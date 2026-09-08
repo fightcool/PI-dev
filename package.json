@@ -1,0 +1,33 @@
+{
+  "name": "pi-dev-environment",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Reproducible, isolated Pi development workstation for Linux x86_64",
+  "engines": { "node": ">=22.19.0 <23", "npm": ">=10 <11" },
+  "packageManager": "npm@10.9.3",
+  "scripts": {
+    "configure": "node scripts/configure.mjs",
+    "start": "node scripts/start.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check:publish": "node scripts/check-publish.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.4",
+    "@howaboua/pi-codex-conversion": "3.0.31",
+    "@narumitw/pi-goal": "0.54.4",
+    "pi-context-prune": "1.4.0",
+    "pi-lens": "4.1.4",
+    "pi-mcp-adapter": "2.32.1",
+    "pi-subagents": "0.66.0",
+    "pi-web-ui": "0.68.2"
+  },
+  "overrides": {
+    "@earendil-works/pi-ai": "0.84.4",
+    "@earendil-works/pi-agent-core": "0.84.4",
+    "@earendil-works/pi-tui": "0.84.4",
+    "qs": "6.16.0"
+  }
+}

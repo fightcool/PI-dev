@@ -1,0 +1,26 @@
+[Unit]
+Description=PI-dev isolated coding workstation
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=@ROOT@
+ExecStart=@NODE@ @START@
+Environment=@CONFIG_ENV@
+Environment=NODE_OPTIONS=--max-old-space-size=1024
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+MemoryAccounting=true
+MemoryHigh=1536M
+MemoryMax=2G
+TasksMax=256
+
+[Install]
+WantedBy=default.target

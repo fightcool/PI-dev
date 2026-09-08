@@ -1,0 +1,12 @@
+[project]
+name = "pi-dev-environment"
+version = "1.0.0"
+description = "Python tools for the independent Pi development checkout"
+requires-python = ">=3.10,<3.11"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest==8.3.4", "ruff==0.12.12"]
+
+[tool.uv]
+package = false
