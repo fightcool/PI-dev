@@ -148,7 +148,16 @@ app.use(express.json({ limit: "10mb" }));
 
 const webauthn = new WebAuthnAuth(DATA_DIR, process.env.PI_WEB_RP_ID ?? "localhost", process.env.PI_WEB_ORIGIN ?? "http://localhost:8787");
 void webauthn.load();
-app.post(["/api/auth/register/options","/dev/api/auth/register/options"], async (_req,res) => res.json(await webauthn.registrationOptions()));
+app.post(["/api/auth/register/options","/dev/api/auth/register/options"], async (_req,res) => {
+	try {
+		res.json(await webauthn.registrationOptions());
+	} catch (e) {
+		// A credential is intentionally single-registration. Do not let an
+		// already-registered device crash Express via an unhandled rejection;
+		// return a recoverable client error instead.
+		res.status(409).json({ error: e instanceof Error ? e.message : "注册不可用" });
+	}
+});
 app.post(["/api/auth/register/verify","/dev/api/auth/register/verify"], async (req,res) => { try { res.json(await webauthn.registration(req.body)); } catch { res.status(400).json({error:"认证失败"}); } });
 app.post(["/api/auth/login/options","/dev/api/auth/login/options"], async (_req,res) => res.json(await webauthn.authenticationOptions()));
 app.post(["/api/auth/login/verify","/dev/api/auth/login/verify"], async (req,res) => { try { const t=await webauthn.authentication(req.body); res.setHeader("Set-Cookie",`pi_web_session=${t}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`); res.json({verified:true}); } catch { res.status(401).json({error:"认证失败"}); } });
