@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+web/dist/
+
+# OS files
+.DS_Store
+
+# pi agent data
+.pi/
+.pi-web/
+.pi-subagents/
+
+# Editor data
+.vscode/
+
+# Plugin dependencies (installed per-plugin)
+plugins/*/node_modules/
+
+# Scratch/test temp files
+tests/scratch/
+
+# pi-web-ui Electron 桌面版构建产物
+release/

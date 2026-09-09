@@ -1,0 +1,47 @@
+[
+	{
+		"id": "webmail",
+		"name": "webmail",
+		"icon": "📬",
+		"description": "网页邮箱：IMAP 收件 + SMTP 发信 + 新邮件通知，可开放给 AI 直接管理邮件。",
+		"descriptionEn": "Web mail: IMAP inbox + SMTP send + new-mail notifications, optionally let the AI manage mail.",
+		"source": "xing-shuyin/pi-web-ui/plugins/webmail",
+		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/webmail"
+	},
+	{
+		"id": "db-client",
+		"name": "db-client",
+		"icon": "🗄️",
+		"description": "数据库连接管理：MySQL / PostgreSQL / SQLite / SQL Server / MongoDB / Redis 的库表浏览、SQL 查询与数据编辑。",
+		"descriptionEn": "Database client: browse schemas, run SQL and edit data across MySQL / PostgreSQL / SQLite / SQL Server / MongoDB / Redis.",
+		"source": "xing-shuyin/pi-web-ui/plugins/db-client",
+		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/db-client"
+	},
+	{
+		"id": "vscode-editor",
+		"name": "vscode-editor",
+		"icon": "📝",
+		"description": "类 VSCode 工作台：多根文件树 + CodeMirror 编辑器 + 底部终端 + Remote-SSH + SFTP 同步。",
+		"descriptionEn": "VSCode-like workbench: multi-root file tree, CodeMirror editor, integrated terminal, Remote-SSH and SFTP sync.",
+		"source": "xing-shuyin/pi-web-ui/plugins/vscode-editor",
+		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/vscode-editor"
+	},
+	{
+		"id": "mermaid",
+		"name": "mermaid",
+		"icon": "📊",
+		"description": "把对话里的 ```mermaid 围栏渲染成 SVG 图表（fenced-code 渲染插件，本地引擎离线优先）。",
+		"descriptionEn": "Renders ```mermaid fences in messages to SVG diagrams (fenced-code renderer plugin, offline-first local engine).",
+		"source": "xing-shuyin/pi-web-ui/plugins/mermaid",
+		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/mermaid"
+	},
+	{
+		"id": "run-trace",
+		"name": "run-trace",
+		"icon": "🧭",
+		"description": "运行轨迹：任务 → 思考 → 工具 → 文件改动 → 结果的时间线聚合视图，支持回放与节点详情。",
+		"descriptionEn": "Run trajectory: task → thinking → tools → file changes → result timeline with replay and node details.",
+		"source": "xing-shuyin/pi-web-ui/plugins/run-trace",
+		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/run-trace"
+	}
+]

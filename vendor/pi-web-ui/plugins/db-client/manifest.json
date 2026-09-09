@@ -1,0 +1,10 @@
+{
+	"id": "db-client",
+	"name": "数据库",
+	"version": "0.2.0",
+	"description": "数据库连接管理与浏览：MySQL / PostgreSQL / SQLite / SQL Server / MongoDB / Redis。库表树、表结构、数据分页查看、SQL 查询编辑器。依赖首次激活自动安装。",
+	"permissions": [
+		"net",
+		"tools"
+	]
+}

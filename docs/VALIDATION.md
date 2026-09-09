@@ -14,14 +14,16 @@
 | Node 测试 | 15 项通过，含无效配置拒绝、幂等安装、设置保留、完整/轻量 profile 切换、token 保留 |
 | 终端 | native node-pty 成功启动 Python，确认 cwd 为本项目，Python prefix 为项目 `.venv` |
 | systemd | 模板通过 `systemd-analyze --user verify`；用户服务 active/running，工作目录 `/root/src/PI-dev` |
-| 新 Web 实例 | `127.0.0.1:8788`，Pi 0.84.4；健康检查 cwd 正确 |
+| 新 Web 实例 | `127.0.0.1:8788`，历史 systemd 实例仍为 Pi 0.84.4；健康检查 cwd 正确 |
 | 前端 | 认证后的 HTML 返回 200，4 个入口资源非空且返回 200 |
 | 访问控制 | 未认证页面及 API 返回 401；WebSocket 拒绝未认证连接、接受正确 token；public health 不下发 cookie |
 | CI 启动脚本 | 本机执行 `node scripts/ci-smoke.mjs` 通过，临时进程按预期退出；随后恢复 systemd 服务 |
 | 运行保护 | 服务活跃时 bootstrap 拒绝覆盖依赖目录 |
 | 原实例 | 旧 8787 健康检查正常，PID 与修改前一致，没有重启；默认 cwd 仍为 `/root`，按要求保留 |
+| dev shadow | `dev` UID 1001；独立 `/srv/pi-dev`、PM2_HOME、配置/会话/日志；8790 loopback；PM2 app `pi-dev-shadow` online；health 返回 Pi 0.85.1、pi-web-ui 0.70.0；smoke 通过；未认证页面 401；doctor 与 Python 3.10.20 pytest 通过 |
 
-新服务一次初始空闲观测的 cgroup 内存约 80 MiB，MemoryHigh 1.5 GiB / MemoryMax 2 GiB，未出现自动重启。该读数不含实际模型会话和后续语言服务器负载，不是内存峰值或性能对比结论。
+阶段 C shadow 依赖审计：PI-dev 根依赖安装无漏洞；vendor/pi-web-ui 独立 `npm ci` 报告 3 个 moderate 漏洞，尚未执行 `npm audit fix`，待锁定上游依赖并单独审查。
+
 
 ## 尚未完成
 
@@ -30,5 +32,7 @@
 - **域名/公网切换**：仍是 loopback 8788，通过 SSH 隧道访问；旧服务与反代未变。
 - **浏览器交互完整回归**：已检查 HTTP、资源、鉴权、WebSocket 和原生 PTY，但没有把这些描述为截图验收或所有 UI 控件回归。
 - **完整扩展运行回归**：full profile 的配置生成经过测试，但所有扩展的实际模型、MCP、LSP 和多代理工作流仍需对应凭证、工具与真实项目验证。
+- **版本迁移**：root 8788 仍由旧 systemd 实例运行 Pi 0.84.4；`dev` 8790 shadow 已运行 Pi 0.85.1、pi-web-ui 0.70.0，正式切换前不得混用两套实例的会话或验证结果。
+
 
 GitHub Actions 状态以仓库 Actions 页面为准，不能把本机验证替代远端干净 runner 的结果。首次提交不包含任何旧实例 token、模型凭证、业务源码、数据库或会话。

@@ -1,0 +1,10 @@
+{
+	"id": "mermaid",
+	"name": "Mermaid 图表",
+	"version": "1.0.0",
+	"description": "把 ```mermaid 围栏渲染为 SVG 图表（renderer 插件：命中了才从 CDN 懒加载引擎，不装不占包、日常聊天零开销）",
+	"view": false,
+	"renderers": [
+		"mermaid"
+	]
+}

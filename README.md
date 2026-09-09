@@ -9,8 +9,8 @@
 | 工作目录 | 本仓库 checkout，不能是 `/root` |
 | Python | 3.10.20，项目 `.venv`，uv 0.12.10 管理 |
 | Node / npm | 22.19.0 / 10.9.3，保持部署基线并锁定版本 |
-| Pi / Web UI | 0.84.4 / 0.68.2 |
-| Web 前端 | 使用 pi-web-ui 发布包的构建产物，由根目录 `npm ci` 安装 |
+| Pi / Web UI | 0.85.1 / 0.70.0 |
+| Web 前端 | 使用锁定的 `vendor/pi-web-ui` 源码构建制品；其运行依赖与 PI-dev 根依赖分别锁定，Pi SDK 统一为 0.85.1 |
 | 新实例 | `127.0.0.1:8788`，`pi-web-ui-dev.service` |
 | Web 数据 | `~/.local/share/pi-dev/web` |
 | Pi 配置及会话 | `~/.local/share/pi-dev/agent` |
@@ -70,7 +70,9 @@ node scripts/service.mjs restart
 
 `full` 增加 pi-lens、pi-subagents、pi-mcp-adapter、pi-codex-conversion、pi-goal。MCP 外部服务和提供商凭证需要另行配置，不会导入旧配置。恢复低开销模式用 `--profile=lean` 后重启。4 GiB 期间建议一个活动对话、一个构建/测试任务，不并行跑全仓扫描。
 
-原环境中的 `statusline-pi@1.3.1` 要求 Pi `^0.75.4`，与当前 0.84.4 不兼容，本环境明确排除，不使用 `--legacy-peer-deps`。`qs` 显式覆盖为 6.16.0，以修复安装时审计发现的间接依赖漏洞。
+PI 0.85.1 与 pi-web-ui 0.70.0 的源码构建制品必须作为一组验证；不要让 UI npm 包重新解析旧版 Pi SDK。
+
+原环境中的 `statusline-pi@1.3.1` 要求 Pi `^0.75.4`，与当前 0.85.1 不兼容，本环境明确排除，不使用 `--legacy-peer-deps`。`qs` 显式覆盖为 6.16.0，以修复安装时审计发现的间接依赖漏洞。
 
 ## 交付与运维
 

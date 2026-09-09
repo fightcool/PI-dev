@@ -7,9 +7,15 @@ if command -v systemctl >/dev/null && systemctl --user is-active --quiet pi-web-
   echo 'Stop pi-web-ui-dev.service explicitly before changing its dependency directory.' >&2
   exit 1
 fi
-[[ "$(uname -s)/$(uname -m)" == Linux/x86_64 ]] || { echo 'Supported platform: Linux x86_64' >&2; exit 1; }
+[[ "$(uname -s)/$(uname -m)" == Linux/x86_64 ]] || {
+  echo 'Supported platform: Linux x86_64' >&2
+  exit 1
+}
 for tool in curl tar sha256sum git; do
-  command -v "$tool" >/dev/null || { echo "Missing prerequisite: $tool" >&2; exit 1; }
+  command -v "$tool" >/dev/null || {
+    echo "Missing prerequisite: $tool" >&2
+    exit 1
+  }
 done
 mkdir -p .tools/downloads
 NODE_VERSION="$(<.node-version)"
@@ -22,7 +28,10 @@ if ! command -v node >/dev/null || [[ "$(node --version)" != "v$NODE_VERSION" ]]
   tar -xJf ".tools/downloads/$ARCHIVE" -C .tools
   export PATH="$ROOT/.tools/node-v$NODE_VERSION-linux-x64/bin:$PATH"
 fi
-[[ "$(npm --version)" == 10.9.3 ]] || { echo 'Use npm 10.9.3 from the pinned Node distribution.' >&2; exit 1; }
+[[ "$(npm --version)" == 10.9.3 ]] || {
+  echo 'Use npm 10.9.3 from the pinned Node distribution.' >&2
+  exit 1
+}
 UV_VERSION=0.12.10
 UV_SHA256=173d95a0c32d18c896c46ba6fafbf3cf9c14ab74b033f81b76c883ef492a976b
 UV="$ROOT/.tools/uv-x86_64-unknown-linux-gnu/uv"
@@ -40,7 +49,10 @@ if [[ "${1:-}" == --update-lock ]]; then
   npm install --package-lock-only --ignore-scripts --no-fund --no-audit
   exit 0
 fi
-[[ $# == 0 ]] || { echo 'Usage: bash scripts/bootstrap.sh [--update-lock]' >&2; exit 1; }
+[[ $# == 0 ]] || {
+  echo 'Usage: bash scripts/bootstrap.sh [--update-lock]' >&2
+  exit 1
+}
 # --locked refuses dependency drift; the repository must already contain uv.lock.
 "$UV" sync --locked --python "$(<.python-version)"
 npm ci --no-fund --no-audit

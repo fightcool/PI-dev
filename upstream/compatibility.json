@@ -1,0 +1,29 @@
+{
+  "piDev": {
+    "node": "22.19.0",
+    "piCodingAgent": "0.85.1",
+    "piWebUiBaseline": "0.70.0"
+  },
+  "resolvedExtensions": {
+    "piWebUi": "0.70.0",
+    "piLens": "4.1.5",
+    "piContextPrune": "1.4.0",
+    "piMcpAdapter": "2.32.1",
+    "piSubagents": "0.66.0",
+    "piCodexConversion": "3.0.31",
+    "piGoal": "0.54.4",
+    "upstreamCommit": "6276a0b0f11b3d5518b825ac2c6fbccda5da17e2"
+  },
+  "requiredChecks": [
+    "format:check",
+    "typecheck",
+    "check:protocol",
+    "test",
+    "build",
+    "packaged-artifact-smoke",
+    "pi-dev-regression"
+  ],
+  "basePath": "/dev/",
+  "websocketPath": "/dev/ws",
+  "apiPath": "/dev/api"
+}
