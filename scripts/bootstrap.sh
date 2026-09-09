@@ -57,6 +57,9 @@ fi
 "$UV" sync --locked --python "$(<.python-version)"
 npm ci --no-fund --no-audit
 node scripts/align-pi-sdk.mjs
+if [[ -f vendor/pi-web-ui/package.json ]]; then
+  (cd vendor/pi-web-ui && npm ci --no-fund --no-audit && npm run build)
+fi
 node scripts/configure.mjs
 node scripts/doctor.mjs
 printf '\nReady. Install the independent service: node scripts/service.mjs install\n'

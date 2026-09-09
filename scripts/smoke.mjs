@@ -26,8 +26,13 @@ assert.equal(health.engine, "pi");
 assert.equal(health.piVersion, process.env.PI_DEV_EXPECTED_PI_VERSION || "0.85.1");
 assert.equal(
   (await get("/", false)).status,
-  401,
-  "unauthenticated page must be rejected",
+  200,
+  "unauthenticated shell must be reachable so the browser can start login",
+);
+assert.equal(
+  (await get("/favicon.ico", false)).status,
+  200,
+  "favicon must be reachable before authentication",
 );
 assert.equal(
   (await get("/api/invalid-route", false)).status,

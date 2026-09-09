@@ -213,6 +213,16 @@ function cookieToken(req: { headers: IncomingMessage["headers"] }): string {
 }
 
 if (AUTH_TOKEN) {
+	// The shell page and its immutable frontend assets must be reachable before
+	// the browser can run auth-token.ts and establish the HttpOnly cookie. API,
+	// WebSocket, and workspace data remain protected below.
+	const isPublicUiAsset = (path: string): boolean =>
+		path === "/favicon.ico" ||
+		path === "/favicon.svg" ||
+		path === "/manifest.webmanifest" ||
+		path === "/sw.js" ||
+		path.startsWith("/assets/") ||
+		path.startsWith("/icons/");
 	// /api/health 保持开放：无敏感信息，容器/监控探针需要它。
 	// 但绝不能因命中 /api/health 就反射下发真实 token cookie（安全漏洞：issue #45）。
 	app.use((req, res, next) => {
@@ -234,7 +244,7 @@ if (AUTH_TOKEN) {
 			// 避免浏览器被残留 cookie 卡死一年（本来也不该再信任它鉴权）。
 			res.setHeader("Set-Cookie", "pi_web_token=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0");
 		}
-			if (req.path === "/api/health" || req.path.startsWith("/api/auth/") || ok) {
+			if (req.path === "/api/health" || req.path.startsWith("/api/auth/") || isPublicUiAsset(req.path) || ok) {
 				next();
 				return;
 			}
@@ -454,6 +464,9 @@ app.get("/plugins/:id/client/*", (req, res) => {
 const RESTART_CHILD_ENV = "PI_WEB_RESTART_CHILD";
 const webDist = join(pkgRoot, "web", "dist");
 if (existsSync(webDist)) {
+	app.get("/favicon.ico", (_req, res) => {
+		res.sendFile(join(webDist, "icon.ico"));
+	});
 	// gzip/deflate 响应压缩：前端 bundle ~1MB，局域网/反代场景传输量降到 ~1/4；
 	// 对 API JSON 同样生效，WS 升级不受影响
 	app.use(compression());

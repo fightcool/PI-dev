@@ -35,8 +35,8 @@ for (const [name, version] of Object.entries(pkg.dependencies)) {
   );
 }
 check(
-  existsSync(join(ROOT, "node_modules/pi-web-ui/web/dist/index.html")),
-  "packaged Web frontend",
+  existsSync(join(ROOT, "vendor/pi-web-ui/web/dist/index.html")),
+  "built vendor Web frontend",
 );
 const webUiSdk = readJson(
   join(ROOT, "node_modules/pi-web-ui/node_modules/@earendil-works/pi-coding-agent/package.json"),
