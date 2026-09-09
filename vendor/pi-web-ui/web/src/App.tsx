@@ -9,6 +9,7 @@ import {
 	type CSSProperties,
 	type PointerEvent as ReactPointerEvent,
 } from "react";
+import { startRegistration, startAuthentication } from "@simplewebauthn/browser";
 import { TopBar } from "./components/TopBar";
 import { LeftPanel } from "./components/LeftPanel";
 import { RightPanel } from "./components/RightPanel";
