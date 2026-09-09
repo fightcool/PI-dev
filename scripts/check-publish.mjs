@@ -7,9 +7,14 @@ const result = spawnSync("git", ["ls-files", "-z"], {
   cwd: ROOT,
   encoding: "utf8",
 });
-if (result.status !== 0 || result.error)
-  throw new Error("Cannot enumerate tracked files.");
-const files = result.stdout.split("\0").filter(Boolean);
+let files;
+if (result.status === 0 && !result.error) {
+  files = result.stdout.split("\0").filter(Boolean);
+} else {
+  const fallback = spawnSync("find", [ROOT, "-type", "f", "-not", "-path", "*/node_modules/*", "-not", "-path", "*/.venv/*", "-not", "-path", "*/.git/*"], { encoding: "utf8" });
+  if (fallback.status !== 0) throw new Error("Cannot enumerate deliverable files.");
+  files = fallback.stdout.split("\n").filter(Boolean).map((file) => file.slice(ROOT.length + 1));
+}
 if (files.length === 0)
   throw new Error(
     "Stage the explicit deliverable files before running this check.",
