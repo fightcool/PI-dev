@@ -89,6 +89,10 @@ export function runtimeEnv(config, base = process.env) {
     PI_CODING_AGENT_DIR: config.agentDir,
     PI_CODING_AGENT_SESSION_DIR: join(config.agentDir, "sessions"),
     PI_WEB_TOKEN: token,
+    // The public hostname is fixed for this deployment. Callers can still
+    // override it explicitly when running an isolated local instance.
+    PI_WEB_RP_ID: base.PI_WEB_RP_ID || "dev.ftai.cc",
+    PI_WEB_ORIGIN: base.PI_WEB_ORIGIN || "https://dev.ftai.cc",
     PI_SKIP_VERSION_CHECK: "1",
     PI_TELEMETRY: "0",
   };

@@ -38,6 +38,10 @@ check(
   existsSync(join(ROOT, "node_modules/pi-web-ui/web/dist/index.html")),
   "packaged Web frontend",
 );
+const webUiSdk = readJson(
+  join(ROOT, "node_modules/pi-web-ui/node_modules/@earendil-works/pi-coding-agent/package.json"),
+);
+check(webUiSdk.version === "0.85.1", `Web UI Pi SDK ${webUiSdk.version}`);
 check(
   config.root === ROOT && config.port !== 8787,
   "dedicated project cwd and port",

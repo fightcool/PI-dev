@@ -56,6 +56,7 @@ fi
 # --locked refuses dependency drift; the repository must already contain uv.lock.
 "$UV" sync --locked --python "$(<.python-version)"
 npm ci --no-fund --no-audit
+node scripts/align-pi-sdk.mjs
 node scripts/configure.mjs
 node scripts/doctor.mjs
 printf '\nReady. Install the independent service: node scripts/service.mjs install\n'

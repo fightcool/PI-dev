@@ -64,6 +64,8 @@ test("runtime overrides inherited old-instance paths and activates the project v
     assert.equal(env.VIRTUAL_ENV, join(ROOT, ".venv"));
     assert.ok(env.PATH.startsWith(join(ROOT, ".venv/bin")));
     assert.equal(env.PI_WEB_TOKEN.length, 64);
+    assert.equal(env.PI_WEB_RP_ID, "dev.ftai.cc");
+    assert.equal(env.PI_WEB_ORIGIN, "https://dev.ftai.cc");
     writeFileSync(tokenFile, "");
     assert.throws(() => runtimeEnv({ ...config(), tokenFile }, {}));
   } finally {

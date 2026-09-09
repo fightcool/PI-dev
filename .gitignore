@@ -24,4 +24,5 @@ mcp.json
 runtime.json
 token
 artifacts/
+.playwright-mcp/
 .DS_Store

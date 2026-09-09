@@ -7,6 +7,8 @@
 | 项目 | 约定 |
 | --- | --- |
 | 工作目录 | 本仓库 checkout，不能是 `/root` |
+| 目标部署服务器 | 当前开发服务器 `C202609091757997`，用户 `dev` |
+| 访问域名 | `https://dev.ftai.cc`（DNS 已指向当前服务器） |
 | Python | 3.10.20，项目 `.venv`，uv 0.12.10 管理 |
 | Node / npm | 22.19.0 / 10.9.3，保持部署基线并锁定版本 |
 | Pi / Web UI | 0.85.1 / 0.70.0 |
@@ -39,13 +41,13 @@ npm run smoke
 
 ## 访问与模型授权
 
-默认只监听本机且启用随机访问口令。建议通过 SSH 隧道访问，不开放公网端口：
+服务默认只监听本机且启用随机访问口令。公网访问使用已配置的 `https://dev.ftai.cc` 反向代理，代理上游必须保持为 `127.0.0.1:8788`，并正确转发 WebSocket `/ws`。在反向代理尚未启用时，可通过 SSH 隧道进行本机验收：
 
 ```bash
 ssh -N -L 8788:127.0.0.1:8788 YOUR_SSH_HOST
 ```
 
-在服务器上查看 `~/.config/pi-dev/token` 的内容，在自己的浏览器打开 `http://127.0.0.1:8788/?token=YOUR_TOKEN`。口令只保存在服务器私有目录，勿粘贴到 GitHub、截图或公开聊天。登录链接可能留在浏览器历史中；认证后可去掉查询参数，继续使用 HttpOnly cookie。
+在服务器上查看 `~/.config/pi-dev/token` 的内容，在自己的浏览器打开 `https://dev.ftai.cc/?token=YOUR_TOKEN`（隧道验收时使用 `http://127.0.0.1:8788/?token=YOUR_TOKEN`）。口令只保存在服务器私有目录，勿粘贴到 GitHub、截图或公开聊天。登录链接可能留在浏览器历史中；认证后可去掉查询参数，继续使用 HttpOnly cookie。
 
 新实例不读取旧实例凭证。进入新界面的模型配置，或运行 `node scripts/pi.mjs` 后 `/login`。自定义 provider 格式见 [配置示例](config/models.example.json)。实际配置写到 `~/.local/share/pi-dev/agent/models.json`，真实凭证通过界面或本地私有 auth 文件配置。模型授权完成后发送一个简短提示，才算模型端到端验收完成。
 
