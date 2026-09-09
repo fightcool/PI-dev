@@ -13,7 +13,7 @@ function curl(path, ...args) {
   assert.equal(r.status, 0, r.stderr || `curl ${path} failed`);
   return r.stdout;
 }
-const unauth = spawnSync("curl", ["--silent", "--output", "/dev/null", "--write-out", "%{http_code}", "--max-time", "10", `${base}/`], { encoding: "utf8" });
+const unauth = spawnSync("curl", ["--silent", "--output", "/dev/null", "--write-out", "%{http_code}", "--max-time", "10", `${base}/api/file`], { encoding: "utf8" });
 assert.equal(unauth.stdout, "401");
 const health = JSON.parse(curl("/api/health", "-H", `Authorization: Bearer ${token}`));
 assert.equal(health.ok, true);
