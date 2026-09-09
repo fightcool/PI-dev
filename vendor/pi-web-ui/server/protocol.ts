@@ -162,9 +162,12 @@ export interface UiState {
 			cacheRead: number;
 			cacheWrite: number;
 			total: number;
-		};
-		cost: number;
-		contextUsage: {
+				/** Tokens consumed by the current request/run. */
+				request?: { input: number; output: number; total: number };
+				run?: { input: number; output: number; total: number };
+			};
+			cost: number;
+			contextUsage: {
 			tokens: number | null;
 			contextWindow: number;
 			percent: number | null;
@@ -1232,7 +1235,13 @@ export type ServerMessage =
 			conversationId: string;
 			seq: number;
 			messageId: string;
-			usage: { input: number; output: number; total: number } | null;
+			usage: {
+				input: number;
+				output: number;
+				total: number;
+				request?: { input: number; output: number; total: number };
+				run?: { input: number; output: number; total: number };
+		} | null;
 			assistantMessageEvent: { type: string; contentIndex?: number; delta?: string };
 	  }
 	/** A tool FINISHED executing (SDK tool_execution_end). Unlike toolResult

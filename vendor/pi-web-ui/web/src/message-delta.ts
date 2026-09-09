@@ -35,7 +35,7 @@ export interface MessageDeltaMsg {
 	conversationId: string;
 	seq: number;
 	messageId: string;
-	usage: { input: number; output: number; total: number } | null;
+	usage: { input: number; output: number; total: number; request?: { input: number; output: number; total: number }; run?: { input: number; output: number; total: number } } | null;
 	assistantMessageEvent: { type: string; contentIndex?: number; delta?: string };
 }
 

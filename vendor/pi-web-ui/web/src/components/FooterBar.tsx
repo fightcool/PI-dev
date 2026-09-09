@@ -102,6 +102,9 @@ export function FooterBar({ chat, send }: FooterBarProps) {
 	const s = state.stats;
 
 	const cache = cacheMetrics(s.tokens);
+	const run = s.tokens.run ?? s.tokens;
+	const request = s.tokens.request ?? s.tokens;
+
 	const hitPct = cache.hitRate * 100;
 	const hitClass = cache.totalInput === 0 ? "" : cache.hitRate >= 0.7 ? "ok" : cache.hitRate >= 0.4 ? "mid" : "warn";
 	const hitText = cache.totalInput > 0 ? `${hitPct.toFixed(1)}%` : "—";
@@ -203,7 +206,8 @@ export function FooterBar({ chat, send }: FooterBarProps) {
 					output: formatTokens(s.tokens.output),
 					total: formatTokens(s.tokens.total),
 				})}>
-					{t("tokensShort")} I/O/T {formatTokens(s.tokens.input)} / {formatTokens(s.tokens.output)} / {formatTokens(s.tokens.total)}
+						{t("tokensShort")} I/O/T {formatTokens(s.tokens.input)} / {formatTokens(s.tokens.output)} / {formatTokens(s.tokens.total)} · R {formatTokens(request.total)} · Run {formatTokens(run.total)}
+
 				</span>
 				<span className="status-sep">·</span>
 

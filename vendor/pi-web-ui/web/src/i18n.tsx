@@ -1065,9 +1065,12 @@ const en: Record<keyof typeof zh, string> = {
 	"thinking.xhigh": "Extra high",
 	"thinking.max": "Max",
 	thinkingUnsupported: "Not supported by this model — snapped to the nearest supported level",
+		/* footerbar */
+		context: "Context",
+		tokensShort: "Tokens",
+		tokenUsageTip: "Cumulative tokens: input {input} · output {output} · total {total}",
+		singleTurnTokens: "Single turn tokens: input {input} · output {output} · total {total}",
 
-	/* footerbar */
-	context: "Context",
 	contextUsage: "Context usage",
 	cumulativeCost: "Cumulative cost",
 	sessionMessages: "Session messages",

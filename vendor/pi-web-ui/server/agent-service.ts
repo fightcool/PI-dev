@@ -2317,7 +2317,8 @@ export class ClientSession {
 				break;
 			}
 			case "agent_start": {
-				// 轨迹事件：新一轮开始（任务文本由 prompt() 暂存；steer/内部续跑
+				conv.usageTracker.startRun();
+
 				// 无暂存时省略，插件回退为「继续执行」）。
 				const task = conv.pendingTask;
 				conv.pendingTask = undefined;
@@ -2353,7 +2354,9 @@ export class ClientSession {
 					usage: (() => {
 						try {
 							const t = this.session.getSessionStats().tokens;
-							return t ? { input: t.input, output: t.output, total: t.total } : null;
+						const usage = conv.usageTracker.snapshot();
+						return { input: usage.current.input, output: usage.current.output, total: usage.current.total };
+
 						} catch {
 							return null;
 						}
@@ -2504,9 +2507,14 @@ export class ClientSession {
 		};
 		try {
 			const s = this.session.getSessionStats();
-			stats = {
-				totalMessages: s.totalMessages,
-				tokens: s.tokens,
+				stats = {
+					totalMessages: s.totalMessages,
+					tokens: {
+						...s.tokens,
+						request: conv.usageTracker.snapshot().current,
+						run: conv.usageTracker.snapshot().turn,
+					},
+
 				cost: s.cost,
 				contextUsage: (() => {
 					const cu = s.contextUsage;
