@@ -198,10 +198,15 @@ export function FooterBar({ chat, send }: FooterBarProps) {
 			</span>
 			<span className="status-sep">·</span>
 
-			<span className="status-item" title={t("cumulativeCost")}>
-				${formatCost(s.cost)}
-			</span>
-			<span className="status-sep">·</span>
+				<span className="status-item status-tokens" title={t("tokenUsageTip", {
+					input: formatTokens(s.tokens.input),
+					output: formatTokens(s.tokens.output),
+					total: formatTokens(s.tokens.total),
+				})}>
+					{t("tokensShort")} I/O/T {formatTokens(s.tokens.input)} / {formatTokens(s.tokens.output)} / {formatTokens(s.tokens.total)}
+				</span>
+				<span className="status-sep">·</span>
+
 
 			<span
 				className="status-item status-cache"
