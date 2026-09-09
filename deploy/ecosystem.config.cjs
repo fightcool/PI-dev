@@ -17,6 +17,8 @@ module.exports = {
       env: {
         NODE_ENV: "production",
         PI_DEV_CONFIG_DIR: process.env.PI_DEV_CONFIG_DIR,
+        PI_WEB_RP_ID: process.env.PI_WEB_RP_ID || "ftai.cc",
+        PI_WEB_ORIGIN: process.env.PI_WEB_ORIGIN || "https://ftai.cc",
       },
     },
   ],
