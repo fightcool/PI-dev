@@ -66,7 +66,7 @@ import {
 import { firstUserText, findSessionFilesForCwd, readSessionLog, replayEventsToMessages } from "./dsh-sessions.js";
 // Governance is a runtime JavaScript module maintained by the PI-dev host.
 // @ts-expect-error no declaration is needed for this small runtime policy module.
-import { assessInputBudget, assessToolOutput, DEFAULT_GOVERNANCE } from "../../../../scripts/governance.mjs";
+import { assessInputBudget, assessToolOutput, DEFAULT_GOVERNANCE } from "../../../scripts/governance.mjs";
 
 const SNAPSHOT_INTERVAL_MS = 60;
 const MAX_OPEN_CONVERSATIONS = 8;
