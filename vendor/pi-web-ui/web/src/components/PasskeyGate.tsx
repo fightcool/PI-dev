@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import { appUrl } from "../base-url";
+import { authToken } from "../auth-token";
 
 async function request(path: string, body?: unknown) {
   const response = await fetch(appUrl(`/api/auth/${path}`), { method: "POST", headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -12,7 +13,12 @@ async function request(path: string, body?: unknown) {
 export function PasskeyGate({ children }: { children: React.ReactNode }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [ready, setReady] = useState(false);
+  // A deployment protected by PI_WEB_TOKEN can be entered from a browser that
+  // does not have the phone's synced Passkey. `?token=…` is absorbed by
+  // initAuthToken() before this component renders; accepting that persisted
+  // token here lets the server-side token middleware authorize API/WS calls.
+  // When no token is present, retain the Passkey gate for local/device login.
+  const [ready, setReady] = useState(() => Boolean(authToken()));
   const [registered, setRegistered] = useState<boolean | null>(null);
   if (ready) return <>{children}</>;
   const run = async (mode: "register" | "login") => {
