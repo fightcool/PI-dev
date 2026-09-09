@@ -11,7 +11,7 @@ let files;
 if (result.status === 0 && !result.error) {
   files = result.stdout.split("\0").filter(Boolean);
 } else {
-  const fallback = spawnSync("find", [ROOT, "-type", "f", "-not", "-path", "*/node_modules/*", "-not", "-path", "*/.venv/*", "-not", "-path", "*/.tools/*", "-not", "-path", "*/.git/*"], { encoding: "utf8" });
+  const fallback = spawnSync("find", [ROOT, "-type", "f", "-not", "-path", "*/node_modules/*", "-not", "-path", "*/.venv/*", "-not", "-path", "*/.tools/*", "-not", "-path", "*/.git/*", "-not", "-path", "*/__pycache__/*", "-not", "-path", "*/.ruff_cache/*"], { encoding: "utf8" });
   if (fallback.status !== 0) throw new Error("Cannot enumerate deliverable files.");
   files = fallback.stdout.split("\n").filter(Boolean).map((file) => file.slice(ROOT.length + 1));
 }
