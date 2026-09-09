@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readdirSync, realpathSync, symlinkSync, renameSync, unlinkSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, symlinkSync, renameSync, unlinkSync, statSync } from "node:fs";
 import { join, resolve, basename } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -17,8 +17,8 @@ function check(condition, message) { if (condition) console.log(`PASS ${message}
 function command(cmd, args, cwd, env = {}) { const r = spawnSync(cmd, args, { cwd, stdio: "inherit", env: { ...process.env, PM2_HOME: pm2Home, ...env } }); if (r.error || r.status !== 0) fail(`${cmd} failed: ${args.join(" ")}`); }
 function run(args, env = {}) { command("pm2", args, undefined, env); }
 function releasePath(id) { const p = resolve(releases, id); if (!p.startsWith(`${releases}/`) || !existsSync(join(p, "scripts/start.mjs"))) fail(`invalid release: ${id}`); return p; }
+function requireReleases() { check(existsSync(releases), `release directory ${releases}`); return readdirSync(releases, { withFileTypes: true }).filter(x => x.isDirectory()).map(x => x.name); }
 function activate(id) { const p = releasePath(id); mkdirSync(base, { recursive: true, mode: 0o755 }); const tmp = join(base, `.current-${process.pid}-${Date.now()}`); symlinkSync(p, tmp); if (existsSync(current)) { const old = join(base, `.current-old-${process.pid}`); renameSync(current, old); renameSync(tmp, current); unlinkSync(old); } else renameSync(tmp, current); console.log(`current -> ${p}`); }
-function requireReleases() { return readdirSync(releases, { withFileTypes: true }).filter(x => x.isDirectory()).map(x => x.name); }
 function newestPrevious(active) {
   return requireReleases().filter(x => x !== active).sort((a, b) => statSync(join(releases, b)).mtimeMs - statSync(join(releases, a)).mtimeMs)[0];
 }
