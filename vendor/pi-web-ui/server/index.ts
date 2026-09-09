@@ -145,6 +145,20 @@ if (process.platform === "win32") {
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
+/** Same-origin transition login: the secret is accepted only in a POST body and
+ * exchanged for an HttpOnly cookie. WebAuthn is intentionally not claimed here. */
+app.get("/login", (_req, res) => {
+	if (!AUTH_TOKEN) { res.status(404).send("登录未启用"); return; }
+	res.type("html").send(`<!doctype html><meta charset="utf-8"><title>登录</title><style>body{font:16px system-ui;max-width:28rem;margin:15vh auto;padding:1rem}input,button{font:inherit;padding:.6rem;margin:.4rem 0;width:100%}</style><h1>同域登录</h1><p>请输入服务端访问口令。口令不会写入 URL 或浏览器存储。</p><form method="post" action="/login"><input name="token" type="password" autocomplete="current-password" required><button>登录</button></form>`);
+});
+app.use(express.urlencoded({ extended: false }));
+app.post("/login", (req, res) => {
+	const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
+	if (!token || token !== AUTH_TOKEN) { res.status(401).type("html").send("登录失败：口令不正确。<a href=\"/login\">重试</a>"); return; }
+	res.setHeader("Set-Cookie", `pi_web_token=${encodeURIComponent(AUTH_TOKEN)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=31536000`);
+	res.redirect("/");
+});
+
 /** 从请求中提取候选 token：头 / 查询参数 / cookie（浏览器导航场景靠 cookie 续命）。 */
 function requestTokens(req: { headers: IncomingMessage["headers"]; url?: string }): string[] {
 	const out: string[] = [];
