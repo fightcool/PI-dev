@@ -54,6 +54,7 @@ import {
 	type PluginRunEvent,
 } from "./plugins.js";
 import { McpBridge } from "./mcp-bridge.js";
+import { WebAuthnAuth } from "./webauthn-auth.js";
 import type {
 	BgServer,
 	ClientMessage,
@@ -144,6 +145,15 @@ if (process.platform === "win32") {
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
+
+const webauthn = new WebAuthnAuth(DATA_DIR, process.env.PI_WEB_RP_ID ?? "localhost", process.env.PI_WEB_ORIGIN ?? "http://localhost:8787");
+void webauthn.load();
+app.post(["/api/auth/register/options","/dev/api/auth/register/options"], async (_req,res) => res.json(await webauthn.registrationOptions()));
+app.post(["/api/auth/register/verify","/dev/api/auth/register/verify"], async (req,res) => { try { res.json(await webauthn.registration(req.body)); } catch { res.status(400).json({error:"认证失败"}); } });
+app.post(["/api/auth/login/options","/dev/api/auth/login/options"], async (_req,res) => res.json(await webauthn.authenticationOptions()));
+app.post(["/api/auth/login/verify","/dev/api/auth/login/verify"], async (req,res) => { try { const t=await webauthn.authentication(req.body); res.setHeader("Set-Cookie",`pi_web_session=${t}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`); res.json({verified:true}); } catch { res.status(401).json({error:"认证失败"}); } });
+app.post(["/api/auth/recovery","/dev/api/auth/recovery"], async (req,res) => { const t=await webauthn.recovery(String(req.body?.code??"")); if(!t) return res.status(401).json({error:"恢复码无效"}); res.setHeader("Set-Cookie",`pi_web_session=${t}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`); res.json({verified:true}); });
+app.post(["/api/auth/revoke","/dev/api/auth/revoke"], async (req,res) => { await webauthn.revoke(String(req.body?.token??"")); res.json({ok:true}); });
 
 /** Same-origin transition login: the secret is accepted only in a POST body and
  * exchanged for an HttpOnly cookie. WebAuthn is intentionally not claimed here. */
