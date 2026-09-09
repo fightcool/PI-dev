@@ -195,7 +195,10 @@ function requestTokens(req: { headers: IncomingMessage["headers"]; url?: string 
 }
 
 function tokenOk(req: Parameters<typeof requestTokens>[0]): boolean {
-	return requestTokens(req).includes(AUTH_TOKEN);
+	if (requestTokens(req).includes(AUTH_TOKEN)) return true;
+	const cookie = req.headers.cookie;
+	const match = typeof cookie === "string" ? cookie.match(/(?:^|;\s*)pi_web_session=([^;]+)/) : null;
+	return !!match && webauthn.valid(decodeURIComponent(match[1]));
 }
 
 /** 请求携带的 pi_web_token cookie 值（未带/损坏时为空串）。 */
