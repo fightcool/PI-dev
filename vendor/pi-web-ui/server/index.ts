@@ -234,12 +234,12 @@ if (AUTH_TOKEN) {
 			// 避免浏览器被残留 cookie 卡死一年（本来也不该再信任它鉴权）。
 			res.setHeader("Set-Cookie", "pi_web_token=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0");
 		}
-			if (req.path === "/api/health" || ok) {
+			if (req.path === "/api/health" || req.path.startsWith("/api/auth/") || ok) {
 				next();
 				return;
 			}
 			if (req.path === "/" || req.path === "/dev/" || req.path === "/dev") {
-				res.redirect("/dev/login");
+				next();
 				return;
 			}
 
