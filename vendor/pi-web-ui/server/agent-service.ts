@@ -15,7 +15,7 @@ import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { existsSync, readFileSync, rmSync, statSync, mkdirSync, watch } from "node:fs";
 import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { normalizeUsageEvent, TokenUsageTracker } from "../../../scripts/token-usage.mjs";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
@@ -547,7 +547,8 @@ interface Conversation {
 	/** Last time ANY SDK event arrived for this conversation — drives the
 	 *  model-stall watchdog (#7): a run that produces no events at all for
 	 *  STALL_NOTIFY_MS is probably a half-open API connection. */
-	lastSdkEventAt: number;
+	/** Unified event-level token accounting for current/run/cumulative views. */
+	usageTracker: TokenUsageTracker;
 	/** Set once the stall notice has been sent for the current silent period;
 	 *  cleared on every SDK event and on each new prompt. */
 	stallNoticed: boolean;
@@ -1757,7 +1758,9 @@ export class ClientSession {
 			listed: false,
 			promptedSinceActive: false,
 			lastActiveAt: Date.now(),
-			lastSdkEventAt: Date.now(),
+				lastSdkEventAt: Date.now(),
+				usageTracker: new TokenUsageTracker(),
+
 			stallNoticed: false,
 			goal: this.makeGoalStatus(),
 			goalGeneration: 0,
@@ -2007,6 +2010,8 @@ export class ClientSession {
 	}
 
 	private onEvent(conv: Conversation, event: AgentSessionEvent): void {
+		const usageEvent = normalizeUsageEvent(event);
+		if (usageEvent) conv.usageTracker.record(usageEvent);
 		// Any SDK event proves the run is alive — feeds the stall watchdog below.
 		conv.lastSdkEventAt = Date.now();
 		conv.stallNoticed = false;

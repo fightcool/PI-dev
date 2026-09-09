@@ -54,7 +54,18 @@ npm run smoke
 
 同一 Unix 用户的 Pi 仍能访问该用户其他文件。推荐新服务器使用专用非 root 用户；本机保留当前 root 执行身份以避免擅自迁移授权。NoNewPrivileges 不会把 root 变为普通用户，Pi 是高权限远程命令执行界面，不可裸露公网。
 
-## 6. 更新、回滚与备份
+## 6.1 PM2 release 演练（隔离端口）
+
+release 工具只允许 shadow 端口（默认 8790），每次 `release` 或 `current` 切换后都会 reload PM2 并运行 smoke；健康检查失败时命令失败，操作者应立即执行 `rollback`。rollback 按 release 目录的修改时间选择最近的上一版本。
+
+```bash
+PI_DEV_DEPLOY_ROOT=/srv/pi-dev PM2_HOME=/srv/pi-dev/pm2 node scripts/release.mjs release <reviewed-id>
+PI_DEV_DEPLOY_ROOT=/srv/pi-dev PM2_HOME=/srv/pi-dev/pm2 node scripts/release.mjs rollback
+PI_DEV_DEPLOY_ROOT=/srv/pi-dev PM2_HOME=/srv/pi-dev/pm2 node scripts/release.mjs resurrect
+```
+
+演练前后确认 `curl http://127.0.0.1:8790/api/health`、认证 API、未认证 WebSocket 拒绝和带 token WebSocket 握手；公网验收只针对已配置的公开入口执行，禁止把 shadow 端口切入生产反代。
+
 
 修改本项目配置前备份 `~/.config/pi-dev`、`~/.local/share/pi-dev` 和当前用户 unit，私有备份使用访问控制或加密存储。备份时排空会话并停止新服务，以保持 JSON/会话一致性。备份、恢复和删除私有数据不由脚本自动执行。
 
