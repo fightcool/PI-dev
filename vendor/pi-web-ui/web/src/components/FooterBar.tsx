@@ -315,6 +315,7 @@ export function FooterBar({ chat, send }: FooterBarProps) {
 						tokens={s.tokens}
 						cost={s.cost}
 						attribution={s.attribution}
+						recentRequests={s.recentRequests}
 						runId={s.runId}
 						channels={channels}
 					/>

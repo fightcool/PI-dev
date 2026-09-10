@@ -13,7 +13,8 @@
  *   @GOTCHA 缓存读写只来自 SDK 的真实字段；为 0 时整行不渲染（不显示误导性的 0）。
  * ──────────────────────────────────────────────────
  */
-import type { UiChannelInfo, UiState, UiUsageAttribution } from "../types";
+import type { UiChannelInfo, UiState, UiUsageAttribution,
+	UiUsageRecord } from "../types";
 import { useT, type Translate } from "../i18n";
 
 /** 令牌数的人类可读格式（FooterBar 与明细表共用）。 */
@@ -62,12 +63,15 @@ export function UsageDetail({
 	tokens,
 	cost,
 	attribution,
+	recentRequests,
 	runId,
 	channels,
 }: {
 	tokens: UiState["stats"]["tokens"];
 	cost: number;
 	attribution?: UiUsageAttribution[];
+	/** §7 最近若干条逐请求记录（时间 + 计价依据）。 */
+	recentRequests?: UiUsageRecord[];
 	runId?: string | null;
 	channels: UiChannelInfo[];
 }) {
@@ -75,6 +79,10 @@ export function UsageDetail({
 	const request = tokens.request ?? tokens;
 	const run = tokens.run ?? tokens;
 	const rows = attribution ?? [];
+	const requests = recentRequests ?? [];
+	// A07：没有任何归属记录但会话有用量时，明确说明「这些历史用量没有渠道归属」，
+	// 而不是显示一张空表让人以为没花过 token（未知/缺失归属要诚实展示）。
+	const unattributedHistory = rows.length === 0 && tokens.total > 0;
 	/** 渠道列：记录里的 channelId 优先解析成显示名；解析不到就显示原 id（绝不猜名字）。 */
 	const channelCell = (row: UiUsageAttribution) => {
 		if (!row.channelId) return <span className="usage-unattributed">{t("channelUnattributed")}</span>;
@@ -169,6 +177,74 @@ export function UsageDetail({
 					</tbody>
 				</table>
 			)}
+			{unattributedHistory && (
+				<div className="usage-empty" title={t("usageHistoryTip")}>
+					{t("usageHistoryUnattributed")}
+				</div>
+			)}
+			{requests.length > 0 && (
+				<>
+					<div className="usage-attr-title">{t("usageRecentTitle")}</div>
+					<table className="usage-recent">
+						<thead>
+							<tr>
+								<th>{t("usageColTime")}</th>
+								<th>{t("usageColSource")}</th>
+								<th>{t("usageColChannel")}</th>
+								<th>{t("usageColModel")}</th>
+								<th>{t("usageColTotal")}</th>
+								<th>{t("usageColCost")}</th>
+							</tr>
+						</thead>
+						<tbody>
+							{requests.map((r: UiUsageRecord) => (
+								<tr key={r.id}>
+									<td>{new Date(r.at).toLocaleTimeString()}</td>
+									<td>{t(SOURCE_LABELS[r.source] ?? "usageSourceSystem")}</td>
+									<td>{requestsChannelCell(r, channels, t)}</td>
+									<td title={r.modelId}>{r.modelId}</td>
+									<td>{formatTokens(r.total)}</td>
+									<td>
+										{r.costBasis === "unknown" && r.total > 0 ? (
+											<span className="usage-unknown-price" title={t("usageCostBasisTip")}>
+												{t("usageUnknownPrice")}
+											</span>
+										) : (
+											formatCost(r.cost)
+										)}
+									</td>
+								</tr>
+							))}
+						</tbody>
+					</table>
+					<div className="usage-cost-note">{t("usageCostBasisNote")}</div>
+				</>
+			)}
 		</div>
+	);
+}
+
+/**
+ * 逐请求记录的渠道单元格：与聚合表同样的「不猜名字」规则 —— 记录里只有 channelId 引用，
+ * 名字用当前渠道表解析；解析不到（已删除/改名）就只显示原 id 并标未归属，绝不写成本渠道。
+ */
+function requestsChannelCell(
+	row: { channelId: string | null; credentialKeyName: string | null },
+	channels: UiChannelInfo[],
+	t: Translate,
+) {
+	if (!row.channelId) return <span className="usage-unattributed">{t("channelUnattributed")}</span>;
+	const known = channels.find((c) => c.id === row.channelId);
+	if (!known)
+		return (
+			<span className="usage-unknown-channel" title={t("channelUnknownTip")}>
+				{t("channelUnattributed")} · {row.channelId}
+			</span>
+		);
+	return (
+		<span>
+			{known.displayName}
+			{row.credentialKeyName && <span className="usage-key">{row.credentialKeyName}</span>}
+		</span>
 	);
 }

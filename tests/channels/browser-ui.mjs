@@ -61,6 +61,16 @@ const state = {
 			run: { input: 100, output: 40, total: 165, cost: 0.03 } },
 		cost: 0.04,
 		runId: "run-1",
+		recentRequests: [
+			{ id: "r:resp-1", at: 1700000000000, runId: "run-1", conversationId: "assessment", cwd: "/synthetic",
+				source: "user", channelId: "ch-a", credentialKeyName: "密钥 1", providerId: "main", modelId: "m1",
+				bindingRevision: 4, configRevision: 7, input: 90, output: 38, cacheRead: 20, cacheWrite: 5, total: 153,
+				cost: 0.03, costBasis: "sdk-model-pricing", currency: "USD" },
+			{ id: "r:resp-2", at: 1700000005000, runId: "run-1", conversationId: "assessment", cwd: "/synthetic",
+				source: "probe", channelId: null, credentialKeyName: null, providerId: "main", modelId: "m1",
+				bindingRevision: null, configRevision: null, input: 10, output: 2, cacheRead: 0, cacheWrite: 0, total: 12,
+				cost: 0, costBasis: "unknown", currency: null },
+		],
 		attribution: [
 			{ source: "user", channelId: "ch-a", credentialKeyName: "密钥 1", providerId: "main", modelId: "m1",
 				bindingRevision: 4, configRevision: 7, requests: 2, input: 90, output: 38, cacheRead: 20, cacheWrite: 5, total: 153, cost: 0.03 },
@@ -170,6 +180,18 @@ try {
 		check("rows without a channel are labelled unattributed", unattributed === 1, `count=${unattributed}`);
 	} else {
 		check("usage detail opens from the footer", false, "selector .usage-attr not found");
+	}
+
+	// 5b) §7 逐请求记录：时间 + 计价依据；未知价格不得显示为 0。
+	const recent = page.locator(".usage-recent");
+	await recent.waitFor({ state: "visible", timeout: options.stepTimeout }).catch(() => undefined);
+	if (await recent.count()) {
+		const recentText = await recent.first().innerText();
+		check("recent request table lists time, channel and model", /\d{1,2}:\d{2}/.test(recentText) && recentText.includes("渠道 A") && recentText.includes("m1"), recentText.split("\n").slice(0, 3).join(" / "));
+		check("unknown pricing is labelled instead of a zero cost", (await page.locator(".usage-recent .usage-unknown-price").count()) === 1);
+		check("pricing basis is stated", (await page.locator(".usage-cost-note").last().innerText()).includes("price table at request time"));
+	} else {
+		check("recent request table renders", false, "selector .usage-recent not found");
 	}
 
 	// 6) 渠道设置页（A11 的「配置」入口）：列表、禁用/缺失标记、账户状态、增改命令。

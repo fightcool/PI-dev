@@ -163,6 +163,34 @@ export interface UiChannelBindingView {
 }
 
 /** 用量归属桶（§7）：按来源/渠道/模型归组；只含引用，不含密钥。 */
+/** 逐请求用量记录（§7：稳定标识、对话/运行、渠道引用、模型、绑定/配置版本、用量、时间、计价依据）。 */
+export interface UiUsageRecord {
+	/** 稳定请求/事件标识：provider 响应 id，或 role+timestamp，或 run 内序号。 */
+	id: string;
+	/** 该请求归属的时间（ms）。 */
+	at: number;
+	runId: string | null;
+	conversationId: string | null;
+	cwd: string | null;
+	/** 来源：user / retry / subagent / compaction / vision / review / wizard / probe / system。 */
+	source: string;
+	channelId: string | null;
+	credentialKeyName: string | null;
+	providerId: string;
+	modelId: string;
+	bindingRevision: number | null;
+	configRevision: number | null;
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	total: number;
+	cost: number;
+	/** "sdk-model-pricing" = SDK 按请求时的模型价目表算出；"unknown" = 未知价格（不得当作 0）。 */
+	costBasis: "sdk-model-pricing" | "unknown";
+	currency: string | null;
+}
+
 export interface UiUsageAttribution {
 	/** 来源：user / retry / subagent / compaction / vision / review / wizard / probe / system。 */
 	source: string;
@@ -279,6 +307,8 @@ export interface UiState {
 			attribution?: UiUsageAttribution[];
 			/** 本次 run 的标识（服务端生成；用于把晚到事件归回原运行）。 */
 			runId?: string | null;
+			/** 最近若干条逐请求记录（新→旧，有界；含时间与计价依据）。 */
+			recentRequests?: UiUsageRecord[];
 			cost: number;
 			contextUsage: {
 			tokens: number | null;

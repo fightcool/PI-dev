@@ -69,6 +69,9 @@ runtime.session.agent.getApiKey = (provider) => this.channels.credentialFor(id, 
 - 请求级视图（`current`）覆盖更新，流式期间即可见，但不计入 run/session；
 - 计入 `cacheRead`/`cacheWrite`/`cost`/`reasoning`；
 - 归属：每次 provider 请求发出时记录当时的绑定快照（渠道/凭据名/模型/绑定版本/配置版本），晚到的用量按该快照归属；来源标注 `user`/`retry`/`subagent`/`compaction`/`vision`/`review`/`wizard`（子代理与复核各自是独立会话，不会并进父会话；未知来源回落 `user`，不伪装成已知来源）。
+- **逐请求记录**（§7「记录包含稳定请求/事件标识、对话/运行、渠道/账户引用、模型、绑定/配置版本、用量、时间和计价依据」）：每条终结用量都落一条有界记录（默认最近 100 条，快照下发 50 条），字段为 `id`（provider 响应 id，或 role+timestamp，或 run 内序号）、`at`、`runId`、`conversationId`、`cwd`、`source`、`channelId`、`credentialKeyName`、`providerId`、`modelId`、`bindingRevision`、`configRevision`、token 五元组、`cost`、`costBasis`、`currency`。去重与聚合同源（同一条消息只落一条记录），重试按尝试分别落记录。
+- **计价依据**：`costBasis:"sdk-model-pricing"`（SDK 按请求当时的模型价目表算出的 USD，非供应商扣费）+ `currency:"USD"`；事件未带价目时记 `"unknown"` 并且界面显示「未知价格」而不是 0（§7「未知价格为空」）。界面在用量详情里新增「最近请求」表（时间/来源/渠道/模型/total/费用）。
+- **历史缺失归属诚实展示**（A07）：会话有用量但没有任何归属记录时，详情面板明确提示「这些历史用量没有渠道归属（记录早于渠道功能或来自无渠道的运行）」，不再显示一张空表。
 - 旁路调用（§7 要求「探测分别标注来源」）：视觉桥转写通过 `vision-bridge.ts#onUsage` 上报真实用量并记为 `source=vision`；压缩摘要走 SDK 内部 `completeSimple`、不产生消息事件，改为用 `compaction_start`/`compaction_end` 的**会话统计差值**记为 `source=compaction`（差值非正时不记）。两条路径的归属都取自请求时绑定，`modelId` 统一为裸模型 id，能与普通请求在归属表里合并。
 
 ## 5. 存储与恢复
@@ -110,7 +113,7 @@ runtime.session.agent.getApiKey = (provider) => this.channels.credentialFor(id, 
 
 ```bash
 # 根工程单测（含用量口径与治理）
-npm test                          # 171 passed / 0 failed
+npm test                          # 174 passed / 0 failed
 
 # 应用单测：渠道模型/存储/服务/账户 + 既有回归
 npm run test:channels:unit        # 46 passed（channel-* 四个文件 + usage-attribution）
@@ -123,7 +126,7 @@ npm run test:performance          # login / synthetic-20/200/1000 全部 passed
 # 端到端：真实 dist server + 两个对话 + 两把 key + 本地替身模型端点
 npm run build && npm run test:channels
 npm run test:channels:multi       # 两个客户端：广播一致/外部冲突可见且可恢复/绑定互不覆盖
-npm run test:channels:browser     # Chromium（桌面 + 移动视口）：选择器/设置页/账户状态/用量归属 17 项断言
+npm run test:channels:browser     # Chromium（桌面 + 移动视口）：选择器/设置页/账户状态/用量归属+逐请求记录 20 项断言
 ```
 
 > 注：`vitest` 必须在 `NODE_ENV` 未设为 `production` 的环境下运行，否则 React 会解析到生产构建，既有的 DOM 用例会以 `act(...) is not supported in production builds` 失败（与本次改动无关）。
@@ -139,6 +142,6 @@ npm run test:channels:browser     # Chromium（桌面 + 移动视口）：选择
 3. **run 内 turn 边界切换**：SDK 支持但本期不启用（见 §2 取舍）。
 4. **旁路调用的用量归属**：视觉桥、压缩摘要、目标复核与目标向导均已接入（见 §4 与 `goal-service.ts#reportIsolatedUsage`）；仍未接入的是模型目录探测（只 GET /models，不产生 token）。压缩用会话统计差值，若压缩期间发生其他模型调用会被一并算入（当前 SDK 行为不会）。
 5. **多客户端并发编辑渠道配置**：已实现「每条命令先从磁盘对齐 + 哈希冲突检测 + 合并写入」，并有双客户端端到端用例（`tests/channel-multiclient-test.mjs`）；仍未经两个真实浏览器的人工并发验证。
-6. **渠道界面的验收范围**：`npm run test:channels:browser` 用真实 Chromium 覆盖 17 项断言——渠道分组、禁用/服务商缺失原因、有效/待生效提示、底部渠道、组合命令携带的 revision、用量归属与「未归属」标记、渠道设置页列表与账户状态（ok/unsupported/stale 与真实数值）、`channel_query_account`、带 `expectedConfigRevision` 的 `channel_save`，以及**移动端视口**（390×844，触屏）下同样的选择流程。**未**做真实设备/真机人工验收与真实供应商账号下的界面验收。
+6. **渠道界面的验收范围**：`npm run test:channels:browser` 用真实 Chromium 覆盖 20 项断言——渠道分组、禁用/服务商缺失原因、有效/待生效提示、底部渠道、组合命令携带的 revision、用量归属与「未归属」标记、渠道设置页列表与账户状态（ok/unsupported/stale 与真实数值）、`channel_query_account`、带 `expectedConfigRevision` 的 `channel_save`，逐请求记录表（时间/来源/渠道/模型/费用、未知价格标注、计价依据说明），以及**移动端视口**（390×844，触屏）下同样的选择流程。**未**做真实设备/真机人工验收与真实供应商账号下的界面验收。
 7. **非中英文语言包的渠道文案**：新增 88 个 key 已按中文顺序填入 8 个语言包以保证一一对应，但暂时使用英文原文作为占位译文（运行时行为与缺 key 回落英文一致）；正式译文待补。
 8. **既有认证面加固**（recovery 限频、CSRF、query token、health 信息）：见 §7，需独立排期。

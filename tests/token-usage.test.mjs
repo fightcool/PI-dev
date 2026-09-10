@@ -101,6 +101,56 @@ test("attributes usage per source, channel and model and never merges channels",
   assert.equal(child.modelId, "m1");
 });
 
+test("per-request records carry a stable id, run/conversation refs, time and a pricing basis (§7)", () => {
+  const t = new TokenUsageTracker({ maxRecords: 2 });
+  t.startRun(1_000);
+  const message = assistant(sdkUsage(), 1_000, { responseId: "resp-7" });
+  t.record(normalizeUsageEvent({ type: "message_end", message }), 1_500, {
+    source: "user", conversationId: "c1", cwd: "/proj", channelId: "ch-a", credentialKeyName: "密钥 1",
+    bindingRevision: 4, configRevision: 7,
+  });
+  // 同一消息的 turn_end 不得再产生一条记录（去重与聚合口径一致）。
+  t.record(normalizeUsageEvent({ type: "turn_end", message }), 1_600, { source: "user", conversationId: "c1" });
+  const [record] = t.snapshot().records;
+  assert.deepEqual(
+    { id: record.id, at: record.at, runId: record.runId, conversationId: record.conversationId, cwd: record.cwd,
+      source: record.source, channelId: record.channelId, key: record.credentialKeyName, provider: record.providerId,
+      model: record.modelId, binding: record.bindingRevision, config: record.configRevision,
+      total: record.total, cost: record.cost, costBasis: record.costBasis, currency: record.currency },
+    { id: "r:resp-7", at: 1_500, runId: "run-1", conversationId: "c1", cwd: "/proj", source: "user",
+      channelId: "ch-a", key: "密钥 1", provider: "main", model: "m1", binding: 4, config: 7,
+      total: 1970, cost: 0.033, costBasis: "sdk-model-pricing", currency: "USD" },
+  );
+  assert.equal(t.snapshot().records.length, 1);
+});
+
+test("records stay bounded and mark unknown pricing instead of pretending it is free", () => {
+  const t = new TokenUsageTracker({ maxRecords: 2 });
+  t.startRun(0);
+  for (let i = 0; i < 4; i++) {
+    t.record(normalizeUsageEvent({ type: "message_end", message: assistant(sdkUsage(), i, { responseId: `resp-${i}` }) }), i, { source: "user" });
+  }
+  assert.deepEqual(t.snapshot().records.map((r) => r.id), ["r:resp-3", "r:resp-2"], " newest first, bounded");
+  // 没有 cost 对象的事件 → 计价依据未知（不得展示为 0 费用）。
+  const bare = normalizeUsageEvent({ type: "message_end", message: { role: "assistant", model: "m2", provider: "main", timestamp: 9, usage: { input: 5, output: 1, totalTokens: 6 } } });
+  t.record(bare, 99, { source: "probe" });
+  const [record] = t.snapshot().records;
+  assert.equal(record.costBasis, "unknown");
+  assert.equal(record.currency, null);
+  assert.equal(record.total, 6);
+});
+
+test("retry attempts get one record each", () => {
+  const t = new TokenUsageTracker();
+  t.startRun(0);
+  t.record(normalizeUsageEvent({ type: "message_end", message: assistant(sdkUsage({ totalTokens: 10, output: 1 }), 1, { responseId: "try-1" }) }), 1, { source: "retry", conversationId: "c1" });
+  t.record(normalizeUsageEvent({ type: "message_end", message: assistant(sdkUsage(), 2, { responseId: "try-2" }) }), 2, { source: "retry", conversationId: "c1" });
+  const records = t.snapshot().records;
+  assert.equal(records.length, 2);
+  assert.deepEqual(records.map((r) => r.source), ["retry", "retry"]);
+  assert.equal(t.snapshot().turn.total, 10 + 1970);
+});
+
 test("keeps legacy governance thresholds and tolerates unknown providers", () => {
   const t = new TokenUsageTracker({ maxRequestTokens: 100, maxRunMs: 50 });
   t.startRun(0);
