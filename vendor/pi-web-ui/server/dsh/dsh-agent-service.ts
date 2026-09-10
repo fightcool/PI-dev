@@ -68,8 +68,12 @@ import { firstUserText, findSessionFilesForCwd, readSessionLog, replayEventsToMe
 // @ts-expect-error runtime policy is maintained as dependency-free JavaScript.
 import { assessInputBudget, assessToolOutput, DEFAULT_GOVERNANCE } from "#governance";
 
+/* 🍞 AI Breadcrumb — @COUPLED ../conversation-retention.ts
+ * @CONTRACT Idle-cache eviction never blocks a new user conversation or interrupts live work.
+ * 📖 ../../docs/conversation-lifecycle.md
+ */
+import { retirementCandidates } from "../conversation-retention.js";
 const SNAPSHOT_INTERVAL_MS = 60;
-const MAX_OPEN_CONVERSATIONS = 8;
 const DEFAULT_CONV_TITLE = "新对话";
 const DEFAULT_CONV_TITLE_EN = "New chat";
 const DEFAULT_MODEL = "deepseek-v4-flash";
@@ -465,14 +469,44 @@ export class DshClientSession {
 	private reclaimIdleConversations(): void {
 		if (this.disposed) return;
 		const now = Date.now();
+		const busy = (conv: DshConversation) =>
+			conv.isStreaming ||
+			!!conv.turnWaiter ||
+			conv.goal.reviewing ||
+			conv.dsGoal?.phase === "active" ||
+			conv.queue.steering.length > 0 ||
+			conv.queue.followUp.length > 0 ||
+			conv.toolStartTimes.size > 0 ||
+			conv.terminals.countLive() > 0;
+		const persisted = new Map<string, Set<string>>();
+		const recoverable = (conv: DshConversation) => {
+			if (conv.messages.length === 0 || conv.fromDisk) return true;
+			if (!persisted.has(conv.cwd))
+				persisted.set(
+					conv.cwd,
+					new Set(findSessionFilesForCwd(this.sessionRoot, conv.cwd).map((file) => basename(dirname(file)))),
+				);
+			return persisted.get(conv.cwd)!.has(conv.sessionId);
+		};
+		const evict = new Set(
+			retirementCandidates(
+				[...this.convs.values()].map((conv) => ({
+					id: conv.id,
+					cwd: conv.cwd,
+					isSubagent: false,
+					busy: busy(conv),
+					lastActiveAt: conv.lastEventAt,
+					recoverable: recoverable(conv),
+				})),
+				this.activeId,
+			),
+		);
 		let changed = false;
 		for (const [id, conv] of this.convs) {
-			if (id === this.activeId) continue;
-			if (conv.isStreaming) continue;
-			if (conv.terminals.list().length > 0) continue;
+			if (id === this.activeId || busy(conv) || !recoverable(conv)) continue;
 			const idle = now - conv.lastEventAt;
 			const limit = conv.listed ? DshClientSession.CONV_RECLAIM_LISTED_IDLE_MS : DshClientSession.CONV_RECLAIM_IDLE_MS;
-			if (idle > limit) {
+			if (evict.has(id) || idle > limit) {
 				this.removeConversation(id);
 				changed = true;
 			}
@@ -1295,34 +1329,31 @@ export class DshClientSession {
 	async newChat(): Promise<void> {
 		if (this.quiesceBlocked()) return;
 		const active = this.conv;
-		if (active.messages.length === 0 && active.terminals.list().length === 0) {
+		if (!active.isStreaming && active.messages.length === 0 && active.terminals.list().length === 0) {
 			this.flushSnapshot();
 			return;
 		}
 		for (const conv of this.convs.values()) {
 			if (conv.id === this.activeId) continue;
-			if (conv.messages.length === 0) {
+			if (
+				conv.cwd === this.cwd &&
+				!conv.isStreaming &&
+				conv.messages.length === 0 &&
+				conv.terminals.list().length === 0
+			) {
 				this.switchConversation(conv.id);
 				this.flushSnapshot();
 				return;
 			}
 		}
-		const openInProject = [...this.convs.values()].filter((c) => c.cwd === this.cwd).length;
-		if (openInProject >= MAX_OPEN_CONVERSATIONS) {
-			this.emit({
-				type: "notice",
-				level: "warning",
-				text: `当前项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个）`,
-				textEn: `This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}).`,
-			});
-			return;
-		}
+		// The idle-cache target must never reject a new user conversation.
 		// 旧对话保留（listed 生命周期简化：不主动移除）。
 		const prevModel = this.model;
 		active.listed = active.isStreaming || active.terminals.list().length > 0 || active.promptedSinceActive;
 		const conv = this.addConversation(`chat-${randomUUID().slice(0, 12)}`, this.cwd, false);
 		this.activeId = conv.id;
 		this.model = prevModel;
+		this.reclaimIdleConversations();
 		this.emitConversations();
 		this.emitGoalStatus();
 		this.pushTerminals();

@@ -1,5 +1,7 @@
 # AGENTS.md — pi-web-ui 项目指南
 
+<!-- 🍞 AI Breadcrumb — @COUPLED docs/conversation-lifecycle.md, server/conversation-maintenance.ts -->
+
 > 本文件是给 AI 编码助手（pi / Claude Code / Cursor 等）看的高层项目说明书。
 > PI-dev 下游维护入口：修改根工程、目录或部署时先读 `../../docs/STRUCTURE.md`；
 > 本文件保留上游应用约定，PI-dev 实例发布遵循根工程命令及 `../../docs/OPERATIONS.md`。
@@ -149,7 +151,7 @@ pi-web-ui/
 | **协议单源** | `docs/architecture-core.md` | `server/protocol.ts` 是唯一事实源；`web/src/types.ts` 是 `export type *` shim；新增消息只改 protocol.ts，两端 switch 各加分支 |
 | **安全边界** | `docs/architecture-core.md` | 默认只绑 loopback；WS Origin/Host 同权威校验；quiesce 准入控制；控制 socket；provider headers 不下发浏览器 |
 | **主题切换** | `docs/architecture-core.md` | styles.css 是唯一布局文件，主题 = 纯 `:root` 变量覆盖（非整文件副本）；内置主题由 make-light-theme.mjs 从 styles.css 变量清单生成；改布局永不碰主题；终端跟随主题 |
-| **多对话并发** | `docs/architecture-core.md` | 每对话独立 AgentSessionRuntime；对话按项目归属；set_cwd 切到目标项目对话；8 个上限/项目；共享同一个 ModelRuntime |
+| **多对话并发与清理** | `docs/conversation-lifecycle.md`、`docs/architecture-core.md` | 修改新建、历史恢复、子代理结束或清理逻辑时读取：用户新建无8个硬限制；空闲缓存回收，子代理归档后释放并可按runId继续 |
 | **附件** | `docs/architecture-attachments.md` | 三种模式（inline/reference/lines）；图片问答（base64 + 缩放）；文件上传（fileData 落盘）；视觉桥（纯文本模型看图转写） |
 | **文件预览** | `docs/architecture-attachments.md` | 512KB 上限 + 内容嗅探（文本/二进制 + GBK 回退）；媒体预览走 HTTP Range；下载绕开 Chrome Safe Browsing |
 | **终端** | `docs/architecture-terminal.md` | 每 Conversation 一个 TerminalManager；spawn 统一准入；按键编码纯函数；输出微批合并；node-pty × --watch 兼容自愈 |
