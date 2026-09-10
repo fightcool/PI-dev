@@ -135,6 +135,12 @@ try {
 	touchedManagers = true;
 	if (isActive(LEGACY)) throw new Error("legacy unit is still active");
 
+	// PM2 → PM2 升级必须先停止当前单元再换链接：单元已 active 时 `manager start` 是空操作，
+	// 旧进程会继续用旧代码服务，切换看似成功实则没生效（2026-09-10 实际踩到）。
+	log(`stopping ${PM2_UNIT} before the release swap`);
+	if (isActive(PM2_UNIT)) systemctl(["stop", PM2_UNIT]);
+	if (isActive(PM2_UNIT)) throw new Error(`${PM2_UNIT} did not stop before the release swap`);
+
 	log(`switching current → ${NEW_ID}`);
 	phase("switching", { from: OLD_ID });
 	await activate(NEW_ID);
