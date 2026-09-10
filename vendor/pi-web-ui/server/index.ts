@@ -184,9 +184,41 @@ app.post(["/api/auth/login/verify", "/dev/api/auth/login/verify"], async (req, r
 		res.status(401).json({ error: "认证失败" });
 	}
 });
+/**
+ * 认证面固定窗口限流（§4 复核结论：恢复码与口令登录此前无限频）。
+ * 单用户实例部署在回环 + 反向代理后，远端地址可能都是代理地址，因此按
+ * 「socket 远端地址」分桶（实际等同全局窗口）。命中即 429 + Retry-After。
+ * @MAGIC AUTH_WINDOW_MS=60_000 / AUTH_MAX_ATTEMPTS=10（每窗口每桶）。
+ */
+const AUTH_WINDOW_MS = 60_000;
+const AUTH_MAX_ATTEMPTS = 10;
+const authAttempts = new Map<string, { count: number; resetAt: number }>();
+function authRateLimited(bucket: string, now = Date.now()): { limited: boolean; retryAfterSec: number } {
+	const entry = authAttempts.get(bucket);
+	if (!entry || entry.resetAt <= now) {
+		authAttempts.set(bucket, { count: 1, resetAt: now + AUTH_WINDOW_MS });
+		return { limited: false, retryAfterSec: 0 };
+	}
+	entry.count += 1;
+	if (entry.count > AUTH_MAX_ATTEMPTS) return { limited: true, retryAfterSec: Math.max(1, Math.ceil((entry.resetAt - now) / 1000)) };
+	return { limited: false, retryAfterSec: 0 };
+}
+/** 成功即清空该桶，避免正常用户被自己之前的失败计数拖累。 */
+function authRateLimitReset(bucket: string): void {
+	authAttempts.delete(bucket);
+}
+const authBucket = (req: { socket?: { remoteAddress?: string } }, kind: string): string => `${kind}:${req.socket?.remoteAddress ?? "unknown"}`;
+
 app.post(["/api/auth/recovery", "/dev/api/auth/recovery"], async (req, res) => {
+	const bucket = authBucket(req, "recovery");
+	const gate = authRateLimited(bucket);
+	if (gate.limited) {
+		res.setHeader("Retry-After", String(gate.retryAfterSec));
+		return res.status(429).json({ error: "尝试过于频繁，请稍后重试" });
+	}
 	const t = await webauthn.recovery(String(req.body?.code ?? ""));
 	if (!t) return res.status(401).json({ error: "恢复码无效" });
+	authRateLimitReset(bucket);
 	res.setHeader("Set-Cookie", `pi_web_session=${t}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`);
 	res.json({ verified: true });
 });
@@ -210,6 +242,13 @@ app.get(["/login", "/dev/login"], (_req, res) => {
 });
 app.use(express.urlencoded({ extended: false }));
 app.post(["/login", "/dev/login"], (req, res) => {
+	const bucket = authBucket(req, "login");
+	const gate = authRateLimited(bucket);
+	if (gate.limited) {
+		res.setHeader("Retry-After", String(gate.retryAfterSec));
+		res.status(429).type("html").send('尝试过于频繁，请稍后重试。<a href="/login">返回</a>');
+		return;
+	}
 	const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
 	if (!token || token !== AUTH_TOKEN) {
 		res.status(401).type("html").send('登录失败：口令不正确。<a href="/login">重试</a>');
@@ -324,8 +363,25 @@ const MANAGED = isManaged();
 /** PI_WEB_TABS: the tabs this instance offers. null = all of them, as before. */
 const TABS = parseTabs();
 
-app.get("/api/health", (_req, res) => {
-	res.json({ ok: true, piVersion: VERSION, cwd: CWD, pid: process.pid, engine: ENGINE });
+/**
+ * 健康端点：探针必须能匿名拿到 `ok`，但**绝对工作区路径/进程号/版本**只在
+ * 「已鉴权」或「直连回环且未经代理转发」时返回（§4 复核：公网暴露绝对路径与 PID 无必要）。
+ * @GOTCHA 反向代理若注入 X-Forwarded-*，远端请求即便落到回环也不返回详情；
+ *          容器/CI 的健康探针直连回环、不带转发头，因此仍然拿到完整字段。
+ */
+const healthForwarded = (req: { headers: IncomingMessage["headers"] }): boolean =>
+	Boolean(req.headers["x-forwarded-for"] || req.headers["x-forwarded-proto"] || req.headers["x-real-ip"]);
+const healthLoopback = (req: { socket?: { remoteAddress?: string } }): boolean => {
+	const address = req.socket?.remoteAddress ?? "";
+	return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+};
+app.get("/api/health", (req, res) => {
+	const detailed = (AUTH_TOKEN ? tokenOk(req) : false) || (healthLoopback(req) && !healthForwarded(req));
+	res.json({
+		ok: true,
+		engine: ENGINE,
+		...(detailed ? { piVersion: VERSION, cwd: CWD, pid: process.pid } : {}),
+	});
 });
 
 /**
