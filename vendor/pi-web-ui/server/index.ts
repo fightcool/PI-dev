@@ -168,7 +168,7 @@ app.post(["/api/auth/revoke","/dev/api/auth/revoke"], async (req,res) => { await
  * exchanged for an HttpOnly cookie. WebAuthn is intentionally not claimed here. */
 app.get(["/login", "/dev/login"], (_req, res) => {
 	if (!AUTH_TOKEN) { res.status(404).send("登录未启用"); return; }
-	res.type("html").send(`<!doctype html><meta charset="utf-8"><title>登录</title><style>body{font:16px system-ui;max-width:28rem;margin:15vh auto;padding:1rem}input,button{font:inherit;padding:.6rem;margin:.4rem 0;width:100%}</style><h1>同域登录</h1><p>请输入服务端访问口令。口令不会写入 URL 或浏览器存储。</p><form method="post" action="/dev/login"><input name="token" type="password" autocomplete="current-password" required><button>登录</button></form>`);
+	res.type("html").send(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>登录</title><style>body{font:16px system-ui;max-width:28rem;margin:15vh auto;padding:1rem}input,button{font:inherit;padding:.6rem;margin:.4rem 0;width:100%}code{background:#f2f2f2;padding:.1rem .35rem;border-radius:4px} .row{display:flex;gap:.4rem} .row input{flex:1} .row button{width:auto;flex:none}</style><script>function toggle(s){var i=document.getElementById('t');i.type=i.type==='password'?'text':'password';s.textContent=i.type==='password'?'显示':'隐藏'}</script><h1>同域登录</h1><p>请输入服务器访问口令。口令不会写入 URL 或浏览器存储。</p><p>口令在服务器上，运行 <code>cat ~/.config/pi-dev/token</code> 查看。</p><form method="post" action="/dev/login"><div class="row"><input id="t" name="token" type="password" autocomplete="current-password" required><button type="button" onclick="toggle(this)">显示</button></div><button>登录</button></form>`);
 });
 app.use(express.urlencoded({ extended: false }));
 app.post(["/login", "/dev/login"], (req, res) => {

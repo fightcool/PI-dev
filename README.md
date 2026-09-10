@@ -47,7 +47,19 @@ npm run smoke
 ssh -N -L 8788:127.0.0.1:8788 YOUR_SSH_HOST
 ```
 
-在服务器上查看 `~/.config/pi-dev/token` 的内容，在自己的浏览器打开 `https://dev.ftai.cc/?token=YOUR_TOKEN`（隧道验收时使用 `http://127.0.0.1:8788/?token=YOUR_TOKEN`）。这也是 PC 浏览器没有同步手机 Passkey 时的登录方式：首次打开后 token 会保存到该浏览器并从地址栏移除，前端可直接进入应用，后续请求使用受保护的 cookie/token。口令只保存在服务器私有目录，勿粘贴到 GitHub、截图或公开聊天。登录链接可能留在浏览器历史中；认证后可去掉查询参数，继续使用 HttpOnly cookie。
+### PC 端登录（访问口令）
+
+访问口令是一个随机的 64 位串，保存在服务器私有目录 `~/.config/pi-dev/token`，**它无法靠记忆，只能复制**。它是 PC 浏览器（未同步手机 Passkey）进入应用的登录方式。
+
+**步骤：**
+
+1. 登录服务器，查看口令：`cat ~/.config/pi-dev/token`（隧道验收时先跑 `ssh -N -L 8788:127.0.0.1:8788 YOUR_SSH_HOST`）。
+2. 在自己的浏览器打开：`https://dev.ftai.cc/?token=YOUR_TOKEN`（隧道验收用 `http://127.0.0.1:8788/?token=YOUR_TOKEN`）。
+3. 首次打开后 token 会保存到该浏览器并从地址栏移除，前端直接进入应用；后续请求使用受保护的 cookie/token，**同一浏览器无需再次输入**。
+
+若您更愿意手动输入，可在登录页点「使用访问口令登录」，粘贴口令即可（页面支持显示/隐藏口令）。
+
+> 安全提醒：口令只保存在服务器私有目录，请勿粘贴到 GitHub、截图或公开聊天。登录链接可能留在浏览器历史中；认证后可去掉查询参数，继续使用 HttpOnly cookie。若在全新设备/浏览器使用，需重新获取口令。
 
 新实例不读取旧实例凭证。进入新界面的模型配置，或运行 `node scripts/pi.mjs` 后 `/login`。自定义 provider 格式见 [配置示例](config/models.example.json)。实际配置写到 `~/.local/share/pi-dev/agent/models.json`，真实凭证通过界面或本地私有 auth 文件配置。模型授权完成后发送一个简短提示，才算模型端到端验收完成。
 
