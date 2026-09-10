@@ -834,6 +834,8 @@ export const zh = {
 		"发给模型的 function-calling 工具定义（name / description / parameters），与系统提示词正文拼成完整初始上下文，只读。",
 	settingsViewToolsSchemaEmpty: "会话尚未就绪，暂无工具 schema。",
 	settingsSkills: "技能",
+	settingsSkillCountLegend: "已启用 / 已安装",
+	settingsSkillDisabledHint: "关闭的技能保留在列表中，但不加入后续模型请求的技能目录；需要时可在这里开启。",
 	settingsReview: "目标审查",
 	settingsReviewDesc: "为独立的目标审查会话配置额外提示词和技能；不会改变主会话设置。",
 	settingsReviewSkills: "审查可用技能",
@@ -1850,6 +1852,8 @@ const en: Record<keyof typeof zh, string> = {
 		"The function-calling tool definitions sent to the model (name / description / parameters), combining with the system prompt text to form the full initial context. Read-only.",
 	settingsViewToolsSchemaEmpty: "Session not ready yet — no tools schema available.",
 	settingsSkills: "Skills",
+	settingsSkillCountLegend: "Enabled / Installed",
+	settingsSkillDisabledHint: "Disabled skills remain listed but are excluded from the skill catalog in subsequent model requests. Enable them here when needed.",
 	settingsReview: "Goal review",
 	settingsReviewDesc:
 		"Configure extra instructions and skills for the isolated goal-review session; the main session is unaffected.",
