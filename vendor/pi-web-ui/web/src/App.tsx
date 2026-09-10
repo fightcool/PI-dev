@@ -101,7 +101,7 @@ export function App() {
 					/>
 				</div>
 			</TemplateProvider>
-			<FooterBar chat={chat} send={send} />
+			<FooterBar chat={chat} send={send} onQueryUsageHistory={connection.channelApi.queryUsageHistory} />
 			<AppDialogs
 				connection={connection}
 				dialogs={dialogs}

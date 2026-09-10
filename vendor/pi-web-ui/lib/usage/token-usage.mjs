@@ -193,9 +193,12 @@ export class TokenUsageTracker {
       cacheWrite: tokens.cacheWrite,
       total: tokens.total,
       cost: tokens.cost,
-      /** "sdk-model-pricing" = 由 SDK 按当时模型价目表算出；"unknown" = 事件未带价目（未知价格）。 */
-      costBasis: normalized.costProvided ? "sdk-model-pricing" : "unknown",
-      currency: normalized.costProvided ? "USD" : null,
+      /**
+       * "sdk-model-pricing" = 由 SDK 按当时模型价目表算出了正的费用；
+       * "unknown" = 事件未带价目，或模型无价目表（算出 0）—— 未知价格展示为空，不能当作免费。
+       */
+      costBasis: normalized.costProvided && tokens.cost > 0 ? "sdk-model-pricing" : "unknown",
+      currency: normalized.costProvided && tokens.cost > 0 ? "USD" : null,
     };
     this.#records.push(record);
     if (this.#records.length > this.#recordLimit) this.#records.splice(0, this.#records.length - this.#recordLimit);

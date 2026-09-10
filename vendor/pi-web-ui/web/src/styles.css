@@ -10445,3 +10445,38 @@ button.source-default-toggle {
 		max-width: 9ch;
 	}
 }
+
+/* P4：用量历史（分组切换 + 时间窗 + 聚合表）。 */
+.usage-history {
+	margin-top: 10px;
+	border-top: 1px solid color-mix(in srgb, var(--border, #2a2d34) 60%, transparent);
+	padding-top: 8px;
+}
+.usage-history-controls {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	justify-content: space-between;
+	margin: 4px 0 6px;
+}
+.usage-history-group,
+.usage-history-window {
+	display: inline-flex;
+	gap: 4px;
+	flex-wrap: wrap;
+}
+.usage-history-table {
+	font-size: 12px;
+}
+.usage-history-total td {
+	border-top: 1px solid var(--border, #2a2d34);
+	font-weight: 600;
+}
+@media (max-width: 560px) {
+	.usage-history-controls {
+		flex-direction: column;
+	}
+	.usage-history-table {
+		font-size: 11px;
+	}
+}

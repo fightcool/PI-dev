@@ -635,6 +635,16 @@ export type ClientMessage =
 	  }
 	/** 查询渠道账户余额/配额（有界超时、限频、缓存；不支持时明确报 unsupported）。 */
 	| { type: "channel_query_account"; commandId: string; channelId: string }
+	// -- P4 用量历史（跨渠道/项目/时间；只读聚合，不参与计费） ---------------
+	/** 查询实例私有用量历史（逐请求记录的只读聚合）。reqId 回显在 usage_history 里。 */
+	| {
+			type: "usage_history_query";
+			reqId: number;
+			groupBy: "channel" | "project" | "model" | "source" | "day";
+			/** 时间窗（含端点，ms）；省略 = 不限。 */
+			from?: number;
+			to?: number;
+	  }
 	// -- custom model config (agentDir/models.json) ---------------------------
 	| { type: "list_models_config" }
 	/** Upsert one provider (api/baseUrl/apiKey + its models) into models.json. */
@@ -1557,6 +1567,44 @@ export type ServerMessage =
 			bindings: UiChannelBinding[];
 			pending: UiChannelPending[];
 			accounts: UiAccountStatus[];
+	  }
+	/** P4 用量历史聚合结果（rows 已按 total 降序；unpricedRequests>0 表示该组含未知价格）。 */
+	| {
+			type: "usage_history";
+			reqId: number;
+			ok: boolean;
+			error?: string;
+			groupBy: "channel" | "project" | "model" | "source" | "day";
+			from: number | null;
+			to: number | null;
+			rows: {
+				/** channelId / cwd / "provider/model" / source / YYYY-MM-DD(UTC)；"unattributed" = 无归属。 */
+				key: string;
+				requests: number;
+				input: number;
+				output: number;
+				cacheRead: number;
+				cacheWrite: number;
+				total: number;
+				cost: number;
+				unpricedRequests: number;
+				firstAt: number | null;
+				lastAt: number | null;
+			}[];
+			totals: {
+				requests: number;
+				input: number;
+				output: number;
+				cacheRead: number;
+				cacheWrite: number;
+				total: number;
+				cost: number;
+				unpricedRequests: number;
+			};
+			scanned: number;
+			skipped: number;
+			/** true = 触到扫描上限，结果不完整（界面需说明）。 */
+			truncated: boolean;
 	  }
 	/** 渠道命令回执：commandId 对应请求，phase 说明最终状态。
 	 *  applied=已生效；pending=已受理待本轮结束；rejected=失败（原绑定保留）；

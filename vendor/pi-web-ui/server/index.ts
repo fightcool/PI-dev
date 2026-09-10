@@ -732,6 +732,11 @@ export interface DispatchSession {
 		expectedConfigRevision?: number;
 	}): Promise<void>;
 	queryChannelAccount(commandId: string, channelId: string): Promise<void>;
+	/** P4 首个切片：跨渠道/项目/时间的用量历史（只读聚合）。 */
+	queryUsageHistory(
+		reqId: number,
+		query: { groupBy: "channel" | "project" | "model" | "source" | "day"; from?: number; to?: number },
+	): Promise<void>;
 	setThinking(level: string): void;
 	setCwd(path: string): Promise<void>;
 	completePath(path: string): Promise<void>;
@@ -1417,6 +1422,9 @@ wss.on("connection", (ws) => {
 				break;
 			case "channel_query_account":
 				void cs.queryChannelAccount(msg.commandId, msg.channelId);
+				break;
+			case "usage_history_query":
+				void cs.queryUsageHistory(msg.reqId, { groupBy: msg.groupBy, from: msg.from, to: msg.to });
 				break;
 			default:
 				break;

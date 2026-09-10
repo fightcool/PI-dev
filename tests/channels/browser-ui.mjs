@@ -189,9 +189,31 @@ try {
 		const recentText = await recent.first().innerText();
 		check("recent request table lists time, channel and model", /\d{1,2}:\d{2}/.test(recentText) && recentText.includes("渠道 A") && recentText.includes("m1"), recentText.split("\n").slice(0, 3).join(" / "));
 		check("unknown pricing is labelled instead of a zero cost", (await page.locator(".usage-recent .usage-unknown-price").count()) === 1);
-		check("pricing basis is stated", (await page.locator(".usage-cost-note").last().innerText()).includes("price table at request time"));
+		// 面板里现在有两个说明（逐请求计价依据 + 历史时间窗），按文本匹配而不是取 last()。
+		const notes = await page.locator(".usage-cost-note").allInnerTexts();
+		check("pricing basis is stated", notes.some((n) => n.includes("price table at request time")), notes.join(" | ").slice(0, 160));
 	} else {
 		check("recent request table renders", false, "selector .usage-recent not found");
+	}
+
+	// 5c) P4 首个切片：用量历史（按渠道/项目/… + 时间窗），未归属行诚实标注。
+	const history = page.locator(".usage-history");
+	await history.waitFor({ state: "visible", timeout: options.stepTimeout }).catch(() => undefined);
+	if (await history.count()) {
+		const historyText = await history.first().innerText();
+		check(
+			"usage history renders grouped rows with totals and an honest unattributed row",
+			historyText.includes("渠道 A") && historyText.includes("Unattributed") && historyText.includes("Total") && historyText.includes("unpriced"),
+			historyText.split("\n").slice(0, 5).join(" / "),
+		);
+		sent = [];
+		await history.locator(".chan-btn", { hasText: "By project" }).first().click();
+		await page.waitForTimeout(300);
+		const query = sent.find((m) => m.type === "usage_history_query");
+		check("switching the grouping asks the server for that aggregation", query?.groupBy === "project", JSON.stringify(query ?? null));
+		check("history queries carry a time window bound", typeof query?.from === "number" || query?.from === undefined);
+	} else {
+		check("usage history section renders", false, "selector .usage-history not found");
 	}
 
 	// 6) 渠道设置页（A11 的「配置」入口）：列表、禁用/缺失标记、账户状态、增改命令。
