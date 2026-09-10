@@ -77,8 +77,35 @@ const state = {
 		bindings: [{ conversationId: "assessment", channelId: "ch-a", endpointId: "default",
 			credentialRef: { providerId: "main", keyName: "密钥 1" }, modelId: "main/m1",
 			bindingRevision: 4, configRevision: 7, lastUsedAt: 1, channelName: "渠道 A" }],
-		pending: [], accounts: [],
+		pending: [],
+		// P3 状态口径：成功 / 不支持 / 过期（失败但保留上次结果）三种都要能显示。
+		accounts: [
+			{ accountRef: "ch-a", kind: "openai-gateway", status: "ok", unit: "USD", balance: 12.5,
+				quota: { used: 1, limit: 13.5, remaining: 12.5, unit: "USD" }, checkedAt: 1700000000000 },
+			{ accountRef: "ch-b", kind: "unsupported", status: "unsupported", error: "no account endpoint" },
+			{ accountRef: "ch-off", kind: "openrouter", status: "stale", unit: "USD", balance: 3.25,
+				checkedAt: 1700000000000, staleSince: 1700000000000, error: "HTTP 503" },
+		],
 	},
+};
+
+// 设置面板在 settings_state 到达前返回 null；fixtures.settingsFixture() 提供最小可用态。
+/** 移动端上下文的替代回复（复用同一份合成状态，但不依赖 performance 隔离底座）。 */
+const mobileReplies = (msg) => {
+	switch (msg.type) {
+		case "hello":
+			return [
+				{ type: "ready", serverVersion: "synthetic", managed: true, engine: "pi" },
+				{ type: "plugins", plugins: [], epoch: 1 },
+				{ type: "snapshot", state },
+				{ type: "channel_state", ...state.channelState },
+			];
+		case "list_channels": return [{ type: "channel_state", ...state.channelState }];
+		case "list_models": return [{ type: "models", models: MODELS }];
+		case "channel_select": return [{ type: "channel_command_result", commandId: msg.commandId, ok: true, phase: "applied",
+			channelId: msg.channelId, configRevision: 7, bindingRevision: 5 }];
+		default: return [];
+	}
 };
 
 const options = config();
@@ -144,8 +171,87 @@ try {
 	} else {
 		check("usage detail opens from the footer", false, "selector .usage-attr not found");
 	}
+
+	// 6) 渠道设置页（A11 的「配置」入口）：列表、禁用/缺失标记、账户状态、增改命令。
+	// 用量面板自带拦截式 backdrop（点击任意处才收起），先把它关掉再进设置页。
+	await page.locator(".status-cwd-backdrop").first().click({ force: true });
+	await page.locator(".usage-panel").waitFor({ state: "hidden", timeout: options.stepTimeout }).catch(() => undefined);
+	sent = [];
+	await page.locator('button.chip[title="Settings"]').first().click();
+	await page.locator(".settings-modal").waitFor({ state: "visible", timeout: options.stepTimeout });
+	await page.locator(".settings-rail .settings-tab", { hasText: "Channels" }).first().click();
+	await page.locator(".chan-settings").waitFor({ state: "visible", timeout: options.stepTimeout });
+	const rows = await page.locator(".chan-settings .chan-row").count();
+	check("settings page lists every configured channel", rows === 4, `rows=${rows}`);
+	const warns = (await page.locator(".chan-settings .chan-warn").allInnerTexts()).join(" | ");
+	check("settings page marks provider-missing channels", warns.includes("Provider not registered"), warns);
+	const settingsText = await page.locator(".chan-settings").first().innerText();
+	check(
+		"settings page shows ok / unsupported / stale account states with real numbers",
+		settingsText.includes("OK") && settingsText.includes("Unsupported") && settingsText.includes("Stale") &&
+			settingsText.includes("Balance 12.5 USD") && settingsText.includes("last successful result"),
+	);
+	// 查询账户 = 一条 channel_query_account（不改配置）。
+	await page.locator(".chan-settings .chan-row").first().locator("button.chan-btn", { hasText: "Query account" }).click();
+	check("account query sends channel_query_account", sent.some((m) => m.type === "channel_query_account" && m.channelId === "ch-a"), JSON.stringify(sent.at(-1) ?? null));
+	// 新增渠道 = 一条带 configRevision 的 channel_save。
+	await page.locator(".chan-settings .chan-btn", { hasText: "Add channel" }).first().click();
+	const form = page.locator(".chan-settings form, .chan-form").first();
+	await form.waitFor({ state: "visible", timeout: options.stepTimeout });
+	await form.locator("input").first().fill("渠道 新");
+	await page.locator(".chan-settings .chan-btn", { hasText: "Save" }).last().click();
+	const save = sent.find((m) => m.type === "channel_save");
+	check("saving a channel sends channel_save with the expected config revision", save?.expectedConfigRevision === 7, JSON.stringify(save ?? null));
 	await context.close();
-} catch (err) {
+
+	// 7) 移动端视口（A11 要求桌面与移动端均可用）：同一套渠道状态在手机宽度下仍可读可操作。
+	const mobile = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true,
+		locale: "en-US", serviceWorkers: "block" });
+	try {
+		const mobileSent = [];
+		const mobilePage = await mobile.newPage();
+		await mobile.route("**/*", async (route) => {
+			const url = new URL(route.request().url());
+			if (url.origin !== origin) return route.abort("blockedbyclient");
+			const { readFile } = await import("node:fs/promises");
+			const { extname, resolve } = await import("node:path");
+			const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
+			const mime = { ".html": "text/html", ".js": "application/javascript", ".css": "text/css",
+				".svg": "image/svg+xml", ".json": "application/json", ".woff2": "font/woff2", ".png": "image/png", ".ico": "image/x-icon" };
+			if (!mime[extname(rel)]) {
+				if (url.pathname === "/api/locales") return route.fulfill({ json: { packs: [] } });
+				if (url.pathname === "/api/themes") return route.fulfill({ json: { themes: [] } });
+				return route.abort("blockedbyclient");
+			}
+			return route.fulfill({ contentType: mime[extname(rel)], body: await readFile(resolve(options.webRoot, rel)) });
+		});
+		await mobile.routeWebSocket("**/*", (socket) => {
+			socket.onMessage((raw) => {
+				const msg = JSON.parse(String(raw));
+				mobileSent.push(msg);
+				for (const reply of mobileReplies(msg)) socket.send(JSON.stringify(reply));
+			});
+		});
+		await mobile.addInitScript(() => {
+			localStorage.setItem("pi-web-ui:token", "synthetic-fixture-only");
+			localStorage.setItem("pi-web-ui:lang", "en");
+		});
+		await mobilePage.goto(origin, { waitUntil: "domcontentloaded" });
+		await mobilePage.locator(".chan-chip.effective").waitFor({ state: "visible", timeout: options.stepTimeout });
+		const mobileOk = await mobilePage.locator(".chan-chip.pending").isVisible();
+		check("mobile viewport shows effective + pending channel state", mobileOk);
+		await mobilePage.locator("button.chip", { has: mobilePage.locator(".chip-model") }).first().click();
+		await mobilePage.locator(".chan-group").first().waitFor({ state: "visible", timeout: options.stepTimeout });
+		const mobileGroups = await mobilePage.locator(".chan-group").count();
+		check("mobile picker groups channels too", mobileGroups === 4, `groups=${mobileGroups}`);
+		mobileSent.length = 0;
+		const mobileGroupA = mobilePage.locator(".chan-group", { has: mobilePage.locator(".chan-name", { hasText: "渠道 A" }) });
+		await mobileGroupA.locator(".dd-model-cell", { hasText: "Mock One" }).first().click();
+		check("mobile click still sends one combined channel_select", mobileSent.filter((m) => m.type === "channel_select").length === 1,
+			JSON.stringify(mobileSent.find((m) => m.type === "channel_select") ?? null));
+	} finally {
+		await mobile.close();
+	}
 	check("browser run completed without exceptions", false, err?.message ?? String(err));
 } finally {
 	await browser.close();
