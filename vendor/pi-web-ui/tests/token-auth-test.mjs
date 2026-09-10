@@ -47,15 +47,18 @@ function check(name, cond, extra = "") {
 }
 
 /** Spawn the built server with the given PI_WEB_TOKEN; resolve when /api/health is up. */
-function startServer(token) {
+function startServer(token, opts = {}) {
+	const { port = PORT, data = dataDir, agent = agentDir, allowQueryToken, extraEnv = {} } = opts;
 	const server = spawn(NODE, ["dist/server/index.js"], {
 		env: {
 			...process.env,
-			PI_WEB_PORT: String(PORT),
-			PI_WEB_DATA_DIR: dataDir,
+			PI_WEB_PORT: String(port),
+			PI_WEB_DATA_DIR: data,
 			PI_WEB_CWD: workdir,
-			PI_CODING_AGENT_DIR: agentDir,
+			PI_CODING_AGENT_DIR: agent,
 			PI_WEB_TOKEN: token,
+			...(allowQueryToken === undefined ? {} : { PI_WEB_ALLOW_QUERY_TOKEN: allowQueryToken ? "1" : "0" }),
+			...extraEnv,
 		},
 		stdio: ["ignore", "pipe", "pipe"],
 		windowsHide: true,
@@ -65,7 +68,7 @@ function startServer(token) {
 	return (async () => {
 		for (let i = 0; i < 60; i++) {
 			try {
-				const res = await fetch(`http://127.0.0.1:${PORT}/api/health`);
+				const res = await fetch(`http://127.0.0.1:${port}/api/health`);
 				if (res.ok) return server;
 			} catch {
 				/* not up yet */
@@ -74,6 +77,70 @@ function startServer(token) {
 		}
 		throw new Error("server did not become ready");
 	})();
+}
+
+/** 认证面加固用例（§4 复核）：限流 + 健康端点详情收敛。 */
+async function hardeningChecks(token) {
+	// 健康端点：直连回环（无转发头）→ 完整字段；带 X-Forwarded-* → 只回 ok/engine。
+	const direct = await fetch(`http://127.0.0.1:${PORT}/api/health`);
+	const directBody = await direct.json();
+	check("health: direct loopback probe keeps cwd/pid/version", typeof directBody.cwd === "string" && Number.isInteger(directBody.pid) && typeof directBody.piVersion === "string");
+	const forwarded = await fetch(`http://127.0.0.1:${PORT}/api/health`, { headers: { "x-forwarded-for": "203.0.113.7" } });
+	const forwardedBody = await forwarded.json();
+	check(
+		"health: forwarded request hides cwd/pid/version",
+		forwardedBody.ok === true && forwardedBody.engine === "pi" && forwardedBody.cwd === undefined && forwardedBody.pid === undefined && forwardedBody.piVersion === undefined,
+		JSON.stringify(forwardedBody),
+	);
+	const authed = await fetch(`http://127.0.0.1:${PORT}/api/health`, { headers: { authorization: `Bearer ${token}`, "x-forwarded-for": "203.0.113.7" } });
+	const authedBody = await authed.json();
+	check("health: authenticated request keeps details even when forwarded", typeof authedBody.cwd === "string");
+
+	// 恢复码限流：第 11 次尝试必须是 429 + Retry-After（前 10 次按无效码回 401）。
+	let limited = null;
+	for (let i = 1; i <= 11; i++) {
+		const res = await fetch(`http://127.0.0.1:${PORT}/api/auth/recovery`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ code: `wrong-code-${i}` }),
+		});
+		if (res.status === 429) { limited = res; break; }
+		if (res.status !== 401) { check("recovery: invalid code → 401 before the limit", false, `status ${res.status}`); return; }
+	}
+	check("recovery: rate limit kicks in with 429", Boolean(limited));
+	check("recovery: 429 carries Retry-After", Boolean(limited && Number(limited.headers.get("retry-after")) >= 1), limited?.headers.get("retry-after") ?? "none");
+
+	// 口令登录共用同一类限流（独立桶）：连续错误口令最终 429。
+	let loginLimited = false;
+	for (let i = 1; i <= 11; i++) {
+		const res = await fetch(`http://127.0.0.1:${PORT}/login`, {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: `token=wrong-${i}`,
+			redirect: "manual",
+		});
+		if (res.status === 429) { loginLimited = true; break; }
+	}
+	check("login: wrong token is rate limited with 429", loginLimited);
+}
+
+/** `?token=` 回落可用开关关闭（§4 S6 的文档化缓解手段，这里做回归保护）。 */
+async function queryTokenDisabledCheck() {
+	const port = PORT + 3;
+	const base = mkdtempSync(join(tmpdir(), "pi-web-querytoken-"));
+	const server = await startServer(TOKEN, { port, data: join(base, "data"), agent: join(base, "agent"), allowQueryToken: false });
+	try {
+		const origin = `http://127.0.0.1:${port}`;
+		const viaQuery = await fetch(`${origin}/api/themes?token=${TOKEN}`);
+		check("PI_WEB_ALLOW_QUERY_TOKEN=0 → query token rejected on a protected route", viaQuery.status === 401, `status ${viaQuery.status}`);
+		const viaHeader = await fetch(`${origin}/api/themes`, { headers: { authorization: `Bearer ${TOKEN}` } });
+		check("PI_WEB_ALLOW_QUERY_TOKEN=0 → header token still accepted", viaHeader.status === 200, `status ${viaHeader.status}`);
+		const cookie = (viaHeader.headers.get("set-cookie") ?? "").split(";")[0];
+		const viaCookie = await fetch(`${origin}/api/themes`, { headers: { cookie } });
+		check("PI_WEB_ALLOW_QUERY_TOKEN=0 → cookie session still accepted", viaCookie.status === 200, `status ${viaCookie.status}`);
+	} finally {
+		await stopServer(server);
+	}
 }
 
 async function stopServer(server) {
@@ -235,6 +302,10 @@ try {
 	check("GET / with healed cookie (no query) → 200", healedNav.status === 200);
 	const wsHealed = await wsTry("/ws", { cookie: jar });
 	check("WS with healed cookie connects", wsHealed === true, JSON.stringify(wsHealed));
+
+	// 8. 认证面加固（§4 复核结论：限流 + 健康端点详情收敛 + query token 可关）。
+	await hardeningChecks(TOKEN2);
+	await queryTokenDisabledCheck();
 
 	console.log(`\n${passed} passed, ${failed} failed`);
 } catch (err) {

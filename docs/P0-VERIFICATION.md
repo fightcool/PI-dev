@@ -94,7 +94,13 @@ runtime.session.agent.getApiKey = (provider) => this.channels.credentialFor(id, 
 
 - **已修复（高）**：`list_models_config` 之前把 `models.json` 的 `apiKey` 原样下发浏览器（浏览器再回传），违反 §4。现在只回 `hasApiKey: boolean`，保存路径对空值理解为「保留已保存的密钥」，因此不再需要密钥往返，也不会因留空而丢 key。
 - **已修复（高）**：WS 收到 `null`/字符串/数组帧时旧实现直接在 `msg.type` 上抛错并终止进程（可达的远程重启）。现在在入口丢弃非对象帧，并把同步异常包成 `notice`，单条畸形命令不再影响进程。
-- **未修复但已记录（不在本期入口范围内）**：`/api/auth/recovery` 无限频与锁定、passkey 会话无 CSRF 令牌、`?token=` 查询参数回落、`/api/health` 泄露绝对路径。这些属于既有认证面，按 §4「不扩大成整套认证平台重写」处理，见文末。
+- **已加固（认证面复查的廉价项，未扩成认证平台重写）**：
+  - `/api/auth/recovery` 与口令登录 POST 加**固定窗口限流**（每桶 10 次/60 秒 → 429 + `Retry-After`；成功即清桶），消除无限次爆破面。桶按 socket 远端地址划分（单用户实例部署在回环 + 反向代理后，实际等同全局窗口，已在代码注释与文档说明）。
+  - 恢复码**只以 sha256 落盘**（`webauthn.json` 不再出现明文）；旧版明文条目命中时兼容放行并在消费时迁移为哈希；`recoveryCodes()` 改为「一次性明文返回、已有码拒绝回显」（哈希不可逆）。
+  - `/api/health` 的**绝对工作区路径 / PID / 版本**只在「已鉴权」或「直连回环且无 `X-Forwarded-*`」时返回；探针仍可匿名拿 `ok`/`engine`，容器与 CI 探针（直连回环）不受影响。这条与部署工具链（`waitForHealth`）兼容：部署脚本正是直连回环探测。
+  - `?token=` 回落已有 `PI_WEB_ALLOW_QUERY_TOKEN=0` 开关，本版补齐**回归用例**（关闭后 query token 在受保护路由被拒，header/cookie 仍可用）。
+  - 验证：`tests/unit/webauthn-auth.test.ts` 2 例（哈希落盘、旧明文迁移）；`tests/token-auth-test.mjs` 33 项（新增健康详情收敛 3 项、两类限流 3 项、query token 关闭 3 项）。
+- **仍未做（已记录，按 §4 不扩成通用认证平台）**：passkey 会话缺少 CSRF 令牌（同站 cookie 已 `SameSite=Strict`，且状态变更入口都在 WS 升级鉴权之后）；`/api/auth/revoke` 无鉴权且恒返回 200（自撤销语义，无越权效果）。
 
 ## 8. 模块结构与文件规模
 
