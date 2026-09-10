@@ -332,6 +332,11 @@ export type ClientMessage =
 	| { type: "abort" }
 	/** Kill only the running bash command(s) — the agent run itself continues. */
 	| { type: "abort_bash" }
+	/** Manually retry the last failed model call after the auto-retry budget
+	 *  (settings retryMaxAttempts) ran out: the turn ended with a red error
+	 *  and is idle. Server re-triggers one LLM turn without adding a new user
+	 *  message; refused while streaming. */
+	| { type: "retry_last" }
 	// -- background tasks (AI-started servers) ------------------------------
 	/** Kill ONE background server the agent started (by listening port). */
 	| { type: "kill_background_server"; port?: number; taskId?: string }

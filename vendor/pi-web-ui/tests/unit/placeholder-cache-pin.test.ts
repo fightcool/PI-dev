@@ -1,33 +1,154 @@
-/**
- * MUTATION PIN — measured-height placeholder cache.
- *
- * The scroll-stick E2E cannot catch a regression that replaces the cached
- * placeholder height with the bare role estimate: in its seeded geometry the
- * bottom-adjacent window is always real content, and hidden→real swaps of
- * messages fully above the viewport are scrollTop-compensated (height-neutral
- * regardless of the placeholder height). Verified honestly on 52189b5:
- * reverting the cache to estimates kept all 21 E2E checks green.
- *
- * This pin closes that gap at the unit level: the LazyMount placeholder height
- * MUST flow through getPlaceholderHeight (measured height + content
- * fingerprint, estimate only as fallback). If someone reverts to a bare
- * estimate — or deletes the fingerprint check — this goes red.
+// @vitest-environment jsdom
+/*
+ * 🍞 AI Breadcrumb Navigation — @COUPLED=behavior under test.
+ * @COUPLED ../../web/src/components/message-list/useRowWindow.ts
+ * @BUGFIX 2026-09-10: pin measured spacer heights through real hook execution,
+ * including unmount/remount and same-length edits, without source regexes.
  */
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { UiMessage } from "../../web/src/types";
+import { useRowWindow } from "../../web/src/components/message-list/useRowWindow";
 
-const src = readFileSync(new URL("../../web/src/components/MessageList.tsx", import.meta.url), "utf8");
+let root: Root;
+let host: HTMLDivElement;
+let container: HTMLDivElement;
+let current: ReturnType<typeof useRowWindow>;
+let messages: UiMessage[];
+let expanded: Set<string>;
+let mounted: boolean;
+let measuredHeight: number;
+let layout: string;
+const stickRef = { current: false };
+let containerRef: { current: HTMLDivElement };
+let resizeCallbacks: (() => void)[];
 
-describe("placeholder measured-height cache (mutation pin)", () => {
-	it("placeholder height flows through getPlaceholderHeight, not a bare estimate", () => {
-		expect(src).toMatch(/height=\{\s*getPlaceholderHeight\(/);
-		// The bare estimate may only appear as getPlaceholderHeight's fallback.
-		const bare = /height=\{\s*estimateMessageHeight\(/;
-		expect(bare.test(src)).toBe(false);
+function Probe() {
+	current = useRowWindow(messages, expanded, containerRef, stickRef, layout);
+	return mounted
+		? createElement("div", {
+				ref: (el: HTMLDivElement | null) => {
+					if (el)
+						el.getBoundingClientRect = () => ({ height: measuredHeight, top: 0, bottom: measuredHeight }) as DOMRect;
+					current.attach("m0", el);
+				},
+			})
+		: null;
+}
+const render = () => {
+	act(() => root.render(createElement(Probe)));
+	// jsdom has no layout engine: deliver the browser's post-layout resize
+	// notification explicitly, then run the hook's scheduled measurement frame.
+	act(() => {
+		resizeCallbacks.forEach((notify) => notify());
+		vi.runOnlyPendingTimers();
+	});
+};
+const firstHeight = () => current.offsets[1] - current.offsets[0];
+
+beforeEach(() => {
+	vi.useFakeTimers();
+	resizeCallbacks = [];
+	vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => setTimeout(() => callback(0), 0));
+	vi.stubGlobal("cancelAnimationFrame", clearTimeout);
+	vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+	vi.stubGlobal(
+		"ResizeObserver",
+		class {
+			constructor(callback: () => void) {
+				resizeCallbacks.push(callback);
+			}
+			observe() {}
+			unobserve() {}
+			disconnect() {}
+		},
+	);
+	host = document.createElement("div");
+	container = document.createElement("div");
+	Object.defineProperty(container, "clientHeight", { value: 800 });
+	Object.defineProperty(container, "clientWidth", { value: 860 });
+	document.body.append(host, container);
+	containerRef = { current: container };
+	root = createRoot(host);
+	messages = Array.from({ length: 40 }, (_, i) => ({
+		id: `m${i}`,
+		role: "user",
+		content: [{ type: "text", text: "old text" }],
+		timestamp: i,
+	}));
+	expanded = new Set();
+	mounted = true;
+	measuredHeight = 333;
+	layout = "normal";
+});
+afterEach(() => {
+	act(() => root.unmount());
+	host.remove();
+	container.remove();
+	vi.unstubAllGlobals();
+	vi.useRealTimers();
+});
+
+describe("measured-height spacer cache", () => {
+	it("keeps the measured height when a row unmounts and remounts", () => {
+		render();
+		expect(firstHeight()).toBe(333);
+		const measuredTotal = current.offsets.at(-1);
+		mounted = false;
+		render();
+		expect(firstHeight()).toBe(333);
+		expect(current.offsets.at(-1)).toBe(measuredTotal);
+		mounted = true;
+		render();
+		expect(firstHeight()).toBe(333);
+		expect(current.offsets.at(-1)).toBe(measuredTotal);
 	});
 
-	it("cache entry writes are fingerprint-stamped (edited messages invalidate)", () => {
-		expect(src).toMatch(/contentFingerprint/);
-		expect(src).toMatch(/heightMetaRef\.current\.set\(id, \{ h, len/);
+	it("invalidates an offscreen measurement for a same-length edit with the same id", () => {
+		render();
+		mounted = false;
+		render();
+		messages = messages.map((m, i) => (i === 0 ? { ...m, content: [{ type: "text", text: "new text" }] } : m));
+		render();
+		expect(firstHeight()).toBe(44);
+		mounted = true;
+		measuredHeight = 555;
+		render();
+		expect(firstHeight()).toBe(555);
+	});
+
+	it("invalidates measurements when a hidden row expands or search layout changes", () => {
+		render();
+		mounted = false;
+		render();
+		expanded = new Set(["m0"]);
+		render();
+		expect(firstHeight()).toBe(72);
+		mounted = true;
+		measuredHeight = 999;
+		render();
+		expect(firstHeight()).toBe(999);
+		mounted = false;
+		render();
+		layout = "search";
+		render();
+		expect(firstHeight()).toBe(72);
+		mounted = true;
+		measuredHeight = 1234;
+		render();
+		expect(firstHeight()).toBe(1234);
+	});
+
+	it("prunes removed ids so a reintroduced row cannot inherit a stale measurement", () => {
+		render();
+		mounted = false;
+		render();
+		const original = messages;
+		messages = messages.slice(1);
+		render();
+		messages = original;
+		render();
+		expect(firstHeight()).toBe(44);
 	});
 });

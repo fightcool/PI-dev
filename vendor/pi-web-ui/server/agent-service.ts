@@ -9,15 +9,19 @@
  * `tool_delta` messages for live tool output and schedule throttled full-state
  * snapshots. The frontend is snapshot-driven (server is the source of truth),
  * so reconnects just re-request a snapshot.
+ * 🍞 @COUPLED session-history-cache.ts / session-search.ts own history reads;
+ * initial-snapshot-gate.ts / index.ts own the initial baseline (see docs/architecture-core.md).
+ * @COUPLED conversation-maintenance.ts / subagent-archive.ts: idle retirement and result restoration.
+ * 📖 docs/conversation-lifecycle.md
  */
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync, rmSync, statSync, mkdirSync, watch } from "node:fs";
-import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
+import { delimiter, dirname, join, resolve, sep } from "node:path";
 // @ts-expect-error Host runtime module is JavaScript by design.
-import { normalizeUsageEvent, TokenUsageTracker } from "../../../scripts/token-usage.mjs";
+import { normalizeUsageEvent, TokenUsageTracker } from "#usage";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
@@ -35,6 +39,12 @@ import {
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { ConversationMaintenance, conversationBusy } from "./conversation-maintenance.js";
+import { SUBAGENT_CONCURRENCY } from "./conversation-retention.js";
+import { SubagentArchive, type ArchivedSubagent } from "./subagent-archive.js";
+import { toSubagentSnapshot, subagentRunOutcome } from "./subagent-state.js";
+import { SessionHistoryCache } from "./session-history-cache.js";
+import { searchSessionInfos } from "./session-search.js";
 import { BgServerTracker } from "./bg-servers.js";
 import {
 	checkAll as checkAllUpdates,
@@ -82,7 +92,6 @@ import {
 	subagentTitle,
 	withSubagentOwner,
 	type SubagentSnapshot,
-	type SubagentState,
 	type SubagentToolHost,
 } from "./subagents.js";
 import { buildAttachmentMessages } from "./attachments.js";
@@ -99,7 +108,6 @@ import type {
 	CommandDef,
 	ConversationSummary,
 	GoalStatus,
-	MessageAnchor,
 	ProjectSummary,
 	QuestionAnswer,
 	ServerMessage,
@@ -514,12 +522,15 @@ export { workspacePath };
  * OWN AgentSessionRuntime, so starting a new chat or switching between chats
  * never interrupts another conversation's in-flight run.
  */
-interface Conversation {
+export interface Conversation {
 	id: string;
 	/** Display title: first user prompt (truncated) or the default. */
 	title: string;
-	/** 这是子代理对话（左栏带「子代理」徽标；inMemory session，不进历史/resume）。 */
+	/** 子代理使用内存会话，结束后由维护模块归档并释放。 */
 	isSubagent: boolean;
+	subagentTemplate?: SubagentTemplate;
+	subagentStarting?: boolean;
+	subagentPending?: number;
 	/** 派发它的父对话 id（Running 面板嵌套用；顶层子代理为空）。 */
 	parentId?: string;
 	/** 子代理类型/角色展示名（explore/implement/review…）。 */
@@ -607,6 +618,13 @@ interface Conversation {
 	 *  TOOL_WATCHDOG_TIMEOUT_MS gets the session aborted instead of hanging
 	 *  the conversation forever (the SDK bash tool has no default timeout). */
 	toolWatchdogs: Map<string, ReturnType<typeof setTimeout>>;
+	/** 本端正在流式输出时收到「其他端完成了这个会话的节点」→ 置位，本轮 agent_end
+	 *  结束后自动从磁盘接力重载（不打断本端正在跑的工作）。 */
+	pendingDiskReload?: boolean;
+	/** 接力重载正在进行——避免两个并发广播对同一对话重复换 runtime。 */
+	reloadInFlight?: boolean;
+	/** 上次看到的磁盘转录签名（mtimeMs:size）——用于接入/回到页面时判断是否需要追平。 */
+	diskSig?: string;
 }
 
 /** 轨迹事件 payload 封顶（可直接广播/持久化，不撑爆 storage.json）。 */
@@ -650,9 +668,6 @@ const TOOL_WATCHDOG_TIMEOUT_MS = (() => {
 	return Number.isFinite(v) && v > 0 ? v : 20 * 60_000;
 })();
 
-/** Cap on simultaneously open conversations of ONE project (each keeps a full
- *  runtime alive; conversations of other projects keep their own lists). */
-const MAX_OPEN_CONVERSATIONS = 8;
 const DEFAULT_CONV_TITLE = "新对话";
 
 /** First user text in a session, truncated for the conversation list. */
@@ -694,66 +709,6 @@ function conversationTitle(session: AgentSession): string {
 	return DEFAULT_CONV_TITLE;
 }
 
-/** 全局搜索的会话匹配：大小写不敏感，命中任一项即算 ——
- *  显示名、当前项目内的文件名片段、首条消息，以及完整转录文本
- *  （SDK 的 allMessagesText 包含每一段 user 与 assistant 消息，AI 输出也在内）。 */
-function sessionMatchesSearch(q: string, s: SessionInfo): boolean {
-	if (s.name && s.name.toLowerCase().includes(q)) return true;
-	if (basename(s.path).toLowerCase().includes(q)) return true;
-	if (s.firstMessage.toLowerCase().includes(q)) return true;
-	if (s.allMessagesText.toLowerCase().includes(q)) return true;
-	return false;
-}
-
-/** 抽取一条 AgentMessage 的可搜索文本（user/assistant 的 text 块；
- *  镜像 SDK buildSessionInfo 的 allMessagesText 范围，保证搜索与定位一致）。 */
-function messageSearchText(m: { content?: unknown }): string {
-	const c = m.content;
-	if (typeof c === "string") return c;
-	if (!Array.isArray(c)) return "";
-	const parts: string[] = [];
-	for (const b of c) {
-		if (!b || typeof b !== "object") continue;
-		const blk = b as { type?: unknown; text?: unknown };
-		if (blk.type === "text" && typeof blk.text === "string") parts.push(blk.text);
-	}
-	return parts.join("\n");
-}
-
-/** 扫描一个会话转录文件，收集文本命中查询的消息锚点（role + timestamp，
- *  按转录顺序，最多 cap 个）。仅 user/assistant 消息参与，与搜索范围一致。 */
-function collectSessionAnchors(filePath: string, q: string, cap = 10): MessageAnchor[] {
-	const anchors: MessageAnchor[] = [];
-	if (!q) return anchors;
-	try {
-		const lines = readFileSync(filePath, "utf8").split("\n");
-		for (const line of lines) {
-			if (!line.trim()) continue;
-			let e: {
-				type?: unknown;
-				message?: { role?: unknown; timestamp?: unknown; content?: unknown };
-			};
-			try {
-				e = JSON.parse(line);
-			} catch {
-				continue;
-			}
-			if (e?.type !== "message") continue;
-			const m = e.message;
-			if (!m) continue;
-			if (m.role !== "user" && m.role !== "assistant") continue;
-			if (typeof m.timestamp !== "number") continue;
-			const text = messageSearchText(m);
-			if (!text || !text.toLowerCase().includes(q)) continue;
-			anchors.push({ role: m.role, timestamp: m.timestamp });
-			if (anchors.length >= cap) break;
-		}
-	} catch {
-		// 单个转录损坏不影响其余会话
-	}
-	return anchors;
-}
-
 /**
  * pi 的会话存储根目录。设置了 `PI_CODING_AGENT_SESSION_DIR` 时，pi 将 transcript
  * 以**扁平布局**直接写在根目录顶层（`<root>/<timestamp>_<uuid>.jsonl`，所属 cwd 是
@@ -784,6 +739,8 @@ export class ClientSession {
 	private convs = new Map<string, Conversation>();
 	private activeId = "";
 	private convSeq = 0;
+	private pendingSubagentCreations = 0;
+	private readonly maintenance: ConversationMaintenance;
 	/** One ModelRuntime shared by all conversations — the model chosen in the
 	 *  top bar applies to every chat, not just the one that set it. Seeded by
 	 *  the first conversation and reused by later ones. */
@@ -845,6 +802,12 @@ export class ClientSession {
 	pluginBgTasksProvider: (() => BgServer[]) | undefined = undefined;
 	/** index.ts 注入：停止插件任务（kill_background_server with taskId）。 */
 	pluginStopBgTask: ((taskId: string) => boolean) | undefined = undefined;
+	/** AgentService 注入：本端完成一个节点（transcript 已落盘）→ 广播给其他端，
+	 *  让它们刷新会话列表并接力重载同一会话。 */
+	onSessionPersisted: ((file: string, cwd: string) => void) | undefined = undefined;
+	/** AgentService 注入：本端改变了会话列表本身（删除/改名/新建落盘）→ 广播给
+	 *  其他端刷新列表。 */
+	onSessionsListChanged: ((cwd: string) => void) | undefined = undefined;
 	/** 上一轮注入会话的插件工具名集合（用于检测注销/移除）。 */
 	private appliedPluginToolNames = new Set<string>();
 
@@ -958,13 +921,38 @@ export class ClientSession {
 		}
 	}
 
-	/** 创建子代理 conversation（inMemory runtime + 独立 terminals），listed 入左栏，
-	 *  并在其上触发一次完整回合。返回 convId（= 工具 runId）。
-	 *
-	 *  `model`（可选）："provider/id"，显式指定子代理模型。不传时由调用方决定是否
-	 *  回退到模板模型 / 设置面板默认模型；null = 跟随主对话当前模型（默认行为，
-	 *  runtime 重建时会继承共享 ModelRuntime 的当前默认）。 */
+	/** Reserve capacity before async creation/restoration; completed archives consume no slots. */
+	private reserveSubagent(): () => void {
+		const running = [...this.convs.values()].filter((c) => c.isSubagent && toSubagentSnapshot(c).streaming).length;
+		if (running + this.pendingSubagentCreations >= SUBAGENT_CONCURRENCY) {
+			throw new Error(
+				`最多同时运行${SUBAGENT_CONCURRENCY}个子代理，请先等待或停止正在运行的任务；已归档结果不占名额。 / At most ${SUBAGENT_CONCURRENCY} subagents may run concurrently; wait or stop a running task.`,
+			);
+		}
+		this.pendingSubagentCreations++;
+		return () => {
+			this.pendingSubagentCreations--;
+		};
+	}
+
 	private async spawnSubagentConversation(
+		prompt: string,
+		type: string,
+		cwd: string,
+		apply?: SubagentTemplate,
+		model?: string | null,
+		parentId?: string,
+	): Promise<string> {
+		this.maintenance.reap();
+		const release = this.reserveSubagent();
+		try {
+			return await this.createSubagentConversation(prompt, type, cwd, apply, model, parentId);
+		} finally {
+			release();
+		}
+	}
+
+	private async createSubagentConversation(
 		prompt: string,
 		type: string,
 		cwd: string,
@@ -981,6 +969,8 @@ export class ClientSession {
 		});
 		const conv = this.makeConversation(runtime, conversationId, terminals);
 		conv.isSubagent = true;
+		conv.subagentTemplate = apply;
+		conv.subagentStarting = true;
 		// 父对话 = 真正派发它的会话（按会话归属的 host 包装填入）。直接用 active
 		// 会错：后台对话运行时用户可能正看着别的项目对话，孩子会被记到无关
 		// 对话名下、沉到别的项目组底部（issue #95）。缺省才回退到 active。
@@ -989,6 +979,8 @@ export class ClientSession {
 		conv.listed = true;
 		conv.title = subagentTitle(prompt);
 		this.convs.set(conv.id, conv);
+		// 子代理不走 bindSession——这里同样注入面板的重试次数覆盖。
+		this.applyRetryOverrides();
 		// 扩展绑定（rpc 模式；uiContext 只给无害的 mock theme/status 槽，避免与主对话
 		// 的 widget 冲突。无 uiContext 时扩展的 ctx.ui.theme.fg 会打到 TUI 真 theme
 		// 代理上抛 "Theme not initialized"，每个扩展一条 error toast。）
@@ -1046,7 +1038,7 @@ export class ClientSession {
 			}
 		}
 		// 触发回合（后台执行；失败转识为通知）。
-		void conv.session.sendUserMessage(prompt).catch((err) => {
+		void this.sendSubagentPrompt(conv, prompt).catch((err) => {
 			this.emit({
 				type: "notice",
 				level: "error",
@@ -1058,69 +1050,78 @@ export class ClientSession {
 		return conv.id;
 	}
 
+	private async sendSubagentPrompt(conv: Conversation, message: string): Promise<void> {
+		conv.subagentPending = (conv.subagentPending ?? 0) + 1;
+		conv.subagentStarting = false;
+		conv.subagentError = undefined;
+		try {
+			await conv.session.sendUserMessage(message, conv.session.isStreaming ? { deliverAs: "steer" } : undefined);
+		} catch (error) {
+			conv.subagentError = error instanceof Error ? error.message : "Subagent failed";
+			throw error;
+		} finally {
+			conv.subagentPending--;
+			this.maintenance.schedule();
+		}
+	}
+
+	private async restoreSubagent(record: ArchivedSubagent): Promise<Conversation> {
+		const sessionManager = SessionManager.inMemory(record.cwd, { id: record.header.id }, record.entries);
+		if (record.leafId === null) sessionManager.resetLeaf();
+		else if (record.leafId !== undefined) sessionManager.branch(record.leafId);
+		const terminals = this.makeTerminalManager(record.id, record.cwd);
+		const runtime = await createAgentSessionRuntime(this.makeRuntimeFactory(terminals, record.template, record.id), {
+			cwd: record.cwd,
+			agentDir: this.agentDir,
+			sessionManager,
+		});
+		try {
+			const conv = this.makeConversation(runtime, record.id, terminals);
+			Object.assign(conv, {
+				isSubagent: true,
+				subagentStarting: true,
+				subagentTemplate: record.template,
+				parentId:
+					record.parentId &&
+					record.parentSessionId &&
+					this.convs.get(record.parentId)?.session.sessionId === record.parentSessionId
+						? record.parentId
+						: undefined,
+				subagentType: record.snapshot.type,
+				title: record.snapshot.title,
+				createdAt: record.createdAt,
+				listed: true,
+			});
+			if (record.model) {
+				const model = runtime.services.modelRuntime.getModel(record.model.provider, record.model.id);
+				if (model) await conv.session.setModel(model);
+			}
+			await conv.session.bindExtensions({
+				mode: "rpc",
+				uiContext: {
+					theme: mockThemeProxy,
+					setStatus: () => {},
+					setWidget: () => {},
+					notify: () => {},
+				} as never,
+			});
+			return conv;
+		} catch (error) {
+			terminals.killAll();
+			await runtime.dispose();
+			throw error;
+		}
+	}
+
 	private getSubagentSnapshot(convId: string): SubagentSnapshot | undefined {
 		const conv = this.convs.get(convId);
-		if (!conv?.isSubagent || !conv.session) return undefined;
-		return this.toSubagentSnapshot(conv);
+		return conv?.isSubagent ? toSubagentSnapshot(conv) : this.maintenance.archive.read(convId)?.snapshot;
 	}
 
 	private listSubagentSnapshots(): SubagentSnapshot[] {
-		return [...this.convs.values()]
-			.filter((c) => c.isSubagent)
-			.sort((a, b) => a.createdAt - b.createdAt)
-			.map((c) => this.toSubagentSnapshot(c));
-	}
-
-	private toSubagentSnapshot(conv: Conversation): SubagentSnapshot {
-		const streaming = conv.session.isStreaming;
-		const state: SubagentState = streaming ? "running" : "done";
-		let messageCount = 0;
-		try {
-			messageCount = conv.session.getSessionStats().totalMessages;
-		} catch {
-			// session being replaced — report defaults
-		}
-		const { error, canceled } = this.subagentRunOutcome(conv);
-		return {
-			convId: conv.id,
-			type: conv.subagentType ?? "general",
-			title: conv.title,
-			prompt: "",
-			state,
-			streaming,
-			error,
-			canceled,
-			messageCount,
-			model: conv.session.model?.id,
-			output: conv.session.getLastAssistantText() ?? "",
-		};
-	}
-
-	/** 子代理最近一次运行的结局：最后一条 assistant 消息的 errorMessage / stopReason。
-	 *  报错 > 中止 > 正常，三者互斥；无 assistant 消息时返回空。 */
-	private subagentRunOutcome(conv: Conversation): { error?: string; canceled?: boolean } {
-		// 自动重试等待期结局未定：瞬时 error 不算失败，避免向主对话误报
-		// 「子代理运行失败」（耗尽后 auto_retry_end 清旗，真正失败照常通知）。
-		if (conv.retryState) return {};
-		try {
-			const msgs = conv.session.agent.state.messages;
-			for (let i = msgs.length - 1; i >= 0; i--) {
-				const m = msgs[i];
-				if ((m as { role?: unknown }).role !== "assistant") continue;
-				const err = (m as { errorMessage?: unknown }).errorMessage;
-				if (typeof err === "string" && err.trim()) {
-					return { error: err.trim() };
-				}
-				const stop = (m as { stopReason?: unknown }).stopReason;
-				if (stop === "aborted" || stop === "cancelled") {
-					return { canceled: true };
-				}
-				break;
-			}
-		} catch {
-			// session being replaced — treat as no outcome yet
-		}
-		return {};
+		const records = new Map(this.maintenance.archive.list().map((s) => [s.convId, s]));
+		for (const conv of this.convs.values()) if (conv.isSubagent) records.set(conv.id, toSubagentSnapshot(conv));
+		return [...records.values()];
 	}
 
 	private emitTerminal(conversationId: string, msg: ServerMessage): void {
@@ -1304,9 +1305,18 @@ export class ClientSession {
 		getSubagent: (convId) => this.getSubagentSnapshot(convId),
 		listSubagents: () => this.listSubagentSnapshots(),
 		steerSubagent: async (convId, message) => {
-			const conv = this.convs.get(convId);
-			if (!conv?.session) return;
-			await conv.session.sendUserMessage(message, conv.session.isStreaming ? { deliverAs: "steer" } : undefined);
+			const live = this.convs.get(convId);
+			const release = live?.isSubagent && toSubagentSnapshot(live).streaming ? () => {} : this.reserveSubagent();
+			let completion: Promise<void>;
+			try {
+				const conv = await this.maintenance.restore(convId);
+				if (!conv?.isSubagent) throw new Error("Subagent not found");
+				completion = this.sendSubagentPrompt(conv, message);
+				this.emitConversations();
+			} finally {
+				release();
+			}
+			await completion;
 		},
 		stopSubagent: async (convId) => {
 			const conv = this.convs.get(convId);
@@ -1399,6 +1409,23 @@ export class ClientSession {
 		this.cwd = cwd;
 		this.agentDir = agentDir;
 		this.stateStore = stateStore;
+		this.maintenance = new ConversationMaintenance(new SubagentArchive(stateStore.dataDir, clientId), {
+			conversations: () => this.convs,
+			activeId: () => this.activeId,
+			drop: (id) => this.removeConversation(id),
+			changed: () => {
+				this.emitConversations();
+				this.flushSnapshot();
+			},
+			warn: () =>
+				this.emit({
+					type: "notice",
+					level: "warning",
+					text: "会话归档失败，已保留运行时和结果，请检查数据目录。",
+					textEn: "Conversation archive failed; runtime and results were retained. Check the data directory.",
+				}),
+			restore: (record) => this.restoreSubagent(record),
+		});
 		this.subagentTemplates = new SubagentTemplatesStore(join(stateStore.dataDir, "subagent-templates.json"));
 		this.markerSvc = new MarkerService({
 			clientId,
@@ -1762,8 +1789,8 @@ export class ClientSession {
 			listed: false,
 			promptedSinceActive: false,
 			lastActiveAt: Date.now(),
-				lastSdkEventAt: Date.now(),
-				usageTracker: new TokenUsageTracker(),
+			lastSdkEventAt: Date.now(),
+			usageTracker: new TokenUsageTracker(),
 
 			stallNoticed: false,
 			goal: this.makeGoalStatus(),
@@ -1858,9 +1885,9 @@ export class ClientSession {
 		for (const sink of [...this.sinks]) sink(msg);
 	}
 
-	/** (Re)attach event plumbing to the ACTIVE conversation's session. */
-	private async bindSession(): Promise<void> {
-		const conv = this.conv;
+	/** (Re)attach extension binding + event plumbing to ONE conversation's session.
+	 *  多端接力重载（reloadConversationFromDisk）也走这里，保证与新建/切换同一套绑定。 */
+	private async bindConversation(conv: Conversation): Promise<void> {
 		conv.unsubscribe?.();
 		conv.session = conv.runtime.session;
 		await conv.session.bindExtensions({
@@ -1871,6 +1898,57 @@ export class ClientSession {
 			},
 		});
 		conv.unsubscribe = conv.session.subscribe((event) => this.onEvent(conv, event));
+		this.updateDiskSig(conv);
+	}
+
+	/** 记录某对话当前磁盘转录的签名（mtimeMs:size），用于判断是否需要接力重载。 */
+	private updateDiskSig(conv: Conversation): void {
+		try {
+			const file = conv.session.sessionFile;
+			if (!file) {
+				conv.diskSig = undefined;
+				return;
+			}
+			const st = statSync(file);
+			conv.diskSig = `${st.mtimeMs}:${st.size}`;
+		} catch {
+			conv.diskSig = undefined;
+		}
+	}
+
+	/** 磁盘转录是否比本端内存状态新（本端上次记录之后被其他端写过）。 */
+	private diskSigChanged(conv: Conversation): boolean {
+		const file = conv.session.sessionFile;
+		if (!file) return false;
+		try {
+			const st = statSync(file);
+			return conv.diskSig !== `${st.mtimeMs}:${st.size}`;
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * 接入 / 回到页面时追平：本端活动会话的磁盘文件若比内存新（离开期间另一端
+	 * 完成了工作，且没有新广播可收），就从磁盘接力重载。
+	 * 覆盖「页面重连但 clientId 未变 → 服务端复用内存 ClientSession」的缺口。
+	 */
+	syncActiveFromDiskIfStale(): void {
+		if (this.disposed) return;
+		const conv = this.convs.get(this.activeId);
+		if (!conv || conv.session.isStreaming || conv.reloadInFlight) return;
+		if (!conv.session.sessionFile || !this.diskSigChanged(conv)) return;
+		void this.reloadConversationFromDisk(conv);
+	}
+
+	/** (Re)attach event plumbing to the ACTIVE conversation's session. */
+	private async bindSession(): Promise<void> {
+		this.maintenance.start();
+		await this.bindConversation(this.conv);
+		// 新会话 / 切换会话 / 强杀重建的必经之路：刚创建的 runtime 用的是 SDK
+		// 默认重试 3 次——这里把面板的 retryMaxAttempts 覆盖注入，否则“设了 6
+		// 次还是按 3 次重试”。已存在会话重复注入是幂等的（同值覆盖）。
+		this.applyRetryOverrides();
 		this.scheduleSnapshot();
 		this.webUi.refresh();
 		this.startWidgetsTimer();
@@ -2020,6 +2098,9 @@ export class ClientSession {
 		conv.lastSdkEventAt = Date.now();
 		conv.stallNoticed = false;
 		switch (event.type) {
+			case "agent_settled":
+				this.maintenance.schedule();
+				break;
 			case "bash_execution_update": {
 				if (event.id) {
 					this.emit({
@@ -2239,6 +2320,10 @@ export class ClientSession {
 				}
 				this.scheduleSessionsRefresh();
 				this.refreshConversationTitle(conv);
+				// 多端接力：一轮结束（transcript 已落盘）→ 先补做期间挂起的重载，
+				// 再把「节点完成」广播给其他端（刷新列表 + 拉动同一会话的端）。
+				void this.flushPendingDiskReloads();
+				this.broadcastPersistedNode(conv);
 				// 内联标记不在此兜底扫最后一条 assistant：每条气泡结束已走 message_end
 				// 即时解析（含中间文本块）；这里再扫会把最后一条标记重复执行（todo 重复建号）。
 
@@ -2262,7 +2347,7 @@ export class ClientSession {
 				// 拿回的结果可能是空或无意义的（否则子代理只是安静地停在「done」，
 				// 主对话永远收不到失败信号）。错误文本变化时允许再次通知（去重）。
 				if (conv.isSubagent) {
-					const { error } = this.subagentRunOutcome(conv);
+					const { error } = subagentRunOutcome(conv);
 					if (error && error !== conv.subagentErrorNotified) {
 						conv.subagentError = error;
 						conv.subagentErrorNotified = error;
@@ -2289,6 +2374,7 @@ export class ClientSession {
 				break;
 			}
 			case "entry_appended": {
+				this.invalidateSessionInfos(conv.cwd);
 				// SDK 仅在扩展 appendEntry 时发 entry_appended（entry 恒为 custom），
 				// assistant 消息不会走这里——气泡级解析见 case "message_end"。
 				this.scheduleSessionsRefresh();
@@ -2296,6 +2382,7 @@ export class ClientSession {
 				break;
 			}
 			case "message_end": {
+				this.invalidateSessionInfos(conv.cwd);
 				// 轨迹事件：一条消息定稿（user/assistant 都收；custom display:false
 				// 的 serializeMessage 返回 null 时跳过）。
 				try {
@@ -2353,10 +2440,8 @@ export class ClientSession {
 					messageId: `stream-${m?.timestamp ?? 0}`,
 					usage: (() => {
 						try {
-							const t = this.session.getSessionStats().tokens;
-						const usage = conv.usageTracker.snapshot();
-						return { input: usage.current.input, output: usage.current.output, total: usage.current.total };
-
+							const usage = conv.usageTracker.snapshot();
+							return { input: usage.current.input, output: usage.current.output, total: usage.current.total };
 						} catch {
 							return null;
 						}
@@ -2507,13 +2592,13 @@ export class ClientSession {
 		};
 		try {
 			const s = this.session.getSessionStats();
-				stats = {
-					totalMessages: s.totalMessages,
-					tokens: {
-						...s.tokens,
-						request: conv.usageTracker.snapshot().current,
-						run: conv.usageTracker.snapshot().turn,
-					},
+			stats = {
+				totalMessages: s.totalMessages,
+				tokens: {
+					...s.tokens,
+					request: conv.usageTracker.snapshot().current,
+					run: conv.usageTracker.snapshot().turn,
+				},
 
 				cost: s.cost,
 				contextUsage: (() => {
@@ -2972,6 +3057,7 @@ export class ClientSession {
 			this.session.setSessionName(name);
 			this.conv.title = name;
 			this.invalidateSessionInfos();
+			this.onSessionsListChanged?.(this.cwd);
 			this.emitConversations();
 			await this.pushSessions();
 			this.emit({
@@ -3023,8 +3109,11 @@ export class ClientSession {
 	setProviderApiKey(provider: string, apiKey: string): Promise<void> {
 		return this.modelAdmin.setProviderApiKey(provider, apiKey);
 	}
-	clearProviderApiKey(provider: string): Promise<void> {
-		return this.modelAdmin.clearProviderApiKey(provider);
+	async clearProviderApiKey(provider: string): Promise<void> {
+		await this.modelAdmin.clearProviderApiKey(provider);
+		// The provider is back to unconfigured — drop its key preference in
+		// EVERY project, otherwise each project switch re-tries a restore.
+		this.stateStore.deleteProviderEverywhere(provider.trim());
 	}
 	listProviders(): Promise<void> {
 		return this.modelAdmin.listProviders();
@@ -3059,37 +3148,43 @@ export class ClientSession {
 		if (active) this.stateStore.saveProjectProviderKey(this.clientId, this.cwd, provider, active);
 	}
 	async activateProviderKey(provider: string, keyName: string): Promise<void> {
-		await this.modelAdmin.activateProviderKey(provider, keyName);
-		this.stateStore.saveProjectProviderKey(this.clientId, this.cwd, provider, keyName);
+		const ok = await this.modelAdmin.activateProviderKey(provider, keyName);
+		// Only remember existing keys — a failed switch (deleted key) must not
+		// plant a stale reference that errors on every later project switch.
+		if (ok) this.stateStore.saveProjectProviderKey(this.clientId, this.cwd, provider, keyName);
+		else this.stateStore.deleteProjectProviderKey(this.clientId, this.cwd, provider);
 	}
 	async removeProviderKey(provider: string, keyName: string): Promise<void> {
 		await this.modelAdmin.removeProviderKey(provider, keyName);
-		const saved = this.stateStore.getProjectProviderKey(this.clientId, this.cwd, provider);
-		if (saved === keyName) {
-			const active = this.modelAdmin.getActiveKeyName(provider);
-			if (active) this.stateStore.saveProjectProviderKey(this.clientId, this.cwd, provider, active);
-			else this.stateStore.deleteProjectProviderKey(this.clientId, this.cwd, provider);
-		}
+		// The deletion may have been made from another project: every project
+		// still pinned to the deleted key must follow the key that took over
+		// (or drop the pin when no keys remain), not just the current one.
+		const active = this.modelAdmin.getActiveKeyName(provider);
+		this.stateStore.repointDeletedKeyEverywhere(provider, keyName, active);
 	}
 
 	/** Restore per-project provider keys when entering a project. For each
 	 *  provider that has a saved key for `cwd`, activate it if it differs from
-	 *  the current global active. Silent — no notice spam on project switch. */
+	 *  the current global active. Silent + self-healing: a saved key deleted
+	 *  elsewhere is dropped without notifying (a noisy error here is what
+	 *  haunted project switches after a key deletion). */
 	private async restoreProjectProviderKeysForCwd(cwd: string): Promise<void> {
 		const saved = this.stateStore.getProjectProviderKeys(this.clientId, cwd);
 		if (!saved) return;
 		for (const [provider, keyName] of Object.entries(saved)) {
 			const cur = this.modelAdmin.getActiveKeyName(provider);
 			if (cur === keyName) continue;
-			try {
-				await this.modelAdmin.activateProviderKey(provider, keyName);
-			} catch {
-				// saved key may have been deleted — ignore
+			if (!this.modelAdmin.hasProviderKey(provider, keyName)) {
+				this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
+				continue;
 			}
+			const ok = await this.modelAdmin.activateProviderKey(provider, keyName, { silent: true });
+			if (!ok) this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
 		}
 	}
 
-	/** When a model is set, ensure its provider's per-project key is restored. */
+	/** When a model is set, ensure its provider's per-project key is restored.
+	 *  Silent + self-healing like the bulk restore above. */
 	private async restoreKeyForModel(modelId: string, cwd: string): Promise<void> {
 		const slash = modelId.indexOf("/");
 		if (slash <= 0) return;
@@ -3098,9 +3193,12 @@ export class ClientSession {
 		if (!saved) return;
 		const cur = this.modelAdmin.getActiveKeyName(provider);
 		if (cur === saved) return;
-		try {
-			await this.modelAdmin.activateProviderKey(provider, saved);
-		} catch {}
+		if (!this.modelAdmin.hasProviderKey(provider, saved)) {
+			this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
+			return;
+		}
+		const ok = await this.modelAdmin.activateProviderKey(provider, saved, { silent: true });
+		if (!ok) this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
 	}
 
 	/** Remember the just-selected model (and the key that was active for its
@@ -3188,11 +3286,14 @@ export class ClientSession {
 	async setSettings(partial: {
 		promptMode?: PromptMode;
 		customSystemPrompt?: string;
+		promptTemplate?: string;
+		promptOverrides?: Record<string, string>;
 		disabledSkills?: string[];
 		disabledExtensions?: string[];
 		terminalToolsEnabled?: boolean;
 		terminalBash?: boolean;
 		terminalBashIdleMs?: number;
+		editSoftEnabled?: boolean;
 		thinkingWrap?: boolean;
 		toolsWrap?: boolean;
 		visionBridgeEnabled?: boolean;
@@ -3200,11 +3301,14 @@ export class ClientSession {
 		visionBridgePromptMode?: PromptMode;
 		visionBridgePrompt?: string;
 		subagentDefaultModel?: string | null;
+		retryMaxAttempts?: number;
 		reviewPrompt?: string;
 		reviewDisabledSkills?: string[];
 		disabledPlugins?: string[];
 		markersEnabled?: boolean;
 		disabledMarkers?: string[];
+		quickPhrases?: string[];
+		quickPhrasesEnabled?: boolean;
 	}): Promise<void> {
 		const { markersEnabled, disabledMarkers, quickPhrasesSeeded, ...rest } = partial as {
 			markersEnabled?: boolean;
@@ -3517,6 +3621,87 @@ export class ClientSession {
 		this.flushSnapshot();
 	}
 
+	/** 手动重试上次失败的模型调用：自动重试次数（retryMaxAttempts）用完后
+	 *  本轮已停止并标红，用户点「重试」再触发一轮 LLM 调用。不新增用户气泡——
+	 *  用 display:false 的 custom 消息 triggerTurn 续跑，模型基于完整上下文
+	 * （含上次报错）继续生成。流式中 / 无可重试失败时只发 notice 拒绝。 */
+	async retryLast(): Promise<void> {
+		const conv = this.conv;
+		try {
+			if (this.quiesceBlocked()) return;
+			const s = this.session;
+			if (s.isStreaming) {
+				this.emit({
+					type: "notice",
+					level: "info",
+					text: "对话正在生成中，无需重试",
+					textEn: "The conversation is still generating — no need to retry",
+				});
+				return;
+			}
+			if (conv.retryState) {
+				this.emit({
+					type: "notice",
+					level: "info",
+					text: "正在自动重试中，稍候即可",
+					textEn: "Auto-retry is in progress — please wait",
+				});
+				return;
+			}
+			// 最后一轮失败的证据：末尾 stopReason=error 的 assistant 消息。
+			let failed: { errorMessage?: unknown; stopReason?: unknown } | null = null;
+			try {
+				const msgs = s.agent.state.messages;
+				for (let i = msgs.length - 1; i >= 0; i--) {
+					const m = msgs[i] as { role?: unknown; errorMessage?: unknown; stopReason?: unknown };
+					if (m.role !== "assistant") continue;
+					if ((typeof m.errorMessage === "string" && m.errorMessage.trim()) || m.stopReason === "error") {
+						failed = m;
+					}
+					break;
+				}
+			} catch {
+				// 会话替换中——按无可重试处理
+			}
+			if (!failed) {
+				this.emit({
+					type: "notice",
+					level: "info",
+					text: "没有可重试的失败：上一轮没有报错结束",
+					textEn: "Nothing to retry: the last turn did not end with an error",
+				});
+				return;
+			}
+			// 轨迹用：下一轮 agent_start 消费（否则插件回退为「继续执行」）。
+			conv.pendingTask = "手动重试上次失败的模型请求";
+			await s.sendCustomMessage(
+				{
+					customType: "manual-retry",
+					content: [
+						{
+							type: "text",
+							text: "（系统：用户点击了「重试」。请基于完整上下文重新发起上一次失败的模型请求，继续完成用户的任务。）",
+						},
+					],
+					display: false,
+				},
+				{ triggerTurn: true },
+			);
+			conv.promptedSinceActive = true;
+			conv.lastActiveAt = Date.now();
+			conv.lastSdkEventAt = Date.now();
+			conv.stallNoticed = false;
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `手动重试失败：${(err as Error).message}`,
+				textEn: `Manual retry failed: ${(err as Error).message}`,
+			});
+		}
+		this.flushSnapshot();
+	}
+
 	/**
 	 * Remove ONE queued prompt text (the ✕ on a pending bubble) so it is neither
 	 * shown nor eventually delivered. The pi SDK has no per-item queue API, so we
@@ -3743,6 +3928,7 @@ export class ClientSession {
 		// the per-project running-list model displaced blanks are disposed, so
 		// this branch normally can't exist — kept as a safety net).
 		const isBlank = (c: Conversation): boolean => {
+			if (c.isSubagent || c.cwd !== this.cwd || conversationBusy(c)) return false;
 			try {
 				return c.session.getSessionStats().totalMessages === 0 && c.terminals.list().length === 0;
 			} catch {
@@ -3763,18 +3949,8 @@ export class ClientSession {
 				return;
 			}
 		}
-		// Cap is per project — conversations of other projects keep their own
-		// lists and don't consume this project's slots.
-		const openInProject = [...this.convs.values()].filter((c) => c.cwd === this.cwd).length;
-		if (openInProject >= MAX_OPEN_CONVERSATIONS) {
-			this.emit({
-				type: "notice",
-				level: "warning",
-				text: `当前项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先打开某个对话并离开（不继续对话）以移出列表`,
-				textEn: `This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}). Open one and leave it (without continuing) to remove it from the list.`,
-			});
-			return;
-		}
+		// Completed work is an evictable cache, not a reason to reject new chats.
+		this.maintenance.reap();
 		// The outgoing conversation is left behind — apply the running-list
 		// lifecycle. Removal is deferred until the new chat exists so the active
 		// conversation stays valid during the (async) runtime creation.
@@ -3798,6 +3974,8 @@ export class ClientSession {
 			// A fresh transcript appeared in the sessions dir — the next listing
 			// must see it, not the pre-newChat fridge snapshot.
 			this.invalidateSessionInfos();
+			// 多端：新会话让其他端的列表也跟上。
+			this.onSessionsListChanged?.(this.cwd);
 			// New session seeds with the ModelRuntime default model — restore the
 			// model the user had selected in the previous chat.
 			if (prevModel && this.sharedModelRuntime) {
@@ -3874,7 +4052,7 @@ export class ClientSession {
 				hasActiveSubagentRun: () => hasActiveSubagentRun({ sessionId: conv.session.sessionFile }),
 				hasPendingWake: () => hasPendingWaitSubscription({ sessionId: conv.session.sessionFile }),
 			});
-		if (retained) {
+		if (conv.isSubagent || conversationBusy(conv) || retained) {
 			conv.listed = true;
 			return null;
 		}
@@ -3897,9 +4075,11 @@ export class ClientSession {
 
 	/** Switch the ACTIVE conversation without interrupting any other chat. */
 	async switchConversation(id: string): Promise<void> {
+		if (!this.convs.has(id)) await this.maintenance.restore(id);
 		if (!this.convs.has(id) || id === this.activeId) return;
 		const displaced = this.displaceActive();
 		this.activeId = id;
+		this.conv.subagentStarting = false;
 		const newCwd = this.conv.cwd;
 		// A listed conversation may belong to ANOTHER project (cross-project
 		// running list). Switching to it must also switch the active workspace
@@ -3942,6 +4122,7 @@ export class ClientSession {
 	 *  workspace stays visible; clicking one switches both the conversation and
 	 *  its project (see switchConversation). The client groups the list by cwd. */
 	private emitConversations(): void {
+		this.maintenance.schedule();
 		const conversations: ConversationSummary[] = [];
 		// Active parents are normally absent from Running. Keep them visible while
 		// listed subagents hang under them, so both rows remain clickable.
@@ -3969,7 +4150,7 @@ export class ClientSession {
 				isStreaming,
 				isSubagent: !!conv.isSubagent,
 				// 子代理带 error 标记：左栏红点提示（普通对话不参与）。
-				...(conv.isSubagent ? this.subagentRunOutcome(conv) : {}),
+				...(conv.isSubagent ? subagentRunOutcome(conv) : {}),
 				parentId: conv.parentId,
 			});
 		}
@@ -3986,33 +4167,14 @@ export class ClientSession {
 	 *  client that never opened the panel never pays the disk scan. */
 	private sessionsRequested = false;
 
-	/**
-	 * Last parsed session list for this cwd, cached briefly so repeated
-	 * global-search keystrokes don't re-parse every transcript file on each
-	 * request (a project can hold 100+ sessions of several MB each).
-	 * pushSessions() and searchSessions() share this fridge — opening the
-	 * panel warms it, then every keystroke inside the TTL is free.
-	 */
-	private sessionInfosCache: { cwd: string; infos: SessionInfo[]; at: number } | null = null;
-	private static readonly SESSION_INFO_CACHE_TTL = 3000;
+	private readonly sessionHistory = new SessionHistoryCache((cwd) => SessionManager.list(cwd, piSessionsRoot()));
 
-	private async loadSessionInfos(): Promise<SessionInfo[]> {
-		const now = Date.now();
-		const c = this.sessionInfosCache;
-		if (c && c.cwd === this.cwd && now - c.at < ClientSession.SESSION_INFO_CACHE_TTL) {
-			return c.infos;
-		}
-		const infos = await SessionManager.list(this.cwd, piSessionsRoot());
-		this.sessionInfosCache = { cwd: this.cwd, infos, at: now };
-		return infos;
+	private loadSessionInfos(cwd = this.cwd): Promise<SessionInfo[]> {
+		return this.sessionHistory.get(cwd);
 	}
 
-	/** Session files on disk changed (delete / new-transcript) — drop the brief
-	 *  TTL fridge so the NEXT listing re-reads the directory instead of serving
-	 *  the pre-mutation snapshot (delete-then-refresh commonly runs inside the
-	 *  window, which would re-push the just-removed session). */
-	private invalidateSessionInfos(): void {
-		this.sessionInfosCache = null;
+	private invalidateSessionInfos(cwd = this.cwd): void {
+		this.sessionHistory.invalidate(cwd);
 	}
 
 	/** Push the persisted session list to the client (client-requested). */
@@ -4021,14 +4183,15 @@ export class ClientSession {
 		await this.pushSessions();
 	}
 
-	private async pushSessions(): Promise<void> {
-		if (!this.sessionsRequested) return;
-		if (!this.sessionsRequested) return;
+	private async pushSessions(force = false): Promise<void> {
+		if (!this.sessionsRequested && !force) return;
+		const cwd = this.cwd;
 		try {
 			// Sessions live in the SDK default per-project dir
 			// (<agentDir>/sessions/--<cwd>--/), the same files the pi CLI/TUI
 			// use — one listing covers every conversation of the current folder.
-			const infos = await this.loadSessionInfos();
+			const infos = await this.loadSessionInfos(cwd);
+			if (this.disposed || cwd !== this.cwd) return;
 
 			const sessions = new Map<string, SessionSummary>();
 			for (const s of infos) {
@@ -4044,7 +4207,134 @@ export class ClientSession {
 			const sorted = [...sessions.values()].sort((a, b) => b.modified - a.modified).slice(0, 200); // newest first — the panel shows recent history
 			this.emit({ type: "sessions", sessions: sorted });
 		} catch {
-			this.emit({ type: "sessions", sessions: [] });
+			if (!this.disposed && cwd === this.cwd) this.emit({ type: "sessions", sessions: [] });
+		}
+	}
+
+	/** 其他端在本项目下写入/新建/删除/改名了会话 → 让本端的会话列表跟上。
+	 *  列表按 cwd 过滤：不同项目不必理会（切到该项目时本来就会 refreshSessions）。 */
+	notifyExternalSessionsChanged(cwd: string): void {
+		if (this.disposed) return;
+		this.invalidateSessionInfos(cwd);
+		if (cwd !== this.cwd) return;
+		// force keeps other devices' history current even before their panel opens.
+		void this.pushSessions(true);
+	}
+
+	/** 本端一个节点完成（transcript 已落盘）→ 广播给其他端（列表刷新 + 接力重载）。
+	 *  子代理/内存会话没有 sessionFile，或会话正被替换时静默跳过。 */
+	private broadcastPersistedNode(conv: Conversation): void {
+		try {
+			const file = conv.session.sessionFile;
+			if (!file) return;
+			this.invalidateSessionInfos(conv.cwd);
+			// 记下自己刚写入的签名，避免下次接入时把自己的写当作「其他端的更新」重载。
+			this.updateDiskSig(conv);
+			this.onSessionPersisted?.(file, conv.cwd);
+		} catch {
+			/* 无文件 / 会话正被替换 — 无需广播 */
+		}
+	}
+
+	/** 其他端完成了该会话文件的一个节点 → 若本端持有它，从磁盘接力重载。
+	 *  本端正在流式输出/有排队消息时置 pending，由本轮 agent_end 补做（绝不打断）。 */
+	async reloadIfHolding(file: string): Promise<void> {
+		if (this.disposed) return;
+		let target: string;
+		try {
+			target = resolve(file);
+		} catch {
+			return;
+		}
+		for (const conv of this.convs.values()) {
+			const own = conv.session.sessionFile;
+			if (!own || resolve(own) !== target) continue;
+			if (conv.reloadInFlight) {
+				conv.pendingDiskReload = true;
+				continue;
+			}
+			if (conv.session.isStreaming || conv.queueSteering.length > 0 || conv.queueFollowUp.length > 0) {
+				conv.pendingDiskReload = true;
+				continue;
+			}
+			await this.reloadConversationFromDisk(conv);
+		}
+	}
+
+	/** 本端一轮结束（agent_end）后，补做期间收到的接力重载。 */
+	private async flushPendingDiskReloads(): Promise<void> {
+		// eslint-disable-next-line unicorn/no-useless-spread -- snapshot: awaited reloads can change the conversation map
+		for (const conv of [...this.convs.values()]) {
+			if (!conv.pendingDiskReload || conv.session.isStreaming) continue;
+			await this.reloadConversationFromDisk(conv);
+		}
+	}
+
+	/**
+	 * 从磁盘重新载入一个对话的 runtime（多端接力）：其他端完成节点后，把本端该
+	 * 会话的内存状态换成磁盘上的最新 transcript。**就地替换**——保留对话 id、
+	 * 所属项目与终端，并重置按对话隔离的消息序列化缓存。
+	 * 调用方必须保证该对话当前没有本地流式输出 / 排队消息。
+	 */
+	private async reloadConversationFromDisk(conv: Conversation): Promise<void> {
+		const file = conv.session.sessionFile;
+		if (!file || conv.session.isStreaming || this.disposed) return;
+		if (conv.reloadInFlight) {
+			conv.pendingDiskReload = true;
+			return;
+		}
+		if (conv.queueSteering.length > 0 || conv.queueFollowUp.length > 0) {
+			conv.pendingDiskReload = true;
+			return;
+		}
+		conv.reloadInFlight = true;
+		conv.pendingDiskReload = false;
+		try {
+			const sessionManager = SessionManager.open(file);
+			const oldRuntime = conv.runtime;
+			const runtime = await createAgentSessionRuntime(this.makeRuntimeFactory(conv.terminals, undefined, conv.id), {
+				cwd: conv.cwd,
+				agentDir: this.agentDir,
+				sessionManager,
+			});
+			// 先停旧事件订阅、释放旧 runtime（解除其扩展绑定），再换新的：避免两个
+			// runtime 的扩展同时挂在 webUi 上产生重复 widget/status。
+			conv.unsubscribe?.();
+			conv.unsubscribe = undefined;
+			try {
+				await oldRuntime.dispose();
+			} catch {
+				/* 旧 runtime 释放失败不影响接力结果 */
+			}
+			this.clearAllToolWatchdogs(conv);
+			conv.runtime = runtime;
+			conv.session = runtime.session;
+			// 消息集合变了：清掉按对话隔离的序列化缓存，强制重建 UI 消息数组。
+			conv.msgIds = new Map();
+			conv.nextMsgId = 1;
+			conv.userSeqByTs = new Map();
+			conv.uiMessageCache = new Map();
+			conv.lastMessagesSig = "";
+			conv.lastMessagesArray = [];
+			conv.deltaSeq = 0;
+			conv.queueSteering = [];
+			conv.queueFollowUp = [];
+			conv.toolStartTimes = new Map();
+			await this.bindConversation(conv);
+			this.applyRetryOverrides();
+			if (conv.id === this.activeId) this.flushSnapshot(true);
+			this.emitConversations();
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "warning",
+				text: `接力刷新会话失败：${(err as Error).message}`,
+				textEn: `Failed to refresh the session from disk: ${(err as Error).message}`,
+			});
+		} finally {
+			conv.reloadInFlight = false;
+			// 重载期间又收到节点完成（已置 pending）→ 补做一次。
+			if (conv.pendingDiskReload && !this.disposed) void this.flushPendingDiskReloads();
 		}
 	}
 
@@ -4141,6 +4431,7 @@ export class ClientSession {
 			// still contains the deleted transcript.
 			this.invalidateSessionInfos();
 			await this.refreshSessions();
+			this.onSessionsListChanged?.(this.cwd);
 		} catch (err) {
 			this.emit({
 				type: "notice",
@@ -4174,6 +4465,7 @@ export class ClientSession {
 			this.setConversationTitleForFile(abs, trimmed);
 			this.invalidateSessionInfos();
 			await this.refreshSessions();
+			this.onSessionsListChanged?.(this.cwd);
 		} catch (err) {
 			this.emit({
 				type: "notice",
@@ -4200,7 +4492,8 @@ export class ClientSession {
 				// in-memory title still updated; transcript write is best-effort
 			}
 			this.emitConversations();
-			this.invalidateSessionInfos();
+			this.invalidateSessionInfos(conv.cwd);
+			this.onSessionsListChanged?.(conv.cwd);
 			await this.refreshSessions();
 		} catch (err) {
 			this.emit({
@@ -4257,18 +4550,7 @@ export class ClientSession {
 		// Streaming / retained conversations refuse dismissal — mirrors displaceActive retention.
 		// A parent with live children also refuses: dropping it orphans the child rows.
 		const hasLiveChild = [...this.convs.values()].some((child) => child.parentId === id);
-		const retained =
-			hasLiveChild ||
-			shouldRetainActive({
-				reviewing: conv.goal.reviewing,
-				wizardRunning: conv.wizardRunning,
-				streaming: conv.session.isStreaming,
-				openTerminals: conv.terminals.countLive(),
-				listed: conv.listed,
-				promptedSinceActive: conv.promptedSinceActive,
-				hasActiveSubagentRun: () => hasActiveSubagentRun({ sessionId: conv.session.sessionFile }),
-				hasPendingWake: () => hasPendingWaitSubscription({ sessionId: conv.session.sessionFile }),
-			});
+		const retained = hasLiveChild || conversationBusy(conv);
 		if (retained) {
 			if (conv.session.isStreaming) {
 				this.emit({
@@ -4301,7 +4583,8 @@ export class ClientSession {
 			}
 			return;
 		}
-		this.removeConversation(id);
+		if (conv.isSubagent) this.maintenance.reap();
+		else this.removeConversation(id);
 		this.emitConversations();
 		this.flushSnapshot();
 	}
@@ -4346,28 +4629,7 @@ export class ClientSession {
 
 			// Only displace the old active conversation after the replacement runtime
 			// is known-good. This keeps a failed history open entirely non-destructive.
-			const oldListed = this.conv.listed;
 			const displaced = this.displaceActive();
-			const openInProject =
-				[...this.convs.values()].filter((c) => c.cwd === targetCwd).length + 1 - (displaced?.cwd === targetCwd ? 1 : 0);
-			if (openInProject > MAX_OPEN_CONVERSATIONS) {
-				// displaceActive() may have promoted a streaming conversation into the
-				// running list. Roll that presentation-only mutation back because no
-				// switch will take place.
-				this.conv.listed = oldListed;
-				openedTerminals.killAll();
-				await openedRuntime.dispose();
-				openedRuntime = null;
-				openedTerminals = null;
-				this.emit({
-					type: "notice",
-					level: "warning",
-					text: `当前项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先打开某个对话并离开（不继续对话）以移出列表`,
-					textEn: `This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}). Open one and leave it (without continuing) to remove it from the list.`,
-				});
-				return;
-			}
-
 			const conv = this.makeConversation(openedRuntime, conversationId, openedTerminals);
 			// Deliberately resumed — must not be dismissed when the user later
 			// switches away without sending a new message.
@@ -4566,22 +4828,7 @@ export class ClientSession {
 		}
 		try {
 			const infos = await this.loadSessionInfos();
-			const results = infos
-				.filter((s) => sessionMatchesSearch(q, s))
-				.sort((a, b) => b.modified.getTime() - a.modified.getTime())
-				.slice(0, 50)
-				.map((s) => {
-					const base: SessionSummary = {
-						path: s.path,
-						name: s.name,
-						firstMessage: s.firstMessage,
-						messageCount: s.messageCount,
-						modified: s.modified.getTime(),
-						source: "web",
-					};
-					// 命中会话里再定位具体消息（供点击跳转）；仅元数据命中则无锚点
-					return { ...base, anchors: collectSessionAnchors(s.path, q) };
-				});
+			const results = await searchSessionInfos(infos, q);
 			this.emit({ type: "session_search_results", reqId, query, ok: true, results });
 		} catch {
 			this.emit({ type: "session_search_results", reqId, query, ok: false, results: [] });
@@ -4915,6 +5162,7 @@ export class ClientSession {
 	}
 
 	async dispose(): Promise<void> {
+		this.maintenance.stop();
 		this.disposed = true;
 		for (const conv of this.convs.values()) conv.terminals.killAll();
 		if (this.snapshotTimer) {
@@ -5122,6 +5370,8 @@ export class AgentService {
 		// BEFORE attachSink so the notice rides the initial pending-notice flush.
 		cs.notifyInterrupted(this.stateStore.takeInterrupted(clientId));
 		cs.attachSink(send);
+		// 接入/回到页面时追平：离开期间另一端完成的工作，这里按磁盘新鲜度补上。
+		cs.syncActiveFromDiskIfStale();
 		// Forward hooks (set once by index.ts) to every session.
 		cs.onQuit = this.onQuit;
 		cs.onToolEvent = this.onToolEvent;
@@ -5132,6 +5382,11 @@ export class AgentService {
 		cs.pluginBgTasksProvider = this.pluginBgTasksProvider;
 		cs.pluginStopBgTask = this.pluginStopBgTask;
 		cs.isQuiesced = () => this.quiesced;
+		// 多端同步：本端完成节点 / 会话列表变化 → 广播给其他客户端。
+		// 节点完成 → 对方刷新列表 + 若持有同一会话则从磁盘接力重载；
+		// 列表变化（新建/删除/改名）→ 对方只刷新列表。
+		cs.onSessionPersisted = (file, cwd) => this.broadcastSessionPersisted(cs.clientId, file, cwd);
+		cs.onSessionsListChanged = (cwd) => this.broadcastSessionsListChanged(cs.clientId, cwd);
 		// 插件宿主工作区跟随：初次接入也同步一次（恢复的 lastCwd 可能≠服务启动目录），
 		// notifyCwd 幂等去重；此后 set_cwd 成功时由 cs.onCwdChanged 继续驱动。
 		cs.onCwdChanged = (abs) => this.onClientCwdChanged?.(abs);
@@ -5180,6 +5435,24 @@ export class AgentService {
 
 	get(clientId: string): ClientSession | undefined {
 		return this.clients.get(clientId);
+	}
+
+	/** 一个客户端完成一个节点（transcript 已落盘）→ 其他端刷新会话列表；持有
+	 *  同一会话的端从磁盘接力重载（节点粒度，不打扰正在流式输出的端）。 */
+	private broadcastSessionPersisted(originClientId: string, file: string, cwd: string): void {
+		for (const cs of this.clients.values()) {
+			if (cs.clientId === originClientId) continue;
+			cs.notifyExternalSessionsChanged(cwd);
+			void cs.reloadIfHolding(file);
+		}
+	}
+
+	/** 会话列表本身变化（新建落盘 / 删除 / 改名）→ 其他同项目端刷新列表。 */
+	private broadcastSessionsListChanged(originClientId: string, cwd: string): void {
+		for (const cs of this.clients.values()) {
+			if (cs.clientId === originClientId) continue;
+			cs.notifyExternalSessionsChanged(cwd);
+		}
 	}
 
 	async disposeAll(): Promise<void> {

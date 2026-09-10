@@ -1,6 +1,7 @@
-.venv/
-.tools/
-node_modules/
+.dev/
+.venv
+.tools
+node_modules
 __pycache__/
 .pytest_cache/
 .ruff_cache/
@@ -24,4 +25,5 @@ mcp.json
 runtime.json
 token
 artifacts/
+.playwright-mcp/
 .DS_Store

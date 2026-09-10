@@ -502,6 +502,54 @@ export class ClientStateStore {
 		this.save();
 	}
 
+	/** Remove one provider from EVERY project's saved keys (all clients, all
+	 *  cwds) — e.g. the provider was cleared and returned to unconfigured.
+	 *  Returns the number of entries removed. */
+	deleteProviderEverywhere(provider: string): number {
+		const all = this.load();
+		let removed = 0;
+		for (const state of Object.values(all)) {
+			const map = state.projectProviderKeys;
+			if (!map) continue;
+			for (const [cwd, inner] of Object.entries(map)) {
+				if (inner && provider in inner) {
+					delete inner[provider];
+					removed++;
+					if (Object.keys(inner).length === 0) delete map[cwd];
+				}
+			}
+			if (map && Object.keys(map).length === 0) delete state.projectProviderKeys;
+		}
+		if (removed > 0) this.save();
+		return removed;
+	}
+
+	/** Fix every project that still references a deleted key: point it at the
+	 *  key that took over (`newActive`), or drop the reference when the
+	 *  provider has no keys left (`newActive` null). A key deletion made in
+	 *  one project must not keep haunting every other project that once used
+	 *  the same key on every project switch. Returns entries touched. */
+	repointDeletedKeyEverywhere(provider: string, deletedKeyName: string, newActive: string | null): number {
+		const all = this.load();
+		let touched = 0;
+		for (const state of Object.values(all)) {
+			const map = state.projectProviderKeys;
+			if (!map) continue;
+			for (const [cwd, inner] of Object.entries(map)) {
+				if (inner?.[provider] !== deletedKeyName) continue;
+				if (newActive) inner[provider] = newActive;
+				else {
+					delete inner[provider];
+					if (Object.keys(inner).length === 0) delete map[cwd];
+				}
+				touched++;
+			}
+			if (map && Object.keys(map).length === 0) delete state.projectProviderKeys;
+		}
+		if (touched > 0) this.save();
+		return touched;
+	}
+
 	/** Get the model the user last selected in a project, or undefined. */
 	getProjectModel(clientId: string, cwd: string): string | undefined {
 		return this.load()[clientId]?.projectModels?.[cwd];

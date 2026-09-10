@@ -11,7 +11,7 @@
 // skill/extension toggle round-trip (see settings-live flow in git history).
 // Usage: npm run build && node settings-test.mjs [port]
 import WebSocket from "ws";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -19,6 +19,9 @@ import { spawn } from "node:child_process";
 const PORT = Number(process.argv[2] || 8931);
 const DATA_DIR = mkdtempSync(join(tmpdir(), "pi-web-set-test-"));
 console.log("data-dir:", DATA_DIR);
+const skillDir = join(DATA_DIR, "agent/skills/settings-fixture");
+mkdirSync(skillDir, { recursive: true });
+writeFileSync(join(skillDir, "SKILL.md"), "---\nname: settings-fixture\ndescription: Synthetic settings toggle fixture\n---\nUse only for this isolated test.\n");
 
 const server = spawn(process.execPath, ["dist/server/index.js"], {
 	env: {
@@ -203,7 +206,7 @@ try {
 	await c.waitFor("settings_state", 8000, (m) => m.settings.thinkingWrap === true);
 
 	// skill toggle
-	const skillName = st0.settings.skills[0]?.name;
+	const skillName = "settings-fixture";
 	if (skillName) {
 		c.send({ type: "set_settings", disabledSkills: [skillName] });
 		const st3 = await c.waitFor("settings_state", 8000, (m) => m.settings.disabledSkills.includes(skillName));
@@ -211,7 +214,8 @@ try {
 		const s = st3.settings.skills.find((x) => x.name === skillName);
 		check("disabled skill still listed (re-enableable)", s && !s.enabled);
 		c.send({ type: "set_settings", disabledSkills: [] });
-		const st4 = await c.waitFor("settings_state", 8000, (m) => m.settings.disabledSkills.length === 0);
+		const st4 = await c.waitFor("settings_state", 8000, (m) =>
+			m.settings.disabledSkills.length === 0 && m.settings.skills.find((x) => x.name === skillName)?.enabled === true);
 		check("skill re-enabled", st4.settings.skills.find((x) => x.name === skillName)?.enabled === true);
 	} else {
 		console.log("  (no skills loaded — skipping)");

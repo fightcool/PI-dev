@@ -69,86 +69,87 @@ function subscribeAll(cb: (pluginId: string, payload: unknown) => void): () => v
 	return () => window.removeEventListener(PLUGIN_DATA_EVENT, handler);
 }
 
-// ---- 已加载视图注册表（模块级单例；React 只是通过订阅读它） -----------------
-
-const loaded = new Map<string, LoadedPluginView>();
-const listeners = new Set<(views: LoadedPluginView[]) => void>();
-/** 加载失败的 id——同一 epoch 内不再重试（避免坏 bundle 无限刷错误）；
- *  目录清单变化/服务端重载（epoch 变）后自动清空，给修复后的插件重试机会。 */
-const failed = new Set<string>();
-/** 上次加载用的服务端重载纪元；变化时丢弃全部已加载视图（bundle URL 带 ?e=
- *  强制浏览器重新拉取）。 */
-let lastEpoch = -1;
-
-function snapshot(): LoadedPluginView[] {
-	return [...loaded.values()];
-}
-
-function notify(): void {
-	const snap = snapshot();
-	for (const l of listeners) l(snap);
-}
-
-/** 订阅当前已加载的插件视图（立即回调一次当前快照）。 */
-export function subscribeLoadedPluginViews(cb: (views: LoadedPluginView[]) => void): () => void {
-	listeners.add(cb);
-	cb(snapshot());
-	return () => listeners.delete(cb);
-}
-
 /**
- * 把目录清单里应显示的插件同步到注册表：
- * - epoch 变化（服务端 plugins_reload）→ 丢弃全部旧 bundle，用 ?e= 重拉
- * - 清单中消失/被禁用的插件 → 移除已加载视图（React 随之卸载并调 cleanup）
- * - 新出现且未失败过的 → 动态 import
+ * 🍞 AI Breadcrumb: @COUPLED app/use-app-views.ts, components/PluginView.tsx.
+ * @CONTRACT Sync only reconciles eligibility; request loads a single visited view.
+ * @GOTCHA An import cannot be cancelled: record identity fences disable/re-enable
+ * and epoch races before either publishing a module or recording a failure.
  */
-export async function syncPluginViews(plugins: UiPluginInfo[], epoch: number): Promise<void> {
-	if (epoch !== lastEpoch) {
-		lastEpoch = epoch;
-		loaded.clear();
-		failed.clear();
-	}
-	// 清掉清单里不再存在的（被删目录 / 设置面板禁用 / 报错）——包括 failed 记录，
-	// 让重新安装的同名插件可以再次尝试。
-	const active = new Set(plugins.map((p) => p.id));
-	// eslint-disable-next-line unicorn/no-useless-spread -- snapshot: handlers may unsubscribe mid-emit
-	for (const id of [...loaded.keys()]) {
-		if (!active.has(id)) loaded.delete(id);
-	}
-	// eslint-disable-next-line unicorn/no-useless-spread -- snapshot: handlers may unsubscribe mid-emit
-	for (const id of [...failed]) {
-		if (!active.has(id)) failed.delete(id);
-	}
-	await Promise.all(
-		plugins
-			// view:false 的纯 renderer 插件不进视图注册表——它们只在消息里命中
-			// ```lang 围栏时才按需懒加载（见 plugin-fence.ts），避免打进主包。
-			.filter((p) => p.hasClient && p.view !== false && !p.error && !loaded.has(p.id) && !failed.has(p.id))
-			.map(async (p) => {
-				try {
-					// @vite-ignore：URL 运行时才知道，Vite 不要试图打包它。
-					// ?e=<epoch> 作为缓存击穿参数：服务端 reload 后 URL 变化，
-					// 浏览器才会真正重新执行改过的 bundle。
-					// appUrl 补上应用根前缀：nginx 子路径反代（页面在 /pi/）时插件
-					// bundle 必须请求 /pi/plugins/... 才能被转发规则命中。
-					const mod = (await import(
-						/* @vite-ignore */ appUrl(`/plugins/${encodeURIComponent(p.id)}/client/entry.mjs?e=${epoch}`)
-					)) as { default?: PluginViewModule };
-					const m = mod.default;
-					if (m && typeof m.mount === "function") {
-						loaded.set(p.id, { info: p, module: m });
-					} else {
-						failed.add(p.id);
-						console.error(`[plugin:${p.id}] entry.mjs 缺少 default.mount`);
+export function createPluginViewLoader(
+	importView: (url: string) => Promise<{ default?: PluginViewModule }> = (url) => import(/* @vite-ignore */ url),
+) {
+	type Record = { info: UiPluginInfo; loaded?: LoadedPluginView; pending?: Promise<void>; failed?: boolean };
+	const records = new Map<string, Record>();
+	const listeners = new Set<(views: LoadedPluginView[]) => void>();
+	let lastEpoch = -1;
+	const snapshot = () => [...records.values()].flatMap((record) => (record.loaded ? [record.loaded] : []));
+	const notify = () => {
+		const views = snapshot();
+		for (const listener of listeners) listener(views);
+	};
+	return {
+		subscribe(cb: (views: LoadedPluginView[]) => void): () => void {
+			listeners.add(cb);
+			cb(snapshot());
+			return () => {
+				listeners.delete(cb);
+			};
+		},
+		sync(plugins: UiPluginInfo[], epoch: number): void {
+			if (epoch !== lastEpoch) {
+				lastEpoch = epoch;
+				records.clear();
+			}
+			const eligible = plugins.filter(isPluginView);
+			const active = new Set(eligible.map((p) => p.id));
+			for (const id of records.keys()) {
+				if (!active.has(id)) records.delete(id);
+			}
+			for (const info of eligible) {
+				const record = records.get(info.id);
+				if (record) record.info = info;
+				else records.set(info.id, { info });
+			}
+			// Cleanup is published synchronously, even while other imports are pending.
+			notify();
+		},
+		request(id: string): Promise<void> {
+			const record = records.get(id);
+			if (!record || record.loaded || record.failed) return Promise.resolve();
+			if (record.pending) return record.pending;
+			const current = () => records.get(id) === record;
+			const url = appUrl(`/plugins/${encodeURIComponent(id)}/client/entry.mjs?e=${lastEpoch}`);
+			record.pending = Promise.resolve()
+				.then(() => (current() ? importView(url) : undefined))
+				.then((mod) => {
+					if (!current() || !mod) return;
+					if (!mod.default || typeof mod.default.mount !== "function") {
+						throw new Error("entry.mjs 缺少 default.mount");
 					}
-				} catch (err) {
-					failed.add(p.id);
-					console.error(`[plugin:${p.id}] 客户端加载失败:`, err);
-				}
-			}),
-	);
-	notify();
+					record.loaded = { info: record.info, module: mod.default };
+					notify();
+				})
+				.catch((err) => {
+					if (!current()) return;
+					record.failed = true;
+					console.error(`[plugin:${id}] 客户端加载失败:`, err);
+				})
+				.finally(() => {
+					record.pending = undefined;
+				});
+			return record.pending;
+		},
+	};
 }
+
+export function isPluginView(plugin: UiPluginInfo): boolean {
+	return plugin.hasClient && plugin.view !== false && !plugin.error;
+}
+
+const viewLoader = createPluginViewLoader();
+export const subscribeLoadedPluginViews = viewLoader.subscribe;
+export const syncPluginViews = viewLoader.sync;
+export const requestPluginView = viewLoader.request;
 
 /** 组装传给插件 mount() 的上下文（send 由 App 注入真正的 ws 发送函数）。 */
 export function makePluginContext(

@@ -1,0 +1,34 @@
+# [breadcrumb] @COUPLED Dockerfile, scripts/lifecycle/container.mjs
+# @CONTRACT All persistent targets match the image; publish only on host loopback.
+services:
+  pi-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pi-dev:local
+    init: true
+    user: node
+    ports:
+      - "127.0.0.1:${PI_DEV_PORT:-8788}:8788"
+    environment:
+      PI_DEV_CONFIG_DIR: /config
+      PI_DEV_STATE_DIR: /data
+      PI_WEB_DATA_DIR: /data/web
+      PI_CODING_AGENT_DIR: /data/agent
+      PI_WEB_CWD: /workspace
+      PI_WEB_PORT: "8788"
+      PI_DEV_PROFILE: "${PI_DEV_PROFILE:-lean}"
+      PI_WEB_RP_ID: "${PI_WEB_RP_ID:-localhost}"
+      PI_WEB_ORIGIN: "${PI_WEB_ORIGIN:-http://localhost:${PI_DEV_PORT:-8788}}"
+    volumes:
+      - pi-dev-config:/config
+      - pi-dev-web:/data/web
+      - pi-dev-agent:/data/agent
+      - pi-dev-workspace:/workspace
+    restart: unless-stopped
+
+volumes:
+  pi-dev-config:
+  pi-dev-web:
+  pi-dev-agent:
+  pi-dev-workspace:

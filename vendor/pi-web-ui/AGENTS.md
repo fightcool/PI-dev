@@ -1,6 +1,10 @@
 # AGENTS.md — pi-web-ui 项目指南
 
+<!-- 🍞 AI Breadcrumb — @COUPLED docs/conversation-lifecycle.md, server/conversation-maintenance.ts -->
+
 > 本文件是给 AI 编码助手（pi / Claude Code / Cursor 等）看的高层项目说明书。
+> PI-dev 下游维护入口：修改根工程、目录或部署时先读 `../../docs/STRUCTURE.md`；
+> 本文件保留上游应用约定，PI-dev 实例发布遵循根工程命令及 `../../docs/OPERATIONS.md`。
 > 详细文档按主题分拆在 `docs/` 目录下。
 > 修改本文件后，在 pi 中运行 `/reload` 生效。
 
@@ -72,7 +76,7 @@ pi-web-ui/
 │   │   ├── sounds.ts           # WebAudio 提示音
 │   │   ├── download.ts         # 下载（fetch→blob，绕开 Chrome Safe Browsing）
 │   │   ├── message-delta.ts    # message_delta 增量 patch 纯函数，有单测
-│   │   ├── lazy-window.ts      # 消息列表惰性窗口化纯函数，有单测
+│   │   ├── lazy-row-window.ts  # 有界消息行窗口：高度索引、可视范围与单个编辑行保留
 │   │   ├── search-text.ts      # 会话内搜索索引纯函数，有单测
 │   │   ├── skill-block.ts      # parseSkillBlock：<skill> 块解析，有单测
 │   │   ├── auth-token.ts       # PI_WEB_TOKEN 口令注入，有单测
@@ -133,7 +137,7 @@ pi-web-ui/
 | `ModelThinking.tsx` | 模型 + 思考强度下拉（模型下拉左侧按服务商筛选 + 顶部搜索过滤框） |
 | `GlobalSearchModal.tsx` | 全局搜索弹窗（Ctrl+K）：搜历史对话/最近项目/工作区文件名 |
 | `PluginView.tsx` | 插件视图宿主：薄 React 壳 + 动态 import client bundle |
-| `CollapsedMessage.tsx` / `LazyMount.tsx` | 消息折叠摘要行 / 消息级惰性挂载包装 |
+| `CollapsedMessage.tsx` / `message-list/` | 折叠摘要、有界消息行窗口、滚动与问题导航；离屏行不保留逐条DOM |
 | `SearchBar.tsx` | 会话内搜索栏（Ctrl+F，CSS Custom Highlight API 高亮） |
 | `Markdown.tsx` / `Dropdown.tsx` / `copy-button.tsx` / `SoundSettings.tsx` | 通用件 |
 
@@ -143,11 +147,11 @@ pi-web-ui/
 
 | 主题 | 文档 | 要点 |
 | --- | --- | --- |
-| **快照驱动** | `docs/architecture-core.md` | 服务端是唯一事实源，60ms 节流推快照；增量快照（snapshot_delta）；message_delta 实时增量通道不经 snapshot 通道；WS permessage-deflate 压缩；多标签页序列化共享；协议版本协商 |
+| **快照驱动** | `docs/architecture-core.md` | 增量快照与流式增量；首次快照按socket合并至插件初始化后（5秒兜底），后续get_state仍强制全量 |
 | **协议单源** | `docs/architecture-core.md` | `server/protocol.ts` 是唯一事实源；`web/src/types.ts` 是 `export type *` shim；新增消息只改 protocol.ts，两端 switch 各加分支 |
 | **安全边界** | `docs/architecture-core.md` | 默认只绑 loopback；WS Origin/Host 同权威校验；quiesce 准入控制；控制 socket；provider headers 不下发浏览器 |
 | **主题切换** | `docs/architecture-core.md` | styles.css 是唯一布局文件，主题 = 纯 `:root` 变量覆盖（非整文件副本）；内置主题由 make-light-theme.mjs 从 styles.css 变量清单生成；改布局永不碰主题；终端跟随主题 |
-| **多对话并发** | `docs/architecture-core.md` | 每对话独立 AgentSessionRuntime；对话按项目归属；set_cwd 切到目标项目对话；8 个上限/项目；共享同一个 ModelRuntime |
+| **多对话并发与清理** | `docs/conversation-lifecycle.md`、`docs/architecture-core.md` | 修改新建、历史恢复、子代理结束或清理逻辑时读取：用户新建无8个硬限制；空闲缓存回收，子代理归档后释放并可按runId继续 |
 | **附件** | `docs/architecture-attachments.md` | 三种模式（inline/reference/lines）；图片问答（base64 + 缩放）；文件上传（fileData 落盘）；视觉桥（纯文本模型看图转写） |
 | **文件预览** | `docs/architecture-attachments.md` | 512KB 上限 + 内容嗅探（文本/二进制 + GBK 回退）；媒体预览走 HTTP Range；下载绕开 Chrome Safe Browsing |
 | **终端** | `docs/architecture-terminal.md` | 每 Conversation 一个 TerminalManager；spawn 统一准入；按键编码纯函数；输出微批合并；node-pty × --watch 兼容自愈 |
@@ -184,10 +188,13 @@ npm run test:smoke   # 零 token 协议冒烟聚合跑器
 > 详细文档见 `docs/release.md`
 
 ```bash
-# 升版本 → 自检构建 → git commit → git push → npm publish
+# 升版本 → 写 CHANGELOG（含 npm run changelog:i18n 自动记文案增量）→ 自检构建 → commit → push → 打 tag（Action 自动建 Release）→ npm publish
 npm run typecheck && npm run build
+npm run changelog:i18n   # 文案有增减时必跑：自动刷新 CHANGELOG Unreleased 的 ### i18n
+# 预览 Release 说明（只看不发）：node scripts/release-notes.mjs X.Y.Z --base v<上个版本>
 git add -A && git commit -m "feat(xxx): 描述"
 git push origin main
+git tag vX.Y.Z && git push origin vX.Y.Z   # tag 带 v 前缀，数字与 npm 版本一致；推送后 Action 自动创建/更新 GitHub Release（含现场生成的 ### i18n），无需手跑 gh release create
 npm publish
 ```
 

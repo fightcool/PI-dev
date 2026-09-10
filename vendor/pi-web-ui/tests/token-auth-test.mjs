@@ -2,7 +2,8 @@
 //
 // When PI_WEB_TOKEN is set on the server:
 //   1. /api/health stays open (monitoring probes)
-//   2. HTTP requests without a valid token → 401
+//   2. The shell and immutable UI assets are public; protected API/WS routes
+//      without a valid token → 401
 //   3. ?token= query param accepted + Set-Cookie pi_web_token issued
 //   4. Authorization: Bearer / X-PI-Token headers accepted
 //   5. WS upgrade without token → rejected; with ?token= → connects
@@ -149,17 +150,21 @@ try {
 	);
 	check("health issues no Set-Cookie at all", hc === "", hc || "<no set-cookie>");
 
-	// 2. protected route rejects missing/invalid token
+	// 2. the shell is public so the browser can load the auth gate; APIs remain protected
 	const r1 = await httpGet("/");
-	check("GET / without token → 401", r1.status === 401);
+	check("GET / without token → 200 shell", r1.status === 200);
+	const asset = await httpGet("/favicon.svg");
+	check("favicon asset is public", asset.status === 200);
 	const r2 = await httpGet("/?token=wrong");
-	check("GET / with wrong token → 401", r2.status === 401);
+	check("GET / with wrong token → 200 shell", r2.status === 200);
 	const api = await httpGet("/api/themes");
 	check("GET /api/themes without token → 401", api.status === 401);
 
-	// 2b. existing-cookie-but-wrong-token requests also clear the stale cookie
+	// 2b. existing-cookie-but-wrong-token requests keep the public shell
+	// available, but clear the stale cookie so the next authenticated request
+	// cannot accidentally reuse it.
 	const r2b = await httpGet("/", { cookie: `pi_web_token=${encodeURIComponent("nope")}` });
-	check("GET / with stale cookie value → 401", r2b.status === 401);
+	check("GET / with stale cookie value → 200 shell", r2b.status === 200);
 	const sc2b = jarHeader(r2b);
 	check(
 		"401 with stale cookie expires it (Max-Age=0)",
@@ -201,16 +206,17 @@ try {
 	await stopServer(server);
 	server = await startServer(TOKEN2); // restart with a NEW secret
 
-	// 7a. old cookie alone now fails and gets expired (no cache clearing needed later)
+	// 7a. old cookie alone still gets expired while the public shell remains
+	// reachable (no cache clearing needed later).
 	const stale1 = await httpGet("/");
-	check("GET / with stale cookie after token change → 401", stale1.status === 401);
+	check("GET / with stale cookie after token change → 200 shell", stale1.status === 200);
 	const scStale = jarHeader(stale1);
 	check(
 		"stale cookie expired on 401 (Max-Age=0)",
 		scStale.includes("Max-Age=0") && scStale.includes("pi_web_token=;"),
 		scStale,
 	);
-	check("401 body hints at changed server token", (await stale1.text()).includes("口令已变更"), "<body>");
+	check("stale-cookie shell does not expose an auth error", !(await stale1.text()).includes("口令已变更"), "<body>");
 	applyJar(stale1); // jar now empty — browser would have dropped the cookie
 
 	// 7b. one correct ?token= entry re-syncs the cookie to the new secret

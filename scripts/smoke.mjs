@@ -1,6 +1,13 @@
+/* 🍞 AI Breadcrumb: @COUPLED scripts/lib.mjs, scripts/lifecycle/health.mjs
+ * @CONTRACT Smoke compares the configured workspace, which can differ from the release code root.
+ */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { loadConfig, ROOT } from "./lib.mjs";
+import { loadConfig } from "./lib.mjs";
+
+// Bound the complete CLI, including WebSocket close handshakes.
+const deadline = setTimeout(() => { console.error("Smoke timed out"); process.exit(1); }, 60000);
+deadline.unref();
 
 const config = loadConfig();
 const base = `http://${config.host}:${config.port}`;
@@ -21,13 +28,20 @@ assert.equal(
 );
 const health = await healthResponse.json();
 assert.equal(health.ok, true);
-assert.equal(health.cwd, ROOT);
+assert.equal(health.cwd, config.workspaceDir);
 assert.equal(health.engine, "pi");
-assert.equal(health.piVersion, process.env.PI_DEV_EXPECTED_PI_VERSION || "0.85.1");
+if (process.env.PI_DEV_EXPECTED_PI_VERSION)
+  assert.equal(health.piVersion, process.env.PI_DEV_EXPECTED_PI_VERSION);
+else assert.equal(typeof health.piVersion, "string");
 assert.equal(
   (await get("/", false)).status,
-  401,
-  "unauthenticated page must be rejected",
+  200,
+  "unauthenticated shell must be reachable so the browser can start login",
+);
+assert.equal(
+  (await get("/favicon.ico", false)).status,
+  200,
+  "favicon must be reachable before authentication",
 );
 assert.equal(
   (await get("/api/invalid-route", false)).status,

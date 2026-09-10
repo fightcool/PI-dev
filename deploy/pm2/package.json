@@ -1,0 +1,9 @@
+{
+  "name": "pi-dev-process-manager",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned PM2 supervisor for PI-dev user deployments",
+  "dependencies": {
+    "pm2": "6.0.8"
+  }
+}

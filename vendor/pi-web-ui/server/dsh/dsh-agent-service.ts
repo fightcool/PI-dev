@@ -64,12 +64,16 @@ import {
 	userMessageEventToUiMessage,
 } from "./dsh-serialize.js";
 import { firstUserText, findSessionFilesForCwd, readSessionLog, replayEventsToMessages } from "./dsh-sessions.js";
-// Governance is a runtime JavaScript module maintained by the PI-dev host.
-// @ts-expect-error no declaration is needed for this small runtime policy module.
-import { assessInputBudget, assessToolOutput, DEFAULT_GOVERNANCE } from "../../../scripts/governance.mjs";
+// Package imports resolve identically from source and compiled server modules.
+// @ts-expect-error runtime policy is maintained as dependency-free JavaScript.
+import { assessInputBudget, assessToolOutput, DEFAULT_GOVERNANCE } from "#governance";
 
+/* 🍞 AI Breadcrumb — @COUPLED ../conversation-retention.ts
+ * @CONTRACT Idle-cache eviction never blocks a new user conversation or interrupts live work.
+ * 📖 ../../docs/conversation-lifecycle.md
+ */
+import { retirementCandidates } from "../conversation-retention.js";
 const SNAPSHOT_INTERVAL_MS = 60;
-const MAX_OPEN_CONVERSATIONS = 8;
 const DEFAULT_CONV_TITLE = "新对话";
 const DEFAULT_CONV_TITLE_EN = "New chat";
 const DEFAULT_MODEL = "deepseek-v4-flash";
@@ -465,14 +469,44 @@ export class DshClientSession {
 	private reclaimIdleConversations(): void {
 		if (this.disposed) return;
 		const now = Date.now();
+		const busy = (conv: DshConversation) =>
+			conv.isStreaming ||
+			!!conv.turnWaiter ||
+			conv.goal.reviewing ||
+			conv.dsGoal?.phase === "active" ||
+			conv.queue.steering.length > 0 ||
+			conv.queue.followUp.length > 0 ||
+			conv.toolStartTimes.size > 0 ||
+			conv.terminals.countLive() > 0;
+		const persisted = new Map<string, Set<string>>();
+		const recoverable = (conv: DshConversation) => {
+			if (conv.messages.length === 0 || conv.fromDisk) return true;
+			if (!persisted.has(conv.cwd))
+				persisted.set(
+					conv.cwd,
+					new Set(findSessionFilesForCwd(this.sessionRoot, conv.cwd).map((file) => basename(dirname(file)))),
+				);
+			return persisted.get(conv.cwd)!.has(conv.sessionId);
+		};
+		const evict = new Set(
+			retirementCandidates(
+				[...this.convs.values()].map((conv) => ({
+					id: conv.id,
+					cwd: conv.cwd,
+					isSubagent: false,
+					busy: busy(conv),
+					lastActiveAt: conv.lastEventAt,
+					recoverable: recoverable(conv),
+				})),
+				this.activeId,
+			),
+		);
 		let changed = false;
 		for (const [id, conv] of this.convs) {
-			if (id === this.activeId) continue;
-			if (conv.isStreaming) continue;
-			if (conv.terminals.list().length > 0) continue;
+			if (id === this.activeId || busy(conv) || !recoverable(conv)) continue;
 			const idle = now - conv.lastEventAt;
 			const limit = conv.listed ? DshClientSession.CONV_RECLAIM_LISTED_IDLE_MS : DshClientSession.CONV_RECLAIM_IDLE_MS;
-			if (idle > limit) {
+			if (evict.has(id) || idle > limit) {
 				this.removeConversation(id);
 				changed = true;
 			}
@@ -929,14 +963,17 @@ export class DshClientSession {
 				const msg = toolResultEventToUiMessage(ev.data as never);
 				if (msg) this.appendMessage(conv, msg);
 				const startedAt = conv.toolStartTimes.get(msg?.toolCallId ?? "");
-					const outputText = msg ? msg.content.map((b) => (b.type === "text" ? b.text : "")).join("\n") : "";
-					const measures = { bytes: Buffer.byteLength(outputText), lines: outputText ? outputText.split("\n").length : 0, tokens: Math.ceil(outputText.length / 4) };
-					const outputBudget = assessToolOutput(measures, DEFAULT_GOVERNANCE);
-						if (outputBudget.truncated && msg) {
-							const cut = Math.max(0, Math.min(outputText.length, DEFAULT_GOVERNANCE.maxToolOutputBytes));
-							msg.content = [{ type: "text", text: outputText.slice(0, cut) + "\n[tool output truncated by governance]" }];
-						}
-
+				const outputText = msg ? msg.content.map((b) => (b.type === "text" ? b.text : "")).join("\n") : "";
+				const measures = {
+					bytes: Buffer.byteLength(outputText),
+					lines: outputText ? outputText.split("\n").length : 0,
+					tokens: Math.ceil(outputText.length / 4),
+				};
+				const outputBudget = assessToolOutput(measures, DEFAULT_GOVERNANCE);
+				if (outputBudget.truncated && msg) {
+					const cut = Math.max(0, Math.min(outputText.length, DEFAULT_GOVERNANCE.maxToolOutputBytes));
+					msg.content = [{ type: "text", text: outputText.slice(0, cut) + "\n[tool output truncated by governance]" }];
+				}
 
 				// bash 工具结束 → 后台任务端口 diff。
 				const toolName = (ev.data as { toolName?: string }).toolName;
@@ -1292,34 +1329,31 @@ export class DshClientSession {
 	async newChat(): Promise<void> {
 		if (this.quiesceBlocked()) return;
 		const active = this.conv;
-		if (active.messages.length === 0 && active.terminals.list().length === 0) {
+		if (!active.isStreaming && active.messages.length === 0 && active.terminals.list().length === 0) {
 			this.flushSnapshot();
 			return;
 		}
 		for (const conv of this.convs.values()) {
 			if (conv.id === this.activeId) continue;
-			if (conv.messages.length === 0) {
+			if (
+				conv.cwd === this.cwd &&
+				!conv.isStreaming &&
+				conv.messages.length === 0 &&
+				conv.terminals.list().length === 0
+			) {
 				this.switchConversation(conv.id);
 				this.flushSnapshot();
 				return;
 			}
 		}
-		const openInProject = [...this.convs.values()].filter((c) => c.cwd === this.cwd).length;
-		if (openInProject >= MAX_OPEN_CONVERSATIONS) {
-			this.emit({
-				type: "notice",
-				level: "warning",
-				text: `当前项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个）`,
-				textEn: `This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}).`,
-			});
-			return;
-		}
+		// The idle-cache target must never reject a new user conversation.
 		// 旧对话保留（listed 生命周期简化：不主动移除）。
 		const prevModel = this.model;
 		active.listed = active.isStreaming || active.terminals.list().length > 0 || active.promptedSinceActive;
 		const conv = this.addConversation(`chat-${randomUUID().slice(0, 12)}`, this.cwd, false);
 		this.activeId = conv.id;
 		this.model = prevModel;
+		this.reclaimIdleConversations();
 		this.emitConversations();
 		this.emitGoalStatus();
 		this.pushTerminals();
@@ -1468,16 +1502,26 @@ export class DshClientSession {
 			if (this.quiesceBlocked()) return;
 			conv.promptedSinceActive = true;
 			conv.lastEventAt = Date.now();
-				const blocks = await this.buildContentBlocks(text, attachments);
-				const inputTokens = Math.ceil(JSON.stringify(blocks).length / 4);
-				const budget = assessInputBudget(inputTokens, DEFAULT_GOVERNANCE);
-				if (budget.state === "blocked") {
-					this.emit({ type: "notice", level: "error", text: `提示词超出输入预算（${inputTokens}/${DEFAULT_GOVERNANCE.maxInputTokens} tokens）`, textEn: `Prompt exceeds input budget (${inputTokens}/${DEFAULT_GOVERNANCE.maxInputTokens} tokens)` });
-					return;
-				}
-				if (budget.state === "compact" || budget.state === "warn") {
-					this.emit({ type: "notice", level: "warning", text: `提示词预算${budget.state === "compact" ? "接近上限" : "较高"}（${inputTokens} tokens）`, textEn: `Prompt budget ${budget.state} (${inputTokens} tokens)` });
-				}
+			const blocks = await this.buildContentBlocks(text, attachments);
+			const inputTokens = Math.ceil(JSON.stringify(blocks).length / 4);
+			const budget = assessInputBudget(inputTokens, DEFAULT_GOVERNANCE);
+			if (budget.state === "blocked") {
+				this.emit({
+					type: "notice",
+					level: "error",
+					text: `提示词超出输入预算（${inputTokens}/${DEFAULT_GOVERNANCE.maxInputTokens} tokens）`,
+					textEn: `Prompt exceeds input budget (${inputTokens}/${DEFAULT_GOVERNANCE.maxInputTokens} tokens)`,
+				});
+				return;
+			}
+			if (budget.state === "compact" || budget.state === "warn") {
+				this.emit({
+					type: "notice",
+					level: "warning",
+					text: `提示词预算${budget.state === "compact" ? "接近上限" : "较高"}（${inputTokens} tokens）`,
+					textEn: `Prompt budget ${budget.state} (${inputTokens} tokens)`,
+				});
+			}
 
 			// 乐观落地用户消息（id 用暂定值；user/message 事件到达时按内容去重）。
 			const optimistic: UiMessage = {
@@ -1786,6 +1830,61 @@ export class DshClientSession {
 			text: "DSH 引擎暂不支持单独中止 bash（可整体停止对话）",
 			textEn: "The DSH engine cannot stop bash alone (stop the whole conversation instead)",
 		});
+	}
+
+	/** 手动重试上次失败的模型调用：找到最后一条用户提问并重发一次
+	 *  （DSH 运行时以 prompt 驱动回合，无 triggerTurn 语义）。流式中 /
+	 *  无可重试失败时只发 notice 拒绝。 */
+	async retryLast(): Promise<void> {
+		const conv = this.conv;
+		try {
+			if (this.quiesceBlocked()) return;
+			if (conv.isStreaming) {
+				this.emit({
+					type: "notice",
+					level: "info",
+					text: "对话正在生成中，无需重试",
+					textEn: "The conversation is still generating — no need to retry",
+				});
+				return;
+			}
+			let failed = false;
+			for (let i = conv.messages.length - 1; i >= 0; i--) {
+				const m = conv.messages[i]!;
+				if (m.role !== "assistant") continue;
+				failed = !!m.errorMessage;
+				break;
+			}
+			if (!failed) {
+				this.emit({
+					type: "notice",
+					level: "info",
+					text: "没有可重试的失败：上一轮没有报错结束",
+					textEn: "Nothing to retry: the last turn did not end with an error",
+				});
+				return;
+			}
+			let lastUser = "";
+			for (let i = conv.messages.length - 1; i >= 0; i--) {
+				const m = conv.messages[i]!;
+				if (m.role !== "user") continue;
+				lastUser = m.content
+					.map((c) => ("text" in c ? (c.text as string) : ""))
+					.join("")
+					.trim();
+				if (lastUser) break;
+			}
+			const lang = this.getLang();
+			await this.prompt(lastUser || pick(lang, "请继续", "Please continue", "dsh.prompt.continue"));
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `手动重试失败：${(err as Error).message}`,
+				textEn: `Manual retry failed: ${(err as Error).message}`,
+			});
+		}
+		this.flushSnapshot();
 	}
 
 	// -----------------------------------------------------------------------

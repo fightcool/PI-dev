@@ -72,7 +72,13 @@ describe("locales", () => {
 			mkdirSync(dirname(packPath(dir, "ja")), { recursive: true });
 			writeFileSync(
 				packPath(dir, "ja"),
-				JSON.stringify({ code: "ja", nativeName: "日本語", version: "x", strings: { ok: "OK" }, serverStrings: { "k.1": "あ" } }),
+				JSON.stringify({
+					code: "ja",
+					nativeName: "日本語",
+					version: "x",
+					strings: { ok: "OK" },
+					serverStrings: { "k.1": "あ" },
+				}),
 			);
 			writeFileSync(packPath(dir, "pt"), JSON.stringify({ code: "pt", strings: { ok: "OK" } }));
 			writeFileSync(packPath(dir, "de"), "{broken");

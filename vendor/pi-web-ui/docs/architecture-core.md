@@ -1,6 +1,20 @@
 # 核心架构
 
+<!-- 🍞 AI Breadcrumb — @COUPLED conversation-lifecycle.md, ../server/conversation-maintenance.ts -->
+
 > 改代码前必读。本文档覆盖快照驱动、协议单源、安全边界、主题切换、多对话并发等全局架构决策。
+
+## PI-dev 下游性能与初始化约定
+
+- `main.tsx` 在登录门内动态加载App；React chunk不能反向依赖Markdown，代码高亮样式随Markdown载入。
+- App按 `app/` 下的布局、附件、视图、对话框与副作用分工。终端/SCM/视图插件首次访问再加载，之后隐藏保留状态；插件移除、禁用及epoch变化须清理旧视图并拒绝过期import结果。
+- `MessageList` 由 `lazy-row-window.ts` 和 `message-list/useRowWindow.ts` 选择有界可见行，折叠摘要也参与窗口化。离屏区使用聚合spacer，不保留每条消息DOM；搜索和问题导航先通过消息id请求挂载，再定位真实DOM。
+- 全文搜索从消息数据建索引，命中高亮只处理已挂载行。打开搜索不会全量展开历史。`QuestionNavigation` 对刻度采样、列表虚拟化，全部问题仍可通过键盘和滚动到达。
+- 消息高度按对象身份、折叠态和布局条件缓存，编辑/搜索布局变化会使旧测量失效；滚动期间最多额外保留一个正在编辑的行。
+- 流式Markdown每100ms采样最新文本，采样发生在分段与解析之前；冻结段memo、未闭合代码块纯文本显示、结束后完整Markdown渲染保持一致。
+- pi引擎首次连接使用 `InitialSnapshotGate`：插件初始化完成后发首个全量快照，挂起时5秒兜底；初始get_state合并，初始化之后的rev/seq缺口get_state继续强制全量。该门只影响新socket，既有标签页继续收到更新。
+- 历史缓存捕获请求cwd，合并进行中的扫描；失效或切项目后不向当前面板发布旧结果。全文搜索锚点通过异步流读取、最多4份文件并发，保留原排序与结果上限。
+- 回归入口：根 `npm run test:performance`；应用 `tests/message-list-window-test.mjs` 检查滚动、编辑、搜索和流式交互；`tests/unit/initial-snapshot.test.ts`、`session-history-cache.test.ts`、`session-search.test.ts` 检查后端路径。
 
 ## 快照驱动
 
@@ -50,7 +64,7 @@
 - **浅色主题**：`themes/white.css`（显示名「白色」：纯白底 + GitHub 蓝强调）与 `themes/md-preview.css`（显示名「紫晕」）+ `themes/cyberpunk.css`（赛博朋克）+ `themes/dazzle.css`（炫彩）均由根目录脚本 `make-light-theme.mjs` 从 `styles.css` 的 `:root` 变量清单生成**纯调色板文件**（生成器读 styles.css 解析全部变量名，主题只覆盖差异值，输出完整 `:root` + 可选非布局 tail：white 带 `.hljs` 浅色高亮覆盖、md-preview 带 body 渐变 + chrome 透明）。styles.css 新增变量后重跑 `node make-light-theme.mjs` 即自动同步进所有内置主题（新变量默认用深色值）。
 - **主题显示名**：css 首行 `/* theme-name: 中文名 */` 即为下拉里的显示名（`listThemes` 读文件头 300 字节解析），缺省回退文件 id——文件名必须是 ASCII（id 校验 `ID_RE`），中文靠这个标记。第二行可选 `/* theme-name-en: English Name */`（英文 UI 用，无则回退中文名）；两行都由 `make-light-theme.mjs` 生成，手改主题文件头会被下次重跑覆盖——改英文名要改生成器。
 - **面板收起/展开按钮对照色（issue #100）**：`.panel-collapse-btn` resting 态即带底色 + 边框（与窄屏顶栏 `.panel-toggle` 同级），前景/底/边框走专用 `--control-fg/--control-bg/--control-border`（默认取正文次级色而非 `--text-faint`），展开条 `.panel-rail` 加宽到 26px、图标套「药丸」底——在浅色/自定义主题下也不再隐形。主题可独立覆盖这三个变量；浅色默认值在生成器的 `LIGHT_DERIVED` 里。
-- **聊天背景图/壁纸（issue #100）**：`--bg-image: none`（主题可写成 `url(...)` 自带一张）+ `--bg-image-dim`（`--bg` 压暗不透明度，默认 0.78）+ `--bg-image-blur`。`body.has-wallpaper` 时 `.messages-wrap::before` 放图（cover 居中 + 模糊）/`::after` 压暗，`.messages` 提 z-index 1 从卡片间隙透出；无壁纸时两层 `display:none`。用户自定义地址存浏览器 localStorage（`pi-web-ui:wallpaper`，`web/src/wallpaper.ts`：URL 白名单 http(s)/blob/data:image/站内相对路径，内联变量覆盖主题，`useWallpaperEffect` 在 App 顶层应用并监听主题切换重算）， UI 在设置 → 消息显示（地址框失焦/回车提交，压暗/模糊滑杆即时预览；也可点「上传图片」选本地文件——复用粘贴图片管线等比缩 ≤1568px + 重编码为 data: URL 存 localStorage，上传失败/过大时行内提示；data: 图不回填输入框，下方缩略图即表示生效中，清除按钮同时清掉地址与预览）。
+- **聊天背景图/壁纸（issue #100）**：`--bg-image: none`（主题可写成 `url(...)` 自带一张）+ `--bg-image-dim`（`--bg` 压暗不透明度，默认 0.78）+ `--bg-image-blur`。`body.has-wallpaper` 时 body 全屏铺两层 fixed 壁纸：`body::before` 放图（cover 居中 + 模糊）/`body::after` 压暗；`.app` 抬 z-index 1 到壁纸之上，消息区/输入区透明直接见壁纸。**容器背景优先**：顶栏/底栏/左右面板背景是独立变量 `--topbar-bg`/`--statusbar-bg`/`--panel-bg`（默认 `color-mix` 半透明 → 壁纸从两侧与顶/底栏下透出），主题把某变量覆盖回实色（如 `var(--bg-elev)`）即关闭该区壁纸、设 `transparent` 即完全透图；统一透图率调 `--wallpaper-panel-alpha`（默认 62%，越小透图越多）。同层还有两类组件底板：卡片级 `--card-bg`（工具调用卡 `.toolcall`、快捷短语 `.quick-chip`、新对话提示词模板卡 `.empty-template`、展开条 `.panel-rail`、全部消息气泡 `.thinking`/`.bashblock`/`.skillcard`/`.attachcard`/`.queued-bubble`/`.retry-notice`）与控件级 `--chip-bg`（顶栏 `.chip`/`.view-switch`/下拉菜单 `.dd-menu`、折叠钮 `.panel-collapse-btn`、代码面 `.codeblock pre`/`.termline`/`.toolcall-output pre`、工具参数块 `.toolcall-args pre`），默认同样半透明、共用 `--wallpaper-panel-alpha`，主题可单独覆盖回实色；中间的聊天/消息区用 `--msgs-bg`（同式半透明，气泡立在统一玻璃面上略实一层形成层次，覆盖回 `transparent` 恢复全透）；无壁纸时两层 `display:none`，且背景变量默认半透明叠在纯色上色差极小。输入框盒子 `--inputbox-bg` 默认与 `--chip-bg` 同式跟随 `--wallpaper-panel-alpha`。下拉弹窗（声音/语言/主题/模型/思考强度等 `.dd-menu`）背景走 `--menu-bg`：默认跟随 `--chip-bg` 半透，两个透明主题覆盖回 `var(--bg-elev2)` 实色保密集列表可读。终端视图读 `--term-bg`（xterm canvas + 容器）：默认实色不参与（终端可读性优先），半透明主题可覆盖成 `color-mix` 半透明随整体透图。内置「半透明」主题（`themes/translucent.css`）专配壁纸：`--wallpaper-panel-alpha: 45%` 整体统一容器色（顶栏/底栏/面板/卡片/控件/输入框全部联动）+ `--term-bg: color-mix(#0b0d12 45%, transparent)` 终端也透 + `--bg-image-dim: 0.72`，不配壁纸时观感偏暗属预期。「全透明」主题（`themes/transparent.css`）是极致版：`--wallpaper-panel-alpha: 0%`（全部 color-mix 表面 = transparent，含 `--term-bg`），只留边框与文字；文字靠压暗加重（`--bg-image-dim: 0.85`），尾段把实色 hover/浮动反馈（菜单项、折叠摘要、展开条、折叠键、复制键、滚到底按钮）统一改 25% 半透底保可用性。用户自定义地址存浏览器 localStorage（`pi-web-ui:wallpaper`，`web/src/wallpaper.ts`：URL 白名单 http(s)/blob/data:image/站内相对路径，内联变量覆盖主题，`useWallpaperEffect` 在 App 顶层应用并监听主题切换重算）， UI 在设置 → 消息显示（地址框失焦/回车提交，压暗/模糊滑杆即时预览；也可点「上传图片」选本地文件——复用粘贴图片管线等比缩 ≤1568px + 重编码为 data: URL 存 localStorage，上传失败/过大时行内提示；data: 图不回填输入框，下方缩略图即表示生效中，清除按钮同时清掉地址与预览）。
 - **终端跟随主题**：xterm 画布经 `web/src/theme.ts` 的 `buildTermTheme()` 读 `--term-*` 变量，主题切换时 `TermXterm.tsx` 监听 `pi-web-ui:theme-change` 事件用 `term.options.theme` 热更新画布；CSS 容器 `.term-main` / `.term-xterm .xterm-viewport` 用 `var(--term-bg)`，与画布自动融合。styles.css 改动后重跑 `node make-light-theme.mjs` 重新生成。
 - **回归**：`theme-test.mjs`（端口 8937，隔离 data-dir）：列表/内置/用户主题、注入 link、浅色生效、刷新持久、用户主题可应用、回默认移除 link。
 
@@ -62,7 +76,7 @@
   - 入列：活动对话**正在流式输出时**被挤到后台（new_chat / switch_conversation / set_cwd，**跨项目切换同样入列**）→ `listed=true`；
   - 留在列表：后台跑完不移出（用户可能还没看结果）；**还有存活 PTY 的对话也留在列表**（终端里可能有仍在跑的任务），但**已退出、仅保留输出的终端不阻止移出**——AI 结束且终端全部跑完后切走，`removeConversation` 顺带 `killAll()` 关闭残留终端并从列表消失（`openTerminals` 传 `terminals.countLive()`，只统计存活 PTY）；
   - 移出：打开它（切为活动）→ 没有继续对话（期间没发过 prompt）→ 切走时 `displaceActive()` 返回它，`removeConversation` 释放 runtime（会话已持久化，历史列表仍可恢复）。
-- 上限 `MAX_OPEN_CONVERSATIONS = 8` **按项目计**，超出时 new_chat 发 warning notice。
+- 普通会话采用空闲缓存目标，用户新建/打开历史不受8个已打开对话的硬限制。子代理结束后自动归档并释放运行时，结果读取与继续按runId恢复；清理条件、并发边界和测试见 [conversation-lifecycle.md](conversation-lifecycle.md)。
 - 所有对话共享**一个 ModelRuntime**（首个对话创建时播种，`makeRuntimeFactory` 传入复用）——顶栏换模型对全部对话生效。**消息序列化缓存（msgIds/uiMessageCache/签名）按对话隔离**：两个对话可能产生相同的 (role, timestamp) 键，共享会串号。
 - **项目切换记住 {模型, key}**：`client-state` 持久化 `projectModels`（cwd→"provider/id"）与 `projectProviderKeys`（cwd→provider→keyName）。**选模型即刻保存**（`setModel` → `rememberProjectModel`，不等一次问答——SDK 只有存在 assistant 消息后才把 `model_change` 落盘，否则新对话选完模型就切走会丢）；**切换项目/会话时恢复**（`restoreProjectModelForCwd` + `restoreProjectProviderKeysForCwd` 于 set_cwd / switch_conversation / switch_session / ClientSession.create），新对话也会套上该项目上次的 {模型, key}。模型/密钥被删时恢复静默跳过。
 - `snapshot` 带 `conversationId`；`conversations`（ServerMessage）推**全部项目已入列的对话**（前端按 `cwd` 分组显示，当前项目不显示组标题）+ `activeId`（activeId 可能未入列，如刚 new_chat 还没跑过）；`switch_conversation`（ClientMessage）**可跨项目切换**——切到其他项目的对话时同步切换工作区，补齐 `set_cwd` 的副作用（文件树/会话历史/项目顺序/命令目录/onCwdChanged 钩子）。

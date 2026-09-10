@@ -1,96 +1,79 @@
-# 实施与运维方案
+# 安装与运维
 
-## 1. 边界与基线
+<!-- 🍞 AI Breadcrumb — @COUPLED PM2-PRODUCTION.md, PM2-SHADOW.md, STRUCTURE.md -->
 
-本次交付为公开仓库 `fightcool/PI-dev`，不是法羽源码迁移。现有私有业务 checkout、未提交修改、数据库、PM2 生产服务及反向代理均不修改。
+当前基线是Linux非root用户、4 vCPU / 8 GiB服务器。正式进程管理使用 [PM2-PRODUCTION.md](PM2-PRODUCTION.md)，下文systemd UI命令保留为迁移前及恢复兼容入口。程序源码集中在仓库，配置与会话按实例保存，见 [STRUCTURE.md](STRUCTURE.md)。早期4 GiB迁移记录已归档到 [history/ENVIRONMENT-VALIDATION.md](history/ENVIRONMENT-VALIDATION.md)。
 
-初始检查：旧 pi-web-ui 使用 `/root`、8787 端口和 `~/.pi-web`；内存约 3.82 GiB、Swap 2 GiB，已经使用约 651 MiB Swap。Swap 占用不等于当前持续内存抖动，是否抖动要看 `vmstat` 的 si/so 和 PSI。当前系统 Python 是 3.11，已有法羽虚拟环境也是 3.11。旧业务主 checkout 明显落后远端，因此不能作为本次环境交付的默认基线。
+## 安装
 
-所有优化在新 checkout 和新用户服务中完成。旧实例承载当前对话，保留运行，直到用户确认切换。两实例并行只用于过渡，会增加基础内存占用，不是最终节省内存的状态。
-
-## 2. 执行顺序
-
-1. Clone `PI-dev`，确定新实例 `WorkingDirectory` 与 `PI_WEB_CWD` 都指向该 checkout。将运行数据移出 checkout，不复制旧会话。这样文件树、搜索、上下文加载的默认范围落在项目内。用户仍可主动切换 cwd，因此这不是权限限制。
-2. 用带 SHA256 校验的 uv 下载 Python 3.10.20；创建项目 `.venv`；依据 `uv.lock` 安装开发工具；不使用生产 venv，不修改 `/usr/bin/python3`。
-3. 锁定 Pi、Web UI 和扩展版本，生成 `package-lock.json`；运行 `npm ci`；验证实际包版本、发布包中的前端资源、node-pty。Python 和 Node 依赖均可从锁文件重建。
-4. 生成独立 `pi-web-ui-dev.service`，使用 8788、独立 Web/Pi 数据目录和随机 token。默认 loopback、目录 0700、配置 0600、UMask 0077；通过 systemd-analyze 校验后启用。不修改旧服务、反代、防火墙或公网监听。
-5. 在云控制台扩容至至少 8 GiB，建议保留现有 CPU 或按负载选择 4 vCPU / 8 GiB。扩容、扣费、停机和重启由用户确认执行；仓库脚本不能增加真实物理内存。
-6. 完成下述验收和公开发布检查，提交锁文件、脚本、测试、模板与文档，推送 GitHub；提供实际 commit 与测试结果。
-
-## 3. 资源控制
-
-systemd 用户服务默认设置 `MemoryHigh=1536M`、`MemoryMax=2G`、`TasksMax=256`，Node V8 old-space 上限 1024 MiB。它们限制服务及其子进程，不是整个服务器。MemoryHigh 会触发回收压力，MemoryMax 可能导致服务被 OOM kill；这些是保护措施，不是性能承诺。原生分配、缓冲区和语言服务器不受 V8 old-space 单独约束。
-
-4 GiB 过渡期使用 lean，限制手工并发，不在 Web 会话里执行重量级全仓扫描。8 GiB 后可按实际工作负载调整模板再安装：例如 MemoryHigh 3G、MemoryMax 4G、V8 old-space 2048 MiB，但必须给生产服务和系统预留余量。需要超过限制的构建不应直接提高整机并发，应观察服务 cgroup 内存后再调优。
-
-默认不对业务数据库、Redis 或 PM2 设置新限制，不调 sysctl，不扩大 Swap 掩盖内存不足。最终停止不再使用的旧 Web 实例才会回收重复实例开销。
-
-## 4. 8 GiB 扩容步骤与验收
-
-扩容前记录实例规格、磁盘、IP、网络规则和当前服务状态；通过云平台创建磁盘快照，另行备份数据库和私有 Pi 状态。备份不得进入本公开仓库。确认业务维护窗口和自动恢复方案，再从云控制台选择内存至少 8 GiB 的实例规格。若平台要求关机，使用平台的规范流程，不在当前 AI 对话里自行重启服务器。
-
-扩容后执行：
+前置：Linux x86_64、Bash、Git、curl、tar、xz、sha256sum、CA证书。node-pty无预编译包时需要Python3、make、C++编译器。bootstrap不自动安装系统软件，不修改全局Git、shell或代理配置。
 
 ```bash
-free -h
-vmstat 1 10
-cat /proc/pressure/memory
-node scripts/doctor.mjs --require-8g
-systemctl --user status pi-web-ui-dev.service --no-pager
-npm run smoke
-```
-
-8 GiB 规格的 guest `MemTotal` 会扣除保留内存，doctor 用 7.5 GiB 作为操作系统可见容量下限；云控制台规格必须仍为至少 8 GiB。验收正常使用 15 至 30 分钟，没有持续 swap-in/out、OOM 或重复重启，WebSocket 稳定；对比同样项目、同样对话和测试工作负载，不用空闲瞬时读数宣称性能提升。
-
-## 5. 安全接入与切换
-
-先用 SSH 隧道测试新实例，再配置模型授权，发送简短提示并运行一个项目内只读命令，确认模型和工具调用。不得自动复制 `~/.pi/agent`，其中可能包含 OAuth、模型密钥、MCP token、系统提示和私有路径。
-
-如需域名接入，单独安排 TLS 反代变更：目标上游 127.0.0.1:8788，完整转发 Host（`$http_host`），正确升级 `/ws`，保持前端资源与 API 同源，并保留 token 鉴权或可靠的外层身份验证。当前仓库不替用户改 nginx、不生成证书、不开放端口。
-
-确认新入口工作、旧对话停止后，可由操作者排空并停用旧服务 `pi-web-ui.service`。新旧服务不能共用 Web 数据目录；历史记录迁移是独立事项，必须停写后备份并核对格式。本轮不迁移历史、不停旧实例。
-
-用户服务开机自启需要 user manager 常驻；检查 `loginctl show-user "$USER" -p Linger`。若为 no，由管理员明确执行 `loginctl enable-linger "$USER"`。安装脚本只 enable 用户服务，不暗改系统级 linger 设置。
-
-同一 Unix 用户的 Pi 仍能访问该用户其他文件。推荐新服务器使用专用非 root 用户；本机保留当前 root 执行身份以避免擅自迁移授权。NoNewPrivileges 不会把 root 变为普通用户，Pi 是高权限远程命令执行界面，不可裸露公网。
-
-## 6.1 PM2 release 演练（隔离端口）
-
-release 工具只允许 shadow 端口（默认 8790），每次 `release` 或 `current` 切换后都会 reload PM2 并运行 smoke；健康检查失败时命令失败，操作者应立即执行 `rollback`。rollback 按 release 目录的修改时间选择最近的上一版本。
-
-```bash
-PI_DEV_DEPLOY_ROOT=/srv/pi-dev PM2_HOME=/srv/pi-dev/pm2 node scripts/release.mjs release <reviewed-id>
-PI_DEV_DEPLOY_ROOT=/srv/pi-dev PM2_HOME=/srv/pi-dev/pm2 node scripts/release.mjs rollback
-PI_DEV_DEPLOY_ROOT=/srv/pi-dev PM2_HOME=/srv/pi-dev/pm2 node scripts/release.mjs resurrect
-```
-
-演练前后确认 `curl http://127.0.0.1:8790/api/health`、认证 API、未认证 WebSocket 拒绝和带 token WebSocket 握手；公网验收只针对已配置的公开入口执行，禁止把 shadow 端口切入生产反代。
-
-
-修改本项目配置前备份 `~/.config/pi-dev`、`~/.local/share/pi-dev` 和当前用户 unit，私有备份使用访问控制或加密存储。备份时排空会话并停止新服务，以保持 JSON/会话一致性。备份、恢复和删除私有数据不由脚本自动执行。
-
-更新默认流程：确认新实例空闲，停止新实例，切到已审核的提交，重新运行 bootstrap 和测试，启动新实例，再跑 smoke。bootstrap 在新服务仍活跃时拒绝覆盖 node_modules；它不会停止旧实例。
-
-```bash
-node scripts/service.mjs stop
 bash scripts/bootstrap.sh
 npm test
-node scripts/service.mjs install
-npm run smoke
+npm run typecheck
+npm run test:unit
+.venv/bin/python -m pytest tests/test_environment.py -q
+npm run check:publish
 ```
 
-明确升级依赖时，修改版本清单后执行 `bash scripts/bootstrap.sh --update-lock`，审查两份锁文件差异，再正常 bootstrap 和验收。不要在 Web UI 中自更新破坏仓库锁定版本，也不要全局运行 `npm update`。固定版本不等于永远安全，至少定期运行 `npm audit` 并审核 Node 安全版本，升级通过专门提交完成。
+工具链保存在 `.tools/` 与 `.venv/`，依赖依据两份npm锁文件及uv.lock重建。不要复制主机node_modules或虚拟环境作为发布制品。`npm run setup:dependencies` 拒绝改动当前在线服务的依赖和指向其他checkout的共享链接。
 
-本次安装失败或需要撤回时，只停用新实例：
+## 配置与开发实例
+
+默认配置目录 `~/.config/pi-dev`，Web数据与Agent状态在 `~/.local/share/pi-dev/`。可显式设置 `PI_DEV_CONFIG_DIR`、`PI_DEV_STATE_DIR`、`PI_DEV_PORT`、`PI_DEV_CWD`，或使用configure的 `--workspace`、`--state-dir`、`--data-dir`、`--agent-dir`、`--port`、`--profile` 参数。所有实例使用不同的状态目录；8787和原型预留8791不可分配给UI。
+
+`runtime.root`描述可执行代码来源，`workspaceDir`描述智能体工作区。加载配置时使用当前脚本所在的实际代码根，保留workspace和私有状态；旧配置没有workspaceDir时沿用旧root作为工作区。受管理的扩展包路径随代码目录迁移，用户显式添加的包设置保留。
+
+`npm run dev`自动使用checkout内 `.dev/config`、`.dev/state`、8890后端和5173前端。它不会导入线上模型授权。私有配置由操作人在本地管理；测试自行生成夹具，禁止把实际访问口令或会话内容写入日志。
+
+## 旧 UI systemd 兼容维护
 
 ```bash
+node scripts/service.mjs status
+node scripts/service.mjs stop
+node scripts/service.mjs install
+node scripts/service.mjs start
+node scripts/service.mjs restart
 node scripts/service.mjs disable
 ```
 
-旧 8787 实例仍可使用，私有目录不删除。恢复某个版本时，先保全未提交改动，然后使用受审查的旧 commit 建立 checkout；在私有 runtime.json 中明确调整 root/node，重新安装该 checkout 依赖和服务。不要使用 `git reset --hard` 丢弃工作，不把旧 lockfile 与新 node_modules 混用。若目录移动，校验会故意失败，避免静默启动旧路径。
+这些是实际服务操作，执行前应确认活动任务、维护窗口和所安装版本。install在服务非活动、端口空闲、模板验证成功后才替换用户unit。运行目录和代码根可以分开；不要在在线checkout中替换依赖或构建产物。
 
-## 7. 发布门禁
+原有每10秒执行 `is-active || start` 的watchdog被原生systemd恢复策略替代：异常或正常退出会延时重启，操作人执行stop后保持停止。迁移入口会识别已安装的旧timer/service，先停止/禁用watchdog，再完成维护操作；不会因仓库删除旧模板而忽略主机上已安装的unit。新安装不再部署watchdog。
 
-只提交本仓库的可重建文件。检查 `git diff --cached`、`npm run check:publish`、`git diff --check`；不要上传 .venv、node_modules、auth.json、models.json、mcp.json、会话、截图中的 token、日志、真实环境配置、数据库、SSH 资料和其他项目源码。脚本的密钥扫描是辅助门禁，不替代人工检查。
+开机启动需要user manager常驻，操作人可用 `loginctl show-user "$USER" -p Linger` 检查。系统级linger、nginx、证书与防火墙调整由有相应权限的操作者完成。
 
-本机验证与 GitHub CI 分别记录，未跑完的 CI 不写成通过。8 GiB 扩容、模型授权、域名切换都必须按真实状态登记，不能因为文件已推送就宣布服务器所有工作完成。
+## 资源规划
+
+服务限制涵盖Node及其子进程；构建、终端、语言服务器也可能计入cgroup。V8 old-space只限制JS堆，不包含全部RSS或子进程。不要用增加内存代替前端性能优化。
+
+以下默认值仅适用于旧 `pi-web-ui-dev.service` 兼容入口：MemoryHigh1536M、MemoryMax2G、Node old-space1024MiB。当前正式PM2资源基线见 [PM2-PRODUCTION.md](PM2-PRODUCTION.md)，不能混用两者的默认值和停止行为。安装时可通过 `PI_DEV_HEAP_MB`、`PI_DEV_MEMORY_HIGH`、`PI_DEV_MEMORY_MAX` 明确覆盖；校验要求 heap < MemoryHigh ≤ MemoryMax。在8GiB机器上，可以按实测工作负载选择 `PI_DEV_HEAP_MB=2048 PI_DEV_MEMORY_HIGH=3G PI_DEV_MEMORY_MAX=4G`，但需预留系统和其他应用空间。重新安装unit后才生效，修改这些变量不会阻止stop/disable等维护操作。验收包括 `vmstat`、cgroup memory.events/PSI、任务并发和持续15–30分钟的交互，不能用瞬时空闲数证明容量充足。
+
+## 发布与回滚
+
+开发checkout和在线版本分离。根 `npm run build` 生成应用及 `dist/build-info.json`，包含提交、应用版本、协议版本和构建时间。启动只接受vendor构建产物，缺失时明确失败，不回退npm版UI。
+
+PM2候选部署使用经过指定的提交归档、独立shared配置与状态、单实例fork、原子current切换及失败恢复，详见 [PM2-SHADOW.md](PM2-SHADOW.md)。它保留8790候选边界，不自动替换8788在线实例。需要长期在线迁移时，先在候选端口验证，再排空任务并由操作者切换；进程重启不能保证生成中会话或PTY零中断。
+
+不要原地执行 `npm update` 或让应用自更新绕过锁文件。依赖升级更新两个实际受影响的清单/锁文件，并重新执行类型、构建、单元、协议和性能验证。
+
+## Docker
+
+根Dockerfile以仓库为上下文，复用锁定依赖安装与根build；复制应用、包内共享模块、主题、插件及所需启动脚本。compose仅将端口绑定到宿主机127.0.0.1，并显式持久化 `/config`、`/data/web`、`/data/agent`、`/workspace`。运行用户为node，bind mount业务工作区时需确保其UID/GID有权限。
+
+容器服务配置保留loopback约束，只有容器入口在验证后将容器内监听设为0.0.0.0。Passkey的RP ID与origin通过部署环境明确设置。容器中的Debian Python用于工具链；宿主机uv虚拟环境不被复制，项目专用Python版本需由工作区镜像补齐。
+
+```bash
+docker compose config
+docker compose build
+docker compose up -d
+```
+
+构建与启动是部署动作；目标机器需有Docker。本轮验收记录会明确实际是否执行容器构建，不能用文件存在声称镜像运行通过。
+
+## 备份与公开交付
+
+升级应用版本不能覆盖shared私有数据。备份模型配置、会话、上传及服务unit前，先确认一致性需求和写入状态；恢复使用单独维护流程。旧release的保留/清理需要显式选择，不批量删除用户数据。
+
+公开交付只包含源码、锁文件、模板、示例和测试。`npm run check:publish`辅助检查秘密及运行路径；提交前仍需逐项审查文件范围。运行数据、构建产物、依赖、日志、密钥、实际模型配置和其他业务源码不得进入提交。

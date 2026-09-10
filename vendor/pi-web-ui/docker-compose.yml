@@ -8,6 +8,8 @@ services:
       - "8787:8787"
     environment:
       PI_WEB_PORT: "8787"
+      PI_WEB_DATA_DIR: /app/.pi-web
+      PI_CODING_AGENT_DIR: /app/.pi-agent
       # The container must bind ALL interfaces so the -p port mapping works —
       # the server defaults to loopback-only for security.
       PI_WEB_HOST: "0.0.0.0"
@@ -30,7 +32,9 @@ services:
     volumes:
       # Persist per-client chat sessions across container restarts.
       - pi-web-data:/app/.pi-web
+      - pi-agent-data:/app/.pi-agent
     restart: unless-stopped
 
 volumes:
   pi-web-data:
+  pi-agent-data:

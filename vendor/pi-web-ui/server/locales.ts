@@ -15,11 +15,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-	extractServerStrings,
-	registerServerStrings,
-	unregisterServerStrings,
-} from "./i18n.js";
+import { extractServerStrings, registerServerStrings, unregisterServerStrings } from "./i18n.js";
 
 export interface LocalePackMeta {
 	code: string;

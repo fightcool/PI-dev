@@ -254,6 +254,8 @@ export const zh = {
 	referenceTip: "仅引用路径（AI 按需读取）",
 	previewFile: "预览",
 	downloadFile: "下载文件",
+	copyName: "复制名称",
+	copyPath: "复制路径",
 	downloadFailed: "下载失败：{error}",
 	fileNotFoundShort: "文件不存在",
 	pluginMountFailed: "插件 {name} 挂载失败",
@@ -388,6 +390,11 @@ export const zh = {
 	waitingResponse: "正在等待模型响应…",
 	retryingApi: "大模型 API 出错，正在自动重试（{attempt}/{max}）：{error}",
 	retryingApiSoon: "大模型 API 出错，正在自动重试：{error}",
+	modelRetryAttempts: "模型报错自动重试次数",
+	modelRetryHint:
+		"大模型 API 调用出错时自动重试的次数。次数用完后本轮停止并标红，可点「重试」手动再试；设为 0 则失败即停。修改即时生效，无需重载。",
+	retryNow: "重试",
+	retryLastTip: "手动重试上次失败的模型请求",
 	compactingContext: "正在压缩上下文，摘要生成中…",
 	compactingReasonManual: "手动触发",
 	compactingReasonThreshold: "上下文达到阈值，自动触发",
@@ -827,6 +834,8 @@ export const zh = {
 		"发给模型的 function-calling 工具定义（name / description / parameters），与系统提示词正文拼成完整初始上下文，只读。",
 	settingsViewToolsSchemaEmpty: "会话尚未就绪，暂无工具 schema。",
 	settingsSkills: "技能",
+	settingsSkillCountLegend: "已启用 / 已安装",
+	settingsSkillDisabledHint: "关闭的技能保留在列表中，但不加入后续模型请求的技能目录；需要时可在这里开启。",
 	settingsReview: "目标审查",
 	settingsReviewDesc: "为独立的目标审查会话配置额外提示词和技能；不会改变主会话设置。",
 	settingsReviewSkills: "审查可用技能",
@@ -871,7 +880,7 @@ export const zh = {
 	questionnaireEnabledDesc:
 		"开启默认值：模型可用 ask_user_question 弹出可回复的问卷/提问对话框（含选项、多选、自定义输入）。关闭后模型将不再弹出问卷，调用也会直接返回已禁用。",
 	questionnaireOffHint: "已关闭：模型不能再向你弹出问卷/提问对话框",
-	settingsMessageDisplay: "消息显示",
+	settingsMessageDisplay: "对话",
 	thinkingWrap: "完整显示思考",
 	thinkingWrapDesc:
 		"开启：思考内容始终完整展开并自动换行（流式推理过程也实时可见）；关闭：折叠成一行摘要，流式中一行实时显示最新文本",
@@ -992,7 +1001,8 @@ export const zh = {
 
 	/* 聊天背景图（壁纸，issue #100） */
 	wallpaperTitle: "聊天背景图",
-	wallpaperDesc: "给消息列表加一张背景图：主题自带的图会自动生效，在此填地址则优先用你的；用压暗与模糊保证文字清晰。",
+	wallpaperDesc:
+		"给整个窗口加一张背景图（左右面板、顶栏、底栏也会透出）：主题自带的图会自动生效，在此填地址则优先用你的；用压暗与模糊保证文字清晰。",
 	wallpaperUrlPh: "图片地址（https://…，留空关闭）",
 	wallpaperDim: "压暗",
 	wallpaperBlur: "模糊",
@@ -1252,6 +1262,8 @@ const en: Record<keyof typeof zh, string> = {
 	referenceTip: "Reference path only (AI reads on demand)",
 	previewFile: "Preview",
 	downloadFile: "Download file",
+	copyName: "Copy name",
+	copyPath: "Copy path",
 	downloadFailed: "Download failed: {error}",
 	fileNotFoundShort: "File not found",
 	pluginMountFailed: "Plugin {name} failed to mount",
@@ -1391,6 +1403,11 @@ const en: Record<keyof typeof zh, string> = {
 	waitingResponse: "Waiting for model response…",
 	retryingApi: "Model API error, auto-retrying ({attempt}/{max}): {error}",
 	retryingApiSoon: "Model API error, auto-retrying: {error}",
+	modelRetryAttempts: "Auto-retry attempts on model errors",
+	modelRetryHint:
+		"How many times a failed model API call is retried automatically. When the budget runs out the turn stops with a red error and you can retry manually; 0 stops at the first failure. Applies immediately, no reload needed.",
+	retryNow: "Retry",
+	retryLastTip: "Manually retry the last failed model request",
 	compactingContext: "Compacting context, generating summary…",
 	compactingReasonManual: "Triggered manually",
 	compactingReasonThreshold: "Auto-triggered by context threshold",
@@ -1835,6 +1852,8 @@ const en: Record<keyof typeof zh, string> = {
 		"The function-calling tool definitions sent to the model (name / description / parameters), combining with the system prompt text to form the full initial context. Read-only.",
 	settingsViewToolsSchemaEmpty: "Session not ready yet — no tools schema available.",
 	settingsSkills: "Skills",
+	settingsSkillCountLegend: "Enabled / Installed",
+	settingsSkillDisabledHint: "Disabled skills remain listed but are excluded from the skill catalog in subsequent model requests. Enable them here when needed.",
 	settingsReview: "Goal review",
 	settingsReviewDesc:
 		"Configure extra instructions and skills for the isolated goal-review session; the main session is unaffected.",
@@ -1883,7 +1902,7 @@ const en: Record<keyof typeof zh, string> = {
 	questionnaireEnabledDesc:
 		"On by default: the model may use ask_user_question to pop up an answerable question dialog (options, multi-select, custom input). Off: the model no longer pops up questionnaires; a call also returns disabled immediately.",
 	questionnaireOffHint: "Disabled: the model can no longer pop up question dialogs",
-	settingsMessageDisplay: "Message display",
+	settingsMessageDisplay: "Conversation",
 	thinkingWrap: "Show full thinking",
 	thinkingWrapDesc:
 		"On: thinking always expands fully and wraps (live reasoning visible while streaming); Off: collapses to a one-line summary with the latest text shown live while streaming",
@@ -2013,7 +2032,7 @@ const en: Record<keyof typeof zh, string> = {
 	/* Chat wallpaper (issue #100) */
 	wallpaperTitle: "Chat wallpaper",
 	wallpaperDesc:
-		"Show a background image behind the message list: a theme-provided image applies automatically, a URL here takes precedence; use dim and blur to keep text readable.",
+		"Show a full-window background image (side panels, top and bottom bars included): a theme-provided image applies automatically, a URL here takes precedence; use dim and blur to keep text readable.",
 	wallpaperUrlPh: "Image URL (https://…, empty = off)",
 	wallpaperDim: "Dim",
 	wallpaperBlur: "Blur",

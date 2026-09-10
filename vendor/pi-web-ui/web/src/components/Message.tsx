@@ -9,6 +9,7 @@ import {
 	FiCopy,
 	FiEdit3,
 	FiImage,
+	FiRefreshCw,
 	FiX,
 } from "react-icons/fi";
 import type {
@@ -113,6 +114,9 @@ interface MessageProps {
 	questionAttachments?: PromptAttachment[];
 	/** Kill the running bash command from its tool card (agent run continues). */
 	onKillBash?: () => void;
+	/** Manually retry the last failed model call (red error on the LAST message
+	 *  while idle). Wired to the server `retry_last` message. */
+	onRetry?: () => void;
 	/** When set, shows a collapse button (message was expanded from the collapsed view). */
 	onCollapse?: (messageId: string) => void;
 
@@ -141,6 +145,7 @@ export const Message = memo(function Message({
 	isLast,
 	onEdit,
 	onKillBash,
+	onRetry,
 	onCollapse,
 	questionAttachments,
 
@@ -434,7 +439,18 @@ export const Message = memo(function Message({
 					</div>
 				) : (
 					<>
-						{message.errorMessage && <div className="msg-error">{message.errorMessage}</div>}
+						{message.errorMessage && (
+							<div className="msg-error">
+								<span className="msg-error-text">{message.errorMessage}</span>
+								{/* 最后一轮报错且已停止：给一个手动重试入口
+									（自动重试次数用完，服务端 retry_last 续跑一轮） */}
+								{isLast && !streaming && onRetry && (
+									<button type="button" className="msg-retry-btn" title={t("retryLastTip")} onClick={onRetry}>
+										<FiRefreshCw /> {t("retryNow")}
+									</button>
+								)}
+							</div>
+						)}
 						{isFileAttachment ? (
 							<AttachmentCard message={message} forceOpen={searchActive} />
 						) : skillBlock ? (

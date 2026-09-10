@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { TokenUsageTracker, normalizeUsageEvent } from "../scripts/token-usage.mjs";
+import { TokenUsageTracker, normalizeUsageEvent } from "../vendor/pi-web-ui/lib/usage/token-usage.mjs";
 
 test("tracks current, single-run and cumulative usage", () => {
   const t = new TokenUsageTracker({ maxRequestTokens: 100 });

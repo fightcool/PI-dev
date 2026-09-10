@@ -1,0 +1,78 @@
+/* theme-name: 全透明 */
+/* theme-name-en: Transparent */
+/*
+ * 全透明主题——「半透明」的极致版（专配壁纸，issue #100）：
+ * 调色板与默认暗色一致，但把壁纸机制里所有表面变量的透图率压到 0
+ * （--wallpaper-panel-alpha: 0% → --topbar-bg / --statusbar-bg / --panel-bg /
+ * --card-bg / --chip-bg / --inputbox-bg / --msgs-bg 全部变成 transparent），
+ * 顶栏/底栏/左右面板/消息区/输入框/全部气泡/代码块/终端视图统统直接见壁纸，
+ * 界面只剩边框与文字定结构。代价是文字全靠 --bg-image-dim 压暗撑着——
+ * 这里压暗加重到 0.85（默认 0.78），亮区壁纸下文字仍可读。
+ *
+ * 全透后 hover/浮动反馈不能依赖容器色（已是 0%），本文件尾段把这些实色
+ * hover 统一改成 25% 半透底（折叠摘要、展开条、折叠键、复制键、滚到底按钮）；
+ * 强调色 hover（accent-soft）与语义按钮（发送/停止/杀进程）不受影响。
+ * 下拉弹窗（声音/语言/主题/模型/思考强度等 .dd-menu）保持实色
+ * （--menu-bg: var(--bg-elev2)），密集列表不随界面透图。
+ * 配壁纸用最佳；不配壁纸时界面直接透出 --bg 纯色（= 默认暗色，无差别）。
+ */
+:root {
+	color-scheme: dark;
+	--bg: #0d0e12;
+	--bg-elev: #14161c;
+	--bg-elev2: #1a1d26;
+	--border: #262a35;
+	--border-soft: #1e2230;
+	--text: #e6e8ef;
+	--text-dim: #9aa1b4;
+	--text-faint: #6b7284;
+	--accent: #8b5cf6;
+	--accent-soft: rgba(139, 92, 246, 0.14);
+	--green: #34d399;
+	--green-soft: rgba(52, 211, 153, 0.12);
+	--red: #f87171;
+	--red-soft: rgba(248, 113, 113, 0.12);
+	--amber: #fbbf24;
+	--term-bg: transparent;
+	--term-fg: #e6e8ef;
+	--term-cursor: #8b5cf6;
+	--term-cursor-accent: #0b0d12;
+	--term-selection: rgba(139, 92, 246, 0.35);
+	--term-black: #1a1d26;
+	--term-red: #f87171;
+	--term-green: #34d399;
+	--term-yellow: #fbbf24;
+	--term-blue: #60a5fa;
+	--term-magenta: #c084fc;
+	--term-cyan: #22d3ee;
+	--term-white: #e6e8ef;
+	--term-bright-black: #6b7284;
+	--term-bright-red: #f87171;
+	--term-bright-green: #34d399;
+	--term-bright-yellow: #fbbf24;
+	--term-bright-blue: #60a5fa;
+	--term-bright-magenta: #c084fc;
+	--term-bright-cyan: #22d3ee;
+	--term-bright-white: #ffffff;
+
+	/* ---- 全透明核心：0% 容器色 = 全部 color-mix 表面（三大区域 / 卡片 /
+	   控件 / 输入框 / 消息区）直接变 transparent；终端 --term-bg 上面已设
+	   transparent。想留一点点玻璃感就把这里提到 10~15%。---- */
+	--wallpaper-panel-alpha: 0%;
+	/* 下拉弹窗（声音/语言/主题/模型/思考强度）：实色底保密集列表可读 */
+	--menu-bg: var(--bg-elev2);
+	/* 压暗加重：全透后没有容器色兜底，文字只靠压暗保可读 */
+	--bg-image-dim: 0.85;
+}
+
+/* hover / 浮动静置反馈：0% 容器色下这些实色 hover 必消失，统一给 25% 半透
+   底（仍透图、可辨反馈）。强调色 hover（accent-soft）与语义按钮不受影响；
+   下拉弹窗已在实色菜单内，其 hover 保留 styles.css 默认实色。 */
+.msg-collapsed:hover,
+.panel-rail:hover,
+.chead-toggle:hover,
+.chead-copy:hover,
+.empty-templates-reset:hover,
+.scroll-bottom {
+	background: color-mix(in srgb, var(--bg-elev) 25%, transparent);
+}

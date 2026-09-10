@@ -1,85 +1,80 @@
 # PI-dev
 
-独立、可复现的 Pi 开发环境。目标平台为 Linux x86_64（本机 Debian 12），用于远程编码项目。
+<!-- 🍞 AI Breadcrumb — @COUPLED docs/DEV-CON-PROPOSAL.md, docs/STRUCTURE.md, docs/README.md -->
 
-## 环境方案
+可复现的个人远程 AI 开发环境，以 Pi 为核心，保留 pi-web-ui 现有 Pi/DSH 引擎架构。一个仓库管理工具链、定制工作台、验证和部署；私有配置与会话独立持久化。当前渠道功能的唯一开发范本是 [PI-dev 多渠道开发基准](docs/DEV-CON-PROPOSAL.md)，统一架构、范围、阶段与验收。功能实现仍暂停，`dev-con/` 暂保留为旧只读原型。
 
-| 项目 | 约定 |
-| --- | --- |
-| 工作目录 | 本仓库 checkout，不能是 `/root` |
-| Python | 3.10.20，项目 `.venv`，uv 0.12.10 管理 |
-| Node / npm | 22.19.0 / 10.9.3，保持部署基线并锁定版本 |
-| Pi / Web UI | 0.85.1 / 0.70.0 |
-| Web 前端 | 使用锁定的 `vendor/pi-web-ui` 源码构建制品；其运行依赖与 PI-dev 根依赖分别锁定，Pi SDK 统一为 0.85.1 |
-| 新实例 | `127.0.0.1:8788`，`pi-web-ui-dev.service` |
-| Web 数据 | `~/.local/share/pi-dev/web` |
-| Pi 配置及会话 | `~/.local/share/pi-dev/agent` |
-| 本机配置及访问口令 | `~/.config/pi-dev/`，不入库 |
-| 内存目标 | 云主机至少 8 GiB；当前 4 GiB 仅作低并发过渡 |
+## 从哪里开始
 
-完整环境指源清单、锁文件、脚本和可重建配置，不是上传 `.venv`、`node_modules` 或服务器镜像。
+- [唯一开发基准](docs/DEV-CON-PROPOSAL.md)：Pi多渠道配置、热切换、Token/费用、账户查询的需求、设计约束和验收。
+- [文档导航](docs/README.md)：区分开发基准、工程规范与历史材料。
+- [领域词汇](CONTEXT.md)：渠道、绑定、热切换、费用与余额的含义。
+- [DEV-CON历史材料](docs/history/dev-con/README.md)：前期评估、架构讨论和暂停原型，均非当前计划。
+- [目录结构与开发边界](docs/STRUCTURE.md)：各目录的归属、源码与运行数据的区别。
+- [安装与运维](docs/OPERATIONS.md)：配置、服务维护和升级。
+- [PM2 正式运行管理](docs/PM2-PRODUCTION.md)：统一进程、日志、开机恢复与版本切换。
+- [PM2 候选发布与回滚](docs/PM2-SHADOW.md)：隔离候选端口与验证。
+- [既有性能与验收记录](docs/FOUNDATION-VALIDATION.md)：指定基线的修改和测量，不代表本期完成状态。
+- [历史环境验收](docs/history/ENVIRONMENT-VALIDATION.md)：早期环境迁移记录，不代表当前部署状态。
 
-## 安装
+## 环境基线
 
-前置条件：Linux x86_64、Bash、Git、curl、tar、xz、sha256sum、CA 证书；运行服务需 systemd 用户会话。下载需要访问 GitHub、nodejs.org、npm 和 PyPI。不自动安装系统包，不修改代理、全局 Git 或 shell 配置。若 node-pty 无可用预编译文件，需用户安装 Python 3、make、C++ 编译器。
+Linux x86_64，非 root 用户。Node 22.19.0 / npm 10.9.3，Python 3.10.20 / uv 0.12.10；Pi SDK 0.85.1、pi-web-ui 0.72.0。依赖分别由根与 vendor 锁文件管理；根不重复安装 npm 版 UI。当前服务器为4 vCPU / 8 GiB，配置容量与实际负载应分别验证。
+
+## 安装和开发
 
 ```bash
 git clone https://github.com/fightcool/PI-dev.git
 cd PI-dev
 bash scripts/bootstrap.sh
 npm test
-.venv/bin/python -m pytest tests/test_environment.py -q
-node scripts/service.mjs install
-npm run smoke
+npm run typecheck
+npm run test:unit
+npm run dev
 ```
 
-脚本下载校验后的 uv；Node 不匹配时下载官方发行包并校验 SHA256，放在 `.tools/`。Python 使用 `--no-bin`，不创建全局 Python 链接。依赖安装采用 `uv sync --locked` 和 `npm ci`，不会顺便升级锁文件。
+bootstrap 下载并校验项目内工具链，使用锁文件安装依赖、构建并生成本机配置。它不会安装系统软件或自动停止在线服务。已经准备好工具链时可用 `npm run setup:dependencies` 和 `npm run build`。
 
-若 Node 是脚本下载的，后续终端需临时执行 `export PATH="$PWD/.tools/node-v22.19.0-linux-x64/bin:$PATH"`；服务记录绝对 Node 路径，不依赖登录 shell。
-
-## 访问与模型授权
-
-默认只监听本机且启用随机访问口令。建议通过 SSH 隧道访问，不开放公网端口：
+`npm run dev` 使用当前 checkout 的 `.dev/config` 与 `.dev/state`，前端 `http://localhost:5173`，后端 `127.0.0.1:8890`；首次使用需要为这个开发实例单独配置授权。在线8788、候选8790与原型预留8791保持分开。远程开发可用SSH隧道转发5173。
 
 ```bash
-ssh -N -L 8788:127.0.0.1:8788 YOUR_SSH_HOST
+npm run build             # vendor应用及版本信息
+npm run typecheck         # 服务端、前端及测试类型
+npm test                  # 根工程/配置/服务/发布测试
+npm run test:unit         # 应用单元测试
+npm run test:smoke        # 自包含协议冒烟
+npm run test:performance  # Chromium，合成数据，无真实模型调用
+npm run check:publish
 ```
 
-在服务器上查看 `~/.config/pi-dev/token` 的内容，在自己的浏览器打开 `http://127.0.0.1:8788/?token=YOUR_TOKEN`。口令只保存在服务器私有目录，勿粘贴到 GitHub、截图或公开聊天。登录链接可能留在浏览器历史中；认证后可去掉查询参数，继续使用 HttpOnly cookie。
+浏览器测试使用已安装Chromium，找不到时设置 `CHROME_PATH`。测试结果写入忽略的 `.dev/performance/`。构建不会切换在线服务。
 
-新实例不读取旧实例凭证。进入新界面的模型配置，或运行 `node scripts/pi.mjs` 后 `/login`。自定义 provider 格式见 [配置示例](config/models.example.json)。实际配置写到 `~/.local/share/pi-dev/agent/models.json`，真实凭证通过界面或本地私有 auth 文件配置。模型授权完成后发送一个简短提示，才算模型端到端验收完成。
+## 实例配置与持久化
 
-`/api/health` 故意允许未认证访问，但不得返回访问口令；其他页面、API 和 WebSocket 必须认证。不要向不可信用户提供访问权：Pi 可以执行当前系统用户权限下的命令，工作目录隔离不是安全沙箱。
+| 位置 | 默认用途 |
+| --- | --- |
+| `~/.config/pi-dev/` | runtime配置、访问凭据 |
+| `~/.local/share/pi-dev/web/` | UI状态、上传、插件 |
+| `~/.local/share/pi-dev/agent/` | Pi配置、模型授权、会话、技能 |
+| `~/.config/systemd/user/` | 安装后的用户服务 |
 
-## 日常使用
+配置支持独立 workspace，程序版本可移动，数据不随release替换。模型配置示例见 [models.example.json](config/models.example.json)。真实凭据不入仓库、构建制品或日志。
+
+Web通过访问口令或已配置的Passkey登录；新浏览器可在页面选择访问口令登录。口令保存在该实例的私有配置目录，由操作人直接在服务器本地获取，不应粘贴到聊天、Issue或公开日志。模型授权完成后需要单独验证一次真实模型调用；健康接口通过不能替代模型可用性验收。
+
+## 运行和交付
 
 ```bash
-npm run doctor
-node scripts/service.mjs status
-journalctl --user -u pi-web-ui-dev.service -n 80 --no-pager
-node scripts/pi.mjs --version
-source .venv/bin/activate
+npm run pm2 -- status
+npm run pm2 -- restart
 ```
 
-默认 `lean` 仅加载 `pi-context-prune`，Web UI 本身提供对话及内置子代理工具。完整扩展依赖已经安装，但不会在空闲时全部加载：
+正式部署使用PM2单实例，由用户级systemd仅托管PM2开机恢复。应用代码位于独立 `deploy/releases/<commit>`，`current`指向在线版本；现有XDG私有数据持续复用。第一次由旧systemd迁移时，使用独立迁移任务等待对话排空、执行切换并自动回滚，见 [PM2正式运行管理](docs/PM2-PRODUCTION.md)。
 
-```bash
-node scripts/configure.mjs --profile=full
-node scripts/service.mjs restart
-```
+旧systemd入口仅用于兼容维护，不能与PM2同时启动。有状态会话和终端不支持直接切为多进程cluster。服务安装前应在独立版本目录完成构建和验证；开发checkout不要直接作为长期在线release。
 
-`full` 增加 pi-lens、pi-subagents、pi-mcp-adapter、pi-codex-conversion、pi-goal。MCP 外部服务和提供商凭证需要另行配置，不会导入旧配置。恢复低开销模式用 `--profile=lean` 后重启。4 GiB 期间建议一个活动对话、一个构建/测试任务，不并行跑全仓扫描。
+根 [Dockerfile](Dockerfile) 与 [compose.yaml](compose.yaml) 复用相同应用构建，显式持久化配置、Web数据、Agent数据和工作区。`docker compose up -d --build` 是创建/更新实例的部署动作，应在确认端口及数据目录后由操作者执行。容器的Python为Debian工具链，不承诺与宿主机uv虚拟环境相同；需要项目专用运行时的workspace应单独配置镜像。
 
-PI 0.85.1 与 pi-web-ui 0.70.0 的源码构建制品必须作为一组验证；不要让 UI npm 包重新解析旧版 Pi SDK。
+默认 `lean` 只加载pi-context-prune；`full` 增加已锁定扩展。切换profile用 `node scripts/configure.mjs --profile=full`，然后在维护窗口重启所管理的实例。Claude Code、Codex CLI 等外部原生 Agent 的配置与资源管理不在项目集成范围内。
 
-原环境中的 `statusline-pi@1.3.1` 要求 Pi `^0.75.4`，与当前 0.85.1 不兼容，本环境明确排除，不使用 `--legacy-peer-deps`。`qs` 显式覆盖为 6.16.0，以修复安装时审计发现的间接依赖漏洞。
-
-## 交付与运维
-
-- [完整实施、扩容和回滚方案](docs/OPERATIONS.md)
-- [本机验收记录](docs/VALIDATION.md)
-- [systemd 模板](deploy/pi-web-ui-dev.service.in)
-- `npm run check:publish` 检查受跟踪文件是否误含运行数据和常见密钥。
-- GitHub Actions 在干净 Linux runner 重建工具链、运行测试及服务冒烟检查。
-
-本仓库公开。真实配置、口令、模型凭证、SSH 私钥、MCP 凭证、会话、上传文件、数据库、日志和业务代码一律不提交。依赖安装会执行第三方生命周期脚本；生产使用前仍需审查供应链和版本安全更新。Python 3.10 临近 2026 年 10 月上游 EOL，本次按要求保留，后续应单独安排兼容性迁移。
+本仓库公开。Pi能执行运行用户权限下的命令，workspace选择不是安全沙箱；公开入口须有认证及正确的WebSocket反代。依赖安装执行第三方生命周期脚本，版本升级需要锁文件差异与回归验证。Python3.10的后续迁移应独立安排。

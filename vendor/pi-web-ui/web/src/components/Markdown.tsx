@@ -1,3 +1,4 @@
+import "highlight.js/styles/github-dark.css";
 import { memo, useSyncExternalStore, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import type { PluggableList } from "unified";

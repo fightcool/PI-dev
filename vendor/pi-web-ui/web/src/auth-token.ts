@@ -38,6 +38,15 @@ export function authToken(): string {
 	}
 }
 
+/** Store a token entered through the in-page login fallback. */
+export function setAuthToken(token: string): void {
+	try {
+		localStorage.setItem(KEY, token.trim());
+	} catch {
+		/* ignore unavailable storage */
+	}
+}
+
 /** 给相对路径 URL 追加 token 查询参数（已带 query 的用 & 连接）。 */
 export function withToken(url: string): string {
 	const t = authToken();

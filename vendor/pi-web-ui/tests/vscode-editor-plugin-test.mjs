@@ -323,6 +323,24 @@ try {
 		if (proc?.pid) process.kill(proc.pid, "SIGTERM");
 	} catch {}
 	await new Promise((r) => setTimeout(r, 500));
-	rmSync(dataDir, { recursive: true, force: true });
+	// 插件后台可能仍在 npm 补装 ssh2（server 被 SIGTERM 后 npm/node-gyp 沦为孤儿
+	// 进程继续写 plugins/vscode-editor/node_modules），此时直接 rmSync 会撞
+	// ENOTEMPTY 竞态（CI 34333925674）→ 带退避重试，等孤儿安装收尾。
+	let cleanErr;
+	for (let i = 0; i < 120; i++) {
+		try {
+			rmSync(dataDir, { recursive: true, force: true });
+			cleanErr = undefined;
+			break;
+		} catch (err) {
+			cleanErr = err;
+			if (err?.code === "ENOENT") break;
+			await new Promise((r) => setTimeout(r, 500));
+		}
+	}
+	if (cleanErr) {
+		fail(`临时目录清理失败: ${cleanErr.message}`);
+		console.error(cleanErr);
+	}
 }
 process.exit(process.exitCode ?? 0);

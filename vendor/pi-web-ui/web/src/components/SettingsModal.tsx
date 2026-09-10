@@ -38,7 +38,6 @@ import type {
 } from "../types";
 import {
 	clearPromptHistory,
-	DEFAULT_PROMPT_HISTORY_SETTINGS,
 	loadPromptHistory,
 	loadPromptHistorySettings,
 	savePromptHistorySettings,
@@ -340,15 +339,23 @@ export function SettingsModal({ chat, send, terminal, onSwitchToTerminal, onClos
 	useEffect(() => {
 		setIdleMsDraft(String(settings?.terminalBashIdleMs ?? 15000));
 	}, [settings?.terminalBashIdleMs]);
+	// 模型报错自动重试次数：本地草稿（失焦/回车提交，0 = 失败即停）。
+	const [retryDraft, setRetryDraft] = useState<string>(String(settings?.retryMaxAttempts ?? 6));
+	useEffect(() => {
+		setRetryDraft(String(settings?.retryMaxAttempts ?? 6));
+	}, [settings?.retryMaxAttempts]);
 
 	if (!settings) return null;
+
+	const skillCount = `${settings.skills.filter((s) => s.enabled).length}/${settings.skills.length}`;
+	const reviewSkillCount = `${settings.reviewSkills.filter((s) => s.enabled).length}/${settings.reviewSkills.length}`;
 
 	const tabs: {
 		id: SettingsTab;
 		icon: React.ReactNode;
 		label: string;
 		/** 有计数徽标（与各区块标题里的 set-count 同源）。 */
-		count?: number;
+		count?: number | string;
 	}[] = [
 		{ id: "prompt", icon: <FiFileText />, label: t("settingsSystemPrompt") },
 		{
@@ -364,10 +371,10 @@ export function SettingsModal({ chat, send, terminal, onSwitchToTerminal, onClos
 		{ id: "display", icon: <FiMessageSquare />, label: t("settingsMessageDisplay") },
 		{ id: "quick", icon: <FiSend />, label: t("quickPhrases"), count: settings.quickPhrases.length },
 		{ id: "markers", icon: <FiTag />, label: t("settingsMarkers"), count: settings.markers?.length ?? 0 },
-		{ id: "skills", icon: <FiCpu />, label: t("settingsSkills"), count: settings.skills.length },
+		{ id: "skills", icon: <FiCpu />, label: t("settingsSkills"), count: skillCount },
 		{ id: "extensions", icon: <FiPackage />, label: t("settingsExtensions"), count: settings.extensions.length },
 		{ id: "plugins", icon: <FiBox />, label: t("settingsUiPlugins"), count: chat.plugins.length },
-		{ id: "review", icon: <FiZap />, label: t("settingsReview"), count: settings.reviewSkills.length },
+		{ id: "review", icon: <FiZap />, label: t("settingsReview"), count: reviewSkillCount },
 		// DSH：无视觉桥概念（真图片直通 vision 模型），隐藏该分区。
 		...(isDsh ? [] : [{ id: "vision" as const, icon: <FiEye />, label: t("settingsVisionBridge") }]),
 		{ id: "presets", icon: <FiSliders />, label: t("settingsPresets"), count: settings.presets.length },
@@ -410,6 +417,7 @@ export function SettingsModal({ chat, send, terminal, onSwitchToTerminal, onClos
 		visionBridgePromptMode?: "append" | "replace";
 		visionBridgePrompt?: string;
 		subagentDefaultModel?: string | null;
+		retryMaxAttempts?: number;
 		reviewPrompt?: string;
 		reviewDisabledSkills?: string[];
 		markersEnabled?: boolean;
@@ -1132,6 +1140,33 @@ export function SettingsModal({ chat, send, terminal, onSwitchToTerminal, onClos
 									<FiMessageSquare className="set-section-icon" />
 									{t("settingsMessageDisplay")}
 								</div>
+								<div className="set-field">
+									<label className="set-field-label" htmlFor="model-retry-max">
+										{t("modelRetryAttempts")}
+									</label>
+									<input
+										id="model-retry-max"
+										className="set-input"
+										type="number"
+										min={0}
+										max={100}
+										step={1}
+										value={retryDraft}
+										onChange={(e) => setRetryDraft(e.target.value)}
+										onBlur={() => {
+											const n = Math.min(100, Math.max(0, Math.floor(Number(retryDraft) || 0)));
+											setRetryDraft(String(n));
+											if (n !== settings.retryMaxAttempts) {
+												setPartial({ retryMaxAttempts: n });
+											}
+										}}
+										onKeyDown={(e) => {
+											if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+										}}
+									/>
+									<p className="set-hint">{t("modelRetryHint")}</p>
+								</div>
+								<hr className="set-sep" />
 								<ToggleRow
 									title={t("thinkingWrap")}
 									tip={t("thinkingWrapDesc")}
@@ -1446,8 +1481,9 @@ export function SettingsModal({ chat, send, terminal, onSwitchToTerminal, onClos
 								<div className="set-section-title">
 									<FiCpu className="set-section-icon" />
 									{t("settingsSkills")}
-									<span className="set-count">{settings.skills.length}</span>
+									<span className="set-count" title={t("settingsSkillCountLegend")}>{skillCount}</span>
 								</div>
+								<p className="set-hint">{t("settingsSkillCountLegend")} · {t("settingsSkillDisabledHint")}</p>
 								{settings.skills.length === 0 ? (
 									<p className="set-empty">{isDsh ? t("dshSkillsNote") : t("noSkills")}</p>
 								) : (
@@ -1797,8 +1833,9 @@ export function SettingsModal({ chat, send, terminal, onSwitchToTerminal, onClos
 									<FiZap className="set-section-icon" />
 									{t("settingsReview")}
 									<HintTip text={t("settingsReviewDesc")} />
-									<span className="set-count">{settings.reviewSkills.length}</span>
+									<span className="set-count" title={t("settingsSkillCountLegend")}>{reviewSkillCount}</span>
 								</div>
+								<p className="set-hint">{t("settingsSkillCountLegend")} · {t("settingsSkillDisabledHint")}</p>
 								<ToggleRow
 									title={t("goalModeEnabled")}
 									tip={t("goalModeEnabledDesc")}

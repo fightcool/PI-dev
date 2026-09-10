@@ -4,9 +4,23 @@ umask 077
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
 if command -v systemctl >/dev/null && systemctl --user is-active --quiet pi-web-ui-dev.service; then
-  echo 'Stop pi-web-ui-dev.service explicitly before changing its dependency directory.' >&2
-  exit 1
+  ACTIVE_ROOT="$(systemctl --user show pi-web-ui-dev.service --property=WorkingDirectory --value)"
+  ACTIVE_START="$(systemctl --user show pi-web-ui-dev.service --property=ExecStart --value)"
+  if [[ "$ACTIVE_ROOT" == "$ROOT" || "$ACTIVE_START" == *"$ROOT/scripts/start.mjs"* ]]; then
+    echo 'Use an isolated checkout or stop this instance before replacing dependencies.' >&2
+    exit 1
+  fi
 fi
+if command -v systemctl >/dev/null && systemctl --user is-active --quiet pi-dev-pm2.service; then
+  PM2_BASE="$(systemctl --user show pi-dev-pm2.service --property=WorkingDirectory --value)"
+  if [[ -e "$PM2_BASE/current" && "$(readlink -f "$PM2_BASE/current")" == "$ROOT" ]]; then
+    echo 'Build a new release; this checkout is the active PM2 version.' >&2
+    exit 1
+  fi
+fi
+for managed_dir in .tools .venv node_modules vendor/pi-web-ui/node_modules; do
+  [[ ! -L "$managed_dir" ]] || { echo "Refusing shared directory: $managed_dir" >&2; exit 1; }
+done
 [[ "$(uname -s)/$(uname -m)" == Linux/x86_64 ]] || {
   echo 'Supported platform: Linux x86_64' >&2
   exit 1
@@ -47,6 +61,7 @@ export UV_PYTHON_PREFERENCE=only-managed
 if [[ "${1:-}" == --update-lock ]]; then
   "$UV" lock --python "$(<.python-version)"
   npm install --package-lock-only --ignore-scripts --no-fund --no-audit
+  npm --prefix vendor/pi-web-ui install --package-lock-only --ignore-scripts --no-fund --no-audit
   exit 0
 fi
 [[ $# == 0 ]] || {
@@ -55,7 +70,8 @@ fi
 }
 # --locked refuses dependency drift; the repository must already contain uv.lock.
 "$UV" sync --locked --python "$(<.python-version)"
-npm ci --no-fund --no-audit
+npm run setup:dependencies
+npm run build
 node scripts/configure.mjs
 node scripts/doctor.mjs
 printf '\nReady. Install the independent service: node scripts/service.mjs install\n'

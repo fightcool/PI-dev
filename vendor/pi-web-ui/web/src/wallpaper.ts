@@ -96,7 +96,7 @@ export async function fileToWallpaperUrl(file: File): Promise<string | null> {
  * 有用户地址 → 写 --bg-image/--bg-image-dim/--bg-image-blur 内联变量（覆盖主题）；
  * 无 → 清掉内联变量（主题自带的 --bg-image 若有则自然生效）。
  * body.has-wallpaper 按「最终生效的 --bg-image 是否为 none」开关，
- * styles.css 里 .messages-wrap 的两层壁纸靠它显隐。
+ * styles.css 里 body 上的两层全屏壁纸（图 + 压暗）靠它显隐。
  */
 export function applyWallpaper(): void {
 	const s = cached ?? loadWallpaperSettings();
