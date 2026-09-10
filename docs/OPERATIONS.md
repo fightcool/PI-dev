@@ -21,7 +21,7 @@ npm run check:publish
 
 ## 配置与开发实例
 
-默认配置目录 `~/.config/pi-dev`，Web数据与Agent状态在 `~/.local/share/pi-dev/`。可显式设置 `PI_DEV_CONFIG_DIR`、`PI_DEV_STATE_DIR`、`PI_DEV_PORT`、`PI_DEV_CWD`，或使用configure的 `--workspace`、`--state-dir`、`--data-dir`、`--agent-dir`、`--port`、`--profile` 参数。所有实例使用不同的状态目录；8787和原型预留8791不可分配给UI。
+默认配置目录 `~/.config/pi-dev`，Web数据与Agent状态在 `~/.local/share/pi-dev/`。可显式设置 `PI_DEV_CONFIG_DIR`、`PI_DEV_STATE_DIR`、`PI_DEV_PORT`、`PI_DEV_CWD`，或使用configure的 `--workspace`、`--state-dir`、`--data-dir`、`--agent-dir`、`--port`、`--profile` 参数。所有实例使用不同的状态目录；8787和运维预留8791不可分配给UI。
 
 `runtime.root`描述可执行代码来源，`workspaceDir`描述智能体工作区。加载配置时使用当前脚本所在的实际代码根，保留workspace和私有状态；旧配置没有workspaceDir时沿用旧root作为工作区。受管理的扩展包路径随代码目录迁移，用户显式添加的包设置保留。
 

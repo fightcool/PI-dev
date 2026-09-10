@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-/* 🍞 AI Breadcrumb — @COUPLED conversation-lifecycle-test.mjs
- * 📖 ../docs/conversation-lifecycle.md
+/* 🍞 AI Breadcrumb — @COUPLED conversation-lifecycle-test.mjs, channel-isolation-test.mjs
+ * 📖 ../docs/conversation-lifecycle.md, ../../docs/P0-VERIFICATION.md
  */
 /**
  * run-smoke.mjs — 零 token 协议冒烟测试聚合跑器（本地与 CI 共用）。
@@ -30,6 +30,7 @@ const WIN32_KNOWN_ENV_FAIL = new Set(["terminal-smoke-test", "restart-handoff-te
 
 const ALL = [
 	"clear-provider-key-test",
+	"channel-isolation-test",
 	"conv-cross-project-test",
 	"conv-cwd-test",
 	"conversation-lifecycle-test",

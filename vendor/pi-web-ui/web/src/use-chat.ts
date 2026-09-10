@@ -1,5 +1,10 @@
 // 🍞 @COUPLED server/index.ts / initial-snapshot-gate.ts: pi hello owns the baseline;
 // rev/seq gaps below still request get_state (docs/architecture-core.md).
+// @COUPLED server/protocol.ts (channel_state / channel_command_result / channel_select …),
+// components/ModelThinking.tsx + components/ModelChannelPicker.tsx (channel 选择 UI),
+// components/FooterBar.tsx + components/UsageDetail.tsx (用量归属), components/ChannelSettings.tsx.
+// @CONTRACT channelResults 按 commandId 存回执；channelApi 方法返回 commandId（socket 未开 = null），
+//   并随命令提交当前 configRevision/bindingRevision，服务端冲突时回 phase=conflict。
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { randomUuid } from "./uuid";
 import { withToken } from "./auth-token";
@@ -72,6 +77,61 @@ export interface Notice {
 	textEn?: string;
 }
 
+/** DEV-CON 渠道状态快照（`channel_state`）—— 服务端权威，密钥只以 keyName 出现。 */
+export type ChannelStateMsg = Extract<ServerMessage, { type: "channel_state" }>;
+/** 渠道命令回执（`channel_command_result`）—— 按 commandId 与提交匹配。 */
+export type ChannelCommandResult = Extract<ServerMessage, { type: "channel_command_result" }>;
+
+/** channel_save 的渠道档案 payload（直接从协议派生，避免手工镜像漂移）。 */
+export type ChannelSaveInput = Extract<ClientMessage, { type: "channel_save" }>["channel"];
+
+/**
+ * DEV-CON 渠道命令 API（use-chat 返回值之一）。
+ *
+ * 每个变更方法都返回 commandId（socket 未打开时返回 null）；UI 用它去
+ * `channelResults[commandId]` 取最新回执，从而区分 applied / pending / rejected /
+ * conflict / superseded，而不是靠推测。revision 由 hook 从当前 channelState 读出
+ * 随命令一起提交，服务端据此拒绝基于旧状态的写入（§4）。
+ */
+export interface ChannelApi {
+	/** 请求渠道状态（服务端也会在变更后主动推送）。 */
+	listChannels: () => boolean;
+	/** 组合切换：渠道 + 命名凭据 + 模型一次提交（credentialKeyName=null 跟随服务商 active key）。 */
+	selectChannel: (input: {
+		channelId: string;
+		credentialKeyName: string | null;
+		modelId: string;
+		conversationId?: string;
+	}) => string | null;
+	/** 清除当前对话的渠道绑定（回到项目/实例默认）。 */
+	clearChannelBinding: (conversationId?: string) => string | null;
+	saveChannel: (channel: ChannelSaveInput) => string | null;
+	deleteChannel: (channelId: string) => string | null;
+	setChannelDefault: (
+		scope: "instance" | "project",
+		selection: { channelId: string; credentialKeyName?: string | null; modelId: string } | null,
+	) => string | null;
+	queryChannelAccount: (channelId: string) => string | null;
+}
+
+/** 回执只用于「最近一次命令结果」展示：保留上限，超出丢最旧的（对象键序 = 插入序）。 */
+const MAX_CHANNEL_RESULTS = 20;
+
+function rememberChannelResult(
+	prev: Record<string, ChannelCommandResult>,
+	result: ChannelCommandResult,
+): Record<string, ChannelCommandResult> {
+	const keys = Object.keys(prev);
+	if (!(result.commandId in prev) && keys.length >= MAX_CHANNEL_RESULTS) {
+		const keepFrom = keys.length - MAX_CHANNEL_RESULTS + 1;
+		const next: Record<string, ChannelCommandResult> = {};
+		for (const k of keys.slice(keepFrom)) next[k] = prev[k];
+		next[result.commandId] = result;
+		return next;
+	}
+	return { ...prev, [result.commandId]: result };
+}
+
 /** A terminal tab. The output stream itself lives in the xterm instance
  * (via the terminal bridge) — this is just the tab metadata. */
 export interface TerminalMeta extends TerminalInfo {
@@ -132,6 +192,10 @@ export interface ChatState {
 	providers: ProviderStatus[];
 	/** Stored API keys per built-in provider (masked), for multi-key grouping. */
 	providerKeys: Record<string, ProviderKeyInfo[]>;
+	/** DEV-CON 渠道快照（channel_state）；null = 尚未收到（无渠道功能的实例保持 null）。 */
+	channelState: ChannelStateMsg | null;
+	/** 渠道命令回执，按 commandId 保留最近一条，供 UI 显示最新一次结果。 */
+	channelResults: Record<string, ChannelCommandResult>;
 	/** Result of the last install_pi_agent run (null while not started/running). */
 	installResult: { ok: boolean; detail: string } | null;
 	/** Path completions for the cwd input. */
@@ -281,6 +345,8 @@ type Action =
 	| { type: "models_config"; providers: UiProviderConfig[] }
 	| { type: "providers_status"; providers: ProviderStatus[] }
 	| { type: "provider_keys"; keys: Record<string, ProviderKeyInfo[]> }
+	| { type: "channel_state"; channelState: ChannelStateMsg }
+	| { type: "channel_command_result"; result: ChannelCommandResult }
 	| {
 			type: "fetch_models_result";
 			result: { reqId: number; ok: boolean; models?: UiModelConfigEntry[]; error?: string };
@@ -631,6 +697,10 @@ function reducer(state: ChatState, action: Action): ChatState {
 			return { ...state, providers: action.providers };
 		case "provider_keys":
 			return { ...state, providerKeys: action.keys };
+		case "channel_state":
+			return { ...state, channelState: action.channelState };
+		case "channel_command_result":
+			return { ...state, channelResults: rememberChannelResult(state.channelResults, action.result) };
 		case "fetch_models_result":
 			return { ...state, fetchModelsResult: action.result };
 		case "refresh_provider_result":
@@ -817,6 +887,8 @@ export function useChat() {
 		modelsConfig: [],
 		providers: [],
 		providerKeys: {},
+		channelState: null,
+		channelResults: {},
 		installResult: null,
 		pathCompletions: [],
 		update: null,
@@ -1059,6 +1131,12 @@ export function useChat() {
 					break;
 				case "provider_keys":
 					dispatch({ type: "provider_keys", keys: msg.keys });
+					break;
+				case "channel_state":
+					dispatch({ type: "channel_state", channelState: msg });
+					break;
+				case "channel_command_result":
+					dispatch({ type: "channel_command_result", result: msg });
 					break;
 				case "fetch_models_result":
 					dispatch({
@@ -1321,11 +1399,89 @@ export function useChat() {
 		[],
 	);
 
+	// -- DEV-CON channels ------------------------------------------------------
+	// Every mutating command carries the revisions the UI currently sees (the
+	// server rejects a stale submit with phase=conflict instead of silently
+	// overwriting an edit made elsewhere), and returns its commandId so the UI can
+	// look the receipt up in channelResults.
+	/** Latest chat state for the command closures — they are created ONCE (stable
+	 *  identity, so memoized consumers keep working) and must read the CURRENT
+	 *  revisions, never the ones captured on the first render. */
+	const channelChatRef = useRef(chat);
+	channelChatRef.current = chat;
+	const channelSendRef = useRef(send);
+	channelSendRef.current = send;
+	const channelApiRef = useRef<ChannelApi | null>(null);
+	if (!channelApiRef.current) {
+		const command = (build: (commandId: string) => ClientMessage): string | null => {
+			const commandId = randomUuid();
+			return channelSendRef.current(build(commandId)) ? commandId : null;
+		};
+		const targetConversation = (explicit?: string): string =>
+			explicit ?? (channelChatRef.current.activeConversationId || channelChatRef.current.state?.conversationId || "");
+		/** 该对话「已存储」绑定的 bindingRevision；无绑定为 0，状态未到达时 undefined（服务端跳过复核）。 */
+		const bindingRevision = (conversationId: string): number | undefined => {
+			const cs = channelChatRef.current.channelState;
+			if (!cs) return undefined;
+			return cs.bindings.find((b) => b.conversationId === conversationId)?.bindingRevision ?? 0;
+		};
+		channelApiRef.current = {
+			listChannels: () => channelSendRef.current({ type: "list_channels" }),
+			selectChannel: ({ channelId, credentialKeyName, modelId, conversationId: explicit }) => {
+				const conversationId = targetConversation(explicit);
+				return command((commandId) => ({
+					type: "channel_select",
+					commandId,
+					channelId,
+					credentialKeyName,
+					modelId,
+					expectedConfigRevision: channelChatRef.current.channelState?.configRevision,
+					expectedBindingRevision: bindingRevision(conversationId),
+					...(conversationId ? { conversationId } : {}),
+				}));
+			},
+			clearChannelBinding: (explicit) => {
+				const conversationId = targetConversation(explicit);
+				return command((commandId) => ({
+					type: "channel_binding_clear",
+					commandId,
+					expectedBindingRevision: bindingRevision(conversationId),
+					...(conversationId ? { conversationId } : {}),
+				}));
+			},
+			saveChannel: (channel) =>
+				command((commandId) => ({
+					type: "channel_save",
+					commandId,
+					channel,
+					expectedConfigRevision: channelChatRef.current.channelState?.configRevision,
+				})),
+			deleteChannel: (channelId) =>
+				command((commandId) => ({
+					type: "channel_delete",
+					commandId,
+					channelId,
+					expectedConfigRevision: channelChatRef.current.channelState?.configRevision,
+				})),
+			setChannelDefault: (scope, selection) =>
+				command((commandId) => ({
+					type: "channel_set_default",
+					commandId,
+					scope,
+					selection,
+					expectedConfigRevision: channelChatRef.current.channelState?.configRevision,
+				})),
+			queryChannelAccount: (channelId) =>
+				command((commandId) => ({ type: "channel_query_account", commandId, channelId })),
+		};
+	}
+
 	const chatApi = useRef({
 		chat,
 		send,
 		pushNotice,
 		dismissNotice,
+		channelApi: channelApiRef.current,
 		terminal: {
 			create: terminalCreate,
 			close: terminalClose,
@@ -1339,6 +1495,7 @@ export function useChat() {
 		send,
 		pushNotice,
 		dismissNotice,
+		channelApi: channelApiRef.current,
 		terminal: {
 			create: terminalCreate,
 			close: terminalClose,

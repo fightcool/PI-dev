@@ -1,7 +1,7 @@
 /*
  * 🍞 AI Breadcrumb: isolated developer instance, no live config or data reuse.
  * @COUPLED configure.mjs, lib.mjs, vendor/pi-web-ui/web/vite.config.ts
- * @WHY Reserve 8788 for the stable UI, 8790 for release checks, 8791 for dev-con.
+ * @WHY Reserve 8788 for the stable UI, 8790 for release checks, 8791 for future ops tooling.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";

@@ -715,6 +715,23 @@ export interface DispatchSession {
 	uploadFile(dirPath: string, name: string, data: string): Promise<void>;
 	listModels(): Promise<void>;
 	setModel(modelId: string): Promise<void>;
+	// -- DEV-CON channels（接口由 ClientSession 实现；DSH 引擎给出显式不支持回执） --
+	pushChannelState(): void;
+	selectChannel(msg: Extract<ClientMessage, { type: "channel_select" }>): Promise<void>;
+	clearChannelBinding(commandId: string, conversationId?: string): Promise<void>;
+	saveChannelConfig(
+		commandId: string,
+		channel: Extract<ClientMessage, { type: "channel_save" }>["channel"],
+		expectedConfigRevision?: number,
+	): Promise<void>;
+	deleteChannelConfig(commandId: string, channelId: string, expectedConfigRevision?: number): Promise<void>;
+	setChannelDefault(input: {
+		commandId: string;
+		scope: "instance" | "project";
+		selection: { channelId: string; credentialKeyName?: string | null; modelId: string } | null;
+		expectedConfigRevision?: number;
+	}): Promise<void>;
+	queryChannelAccount(commandId: string, channelId: string): Promise<void>;
 	setThinking(level: string): void;
 	setCwd(path: string): Promise<void>;
 	completePath(path: string): Promise<void>;
@@ -1018,7 +1035,7 @@ wss.on("connection", (ws) => {
 	// cid getter lets plugins target THIS socket via host.sendTo(clientId).
 	const removePluginSender = pluginMgr.addSender(send, () => clientId);
 
-	const dispatch = (msg: ClientMessage): void => {
+	const dispatchUnsafe = (msg: ClientMessage): void => {
 		if (!clientId) {
 			pending.push(msg);
 			return;
@@ -1374,15 +1391,60 @@ wss.on("connection", (ws) => {
 			case "delete_preset":
 				void cs.deletePreset(msg.name);
 				break;
+			// -- DEV-CON channels ----------------------------------------
+			case "list_channels":
+				cs.pushChannelState();
+				break;
+			case "channel_select":
+				void cs.selectChannel(msg);
+				break;
+			case "channel_binding_clear":
+				void cs.clearChannelBinding(msg.commandId, msg.conversationId);
+				break;
+			case "channel_save":
+				void cs.saveChannelConfig(msg.commandId, msg.channel, msg.expectedConfigRevision);
+				break;
+			case "channel_delete":
+				void cs.deleteChannelConfig(msg.commandId, msg.channelId, msg.expectedConfigRevision);
+				break;
+			case "channel_set_default":
+				void cs.setChannelDefault({
+					commandId: msg.commandId,
+					scope: msg.scope,
+					selection: msg.selection,
+					expectedConfigRevision: msg.expectedConfigRevision,
+				});
+				break;
+			case "channel_query_account":
+				void cs.queryChannelAccount(msg.commandId, msg.channelId);
+				break;
 			default:
 				break;
+		}
+	};
+
+	/**
+	 * 入口防护（P0「入口安全」）：畸形/越界命令只能影响本条命令。
+	 * 之前 dispatch 里的同步异常会冒泡到 ws 的 message 处理器并终止进程；
+	 * 这里统一包一层，并把失败变成可见的 notice。
+	 */
+	const dispatch = (msg: ClientMessage): void => {
+		try {
+			dispatchUnsafe(msg);
+		} catch (err) {
+			send({ type: "notice", level: "error", text: `命令处理失败：${(err as Error).message}` });
 		}
 	};
 
 	ws.on("message", (data) => {
 		let msg: ClientMessage;
 		try {
-			msg = JSON.parse(data.toString()) as ClientMessage;
+			const parsed: unknown = JSON.parse(data.toString());
+			// 非对象帧（null / 字符串 / 数字 / 数组，或 type 不是字符串）会让
+			// 后面的 msg.type 直接抛错并杀死进程 —— 在这里就丢掉。
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+			if (typeof (parsed as { type?: unknown }).type !== "string") return;
+			msg = parsed as ClientMessage;
 		} catch {
 			return;
 		}

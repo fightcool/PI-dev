@@ -1,0 +1,300 @@
+/* 🍞 AI Breadcrumb — @COUPLED ../../server/dev-con/channel-service.ts
+ * 📖 ../../../docs/DEV-CON-PROPOSAL.md §4/§5/§9/§10（A01 凭据隔离、A02 冲突可见、A03 切换时点、A04 组合命令、A05 版本）
+ * 用假宿主覆盖服务语义：两个对话/两把 key 的隔离、待生效、被取代、冲突、默认值继承。
+ */
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { beforeEach, describe, expect, it } from "vitest";
+import type { ServerMessage } from "../../server/protocol.js";
+import { ChannelService, type ChannelServiceHost } from "../../server/dev-con/channel-service.js";
+import { loadCatalog, channelStorePath } from "../../server/dev-con/channel-store.js";
+import { readFileSync } from "node:fs";
+
+type Receipt = Extract<ServerMessage, { type: "channel_command_result" }>;
+type State = Extract<ServerMessage, { type: "channel_state" }>;
+
+/** 假宿主：两个对话 + 一个 provider + 两把命名密钥。 */
+function makeHost(dir: string) {
+	const emitted: ServerMessage[] = [];
+	const busy = new Set<string>();
+	const queued = new Set<string>();
+	const messages = new Map<string, number>();
+	const conversations = new Set(["c1", "c2"]);
+	const models: Record<string, string> = { "main/m1": "Model 1", "main/m2": "Model 2", "other/x": "X" };
+	const applied: { conversationId: string; modelId: string }[] = [];
+	const host: ChannelServiceHost = {
+		agentDir: dir,
+		emit: (msg) => emitted.push(msg),
+		broadcast: (msg) => emitted.push(msg),
+		flushSnapshot: () => undefined,
+		hasProvider: (id) => id === "main",
+		getModel: (providerId, modelId) => (models[`${providerId}/${modelId}`] ? { id: modelId, name: models[`${providerId}/${modelId}`] } : null),
+		keyNames: (providerId) =>
+			providerId === "main"
+				? [
+						{ keyName: "密钥 1", active: true },
+						{ keyName: "密钥 2", active: false },
+					]
+				: [],
+		resolveKeyValue: (providerId, keyName) => (providerId === "main" ? { "密钥 1": "sk-one", "密钥 2": "sk-two" }[keyName] ?? null : null),
+		setConversationModel: async (conversationId, modelId) => {
+			if (!conversations.has(conversationId)) throw new Error("对话不存在");
+			if (!models[modelId]) throw new Error(`模型不存在：${modelId}`);
+			applied.push({ conversationId, modelId });
+		},
+		activeConversationId: () => "c1",
+		conversationExists: (id) => conversations.has(id),
+		isBusy: (id) => busy.has(id),
+		hasQueue: (id) => queued.has(id),
+		conversationHasMessages: (id) => (messages.get(id) ?? 0) > 0,
+		cwd: () => "/proj",
+	};
+	const receipts = () => emitted.filter((m): m is Receipt => m.type === "channel_command_result");
+	const lastReceipt = (commandId: string) => receipts().filter((r) => r.commandId === commandId).at(-1);
+	const lastState = () => emitted.filter((m): m is State => m.type === "channel_state").at(-1);
+	return {
+		host,
+		applied,
+		receipts,
+		lastReceipt,
+		lastState,
+		setBusy: (id: string, value: boolean) => (value ? busy.add(id) : busy.delete(id)),
+		setQueued: (id: string, value: boolean) => (value ? queued.add(id) : queued.delete(id)),
+		setMessages: (id: string, count: number) => messages.set(id, count),
+	};
+}
+
+const channelDraft = (id: string, keyName: string | null) => ({
+	id,
+	displayName: `渠道 ${id}`,
+	providerId: "main",
+	endpointId: "default",
+	credentialRef: keyName ? { providerId: "main", keyName } : null,
+	accountRef: null,
+	enabled: true,
+	extra: {},
+});
+
+let dir: string;
+beforeEach(() => {
+	dir = mkdtempSync(join(tmpdir(), "pi-dev-channelsvc-"));
+});
+
+describe("channel service — configuration", () => {
+	it("saves a channel, persists it and rejects a stale config revision", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({ commandId: "cmd-1", channel: channelDraft("ch-1", "密钥 1") });
+		expect(h.lastReceipt("cmd-1")?.ok).toBe(true);
+		expect(h.lastReceipt("cmd-1")?.configRevision).toBe(1);
+		expect(loadCatalog(dir).catalog.channels.map((c) => c.id)).toEqual(["ch-1"]);
+
+		// 别人先改过（revision 已前进）→ 旧基准提交必须 conflict。
+		await svc.saveChannel({ commandId: "cmd-2", channel: channelDraft("ch-2", null), expectedConfigRevision: 0 });
+		expect(h.lastReceipt("cmd-2")).toMatchObject({ ok: false, phase: "conflict" });
+		expect(loadCatalog(dir).catalog.channels.map((c) => c.id)).toEqual(["ch-1"]);
+	});
+
+	it("rejects unknown providers, unknown credentials and bad ids without touching disk", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({ commandId: "a", channel: { ...channelDraft("ch-1", null), providerId: "nope" } });
+		expect(h.lastReceipt("a")?.error).toContain("未在模型中注册");
+		await svc.saveChannel({ commandId: "b", channel: channelDraft("ch-1", "密钥 9") });
+		expect(h.lastReceipt("b")?.error).toContain("命名凭据不存在");
+		await svc.saveChannel({ commandId: "c", channel: { ...channelDraft("ch-1", null), id: "BAD_ID" } });
+		expect(h.lastReceipt("c")?.ok).toBe(false);
+		expect(loadCatalog(dir).exists).toBe(false);
+	});
+
+	it("deletes a channel and detaches the conversations bound to it", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
+		await svc.select({ commandId: "sel", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m1" } });
+		expect(h.lastReceipt("sel")?.phase).toBe("applied");
+		await svc.deleteChannel({ commandId: "d", channelId: "ch-1" });
+		expect(h.lastReceipt("d")?.ok).toBe(true);
+		const catalog = loadCatalog(dir).catalog;
+		expect(catalog.channels).toEqual([]);
+		expect(catalog.bindings).toEqual({});
+	});
+});
+
+describe("channel service — combined selection", () => {
+	it("applies immediately when idle and confirms the effective binding", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
+		await svc.select({ commandId: "sel", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m1" } });
+		const receipt = h.lastReceipt("sel");
+		expect(receipt).toMatchObject({ ok: true, phase: "applied", conversationId: "c1", channelId: "ch-1" });
+		expect(receipt?.binding).toMatchObject({ modelId: "main/m1", credentialRef: { providerId: "main", keyName: "密钥 1" }, bindingRevision: 1 });
+		expect(h.applied).toEqual([{ conversationId: "c1", modelId: "main/m1" }]);
+		expect(svc.bindingViewMessage("c1").effective?.channelName).toBe("渠道 ch-1");
+	});
+
+	it("keeps two conversations on two different keys without touching the other one", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({ commandId: "s1", channel: channelDraft("ch-a", "密钥 1") });
+		await svc.saveChannel({ commandId: "s2", channel: channelDraft("ch-b", "密钥 2") });
+		await svc.select({ commandId: "p", conversationId: "c1", selection: { channelId: "ch-a", modelId: "main/m1" } });
+		await svc.select({ commandId: "q", conversationId: "c2", selection: { channelId: "ch-b", modelId: "main/m2" } });
+		// A01：并行对话各自绑定自己的渠道/密钥，互不影响。
+		expect(svc.credentialFor("c1", "main")).toBe("sk-one");
+		expect(svc.credentialFor("c2", "main")).toBe("sk-two");
+		expect(svc.credentialFor("c1", "main")).not.toBe(svc.credentialFor("c2", "main"));
+		expect(svc.bindingViewMessage("c1").effective?.modelId).toBe("main/m1");
+		expect(svc.bindingViewMessage("c2").effective?.modelId).toBe("main/m2");
+		// 未绑定的对话不使用任何命名凭据（回落到全局解析）。
+		expect(svc.credentialFor("c3", "main")).toBeUndefined();
+	});
+
+	it("defers the switch while streaming and applies it after the run settles", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
+		await svc.select({ commandId: "first", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m1" } });
+		h.setBusy("c1", true);
+		await svc.select({ commandId: "second", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m2" } });
+		const pendingReceipt = h.lastReceipt("second");
+		expect(pendingReceipt).toMatchObject({ ok: true, phase: "pending" });
+		// A03：在途请求/工具仍按原绑定；有效值不变，待生效值可见。
+		expect(h.applied).toHaveLength(1);
+		expect(svc.bindingViewMessage("c1").effective?.modelId).toBe("main/m1");
+		expect(svc.bindingViewMessage("c1").pending?.modelId).toBe("main/m2");
+		expect(svc.credentialFor("c1", "main")).toBe("sk-one");
+		expect(h.lastState()?.pending?.[0]).toMatchObject({ conversationId: "c1", modelId: "main/m2" });
+
+		h.setBusy("c1", false);
+		await svc.onConversationSettled("c1");
+		expect(h.applied).toEqual([
+			{ conversationId: "c1", modelId: "main/m1" },
+			{ conversationId: "c1", modelId: "main/m2" },
+		]);
+		expect(h.lastReceipt("second")).toMatchObject({ ok: true, phase: "applied" });
+		expect(svc.bindingViewMessage("c1").effective?.modelId).toBe("main/m2");
+		expect(svc.bindingViewMessage("c1").pending).toBeNull();
+	});
+
+	it("marks a superseded pending selection instead of pretending both succeeded", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
+		h.setBusy("c1", true);
+		await svc.select({ commandId: "p1", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m1" } });
+		await svc.select({ commandId: "p2", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m2" } });
+		expect(h.lastReceipt("p1")).toMatchObject({ ok: false, phase: "superseded" });
+		expect(h.lastReceipt("p2")).toMatchObject({ ok: true, phase: "pending" });
+		h.setBusy("c1", false);
+		await svc.onConversationSettled("c1");
+		expect(h.applied).toEqual([{ conversationId: "c1", modelId: "main/m2" }]);
+	});
+
+	it("keeps the previous binding when the switch fails", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
+		await svc.select({ commandId: "ok", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m1" } });
+		h.setMessages("c1", 3);
+		await svc.select({ commandId: "bad", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/missing" } });
+		expect(h.lastReceipt("bad")).toMatchObject({ ok: false, phase: "rejected", conversationId: "c1" });
+		expect(h.lastReceipt("bad")?.error).toContain("模型不存在");
+		expect(svc.bindingViewMessage("c1").effective?.modelId).toBe("main/m1");
+	});
+
+	it("rejects a stale binding revision and a model outside the channel provider", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
+		await svc.select({ commandId: "a", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m1" } });
+		await svc.select({ commandId: "b", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m2" }, expectedBindingRevision: 0 });
+		expect(h.lastReceipt("b")).toMatchObject({ ok: false, phase: "conflict" });
+		await svc.select({ commandId: "c", conversationId: "c1", selection: { channelId: "ch-1", modelId: "other/x" } });
+		expect(h.lastReceipt("c")?.error).toContain("不属于该渠道的服务商");
+	});
+
+	it("clears a binding on request", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
+		await svc.select({ commandId: "a", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m1" } });
+		await svc.clearBinding({ commandId: "clear", conversationId: "c1" });
+		expect(h.lastReceipt("clear")).toMatchObject({ ok: true, phase: "applied" });
+		expect(svc.bindingViewMessage("c1").effective).toBeNull();
+		expect(svc.credentialFor("c1", "main")).toBeUndefined();
+	});
+});
+
+describe("channel service — defaults, persistence and requests", () => {
+	it("lets a fresh conversation inherit the project default but never rebinds a used one", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
+		await svc.setDefault({ commandId: "d", scope: "project", selection: { channelId: "ch-1", modelId: "main/m1" } });
+		expect(h.lastReceipt("d")).toMatchObject({ ok: true, phase: "applied" });
+		// 未发言的新对话继承默认（来源标 project）。
+		expect(svc.effectiveSelectionFor("c1")).toMatchObject({ source: "project" });
+		expect(svc.credentialFor("c1", "main")).toBe("sk-one");
+		// 已经跑过的对话不被新默认悄悄重绑（§4/A03）。
+		h.setMessages("c2", 2);
+		expect(svc.effectiveSelectionFor("c2")).toMatchObject({ source: "none", selection: null });
+		expect(svc.credentialFor("c2", "main")).toBeUndefined();
+	});
+
+	it("survives a restart: a new service instance sees the persisted channels and bindings", async () => {
+		const h = makeHost(dir);
+		const first = new ChannelService(h.host);
+		await first.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 2") });
+		await first.select({ commandId: "a", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m2" } });
+
+		const restarted = new ChannelService(h.host);
+		expect(restarted.credentialFor("c1", "main")).toBe("sk-two");
+		expect(restarted.bindingViewMessage("c1").effective?.modelId).toBe("main/m2");
+	});
+
+	it("carries the channel binding to a new chat and can be detected as explicit", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
+		await svc.select({ commandId: "a", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m1" } });
+		expect(svc.hasConversationBinding("c1")).toBe(true);
+		expect(svc.hasConversationBinding("c2")).toBe(false);
+		svc.inheritBinding("c1", "c2");
+		// 新对话拿到同一个渠道/凭据/模型，但是独立的一条绑定。
+		expect(svc.hasConversationBinding("c2")).toBe(true);
+		expect(svc.bindingViewMessage("c2").effective).toMatchObject({ channelId: "ch-1", modelId: "main/m1" });
+		expect(svc.credentialFor("c2", "main")).toBe("sk-one");
+		expect(svc.bindingViewMessage("c2").effective?.bindingRevision).not.toBe(svc.bindingViewMessage("c1").effective?.bindingRevision);
+		// 没有来源绑定时不会凭空生成绑定。
+		svc.inheritBinding("c3", "c4");
+		expect(svc.hasConversationBinding("c4")).toBe(false);
+	});
+
+	it("records the request-time binding snapshot for usage attribution", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
+		await svc.select({ commandId: "a", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m1" } });
+		expect(svc.bindingSnapshotFor("c1")).toMatchObject({
+			channelId: "ch-1",
+			credentialKeyName: "密钥 1",
+			modelId: "main/m1",
+			providerId: "main",
+			bindingRevision: 1,
+		});
+		expect(svc.bindingSnapshotFor("c2")).toBeNull();
+	});
+
+	it("never writes key material into channels.json", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
+		await svc.select({ commandId: "a", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m1" } });
+		const text = readFileSync(channelStorePath(dir), "utf8");
+		expect(text).not.toContain("sk-one");
+		expect(text).not.toContain("apiKey");
+	});
+});

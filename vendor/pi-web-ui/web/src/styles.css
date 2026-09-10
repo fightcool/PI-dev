@@ -9962,3 +9962,440 @@ button.source-default-toggle {
 }
 
 /* 旧语义 head 类只留 DOM 钩子：布局全部走上面的 .chead 一套。 */
+
+/* ============================ DEV-CON channels ============================
+   渠道选择（模型下拉分组 + 待生效徽标）、底栏渠道/用量明细、设置页渠道分区。
+   颜色统一走主题变量；状态色：ok=green / stale=amber / failed|unsupported=text-faint，
+   失败与「未归属」都不使用绿色或数字 0 伪装正常。 */
+
+/* ---- 模型下拉里的渠道分组 ---- */
+.chan-group {
+	padding: 2px 0 4px;
+}
+.chan-head {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	padding: 5px 8px 3px;
+	font-size: 11.5px;
+	border-bottom: 1px solid var(--border-soft);
+	margin-bottom: 2px;
+}
+.chan-head.disabled {
+	opacity: 0.75;
+}
+.chan-head .chan-name {
+	font-weight: 600;
+	color: var(--text);
+}
+.chan-head .chan-provider {
+	font-size: 10.5px;
+	color: var(--text-faint);
+	font-family: var(--mono);
+}
+.chan-head .chan-reason,
+.chan-warn {
+	margin-left: auto;
+	font-size: 10.5px;
+	color: var(--amber);
+}
+.chan-keys {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+	padding: 2px 8px 4px;
+}
+.chan-keys-label {
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	color: var(--text-faint);
+}
+.chan-key {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	border: 1px solid var(--border);
+	background: var(--bg-elev);
+	color: var(--text-dim);
+	border-radius: 999px;
+	padding: 1px 8px;
+	font-size: 11px;
+	cursor: pointer;
+}
+.chan-key:hover {
+	color: var(--text);
+	border-color: var(--accent-soft);
+}
+.chan-key.active {
+	color: var(--accent);
+	border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+	background: var(--accent-soft);
+}
+.chan-key-dot {
+	font-size: 8px;
+	color: var(--green);
+}
+.chan-pending-tag {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	font-size: 10.5px;
+	color: var(--amber);
+}
+
+/* ---- 选择器旁的有效/待生效/回执 chips ---- */
+.chip-channel-state {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	min-width: 0;
+}
+.chan-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	max-width: 240px;
+	padding: 1px 7px;
+	border-radius: 999px;
+	border: 1px solid var(--border);
+	background: var(--bg-elev);
+	font-size: 10.5px;
+	color: var(--text-dim);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.chan-chip.effective {
+	color: var(--text);
+}
+.chan-chip.pending {
+	color: var(--amber);
+	border-color: color-mix(in srgb, var(--amber) 40%, var(--border));
+}
+.chan-chip.error {
+	color: var(--red);
+	border-color: color-mix(in srgb, var(--red) 40%, var(--border));
+}
+.chan-chip-src {
+	font-size: 10px;
+	color: var(--text-faint);
+	border-left: 1px solid var(--border-soft);
+	padding-left: 5px;
+}
+.chan-refresh {
+	display: inline-flex;
+	align-items: center;
+	border: none;
+	background: transparent;
+	color: inherit;
+	cursor: pointer;
+	padding: 0;
+}
+
+/* ---- 底栏：有效渠道 + 待生效 ---- */
+.status-channel {
+	color: var(--text);
+}
+.status-channel-src {
+	font-size: 10px;
+	color: var(--text-faint);
+}
+.status-channel-pending {
+	color: var(--amber);
+}
+.status-tokens {
+	border: none;
+	background: transparent;
+	font: inherit;
+	font-size: 11px;
+	cursor: pointer;
+	padding: 1px 4px;
+	border-radius: 4px;
+}
+.status-tokens:hover,
+.status-tokens.active {
+	color: var(--accent);
+	background: var(--bg-elev2);
+}
+
+/* ---- 用量明细面板（底栏令牌项点开） ---- */
+.usage-panel {
+	position: fixed;
+	right: 16px;
+	bottom: 40px;
+	z-index: 200;
+	width: min(680px, calc(100vw - 32px));
+	max-height: min(460px, calc(100vh - 120px));
+	overflow: auto;
+	padding: 10px 12px;
+	background: var(--bg-elev2);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.45);
+	font-size: 11.5px;
+	color: var(--text-dim);
+}
+.usage-panel-head {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--text);
+	margin-bottom: 6px;
+}
+.usage-runid {
+	margin-left: auto;
+	font-size: 10.5px;
+	font-weight: 400;
+	color: var(--text-faint);
+	font-family: var(--mono);
+}
+.usage-panel table {
+	width: 100%;
+	border-collapse: collapse;
+	font-variant-numeric: tabular-nums;
+}
+.usage-panel th,
+.usage-panel td {
+	text-align: left;
+	padding: 2px 6px;
+	white-space: nowrap;
+}
+.usage-panel th {
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.4px;
+	color: var(--text-faint);
+	font-weight: 600;
+}
+.usage-scope td:first-child {
+	color: var(--text);
+}
+.usage-cache,
+.usage-cost {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+	margin-top: 6px;
+}
+.usage-cache b,
+.usage-cost b {
+	color: var(--text);
+}
+.usage-cost-note {
+	font-size: 10.5px;
+	color: var(--text-faint);
+}
+.usage-attr-title {
+	margin-top: 10px;
+	padding-top: 6px;
+	border-top: 1px solid var(--border-soft);
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--text);
+}
+.usage-attr td {
+	color: var(--text-dim);
+}
+.usage-empty {
+	padding: 6px 2px;
+	color: var(--text-faint);
+}
+/* 未归属（channelId 缺失）与解析不到的渠道：不猜名字，也不显示成正常渠道。 */
+.usage-unattributed {
+	color: var(--text-faint);
+	font-style: italic;
+}
+.usage-unknown-channel {
+	color: var(--amber);
+	font-family: var(--mono);
+}
+.usage-key {
+	margin-left: 5px;
+	font-size: 10px;
+	color: var(--text-faint);
+}
+
+/* ---- 设置页：渠道列表 / 表单 / 默认值 ---- */
+.chan-settings {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.chan-settings-head {
+	display: flex;
+	gap: 6px;
+}
+.chan-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	border: 1px solid var(--border);
+	background: var(--bg-elev);
+	color: var(--text-dim);
+	border-radius: 7px;
+	padding: 4px 9px;
+	font-size: 12px;
+	cursor: pointer;
+}
+.chan-btn:hover:not(:disabled) {
+	color: var(--text);
+	border-color: var(--accent-soft);
+}
+.chan-btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+.chan-btn.primary {
+	color: var(--accent);
+	border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.chan-btn.danger:hover {
+	color: var(--red);
+	border-color: color-mix(in srgb, var(--red) 45%, var(--border));
+}
+.chan-receipt {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 8px;
+	border-radius: 7px;
+	border: 1px solid color-mix(in srgb, var(--red) 40%, var(--border));
+	background: color-mix(in srgb, var(--red) 10%, transparent);
+	color: var(--red);
+	font-size: 12px;
+}
+.chan-receipt.conflict {
+	border-color: color-mix(in srgb, var(--amber) 40%, var(--border));
+	background: color-mix(in srgb, var(--amber) 10%, transparent);
+	color: var(--amber);
+}
+.chan-receipt .chan-btn {
+	margin-left: auto;
+}
+.chan-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 10px;
+	padding: 8px 10px;
+	border: 1px solid var(--border-soft);
+	border-radius: 9px;
+	background: var(--bg-elev);
+}
+.chan-row.off {
+	opacity: 0.65;
+}
+.chan-row-main {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	min-width: 0;
+	flex: 1 1 220px;
+}
+.chan-row-main .chan-name {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text);
+}
+.chan-meta {
+	font-size: 11px;
+	color: var(--text-faint);
+	font-family: var(--mono);
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.chan-row-actions {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+.chan-enable {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	font-size: 11.5px;
+	color: var(--text-dim);
+}
+.chan-acct {
+	flex: 1 1 100%;
+	font-size: 11px;
+	padding-top: 2px;
+	border-top: 1px dashed var(--border-soft);
+	color: var(--text-faint);
+}
+.chan-acct.ok {
+	color: var(--green);
+}
+.chan-acct.stale {
+	color: var(--amber);
+}
+.chan-acct.failed,
+.chan-acct.unsupported {
+	color: var(--text-faint);
+}
+.chan-form {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 10px;
+	border: 1px solid var(--border);
+	border-radius: 9px;
+	background: var(--bg-elev2);
+}
+.chan-form-title {
+	font-size: 12.5px;
+	font-weight: 600;
+	color: var(--text);
+}
+.chan-form-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 6px;
+}
+.chan-defaults {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 10px;
+	border: 1px solid var(--border-soft);
+	border-radius: 9px;
+}
+.chan-default-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+}
+.chan-default-label {
+	font-size: 12px;
+	color: var(--text);
+	min-width: 88px;
+}
+.chan-default-row select {
+	background: var(--bg-elev);
+	border: 1px solid var(--border);
+	border-radius: 7px;
+	color: var(--text);
+	padding: 4px 7px;
+	font-size: 12px;
+	max-width: 220px;
+}
+
+@media (max-width: 640px) {
+	.chan-chip {
+		max-width: 150px;
+	}
+	.usage-panel {
+		right: 8px;
+		left: 8px;
+		width: auto;
+	}
+	.chan-default-label {
+		min-width: 0;
+	}
+}

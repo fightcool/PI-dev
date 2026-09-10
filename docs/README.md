@@ -2,13 +2,14 @@
 
 <!-- 🍞 AI Breadcrumb — @COUPLED DEV-CON-PROPOSAL.md, STRUCTURE.md, history/dev-con/README.md -->
 
-**本轮渠道管理功能的唯一开发范本是 [DEV-CON-PROPOSAL.md：PI-dev 多渠道开发基准](DEV-CON-PROPOSAL.md)。** 它统一产品边界、架构、配置所有权、热切换、用量/账户口径、阶段顺序、技术待验证项与验收标准。功能开发目前仍暂停。
+**本仓库渠道管理功能的唯一开发范本是 [DEV-CON-PROPOSAL.md：PI-dev 多渠道开发基准](DEV-CON-PROPOSAL.md)。** 它统一产品边界、架构、配置所有权、热切换、用量/账户口径、阶段顺序、技术待验证项与验收标准。P0 技术结论与证据见 [P0-VERIFICATION.md](P0-VERIFICATION.md)。
 
 ## 开发时阅读
 
 | 文档 | 用途 |
 | --- | --- |
 | [DEV-CON-PROPOSAL.md](DEV-CON-PROPOSAL.md) | 当前需求与验收的唯一依据，先读此文 |
+| [P0-VERIFICATION.md](P0-VERIFICATION.md) | P0 七项的实现结论、可复现证据与未验证项 |
 | [CONTEXT.md](../CONTEXT.md) | 领域词汇，辅助理解，不维护第二份计划 |
 | [STRUCTURE.md](STRUCTURE.md) | 目录、依赖、实例数据和源码边界 |
 | [根README](../README.md) | 安装/开发入口与项目导航 |
@@ -23,7 +24,7 @@
 
 ## 记录与历史材料
 
-- [DEV-CON归档索引](history/dev-con/README.md)：旧评估、v1.2架构讨论和只读原型记录。
+- [DEV-CON归档索引](history/dev-con/README.md)：旧评估、v1.2架构讨论和已移除原型的记录。
 - [FOUNDATION-VALIDATION.md](FOUNDATION-VALIDATION.md)：指定基线的结构/性能验收，不是当前规划或在线状态证明。
 - [PM2-CUTOVER.md](PM2-CUTOVER.md)：特定一次迁移记录，不是后续部署计划或授权。
 - `history/`：早期环境与认证记录，仅供追溯。

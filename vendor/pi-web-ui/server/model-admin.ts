@@ -10,6 +10,11 @@
  *
  * 经 ModelAdminHost 与 ClientSession 解耦（同 settings/goal/slash 服务模式）。
  * UI 文案直接中文（服务端 notice 约定）。apiKey/headers 绝不下发浏览器。
+ * 🍞 @COUPLED dev-con/channel-service.ts（keyNameList / resolveProviderKeyValue 供渠道凭据引用）
+ *   @COUPLED server/agent-service.ts（makeChannelHost 注入）、web/src/components/ModelConfigModal.tsx
+ *   📖 docs/DEV-CON-PROPOSAL.md §4
+ *   @BUGFIX 2026-09: listModelsConfig 曾把 models.json 的 apiKey 原样下发浏览器；现只回 hasApiKey，
+ *            保存时空值 = 保留已存密钥（否则用户只改模型列表就会丢 key）。
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -226,6 +231,21 @@ export class ModelAdminService {
 		} catch {
 			return false;
 		}
+	}
+
+	/** DEV-CON：命名密钥列表（只名称 + active 标记）。渠道模块用它展示/校验
+	 *  凭据引用，密钥正文永不出服务端。 */
+	keyNameList(provider: string): { keyName: string; active: boolean }[] {
+		const entry = this.readProviderKeys()[provider.trim()];
+		if (!entry) return [];
+		return entry.keys.map((k) => ({ keyName: k.name, active: entry.activeKeyName === k.name }));
+	}
+
+	/** DEV-CON：按名称解析密钥正文（仅服务端内部使用；不写入、不下发）。 */
+	resolveProviderKeyValue(provider: string, keyName: string): string | null {
+		const entry = this.readProviderKeys()[provider.trim()];
+		const key = entry?.keys.find((k) => k.name === keyName.trim());
+		return key?.apiKey ?? null;
 	}
 
 	/** Seed a provider's key list from an EXISTING auth.json credential (legacy
@@ -835,7 +855,10 @@ export class ModelAdminService {
 				name: p.name as string | undefined,
 				api: p.api as string | undefined,
 				baseUrl: p.baseUrl as string | undefined,
-				apiKey: p.apiKey as string | undefined,
+				// §4 入口安全：密钥正文与掩码片段都不回传浏览器。
+				// 之前这里把 models.json 的 apiKey 原样下发（浏览器再回传），
+				// 使密钥每次列表请求都过一遍 wire；现在只给「是否已保存」。
+				hasApiKey: typeof p.apiKey === "string" && p.apiKey.trim().length > 0,
 				authHeader: p.authHeader as boolean | undefined,
 				// headers are intentionally NOT sent to the browser — they may
 				// contain Authorization / API-key values; kept server-side only.
@@ -1184,11 +1207,15 @@ export class ModelAdminService {
 			// headers never reach the browser, so the incoming config can't carry
 			// them — preserve the previously stored values when they are absent.
 			const prevHeaders = providers[pid]?.headers;
+			// 同理：apiKey 不再回传浏览器，所以空/缺失必须理解为「保留已保存的值」，
+			// 否则用户只改模型列表就会把密钥删掉。
+			const prevApiKey = typeof providers[pid]?.apiKey === "string" ? (providers[pid]?.apiKey as string) : undefined;
+			const nextApiKey = config.apiKey?.trim() ? config.apiKey.trim() : prevApiKey;
 			providers[pid] = {
 				...(config.name?.trim() ? { name: config.name.trim() } : {}),
 				...(config.api?.trim() ? { api: config.api.trim() } : {}),
 				...(config.baseUrl?.trim() ? { baseUrl: config.baseUrl.trim() } : {}),
-				...(config.apiKey?.trim() ? { apiKey: config.apiKey.trim() } : {}),
+				...(nextApiKey ? { apiKey: nextApiKey } : {}),
 				...(config.authHeader ? { authHeader: true } : {}),
 				...(prevHeaders && Object.keys(prevHeaders).length > 0 ? { headers: prevHeaders } : {}),
 				models,

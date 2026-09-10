@@ -116,7 +116,7 @@ test("profile switches migrate only managed packages and remove duplicates acros
 
 const cliInvalid = [
   ["reserved legacy port", ["--port=8787"], {}],
-  ["reserved dev-con port", ["--port=8791"], {}],
+  ["reserved operations port", ["--port=8791"], {}],
   ["reserved environment port", [], { PI_DEV_PORT: "8791" }],
   ["nonnumeric port", [], { PI_DEV_PORT: "invalid" }],
   ["privileged port", ["--port=80"], {}],

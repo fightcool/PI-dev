@@ -1,3 +1,4 @@
+/* 🍞 @COUPLED web/src/components/ChatInput.tsx, web/src/app/app-dialogs.tsx — 📖 docs/DEV-CON-PROPOSAL.md §6 */
 import { lazy, Suspense, useCallback, useMemo } from "react";
 import { LeftPanel } from "../components/LeftPanel";
 import { RightPanel } from "../components/RightPanel";
@@ -31,7 +32,7 @@ export function ChatView({
 	dialogs: ReturnType<typeof useAppDialogs>;
 	uploads: ReturnType<typeof useAttachments>;
 }) {
-	const { chat, send, pushNotice } = connection;
+	const { chat, send, pushNotice, channelApi } = connection;
 	const t = useT();
 	const wide = useWideChat();
 	const {
@@ -100,6 +101,13 @@ export function ChatView({
 		// so the object identity survives token deltas and ChatInput's memo holds.
 		[model, thinkingLevel, availableThinkingLevels],
 	);
+	// DEV-CON：channelBinding 由服务端在每个 checkpoint 重新构造（对象身份每次都变），
+	// 直接透传会击穿上面这条 memo 链；按内容键缓存，内容不变就保持同一引用。
+	const rawChannelBinding = chat.state?.channelBinding ?? null;
+	const channelBindingKey = rawChannelBinding
+		? JSON.stringify([rawChannelBinding.source, rawChannelBinding.effective, rawChannelBinding.pending])
+		: "";
+	const channelBinding = useMemo(() => rawChannelBinding, [channelBindingKey]);
 
 	return (
 		<div className={`view-pane ${view === "chat" ? "" : "hidden"}`}>
@@ -167,6 +175,10 @@ export function ChatView({
 					models={chat.models}
 					modelsLoading={chat.modelsLoading}
 					providerKeys={chat.providerKeys}
+					channelState={chat.channelState}
+					channelBinding={channelBinding}
+					channelResults={chat.channelResults}
+					channelApi={channelApi}
 					attachments={attachments}
 					onRemoveAttachment={removeAttachmentCb}
 					onAddImageFiles={addImageFilesCb}
