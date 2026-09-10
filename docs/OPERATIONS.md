@@ -1,6 +1,6 @@
 # 安装与运维
 
-当前基线是Linux非root用户、4 vCPU / 8 GiB服务器。程序源码集中在仓库，配置与会话按实例保存，见 [STRUCTURE.md](STRUCTURE.md)。早期4 GiB迁移记录已归档到 [history/ENVIRONMENT-VALIDATION.md](history/ENVIRONMENT-VALIDATION.md)。
+当前基线是Linux非root用户、4 vCPU / 8 GiB服务器。正式进程管理使用 [PM2-PRODUCTION.md](PM2-PRODUCTION.md)，下文systemd UI命令保留为迁移前及恢复兼容入口。程序源码集中在仓库，配置与会话按实例保存，见 [STRUCTURE.md](STRUCTURE.md)。早期4 GiB迁移记录已归档到 [history/ENVIRONMENT-VALIDATION.md](history/ENVIRONMENT-VALIDATION.md)。
 
 ## 安装
 

@@ -6,7 +6,8 @@
 
 - [目录结构与开发边界](docs/STRUCTURE.md)：各目录的归属、源码与运行数据的区别。
 - [安装与运维](docs/OPERATIONS.md)：配置、服务维护和升级。
-- [PM2 发布与回滚](docs/PM2-SHADOW.md)：独立 release、候选端口与验证。
+- [PM2 正式运行管理](docs/PM2-PRODUCTION.md)：统一进程、日志、开机恢复与版本切换。
+- [PM2 候选发布与回滚](docs/PM2-SHADOW.md)：隔离候选端口与验证。
 - [性能与验收](docs/FOUNDATION-VALIDATION.md)：本轮修改、测量方法及结果。
 - [历史环境验收](docs/history/ENVIRONMENT-VALIDATION.md)：早期环境迁移记录，不代表当前部署状态。
 
@@ -58,13 +59,13 @@ Web通过访问口令或已配置的Passkey登录；新浏览器可在页面选�
 ## 运行和交付
 
 ```bash
-npm run doctor
-node scripts/service.mjs install
-node scripts/service.mjs status
-npm run smoke
+npm run pm2 -- status
+npm run pm2 -- restart
 ```
 
-单个实例选择systemd或PM2管理，不叠加管理同一个进程；PM2使用单实例fork。有状态会话和终端不支持直接切为多进程cluster。服务安装前应在独立版本目录完成构建和验证；开发checkout不要直接作为长期在线release。
+正式部署使用PM2单实例，由用户级systemd仅托管PM2开机恢复。应用代码位于独立 `deploy/releases/<commit>`，`current`指向在线版本；现有XDG私有数据持续复用。第一次由旧systemd迁移时，使用独立迁移任务等待对话排空、执行切换并自动回滚，见 [PM2正式运行管理](docs/PM2-PRODUCTION.md)。
+
+旧systemd入口仅用于兼容维护，不能与PM2同时启动。有状态会话和终端不支持直接切为多进程cluster。服务安装前应在独立版本目录完成构建和验证；开发checkout不要直接作为长期在线release。
 
 根 [Dockerfile](Dockerfile) 与 [compose.yaml](compose.yaml) 复用相同应用构建，显式持久化配置、Web数据、Agent数据和工作区。`docker compose up -d --build` 是创建/更新实例的部署动作，应在确认端口及数据目录后由操作者执行。容器的Python为Debian工具链，不承诺与宿主机uv虚拟环境相同；需要项目专用运行时的workspace应单独配置镜像。
 

@@ -19,6 +19,7 @@
     "test:performance": "node tests/performance/browser.mjs",
     "test:smoke": "node scripts/protocol-smoke.mjs",
     "start": "node scripts/start.mjs",
+    "pm2": "node scripts/pm2.mjs",
     "doctor": "node scripts/doctor.mjs",
     "smoke": "node scripts/smoke.mjs",
     "smoke:public": "node scripts/public-smoke.mjs",

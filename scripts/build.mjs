@@ -7,9 +7,11 @@ import { existsSync, mkdirSync, writeFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { assertInactiveCheckout } from "./lifecycle/build-target.mjs";
 
 const root = realpathSync(join(dirname(fileURLToPath(import.meta.url)), ".."));
 const app = join(root, "vendor/pi-web-ui");
+assertInactiveCheckout(root);
 const { readFileSync } = await import("node:fs");
 const pkg = JSON.parse(readFileSync(join(app, "package.json"), "utf8"));
 const sdk = JSON.parse(readFileSync(join(app, "node_modules/@earendil-works/pi-coding-agent/package.json"), "utf8"));

@@ -2,6 +2,7 @@
 
 当前规范以根README、[STRUCTURE.md](STRUCTURE.md)、[OPERATIONS.md](OPERATIONS.md) 和 [PM2-SHADOW.md](PM2-SHADOW.md) 为准。
 
+- [PM2-PRODUCTION.md](PM2-PRODUCTION.md)：正式运行目录、进程管理与迁移。
 - [FOUNDATION-VALIDATION.md](FOUNDATION-VALIDATION.md)：本轮结构、发布和性能整改的实际验收。
 - [DEV-CON-PROPOSAL.md](DEV-CON-PROPOSAL.md)：未来独立管理面的已讨论方案；这一轮没有实现渠道/MCP/技能同步管理台。
 - `history/`：保留早期环境迁移和认证验收记录，避免旧结论被误认为当前状态。

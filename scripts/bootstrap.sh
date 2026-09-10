@@ -11,6 +11,13 @@ if command -v systemctl >/dev/null && systemctl --user is-active --quiet pi-web-
     exit 1
   fi
 fi
+if command -v systemctl >/dev/null && systemctl --user is-active --quiet pi-dev-pm2.service; then
+  PM2_BASE="$(systemctl --user show pi-dev-pm2.service --property=WorkingDirectory --value)"
+  if [[ -e "$PM2_BASE/current" && "$(readlink -f "$PM2_BASE/current")" == "$ROOT" ]]; then
+    echo 'Build a new release; this checkout is the active PM2 version.' >&2
+    exit 1
+  fi
+fi
 for managed_dir in .tools .venv node_modules vendor/pi-web-ui/node_modules; do
   [[ ! -L "$managed_dir" ]] || { echo "Refusing shared directory: $managed_dir" >&2; exit 1; }
 done

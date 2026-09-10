@@ -1,0 +1,34 @@
+# systemd boots only the PM2 supervisor; PM2 owns application processes.
+[Unit]
+Description=PI-dev PM2 process supervisor
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=@BASE@
+ExecStart=@NODE@ @PM2_RUNTIME@ start @ECOSYSTEM@ --only pi-dev-web
+Environment=@PM2_HOME@
+Environment=@CONFIG_DIR@
+Environment=@DEPLOY_ROOT@
+Environment=@RELEASE_ROOT@
+Environment=@NODE_ENV_PATH@
+Environment=PI_DEV_PM2_NAME=pi-dev-web
+Environment=PI_DEV_HEAP_MB=2048
+Environment=PI_DEV_PM2_MAX_MEMORY=3G
+Environment=PI_WEB_RP_ID=dev.ftai.cc
+Environment=PI_WEB_ORIGIN=https://dev.ftai.cc
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+MemoryAccounting=true
+MemoryHigh=3G
+MemoryMax=4G
+TasksMax=512
+
+[Install]
+WantedBy=default.target
