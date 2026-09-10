@@ -164,7 +164,7 @@ export interface UiChannelBindingView {
 
 /** 用量归属桶（§7）：按来源/渠道/模型归组；只含引用，不含密钥。 */
 export interface UiUsageAttribution {
-	/** 来源：user / retry / subagent / compaction / vision / probe / system。 */
+	/** 来源：user / retry / subagent / compaction / vision / review / wizard / probe / system。 */
 	source: string;
 	channelId: string | null;
 	credentialKeyName: string | null;

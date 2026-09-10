@@ -26,7 +26,7 @@ export const DEFAULT_USAGE_LIMITS = Object.freeze({
 });
 
 /** 用量来源分类（§7：子代理、重试、压缩摘要、探测分别标注）。 */
-export const USAGE_SOURCES = Object.freeze(["user", "retry", "subagent", "compaction", "vision", "probe", "system"]);
+export const USAGE_SOURCES = Object.freeze(["user", "retry", "subagent", "compaction", "vision", "review", "wizard", "probe", "system"]);
 
 function nonNegative(value, name) {
   if (!Number.isFinite(value) || value < 0) throw new Error(`${name} must be non-negative`);

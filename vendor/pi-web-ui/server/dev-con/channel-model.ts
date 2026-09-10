@@ -5,7 +5,8 @@
  *              @PERF=performance @CONTRACT=interface contract 📖=dev doc reference
  *
  * Breadcrumbs (changing this affects):
- *   @COUPLED channel-store.ts (persists this shape), channel-service.ts (commands),
+ *   @COUPLED channel-store.ts (persists this shape), channel-state.ts (目录内存态 + 视图),
+ *            channel-service.ts / channel-config.ts (commands),
  *            protocol.ts (wire types channel_state / channel_command_result / channel_select)
  *   📖 docs/DEV-CON-PROPOSAL.md §4 (配置对象、所有权与安全), §5 (热切换与会话语义), §9 (P0 技术项)
  *   @CONTRACT 纯逻辑模块：禁止 fs / 网络 / SDK 导入，便于 vitest 单测直接覆盖规格。

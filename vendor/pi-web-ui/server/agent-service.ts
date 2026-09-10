@@ -1510,6 +1510,15 @@ export class ClientSession {
 			lang: () => this.getLang(),
 			// 目标模式总开关（设置面板「目标审查」页）：关 → 目标入口一律拒绝。
 			goalModeEnabled: () => this.settingsSvc.current.goalModeEnabled !== false,
+			// DEV-CON §7：复核/调研用独立 ModelRuntime，用量单独标注来源并归到发起它的对话。
+			recordUsage: (source, usage) => {
+				const conv = this.conv;
+				conv.usageTracker.record(
+					{ scope: "final", identity: null, role: "assistant", ...usage },
+					Date.now(),
+					this.bindingAttribution(conv, source),
+				);
+			},
 			activeConvId: () => this.activeId,
 			activeConv: () => this.conv,
 			getConv: (id) => this.convs.get(id),

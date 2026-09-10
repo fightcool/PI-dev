@@ -16,6 +16,7 @@
 | 命令与状态 | 普通渠道选择收敛为单条 `channel_select` 命令（渠道+凭据+模型），服务端串行化 + `configRevision`/`bindingRevision` 复核，回执 `channel_command_result` 带 `phase`（applied/pending/rejected/conflict/superseded）；外部改写文件时冲突可见、刷新后可用新版本重试成功（可恢复） | `server/dev-con/channel-service.ts`（`enqueue` 每条命令先从磁盘对齐、`refresh()`）；`tests/unit/channel-service.test.ts`；`tests/channel-multiclient-test.mjs` |
 | 用量身份 | 只有 `message_end`/`turn_end` 的**终结值**累加，并按消息身份（`responseId` 或 role+timestamp）去重；`message_update` 只更新请求级视图；补齐 `totalTokens`/`cacheRead`/`cacheWrite`/`cost` | `lib/usage/token-usage.mjs`；`tests/token-usage.test.mjs` |
 | 存储与恢复 | 渠道元数据落在 `<agentDir>/dev-con/channels.json` 旁路文件，**只存引用**（providerId/keyName/modelId），原子写 + 哈希复核；密钥仍在 `provider-keys.json`/`auth.json`，模型目录仍在 `models.json` | `server/dev-con/channel-store.ts`；`tests/unit/channel-store.test.ts` |
+| 模块结构 | `server/dev-con/` 分四层：`channel-model`（纯逻辑）/`channel-store`（持久化）/`channel-state`（状态与视图）/`channel-service`+`channel-config`（命令）；各文件功能行数均 < 300 | 见 §8 文件清单 |
 | 账户查询 | 首批适配器 = OpenAI 兼容自建网关（`/api/user/self`）+ OpenRouter；**必须由渠道显式配置账户端点**，否则返回 `unsupported`；有界超时/体积上限/禁重定向/限频/缓存/失败保留旧值 | `server/dev-con/channel-accounts.ts`；`tests/unit/channel-accounts.test.ts` |
 | 入口安全 | 修复 `models_config` 回传 models.json 明文 apiKey（改为 `hasApiKey` 布尔）；WS 非对象帧不再导致进程退出；新增入口全部走既有 WS 鉴权，未开新面 | `server/model-admin.ts#listModelsConfig/saveModelConfig`；`server/index.ts` message 处理器；`tests/channel-isolation-test.mjs` 末项 |
 
@@ -67,7 +68,7 @@ runtime.session.agent.getApiKey = (provider) => this.channels.credentialFor(id, 
 - 累计只取终结事件（`message_end`/`turn_end`），并按消息身份去重；
 - 请求级视图（`current`）覆盖更新，流式期间即可见，但不计入 run/session；
 - 计入 `cacheRead`/`cacheWrite`/`cost`/`reasoning`；
-- 归属：每次 provider 请求发出时记录当时的绑定快照（渠道/凭据名/模型/绑定版本/配置版本），晚到的用量按该快照归属；来源标注 `user`/`retry`/`subagent`/`compaction`/`vision`（子代理是独立会话，不会并进父会话）。
+- 归属：每次 provider 请求发出时记录当时的绑定快照（渠道/凭据名/模型/绑定版本/配置版本），晚到的用量按该快照归属；来源标注 `user`/`retry`/`subagent`/`compaction`/`vision`/`review`/`wizard`（子代理与复核各自是独立会话，不会并进父会话；未知来源回落 `user`，不伪装成已知来源）。
 - 旁路调用（§7 要求「探测分别标注来源」）：视觉桥转写通过 `vision-bridge.ts#onUsage` 上报真实用量并记为 `source=vision`；压缩摘要走 SDK 内部 `completeSimple`、不产生消息事件，改为用 `compaction_start`/`compaction_end` 的**会话统计差值**记为 `source=compaction`（差值非正时不记）。两条路径的归属都取自请求时绑定，`modelId` 统一为裸模型 id，能与普通请求在归属表里合并。
 
 ## 5. 存储与恢复
@@ -91,6 +92,19 @@ runtime.session.agent.getApiKey = (provider) => this.channels.credentialFor(id, 
 - **已修复（高）**：`list_models_config` 之前把 `models.json` 的 `apiKey` 原样下发浏览器（浏览器再回传），违反 §4。现在只回 `hasApiKey: boolean`，保存路径对空值理解为「保留已保存的密钥」，因此不再需要密钥往返，也不会因留空而丢 key。
 - **已修复（高）**：WS 收到 `null`/字符串/数组帧时旧实现直接在 `msg.type` 上抛错并终止进程（可达的远程重启）。现在在入口丢弃非对象帧，并把同步异常包成 `notice`，单条畸形命令不再影响进程。
 - **未修复但已记录（不在本期入口范围内）**：`/api/auth/recovery` 无限频与锁定、passkey 会话无 CSRF 令牌、`?token=` 查询参数回落、`/api/health` 泄露绝对路径。这些属于既有认证面，按 §4「不扩大成整套认证平台重写」处理，见文末。
+
+## 8. 模块结构与文件规模
+
+`channel-service.ts` 拆分前为 754 行（功能行 609），违反仓库 300 行纪律（self-check 规则 29 / coding-principles 门 3）。现拆为状态层与命令层，行为、公开 API、回执语义与 `channels.json` 格式零变化：
+
+| 文件 | 功能行数 | 职责 |
+| --- | --- | --- |
+| `server/dev-con/channel-model.ts` | ~243 | 纯类型与纯逻辑（优先级、时点、版本、脱敏、裁剪） |
+| `server/dev-con/channel-store.ts` | ~136 | 落盘：原子写、哈希冲突、无损失去、拒绝密钥字段 |
+| `server/dev-con/channel-state.ts` | ~254 | 目录内存态、绑定键、选择/凭据解析、视图（`stateMessage`） |
+| `server/dev-con/channel-accounts.ts` | ~240 | 账户适配器与限频/缓存/超时 |
+| `server/dev-con/channel-service.ts` | ~297 | 命令层：串行化、回执、待生效、校验 |
+| `server/dev-con/channel-config.ts` | ~184 | 配置命令：渠道 CRUD、默认值、账户查询 |
 
 ## 复现方式与本次实测结果
 
@@ -123,7 +137,7 @@ npm run test:channels:browser     # Chromium（桌面 + 移动视口）：选择
 1. **DSH 引擎**：明确回 `phase:"rejected"`（换模型=重启运行时），未做任何 DSH 热切换改造。
 2. **真实供应商账户查询**：未接入任何真实账号；适配器只对本地替身端点验证。OpenAI 网关的 `quota` 语义（单位/换算）需要真实网关注入后才算验收。
 3. **run 内 turn 边界切换**：SDK 支持但本期不启用（见 §2 取舍）。
-4. **旁路调用的用量归属**：视觉桥与压缩摘要已接入（见 §4）；**目标复核/向导**（独立 `ModelRuntime`，`goal-service.ts`）仍是独立计费路径，未接入本会话归属。压缩差值法只覆盖压缩本身的调用，若压缩期间发生其他模型调用会被一并算入（当前 SDK 行为不会）。
+4. **旁路调用的用量归属**：视觉桥、压缩摘要、目标复核与目标向导均已接入（见 §4 与 `goal-service.ts#reportIsolatedUsage`）；仍未接入的是模型目录探测（只 GET /models，不产生 token）。压缩用会话统计差值，若压缩期间发生其他模型调用会被一并算入（当前 SDK 行为不会）。
 5. **多客户端并发编辑渠道配置**：已实现「每条命令先从磁盘对齐 + 哈希冲突检测 + 合并写入」，并有双客户端端到端用例（`tests/channel-multiclient-test.mjs`）；仍未经两个真实浏览器的人工并发验证。
 6. **渠道界面的验收范围**：`npm run test:channels:browser` 用真实 Chromium 覆盖 17 项断言——渠道分组、禁用/服务商缺失原因、有效/待生效提示、底部渠道、组合命令携带的 revision、用量归属与「未归属」标记、渠道设置页列表与账户状态（ok/unsupported/stale 与真实数值）、`channel_query_account`、带 `expectedConfigRevision` 的 `channel_save`，以及**移动端视口**（390×844，触屏）下同样的选择流程。**未**做真实设备/真机人工验收与真实供应商账号下的界面验收。
 7. **非中英文语言包的渠道文案**：新增 88 个 key 已按中文顺序填入 8 个语言包以保证一一对应，但暂时使用英文原文作为占位译文（运行时行为与缺 key 回落英文一致）；正式译文待补。

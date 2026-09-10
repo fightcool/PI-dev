@@ -14,7 +14,7 @@
  * ──────────────────────────────────────────────────
  */
 import type { UiChannelInfo, UiState, UiUsageAttribution } from "../types";
-import { useT } from "../i18n";
+import { useT, type Translate } from "../i18n";
 
 /** 令牌数的人类可读格式（FooterBar 与明细表共用）。 */
 export function formatTokens(n: number): string {
@@ -45,6 +45,19 @@ function ScopeRow({ label, tok }: { label: string; tok: { input: number; output:
  * 用量详情面板：请求/本轮/会话口径 + 缓存读写（非零才显示）+ 按来源/渠道/模型的归属表。
  * 由底栏的令牌项点开（overlay，不占用输入区）。
  */
+// 来源标识符 → 文案键（服务端只发标识符；未知来源按「系统」显示，绝不猜具体来源）。
+const SOURCE_LABELS: Record<string, Parameters<Translate>[0]> = {
+	user: "usageSourceUser",
+	retry: "usageSourceRetry",
+	subagent: "usageSourceSubagent",
+	compaction: "usageSourceCompaction",
+	vision: "usageSourceVision",
+	review: "usageSourceReview",
+	wizard: "usageSourceWizard",
+	probe: "usageSourceProbe",
+	system: "usageSourceSystem",
+};
+
 export function UsageDetail({
 	tokens,
 	cost,
@@ -143,7 +156,7 @@ export function UsageDetail({
 					<tbody>
 						{rows.map((row) => (
 							<tr key={`${row.source}|${row.channelId ?? "-"}|${row.providerId}|${row.modelId}`}>
-								<td>{row.source}</td>
+								<td>{t(SOURCE_LABELS[row.source] ?? "usageSourceSystem")}</td>
 								<td>{channelCell(row)}</td>
 								<td title={row.modelId}>{row.modelId}</td>
 								<td>{row.requests}</td>

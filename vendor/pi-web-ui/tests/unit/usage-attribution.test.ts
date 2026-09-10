@@ -32,6 +32,17 @@ describe("bypass call attribution", () => {
 		expect(t.snapshot().requests).toBe(2);
 	});
 
+	it("labels goal review and wizard sessions as their own sources", () => {
+		const t = new TokenUsageTracker();
+		t.startRun(1_000);
+		bypass(t, "review", { input: 700, output: 90, cacheRead: 0, cacheWrite: 0, total: 790, cost: 0.02 });
+		bypass(t, "wizard", { input: 400, output: 60, cacheRead: 0, cacheWrite: 0, total: 460, cost: 0.01 });
+		// 未知来源不会被伪装成 review/wizard（回落 user），所以必须显式登记在 USAGE_SOURCES。
+		bypass(t, "totally-unknown", { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2, cost: 0 });
+		const sources = t.attributionList().map((b: { source: string }) => b.source).sort();
+		expect(sources).toEqual(["review", "user", "wizard"]);
+	});
+
 	it("ignores a non-positive compaction delta (no phantom usage)", () => {
 		const t = new TokenUsageTracker();
 		t.startRun(1_000);

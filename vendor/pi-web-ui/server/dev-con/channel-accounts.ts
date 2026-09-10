@@ -5,7 +5,8 @@
  *              @PERF=performance @CONTRACT=interface contract 📖=dev doc reference
  *
  * Breadcrumbs (changing this affects):
- *   @COUPLED channel-service.ts (queryAccount), protocol.ts (UiAccountStatus),
+ *   @COUPLED channel-config.ts (queryAccountCommand 调用 query), channel-service.ts (accounts 快照
+ *            注入 stateMessage), protocol.ts (UiAccountStatus),
  *            channel-model.ts (ChannelRecord.extra.account 配置入口)
  *   📖 docs/DEV-CON-PROPOSAL.md §7（余额/配额/限频/失败状态）, §9（账户查询 P0 项）
  *   @CONTRACT 只在渠道显式配置账户端点（channel.extra.account）时查询；没有适配器时

@@ -5,7 +5,8 @@
  *              @PERF=performance @CONTRACT=interface contract 📖=dev doc reference
  *
  * Breadcrumbs (changing this affects):
- *   @COUPLED channel-model.ts (数据结构 + 纯逻辑), channel-service.ts (唯一调用方)
+ *   @COUPLED channel-model.ts (数据结构 + 纯逻辑), channel-state.ts (唯一调用方),
+ *            channel-config.ts (配置/默认值命令经状态层写入)
  *   📖 docs/DEV-CON-PROPOSAL.md §4「配置变更采用校验/预览 → revision复核 → 应用 → 验证和回执」
  *   @CONTRACT 渠道元数据落盘于 <agentDir>/dev-con/channels.json，只存引用不存密钥；
  *             写入前用 findSecretMaterial 拒绝任何密钥字段，避免出现第二份凭据事实源。
