@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+/* 🍞 AI Breadcrumb — @COUPLED conversation-lifecycle-test.mjs
+ * 📖 ../docs/conversation-lifecycle.md
+ */
 /**
  * run-smoke.mjs — 零 token 协议冒烟测试聚合跑器（本地与 CI 共用）。
  *
@@ -29,6 +32,7 @@ const ALL = [
 	"clear-provider-key-test",
 	"conv-cross-project-test",
 	"conv-cwd-test",
+	"conversation-lifecycle-test",
 	"project-model-key-test",
 	"provider-keys-test",
 	"db-client-test",

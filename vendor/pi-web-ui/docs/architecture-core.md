@@ -1,5 +1,7 @@
 # 核心架构
 
+<!-- 🍞 AI Breadcrumb — @COUPLED conversation-lifecycle.md, ../server/conversation-maintenance.ts -->
+
 > 改代码前必读。本文档覆盖快照驱动、协议单源、安全边界、主题切换、多对话并发等全局架构决策。
 
 ## PI-dev 下游性能与初始化约定
@@ -74,7 +76,7 @@
   - 入列：活动对话**正在流式输出时**被挤到后台（new_chat / switch_conversation / set_cwd，**跨项目切换同样入列**）→ `listed=true`；
   - 留在列表：后台跑完不移出（用户可能还没看结果）；**还有存活 PTY 的对话也留在列表**（终端里可能有仍在跑的任务），但**已退出、仅保留输出的终端不阻止移出**——AI 结束且终端全部跑完后切走，`removeConversation` 顺带 `killAll()` 关闭残留终端并从列表消失（`openTerminals` 传 `terminals.countLive()`，只统计存活 PTY）；
   - 移出：打开它（切为活动）→ 没有继续对话（期间没发过 prompt）→ 切走时 `displaceActive()` 返回它，`removeConversation` 释放 runtime（会话已持久化，历史列表仍可恢复）。
-- 上限 `MAX_OPEN_CONVERSATIONS = 8` **按项目计**，超出时 new_chat 发 warning notice。
+- 普通会话采用空闲缓存目标，用户新建/打开历史不受8个已打开对话的硬限制。子代理结束后自动归档并释放运行时，结果读取与继续按runId恢复；清理条件、并发边界和测试见 [conversation-lifecycle.md](conversation-lifecycle.md)。
 - 所有对话共享**一个 ModelRuntime**（首个对话创建时播种，`makeRuntimeFactory` 传入复用）——顶栏换模型对全部对话生效。**消息序列化缓存（msgIds/uiMessageCache/签名）按对话隔离**：两个对话可能产生相同的 (role, timestamp) 键，共享会串号。
 - **项目切换记住 {模型, key}**：`client-state` 持久化 `projectModels`（cwd→"provider/id"）与 `projectProviderKeys`（cwd→provider→keyName）。**选模型即刻保存**（`setModel` → `rememberProjectModel`，不等一次问答——SDK 只有存在 assistant 消息后才把 `model_change` 落盘，否则新对话选完模型就切走会丢）；**切换项目/会话时恢复**（`restoreProjectModelForCwd` + `restoreProjectProviderKeysForCwd` 于 set_cwd / switch_conversation / switch_session / ClientSession.create），新对话也会套上该项目上次的 {模型, key}。模型/密钥被删时恢复静默跳过。
 - `snapshot` 带 `conversationId`；`conversations`（ServerMessage）推**全部项目已入列的对话**（前端按 `cwd` 分组显示，当前项目不显示组标题）+ `activeId`（activeId 可能未入列，如刚 new_chat 还没跑过）；`switch_conversation`（ClientMessage）**可跨项目切换**——切到其他项目的对话时同步切换工作区，补齐 `set_cwd` 的副作用（文件树/会话历史/项目顺序/命令目录/onCwdChanged 钩子）。

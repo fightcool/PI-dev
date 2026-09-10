@@ -1,3 +1,7 @@
+/* 🍞 AI Breadcrumb — @COUPLED subagent-state.ts, subagent-archive.ts, agent-service.ts
+ * @CONTRACT Completed subagents are archived automatically; results remain retrievable.
+ * 📖 ../docs/conversation-lifecycle.md
+ */
 // ---------------------------------------------------------------------------
 // subagents.ts — 第一方轻量子代理：工具定义与运行态模型
 // ---------------------------------------------------------------------------
@@ -12,9 +16,9 @@
 // 同一个 modelRuntime，创建走 createAgentSessionServices + FromServices（已
 // 封装好）。因此本模块把子代理定义为：
 //
-//   子代理 = 一个标记了 isSubagent 的普通 Conversation（inMemory session，
-//   不落盘、不进历史/resume 列表）
-//   - 出现在左栏「运行的对话」列表，带「子代理」徽标
+//   子代理 = 一个标记了 isSubagent 的 Conversation；运行时使用 inMemory session，
+//   结束后保存私有归档并自动释放，仍可按 runId 获取结果或恢复继续。
+//   - 运行时出现在左栏「运行的对话」列表，带「子代理」徽标
 //   - 用户可以像普通对话一样：点开查看实时消息流、输入补充（= steer）、
 //     中止（= abort）、完成后移出（= dismiss）
 //   - 运行态经现有快照/消息管线推送，不需要单独的可视化桥
@@ -30,9 +34,9 @@
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { bilingual, pick, type ServerLang } from "./i18n.js";
-
-/** 子代理的状态（由 conversation 派生的轻量视图）。 */
-export type SubagentState = "running" | "queued" | "done" | "canceled";
+import { isSubagentTerminal, type SubagentSnapshot } from "./subagent-state.js";
+export { isSubagentTerminal } from "./subagent-state.js";
+export type { SubagentSnapshot, SubagentState } from "./subagent-state.js";
 
 /**
  * subagent_wait_all 的最长阻塞时间：必须短暂低于工具看门狗（默认 20 分钟，
@@ -44,38 +48,6 @@ const WAIT_CAP_MS = (() => {
 	const watchdog = Number.isFinite(v) && v > 0 ? v : 20 * 60_000;
 	return Math.max(60_000, Math.floor(watchdog * 0.8));
 })();
-
-/** 子代理是否已到终态（运行结束、被中止或出错）。wait 工具据此判断
- * 是否可以取结果；streaming=false 即可（error/canceled 都在快照里带标记）。 */
-export function isSubagentTerminal(r: SubagentSnapshot | undefined): boolean {
-	return !!r && !r.streaming;
-}
-
-/** 单个子代理的运行态快照（供 subagent_list / subagent_get_result 与左栏徽标）。 */
-export interface SubagentSnapshot {
-	/** conversation id（= 工具的 runId；左栏点击即 switch 到它）。 */
-	convId: string;
-	/** 展示类型 / 角色（explore / implement / review …，默认 general）。 */
-	type: string;
-	/** 标题：prompt 首行（截断）。 */
-	title: string;
-	/** 原始 prompt。 */
-	prompt: string;
-	state: SubagentState;
-	/** 是否正在流式输出。 */
-	streaming: boolean;
-	/** 最近一次运行是否报错（provider 400/超时等）；有则这里带可读错误文本。 */
-	error?: string;
-	/** 是否被用户/AI 中止（最后一条 assistant 消息 stopReason=aborted，或中断后
-	 *  有输出但未正常结束）。区别于 error：中止不是故障，但不应当作成功结果。 */
-	canceled?: boolean;
-	/** 会话消息数（近似活动量）。 */
-	messageCount: number;
-	/** 会话模型 id（可空）。 */
-	model?: string;
-	/** 已收集的 assistant 最后文本（运行中为最新输出）。 */
-	output: string;
-}
 
 /**
  * 由 ClientSession 实现的子代理操作接口。所有操作都作用于它的
@@ -299,6 +271,13 @@ export function makeSubagentTools(host: SubagentToolHost, lang?: () => ServerLan
 				const doneId = shortId(r.convId);
 				const doneDetail = verdictText(r, getLang());
 				const doneOutput = r.output || (getLang() === "zh" ? "（无结果）" : "(no result)");
+				const archived = r.archived
+					? pick(
+							getLang(),
+							"\n（已归档并释放运行名额；结果仍可读取，可用 subagent_steer 继续。）",
+							"\n(Archived; runtime released. Results remain available; use subagent_steer to continue.)",
+						)
+					: "";
 				if (r.streaming || r.state === "running") {
 					const runningId = shortId(r.convId);
 					const runningOutput = r.output || (getLang() === "zh" ? "（暂无输出）" : "(no output yet)");
@@ -320,7 +299,7 @@ export function makeSubagentTools(host: SubagentToolHost, lang?: () => ServerLan
 						`Subagent ${doneId} (${r.type}) status: ${verdict}\n${doneDetail}\n${doneOutput}`,
 						"subagents.get.done",
 						{ doneId: doneId, "r.type": r.type, verdict: verdict, doneDetail: doneDetail, doneOutput: doneOutput },
-					),
+					) + archived,
 					r,
 				);
 			},
@@ -329,8 +308,8 @@ export function makeSubagentTools(host: SubagentToolHost, lang?: () => ServerLan
 			name: "subagent_steer",
 			label: "Steer subagent",
 			description: bilingual(
-				"Inject a message into a subagent to redirect or supplement its work (same as the user sending a message in its conversation).",
-				"向一个子代理注入一条消息，重定向/补充它的工作方向（等同用户在它的对话里发消息）。",
+				"Inject a message into a subagent; archived conversations are restored automatically before continuing.",
+				"向子代理注入消息；已归档的对话会自动恢复后继续。",
 			),
 			promptSnippet: "inject a message into a running subagent to redirect its work",
 			parameters: Type.Object({
@@ -359,8 +338,8 @@ export function makeSubagentTools(host: SubagentToolHost, lang?: () => ServerLan
 			name: "subagent_list",
 			label: "List subagents",
 			description: bilingual(
-				"List all subagents and their live status: convId, type, state, title, message count (errors/aborts are marked in the state).",
-				"列出全部子代理的运行态：convId、类型、状态、标题、消息数（报错/中止的会在状态里标出）。",
+				"List live subagents and up to 100 recent archived results. Older results remain retrievable by runId. Errors and aborts are marked.",
+				"列出运行中的子代理和最近100个归档结果；更早的结果仍可按runId获取，报错和中止会标出。",
 			),
 			promptSnippet: "list all subagents and their live status",
 			parameters: Type.Object({}),
@@ -372,7 +351,8 @@ export function makeSubagentTools(host: SubagentToolHost, lang?: () => ServerLan
 				const lines = list.map(
 					(r) =>
 						`- ${r.convId} · ${r.type} · ${subagentVerdict(r, tLang)} · ${r.title}` +
-						(tLang === "zh" ? `（msg: ${r.messageCount}）` : ` (msg: ${r.messageCount})`),
+						(tLang === "zh" ? `（msg: ${r.messageCount}）` : ` (msg: ${r.messageCount})`) +
+						(r.archived ? (tLang === "zh" ? " [已归档]" : " [archived]") : ""),
 				);
 				return text(lines.join("\n"));
 			},
