@@ -735,6 +735,8 @@
     "settingsViewToolsSchemaHint": "モデルに渡す function-calling ツール定義です（name / description / parameters）。システムプロンプト本文と合わせて完全な初期コンテキストになります。読み取り専用です。",
     "settingsViewToolsSchemaEmpty": "セッションはまだ準備中です。ツールスキーマはまだありません。",
     "settingsSkills": "スキル",
+    "settingsSkillCountLegend": "有効 / インストール済み",
+    "settingsSkillDisabledHint": "無効なスキルは一覧に残りますが、以降のモデルリクエストのスキルカタログには含まれません。必要に応じてここで有効にしてください。",
     "settingsReview": "ゴールレビュー",
     "settingsReviewDesc": "独立したゴールレビューセッション用に追加のプロンプトとスキルを設定します。メインセッションの設定は変更されません。",
     "settingsReviewSkills": "レビューで利用可能なスキル",

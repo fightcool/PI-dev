@@ -64,9 +64,9 @@ import {
 	userMessageEventToUiMessage,
 } from "./dsh-serialize.js";
 import { firstUserText, findSessionFilesForCwd, readSessionLog, replayEventsToMessages } from "./dsh-sessions.js";
-// Governance is a runtime JavaScript module maintained by the PI-dev host.
-// @ts-expect-error no declaration is needed for this small runtime policy module.
-import { assessInputBudget, assessToolOutput, DEFAULT_GOVERNANCE } from "../../../scripts/governance.mjs";
+// Package imports resolve identically from source and compiled server modules.
+// @ts-expect-error runtime policy is maintained as dependency-free JavaScript.
+import { assessInputBudget, assessToolOutput, DEFAULT_GOVERNANCE } from "#governance";
 
 const SNAPSHOT_INTERVAL_MS = 60;
 const MAX_OPEN_CONVERSATIONS = 8;
@@ -929,14 +929,17 @@ export class DshClientSession {
 				const msg = toolResultEventToUiMessage(ev.data as never);
 				if (msg) this.appendMessage(conv, msg);
 				const startedAt = conv.toolStartTimes.get(msg?.toolCallId ?? "");
-					const outputText = msg ? msg.content.map((b) => (b.type === "text" ? b.text : "")).join("\n") : "";
-					const measures = { bytes: Buffer.byteLength(outputText), lines: outputText ? outputText.split("\n").length : 0, tokens: Math.ceil(outputText.length / 4) };
-					const outputBudget = assessToolOutput(measures, DEFAULT_GOVERNANCE);
-						if (outputBudget.truncated && msg) {
-							const cut = Math.max(0, Math.min(outputText.length, DEFAULT_GOVERNANCE.maxToolOutputBytes));
-							msg.content = [{ type: "text", text: outputText.slice(0, cut) + "\n[tool output truncated by governance]" }];
-						}
-
+				const outputText = msg ? msg.content.map((b) => (b.type === "text" ? b.text : "")).join("\n") : "";
+				const measures = {
+					bytes: Buffer.byteLength(outputText),
+					lines: outputText ? outputText.split("\n").length : 0,
+					tokens: Math.ceil(outputText.length / 4),
+				};
+				const outputBudget = assessToolOutput(measures, DEFAULT_GOVERNANCE);
+				if (outputBudget.truncated && msg) {
+					const cut = Math.max(0, Math.min(outputText.length, DEFAULT_GOVERNANCE.maxToolOutputBytes));
+					msg.content = [{ type: "text", text: outputText.slice(0, cut) + "\n[tool output truncated by governance]" }];
+				}
 
 				// bash 工具结束 → 后台任务端口 diff。
 				const toolName = (ev.data as { toolName?: string }).toolName;
@@ -1468,16 +1471,26 @@ export class DshClientSession {
 			if (this.quiesceBlocked()) return;
 			conv.promptedSinceActive = true;
 			conv.lastEventAt = Date.now();
-				const blocks = await this.buildContentBlocks(text, attachments);
-				const inputTokens = Math.ceil(JSON.stringify(blocks).length / 4);
-				const budget = assessInputBudget(inputTokens, DEFAULT_GOVERNANCE);
-				if (budget.state === "blocked") {
-					this.emit({ type: "notice", level: "error", text: `提示词超出输入预算（${inputTokens}/${DEFAULT_GOVERNANCE.maxInputTokens} tokens）`, textEn: `Prompt exceeds input budget (${inputTokens}/${DEFAULT_GOVERNANCE.maxInputTokens} tokens)` });
-					return;
-				}
-				if (budget.state === "compact" || budget.state === "warn") {
-					this.emit({ type: "notice", level: "warning", text: `提示词预算${budget.state === "compact" ? "接近上限" : "较高"}（${inputTokens} tokens）`, textEn: `Prompt budget ${budget.state} (${inputTokens} tokens)` });
-				}
+			const blocks = await this.buildContentBlocks(text, attachments);
+			const inputTokens = Math.ceil(JSON.stringify(blocks).length / 4);
+			const budget = assessInputBudget(inputTokens, DEFAULT_GOVERNANCE);
+			if (budget.state === "blocked") {
+				this.emit({
+					type: "notice",
+					level: "error",
+					text: `提示词超出输入预算（${inputTokens}/${DEFAULT_GOVERNANCE.maxInputTokens} tokens）`,
+					textEn: `Prompt exceeds input budget (${inputTokens}/${DEFAULT_GOVERNANCE.maxInputTokens} tokens)`,
+				});
+				return;
+			}
+			if (budget.state === "compact" || budget.state === "warn") {
+				this.emit({
+					type: "notice",
+					level: "warning",
+					text: `提示词预算${budget.state === "compact" ? "接近上限" : "较高"}（${inputTokens} tokens）`,
+					textEn: `Prompt budget ${budget.state} (${inputTokens} tokens)`,
+				});
+			}
 
 			// 乐观落地用户消息（id 用暂定值；user/message 事件到达时按内容去重）。
 			const optimistic: UiMessage = {

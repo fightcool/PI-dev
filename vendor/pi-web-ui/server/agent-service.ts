@@ -9,15 +9,17 @@
  * `tool_delta` messages for live tool output and schedule throttled full-state
  * snapshots. The frontend is snapshot-driven (server is the source of truth),
  * so reconnects just re-request a snapshot.
+ * 🍞 @COUPLED session-history-cache.ts / session-search.ts own history reads;
+ * initial-snapshot-gate.ts / index.ts own the initial baseline (see docs/architecture-core.md).
  */
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync, rmSync, statSync, mkdirSync, watch } from "node:fs";
-import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
+import { delimiter, dirname, join, resolve, sep } from "node:path";
 // @ts-expect-error Host runtime module is JavaScript by design.
-import { normalizeUsageEvent, TokenUsageTracker } from "../../../scripts/token-usage.mjs";
+import { normalizeUsageEvent, TokenUsageTracker } from "#usage";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
@@ -35,6 +37,8 @@ import {
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { SessionHistoryCache } from "./session-history-cache.js";
+import { searchSessionInfos } from "./session-search.js";
 import { BgServerTracker } from "./bg-servers.js";
 import {
 	checkAll as checkAllUpdates,
@@ -99,7 +103,6 @@ import type {
 	CommandDef,
 	ConversationSummary,
 	GoalStatus,
-	MessageAnchor,
 	ProjectSummary,
 	QuestionAnswer,
 	ServerMessage,
@@ -699,66 +702,6 @@ function conversationTitle(session: AgentSession): string {
 		// best-effort
 	}
 	return DEFAULT_CONV_TITLE;
-}
-
-/** 全局搜索的会话匹配：大小写不敏感，命中任一项即算 ——
- *  显示名、当前项目内的文件名片段、首条消息，以及完整转录文本
- *  （SDK 的 allMessagesText 包含每一段 user 与 assistant 消息，AI 输出也在内）。 */
-function sessionMatchesSearch(q: string, s: SessionInfo): boolean {
-	if (s.name && s.name.toLowerCase().includes(q)) return true;
-	if (basename(s.path).toLowerCase().includes(q)) return true;
-	if (s.firstMessage.toLowerCase().includes(q)) return true;
-	if (s.allMessagesText.toLowerCase().includes(q)) return true;
-	return false;
-}
-
-/** 抽取一条 AgentMessage 的可搜索文本（user/assistant 的 text 块；
- *  镜像 SDK buildSessionInfo 的 allMessagesText 范围，保证搜索与定位一致）。 */
-function messageSearchText(m: { content?: unknown }): string {
-	const c = m.content;
-	if (typeof c === "string") return c;
-	if (!Array.isArray(c)) return "";
-	const parts: string[] = [];
-	for (const b of c) {
-		if (!b || typeof b !== "object") continue;
-		const blk = b as { type?: unknown; text?: unknown };
-		if (blk.type === "text" && typeof blk.text === "string") parts.push(blk.text);
-	}
-	return parts.join("\n");
-}
-
-/** 扫描一个会话转录文件，收集文本命中查询的消息锚点（role + timestamp，
- *  按转录顺序，最多 cap 个）。仅 user/assistant 消息参与，与搜索范围一致。 */
-function collectSessionAnchors(filePath: string, q: string, cap = 10): MessageAnchor[] {
-	const anchors: MessageAnchor[] = [];
-	if (!q) return anchors;
-	try {
-		const lines = readFileSync(filePath, "utf8").split("\n");
-		for (const line of lines) {
-			if (!line.trim()) continue;
-			let e: {
-				type?: unknown;
-				message?: { role?: unknown; timestamp?: unknown; content?: unknown };
-			};
-			try {
-				e = JSON.parse(line);
-			} catch {
-				continue;
-			}
-			if (e?.type !== "message") continue;
-			const m = e.message;
-			if (!m) continue;
-			if (m.role !== "user" && m.role !== "assistant") continue;
-			if (typeof m.timestamp !== "number") continue;
-			const text = messageSearchText(m);
-			if (!text || !text.toLowerCase().includes(q)) continue;
-			anchors.push({ role: m.role, timestamp: m.timestamp });
-			if (anchors.length >= cap) break;
-		}
-	} catch {
-		// 单个转录损坏不影响其余会话
-	}
-	return anchors;
 }
 
 /**
@@ -1777,8 +1720,8 @@ export class ClientSession {
 			listed: false,
 			promptedSinceActive: false,
 			lastActiveAt: Date.now(),
-				lastSdkEventAt: Date.now(),
-				usageTracker: new TokenUsageTracker(),
+			lastSdkEventAt: Date.now(),
+			usageTracker: new TokenUsageTracker(),
 
 			stallNoticed: false,
 			goal: this.makeGoalStatus(),
@@ -2358,6 +2301,7 @@ export class ClientSession {
 				break;
 			}
 			case "entry_appended": {
+				this.invalidateSessionInfos(conv.cwd);
 				// SDK 仅在扩展 appendEntry 时发 entry_appended（entry 恒为 custom），
 				// assistant 消息不会走这里——气泡级解析见 case "message_end"。
 				this.scheduleSessionsRefresh();
@@ -2365,6 +2309,7 @@ export class ClientSession {
 				break;
 			}
 			case "message_end": {
+				this.invalidateSessionInfos(conv.cwd);
 				// 轨迹事件：一条消息定稿（user/assistant 都收；custom display:false
 				// 的 serializeMessage 返回 null 时跳过）。
 				try {
@@ -2422,10 +2367,8 @@ export class ClientSession {
 					messageId: `stream-${m?.timestamp ?? 0}`,
 					usage: (() => {
 						try {
-							const t = this.session.getSessionStats().tokens;
-						const usage = conv.usageTracker.snapshot();
-						return { input: usage.current.input, output: usage.current.output, total: usage.current.total };
-
+							const usage = conv.usageTracker.snapshot();
+							return { input: usage.current.input, output: usage.current.output, total: usage.current.total };
 						} catch {
 							return null;
 						}
@@ -2576,13 +2519,13 @@ export class ClientSession {
 		};
 		try {
 			const s = this.session.getSessionStats();
-				stats = {
-					totalMessages: s.totalMessages,
-					tokens: {
-						...s.tokens,
-						request: conv.usageTracker.snapshot().current,
-						run: conv.usageTracker.snapshot().turn,
-					},
+			stats = {
+				totalMessages: s.totalMessages,
+				tokens: {
+					...s.tokens,
+					request: conv.usageTracker.snapshot().current,
+					run: conv.usageTracker.snapshot().turn,
+				},
 
 				cost: s.cost,
 				contextUsage: (() => {
@@ -3041,6 +2984,7 @@ export class ClientSession {
 			this.session.setSessionName(name);
 			this.conv.title = name;
 			this.invalidateSessionInfos();
+			this.onSessionsListChanged?.(this.cwd);
 			this.emitConversations();
 			await this.pushSessions();
 			this.emit({
@@ -4156,33 +4100,14 @@ export class ClientSession {
 	 *  client that never opened the panel never pays the disk scan. */
 	private sessionsRequested = false;
 
-	/**
-	 * Last parsed session list for this cwd, cached briefly so repeated
-	 * global-search keystrokes don't re-parse every transcript file on each
-	 * request (a project can hold 100+ sessions of several MB each).
-	 * pushSessions() and searchSessions() share this fridge — opening the
-	 * panel warms it, then every keystroke inside the TTL is free.
-	 */
-	private sessionInfosCache: { cwd: string; infos: SessionInfo[]; at: number } | null = null;
-	private static readonly SESSION_INFO_CACHE_TTL = 3000;
+	private readonly sessionHistory = new SessionHistoryCache((cwd) => SessionManager.list(cwd, piSessionsRoot()));
 
-	private async loadSessionInfos(): Promise<SessionInfo[]> {
-		const now = Date.now();
-		const c = this.sessionInfosCache;
-		if (c && c.cwd === this.cwd && now - c.at < ClientSession.SESSION_INFO_CACHE_TTL) {
-			return c.infos;
-		}
-		const infos = await SessionManager.list(this.cwd, piSessionsRoot());
-		this.sessionInfosCache = { cwd: this.cwd, infos, at: now };
-		return infos;
+	private loadSessionInfos(cwd = this.cwd): Promise<SessionInfo[]> {
+		return this.sessionHistory.get(cwd);
 	}
 
-	/** Session files on disk changed (delete / new-transcript) — drop the brief
-	 *  TTL fridge so the NEXT listing re-reads the directory instead of serving
-	 *  the pre-mutation snapshot (delete-then-refresh commonly runs inside the
-	 *  window, which would re-push the just-removed session). */
-	private invalidateSessionInfos(): void {
-		this.sessionInfosCache = null;
+	private invalidateSessionInfos(cwd = this.cwd): void {
+		this.sessionHistory.invalidate(cwd);
 	}
 
 	/** Push the persisted session list to the client (client-requested). */
@@ -4193,11 +4118,13 @@ export class ClientSession {
 
 	private async pushSessions(force = false): Promise<void> {
 		if (!this.sessionsRequested && !force) return;
+		const cwd = this.cwd;
 		try {
 			// Sessions live in the SDK default per-project dir
 			// (<agentDir>/sessions/--<cwd>--/), the same files the pi CLI/TUI
 			// use — one listing covers every conversation of the current folder.
-			const infos = await this.loadSessionInfos();
+			const infos = await this.loadSessionInfos(cwd);
+			if (this.disposed || cwd !== this.cwd) return;
 
 			const sessions = new Map<string, SessionSummary>();
 			for (const s of infos) {
@@ -4213,17 +4140,17 @@ export class ClientSession {
 			const sorted = [...sessions.values()].sort((a, b) => b.modified - a.modified).slice(0, 200); // newest first — the panel shows recent history
 			this.emit({ type: "sessions", sessions: sorted });
 		} catch {
-			this.emit({ type: "sessions", sessions: [] });
+			if (!this.disposed && cwd === this.cwd) this.emit({ type: "sessions", sessions: [] });
 		}
 	}
 
 	/** 其他端在本项目下写入/新建/删除/改名了会话 → 让本端的会话列表跟上。
 	 *  列表按 cwd 过滤：不同项目不必理会（切到该项目时本来就会 refreshSessions）。 */
 	notifyExternalSessionsChanged(cwd: string): void {
-		if (this.disposed || cwd !== this.cwd) return;
-		// 3s 的 session-info 冰箱会端回旧列表，这里先击穿再重列。force：即使本端还
-		// 没打开过历史面板也推（推送的数据会在前端 state 里就位，开抽屉即见）。
-		this.invalidateSessionInfos();
+		if (this.disposed) return;
+		this.invalidateSessionInfos(cwd);
+		if (cwd !== this.cwd) return;
+		// force keeps other devices' history current even before their panel opens.
 		void this.pushSessions(true);
 	}
 
@@ -4233,6 +4160,7 @@ export class ClientSession {
 		try {
 			const file = conv.session.sessionFile;
 			if (!file) return;
+			this.invalidateSessionInfos(conv.cwd);
 			// 记下自己刚写入的签名，避免下次接入时把自己的写当作「其他端的更新」重载。
 			this.updateDiskSig(conv);
 			this.onSessionPersisted?.(file, conv.cwd);
@@ -4268,6 +4196,7 @@ export class ClientSession {
 
 	/** 本端一轮结束（agent_end）后，补做期间收到的接力重载。 */
 	private async flushPendingDiskReloads(): Promise<void> {
+		// eslint-disable-next-line unicorn/no-useless-spread -- snapshot: awaited reloads can change the conversation map
 		for (const conv of [...this.convs.values()]) {
 			if (!conv.pendingDiskReload || conv.session.isStreaming) continue;
 			await this.reloadConversationFromDisk(conv);
@@ -4496,7 +4425,8 @@ export class ClientSession {
 				// in-memory title still updated; transcript write is best-effort
 			}
 			this.emitConversations();
-			this.invalidateSessionInfos();
+			this.invalidateSessionInfos(conv.cwd);
+			this.onSessionsListChanged?.(conv.cwd);
 			await this.refreshSessions();
 		} catch (err) {
 			this.emit({
@@ -4862,22 +4792,7 @@ export class ClientSession {
 		}
 		try {
 			const infos = await this.loadSessionInfos();
-			const results = infos
-				.filter((s) => sessionMatchesSearch(q, s))
-				.sort((a, b) => b.modified.getTime() - a.modified.getTime())
-				.slice(0, 50)
-				.map((s) => {
-					const base: SessionSummary = {
-						path: s.path,
-						name: s.name,
-						firstMessage: s.firstMessage,
-						messageCount: s.messageCount,
-						modified: s.modified.getTime(),
-						source: "web",
-					};
-					// 命中会话里再定位具体消息（供点击跳转）；仅元数据命中则无锚点
-					return { ...base, anchors: collectSessionAnchors(s.path, q) };
-				});
+			const results = await searchSessionInfos(infos, q);
 			this.emit({ type: "session_search_results", reqId, query, ok: true, results });
 		} catch {
 			this.emit({ type: "session_search_results", reqId, query, ok: false, results: [] });

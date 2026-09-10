@@ -1,10 +1,15 @@
 {
   "name": "pi-web-ui",
   "repository": "https://github.com/xing-shuyin/pi-web-ui.git",
-  "commit": "6276a0b0f11b3d5518b825ac2c6fbccda5da17e2",
-  "packageVersion": "0.70.0",
+  "initialImport": {
+    "commit": "6276a0b0f11b3d5518b825ac2c6fbccda5da17e2",
+    "packageVersion": "0.70.0",
+    "importedAt": "2026-09-09"
+  },
+  "packageVersion": "0.72.0",
+  "upgradeRecordedBy": "1c4b991acd03374699b4f5ed41db16c4a93f370f",
+  "upstreamCommitForCurrentVersion": null,
   "license": "MIT",
-  "importedAt": "2026-09-09",
   "snapshot": "vendor/pi-web-ui",
-  "notes": "Source snapshot imported without .git, node_modules, dist, or runtime data. Build and protocol checks are required before release."
+  "notes": "Tracked source fork, without dependencies or build/runtime data. Initial import provenance is retained separately; the 0.72.0 upgrade commit did not record an exact upstream SHA. PI-dev root commands govern environment releases; vendor commands remain available for upstream-compatible application builds. Never infer current upstream identity from the initial import SHA."
 }

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ROOT } from "./lib.mjs";
 
@@ -9,7 +9,7 @@ const result = spawnSync("git", ["ls-files", "-z"], {
 });
 let files;
 if (result.status === 0 && !result.error) {
-  files = result.stdout.split("\0").filter(Boolean);
+  files = result.stdout.split("\0").filter(Boolean).filter(file => existsSync(join(ROOT, file)));
 } else {
   const fallback = spawnSync("find", [ROOT, "-type", "f", "-not", "-path", "*/node_modules/*", "-not", "-path", "*/.venv/*", "-not", "-path", "*/.tools/*", "-not", "-path", "*/.git/*", "-not", "-path", "*/.playwright-mcp/*", "-not", "-path", "*/__pycache__/*", "-not", "-path", "*/.ruff_cache/*"], { encoding: "utf8" });
   if (fallback.status !== 0) throw new Error("Cannot enumerate deliverable files.");
@@ -32,6 +32,11 @@ for (const file of files) {
   if (forbidden.test(file) && !file.endsWith(".example")) {
     console.error(`FAIL private/runtime path tracked: ${file}`);
     failed = true;
+  }
+  if (lstatSync(join(ROOT, file)).isSymbolicLink()) {
+    console.error(`FAIL symlink is not a portable deliverable: ${file}`);
+    failed = true;
+    continue;
   }
   const content = readFileSync(join(ROOT, file));
   const isBinary = /\.(?:png|jpe?g|gif|webp|ico|woff2?|ttf|svg)$/i.test(file);

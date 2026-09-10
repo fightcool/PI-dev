@@ -24,6 +24,7 @@ RUN npm i -g @deepseek-ai/dsh@0.1.1-rc.2
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/lib ./lib
 COPY --from=build /app/web/dist ./web/dist
 ENV PI_WEB_PORT=8787
 EXPOSE 8787

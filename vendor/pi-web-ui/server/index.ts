@@ -1,5 +1,7 @@
 /**
  * pi-web-ui server entry.
+ * 🍞 @COUPLED initial-snapshot-gate.ts / web/src/use-chat.ts: pi hello supplies
+ * one full baseline after plugins; later get_state remains a full resync.
  *
  * - Serves the built frontend (web/dist) in production; in dev, Vite serves it
  *   on :5173 and proxies /ws to this server.
@@ -28,6 +30,7 @@ import express from "express";
 import compression from "compression";
 import { WebSocket, WebSocketServer } from "ws";
 import { VERSION, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { InitialSnapshotGate } from "./initial-snapshot-gate.js";
 import { PROTOCOL_VERSION } from "./protocol-version.js";
 import { AgentService, workspacePath, QuiesceRejectedError } from "./agent-service.js";
 import { isAbsoluteWirePath, wireToAbs } from "./files-service.js";
@@ -101,9 +104,9 @@ const ALLOW_ORIGINS = (process.env.PI_WEB_ALLOW_ORIGINS ?? "")
 /** 可选共享口令（PI_WEB_TOKEN）：设置后所有 HTTP/WS 请求必须携带——
  *  Authorization: Bearer / X-PI-Token 头、?token= 查询参数或 pi_web_token cookie
  *  任一匹配即可；供 0.0.0.0 / 反代等暴露场景兜底，未设置则行为不变。 */
-	const AUTH_TOKEN = process.env.PI_WEB_TOKEN?.trim() ?? "";
-	/** Query tokens are a compatibility mode; disable in exposed deployments. */
-	const ALLOW_QUERY_TOKEN = process.env.PI_WEB_ALLOW_QUERY_TOKEN !== "0";
+const AUTH_TOKEN = process.env.PI_WEB_TOKEN?.trim() ?? "";
+/** Query tokens are a compatibility mode; disable in exposed deployments. */
+const ALLOW_QUERY_TOKEN = process.env.PI_WEB_ALLOW_QUERY_TOKEN !== "0";
 
 /** 语言包下载根（语言包仓库的 raw 文件地址；版本 tag 优先、main 兜底，见 locales.ts）。 */
 const LOCALE_BASE_URL =
@@ -146,9 +149,13 @@ if (process.platform === "win32") {
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
-const webauthn = new WebAuthnAuth(DATA_DIR, process.env.PI_WEB_RP_ID ?? "localhost", process.env.PI_WEB_ORIGIN ?? "http://localhost:8787");
+const webauthn = new WebAuthnAuth(
+	DATA_DIR,
+	process.env.PI_WEB_RP_ID ?? "localhost",
+	process.env.PI_WEB_ORIGIN ?? "http://localhost:8787",
+);
 void webauthn.load();
-app.post(["/api/auth/register/options","/dev/api/auth/register/options"], async (_req,res) => {
+app.post(["/api/auth/register/options", "/dev/api/auth/register/options"], async (_req, res) => {
 	try {
 		res.json(await webauthn.registrationOptions());
 	} catch (e) {
@@ -158,23 +165,60 @@ app.post(["/api/auth/register/options","/dev/api/auth/register/options"], async 
 		res.status(409).json({ error: e instanceof Error ? e.message : "注册不可用" });
 	}
 });
-app.post(["/api/auth/register/verify","/dev/api/auth/register/verify"], async (req,res) => { try { res.json(await webauthn.registration(req.body)); } catch { res.status(400).json({error:"认证失败"}); } });
-app.post(["/api/auth/login/options","/dev/api/auth/login/options"], async (_req,res) => res.json(await webauthn.authenticationOptions()));
-app.post(["/api/auth/login/verify","/dev/api/auth/login/verify"], async (req,res) => { try { const t=await webauthn.authentication(req.body); res.setHeader("Set-Cookie",`pi_web_session=${t}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`); res.json({verified:true}); } catch { res.status(401).json({error:"认证失败"}); } });
-app.post(["/api/auth/recovery","/dev/api/auth/recovery"], async (req,res) => { const t=await webauthn.recovery(String(req.body?.code??"")); if(!t) return res.status(401).json({error:"恢复码无效"}); res.setHeader("Set-Cookie",`pi_web_session=${t}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`); res.json({verified:true}); });
-app.post(["/api/auth/revoke","/dev/api/auth/revoke"], async (req,res) => { await webauthn.revoke(String(req.body?.token??"")); res.json({ok:true}); });
+app.post(["/api/auth/register/verify", "/dev/api/auth/register/verify"], async (req, res) => {
+	try {
+		res.json(await webauthn.registration(req.body));
+	} catch {
+		res.status(400).json({ error: "认证失败" });
+	}
+});
+app.post(["/api/auth/login/options", "/dev/api/auth/login/options"], async (_req, res) =>
+	res.json(await webauthn.authenticationOptions()),
+);
+app.post(["/api/auth/login/verify", "/dev/api/auth/login/verify"], async (req, res) => {
+	try {
+		const t = await webauthn.authentication(req.body);
+		res.setHeader("Set-Cookie", `pi_web_session=${t}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`);
+		res.json({ verified: true });
+	} catch {
+		res.status(401).json({ error: "认证失败" });
+	}
+});
+app.post(["/api/auth/recovery", "/dev/api/auth/recovery"], async (req, res) => {
+	const t = await webauthn.recovery(String(req.body?.code ?? ""));
+	if (!t) return res.status(401).json({ error: "恢复码无效" });
+	res.setHeader("Set-Cookie", `pi_web_session=${t}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`);
+	res.json({ verified: true });
+});
+app.post(["/api/auth/revoke", "/dev/api/auth/revoke"], async (req, res) => {
+	await webauthn.revoke(String(req.body?.token ?? ""));
+	res.json({ ok: true });
+});
 
 /** Same-origin transition login: the secret is accepted only in a POST body and
  * exchanged for an HttpOnly cookie. WebAuthn is intentionally not claimed here. */
 app.get(["/login", "/dev/login"], (_req, res) => {
-	if (!AUTH_TOKEN) { res.status(404).send("登录未启用"); return; }
-	res.type("html").send(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>登录</title><style>body{font:16px system-ui;max-width:28rem;margin:15vh auto;padding:1rem}input,button{font:inherit;padding:.6rem;margin:.4rem 0;width:100%}code{background:#f2f2f2;padding:.1rem .35rem;border-radius:4px} .row{display:flex;gap:.4rem} .row input{flex:1} .row button{width:auto;flex:none}</style><script>function toggle(s){var i=document.getElementById('t');i.type=i.type==='password'?'text':'password';s.textContent=i.type==='password'?'显示':'隐藏'}</script><h1>同域登录</h1><p>请输入服务器访问口令。口令不会写入 URL 或浏览器存储。</p><p>口令在服务器上，运行 <code>cat ~/.config/pi-dev/token</code> 查看。</p><form method="post" action="/dev/login"><div class="row"><input id="t" name="token" type="password" autocomplete="current-password" required><button type="button" onclick="toggle(this)">显示</button></div><button>登录</button></form>`);
+	if (!AUTH_TOKEN) {
+		res.status(404).send("登录未启用");
+		return;
+	}
+	res
+		.type("html")
+		.send(
+			`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>登录</title><style>body{font:16px system-ui;max-width:28rem;margin:15vh auto;padding:1rem}input,button{font:inherit;padding:.6rem;margin:.4rem 0;width:100%}code{background:#f2f2f2;padding:.1rem .35rem;border-radius:4px} .row{display:flex;gap:.4rem} .row input{flex:1} .row button{width:auto;flex:none}</style><script>function toggle(s){var i=document.getElementById('t');i.type=i.type==='password'?'text':'password';s.textContent=i.type==='password'?'显示':'隐藏'}</script><h1>同域登录</h1><p>请输入服务器访问口令。口令不会写入 URL 或浏览器存储。</p><p>口令在服务器上，运行 <code>cat ~/.config/pi-dev/token</code> 查看。</p><form method="post" action="/dev/login"><div class="row"><input id="t" name="token" type="password" autocomplete="current-password" required><button type="button" onclick="toggle(this)">显示</button></div><button>登录</button></form>`,
+		);
 });
 app.use(express.urlencoded({ extended: false }));
 app.post(["/login", "/dev/login"], (req, res) => {
 	const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
-	if (!token || token !== AUTH_TOKEN) { res.status(401).type("html").send("登录失败：口令不正确。<a href=\"/login\">重试</a>"); return; }
-	res.setHeader("Set-Cookie", `pi_web_token=${encodeURIComponent(AUTH_TOKEN)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=31536000`);
+	if (!token || token !== AUTH_TOKEN) {
+		res.status(401).type("html").send('登录失败：口令不正确。<a href="/login">重试</a>');
+		return;
+	}
+	res.setHeader(
+		"Set-Cookie",
+		`pi_web_token=${encodeURIComponent(AUTH_TOKEN)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=31536000`,
+	);
 	res.redirect("/");
 });
 
@@ -185,12 +229,12 @@ function requestTokens(req: { headers: IncomingMessage["headers"]; url?: string 
 	if (typeof auth === "string" && auth.startsWith("Bearer ")) out.push(auth.slice(7).trim());
 	const header = req.headers["x-pi-token"];
 	if (typeof header === "string") out.push(header.trim());
-		try {
-			if (ALLOW_QUERY_TOKEN) {
-				const q = new URL(req.url ?? "/", "http://localhost").searchParams.get("token");
-				if (q) out.push(q.trim());
-			}
-		} catch {
+	try {
+		if (ALLOW_QUERY_TOKEN) {
+			const q = new URL(req.url ?? "/", "http://localhost").searchParams.get("token");
+			if (q) out.push(q.trim());
+		}
+	} catch {
 		/* ignore malformed url */
 	}
 	const cookie = req.headers.cookie;
@@ -253,14 +297,14 @@ if (AUTH_TOKEN) {
 			// 避免浏览器被残留 cookie 卡死一年（本来也不该再信任它鉴权）。
 			res.setHeader("Set-Cookie", "pi_web_token=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0");
 		}
-			if (req.path === "/api/health" || req.path.startsWith("/api/auth/") || isPublicUiAsset(req.path) || ok) {
-				next();
-				return;
-			}
-			if (req.path === "/" || req.path === "/dev/" || req.path === "/dev") {
-				next();
-				return;
-			}
+		if (req.path === "/api/health" || req.path.startsWith("/api/auth/") || isPublicUiAsset(req.path) || ok) {
+			next();
+			return;
+		}
+		if (req.path === "/" || req.path === "/dev/" || req.path === "/dev") {
+			next();
+			return;
+		}
 
 		res
 			.status(401)
@@ -908,6 +952,7 @@ wss.on("connection", (ws) => {
 	service.noteSocketOpen();
 	let clientId: string | null = null;
 	let closed = false;
+	const initialSnapshot = new InitialSnapshotGate();
 	/** 最近一份全量 snapshot 的估算字节数（UTF-16 ×2），供背压相对阈值用（issue #11）。 */
 	let lastSnapshotBytes = 0;
 	/** Commands received while the session is still being created — replayed after attach. */
@@ -928,6 +973,14 @@ wss.on("connection", (ws) => {
 
 	const send = (msg: ServerMessage): void => {
 		if (closed || ws.readyState !== WebSocket.OPEN) return;
+		// A reused ClientSession may broadcast while this socket loads plugins.
+		// Its first snapshot must be full and follow the renderer catalog.
+		if (
+			ENGINE === "pi" &&
+			(msg.type === "snapshot" || msg.type === "snapshot_delta") &&
+			!initialSnapshot.canSendSnapshot
+		)
+			return;
 		// 发送背压（issue #11）：socket 消费不过来时（前端慢/网络差），堆里会堆积
 		// 每份可达 ~10MB 的全量 snapshot 字符串，低内存主机直接 OOM。snapshot 是全量
 		// 幂等的且稍后必有更新的一份，可以安全丢弃——在序列化之前丢，连
@@ -1023,9 +1076,9 @@ wss.on("connection", (ws) => {
 				cs.cycleThinking();
 				break;
 			case "get_state":
-				// Always a FULL snapshot: the client is (re)connecting or detected
-				// a rev/seq gap — it needs an authoritative state to rebuild from.
-				cs.flushSnapshot(true);
+				// Startup requests share the full snapshot sent after plugin loading.
+				// Once initialized, every rev/seq-gap resync remains authoritative.
+				if (ENGINE !== "pi" || initialSnapshot.canSendSnapshot) cs.flushSnapshot(true);
 				break;
 			case "get_commands":
 				void cs.pushSlashCommands();
@@ -1341,6 +1394,7 @@ wss.on("connection", (ws) => {
 				.attach(cid, send)
 				.then((cs) => {
 					if (closed) return;
+					if (ENGINE === "pi") initialSnapshot.start(() => cs.flushSnapshot(true));
 					send({
 						type: "ready",
 						clientId: cid,
@@ -1373,19 +1427,13 @@ wss.on("connection", (ws) => {
 							// 插件命令可能在本客户端 attach 过程中才注册（首载竞态）——
 							// 重推一次目录，保证选择器完整。
 							service.applyPluginCommandCatalog();
-							// 插件清单【先于】快照推送：前端渲染历史消息前就拿到 renderer
-							// 注册表（plugin-fence.ts），`` ```lang `` 围栏才能立即命中插件；
-							// 否则消息先落成普通代码块，清单后到也不会重渲。
-							// forceFull：同一 clientId 重连会复用内存 ClientSession，增量快照的
-							// baseRev 是新 socket 没有的（前端只能再 get_state 自愈）。首个快照
-							// 恒发全量，重连一次到位——也保证多端接力后的追平状态能到达。
-							cs.flushSnapshot(true);
 						})
 						.catch(() => {
+							// Plugin failure must not prevent the initial authoritative state.
+						})
+						.then(() => {
 							if (closed) return;
-							// ensureLoaded 失败（如磁盘读错）不能卡死快照——前端 30s 无消息
-							// 会重连，重连又失败会陷入循环。至少把状态推下去。
-							cs.flushSnapshot(true);
+							initialSnapshot.complete(() => cs.flushSnapshot(true));
 						});
 					// hello may carry the UI locale — persist it before replaying
 					// anything queued during startup (issue #91).
@@ -1425,6 +1473,7 @@ wss.on("connection", (ws) => {
 	ws.on("close", () => {
 		service.noteSocketClose();
 		closed = true;
+		initialSnapshot.dispose();
 		pending = [];
 		removePluginSender();
 		if (snapshotRetryTimer) {

@@ -735,6 +735,8 @@
     "settingsViewToolsSchemaHint": "Définitions function-calling envoyées au modèle (name / description / parameters), qui forment avec le prompt système le contexte initial complet, lecture seule.",
     "settingsViewToolsSchemaEmpty": "Session pas encore prête, aucun schema d'outils pour l'instant.",
     "settingsSkills": "Compétences",
+    "settingsSkillCountLegend": "Activées / Installées",
+    "settingsSkillDisabledHint": "Les compétences désactivées restent dans la liste, mais sont exclues du catalogue des prochaines requêtes au modèle. Activez-les ici au besoin.",
     "settingsReview": "Révision d'objectif",
     "settingsReviewDesc": "Configurez prompt et compétences supplémentaires pour la session de révision d'objectif séparée ; ne change pas les réglages de la session principale.",
     "settingsReviewSkills": "Compétences de révision",

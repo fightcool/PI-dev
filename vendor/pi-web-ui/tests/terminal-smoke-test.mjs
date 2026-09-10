@@ -11,6 +11,8 @@ import WebSocket from "ws";
 const PORT = 20000 + Math.floor(Math.random() * 10000);
 const workdir = mkdtempSync(join(tmpdir(), "piweb-term-"));
 const dataDir = mkdtempSync(join(tmpdir(), "piweb-term-data-"));
+process.env.PI_CODING_AGENT_DIR = join(dataDir, "agent");
+delete process.env.PI_CODING_AGENT_SESSION_DIR;
 process.env.PI_WEB_PORT = String(PORT);
 process.env.PI_WEB_CWD = workdir;
 process.env.PI_WEB_DATA_DIR = dataDir;
@@ -196,10 +198,9 @@ async function main() {
 	// The CLI stores sessions in <agentDir>/sessions/--<cwd-sanitized>--; fabricate
 	// one there and check list_sessions discovers the same persisted file.
 	{
-		const { homedir } = await import("node:os");
 		const { writeFileSync, mkdirSync } = await import("node:fs");
 		const safePath = `--${workdir.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
-		const tuiDir = join(homedir(), ".pi", "agent", "sessions", safePath);
+		const tuiDir = join(process.env.PI_CODING_AGENT_DIR, "sessions", safePath);
 		const tuiFile = join(tuiDir, "2026-08-04T00-00-00-000Z_tui-smoke-test.jsonl");
 		mkdirSync(tuiDir, { recursive: true });
 		writeFileSync(

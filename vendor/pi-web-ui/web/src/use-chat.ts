@@ -1,3 +1,5 @@
+// 🍞 @COUPLED server/index.ts / initial-snapshot-gate.ts: pi hello owns the baseline;
+// rev/seq gaps below still request get_state (docs/architecture-core.md).
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { randomUuid } from "./uuid";
 import { withToken } from "./auth-token";
@@ -966,8 +968,9 @@ export function useChat() {
 						managed: msg.managed,
 						tabs: msg.tabs,
 					});
-					// Ensure a fresh snapshot on (re)connect.
-					ws.send(JSON.stringify({ type: "get_state" } satisfies ClientMessage));
+					// pi sends its initial full state after the plugin renderer catalog.
+					// Keep DSH's existing request path; rev/seq-gap resyncs are separate.
+					if (msg.engine === "dsh") ws.send(JSON.stringify({ type: "get_state" } satisfies ClientMessage));
 					// Sessions + recent projects are LAZY: LeftPanel requests them
 					// when it is actually shown — listing scans every session file
 					// on disk (listAll scans ALL projects), too heavy for the

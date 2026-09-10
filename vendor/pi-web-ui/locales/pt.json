@@ -735,6 +735,8 @@
     "settingsViewToolsSchemaHint": "As definições de ferramentas function-calling enviadas ao modelo (nome / descrição / parâmetros), combinadas com o texto do prompt de sistema para formar o contexto inicial completo. Somente leitura.",
     "settingsViewToolsSchemaEmpty": "Sessão ainda não pronta — nenhum esquema de ferramentas disponível.",
     "settingsSkills": "Skills",
+    "settingsSkillCountLegend": "Ativadas / Instaladas",
+    "settingsSkillDisabledHint": "As skills desativadas permanecem na lista, mas são excluídas do catálogo nas próximas solicitações ao modelo. Ative-as aqui quando necessário.",
     "settingsReview": "Revisão de objetivos",
     "settingsReviewDesc": "Configura prompts e skills adicionais para as sessões independentes de revisão de objetivo; não altera as configurações da conversa principal.",
     "settingsReviewSkills": "Skills disponíveis para revisão",

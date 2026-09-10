@@ -1,9 +1,9 @@
-import { StrictMode } from "react";
+import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
-import { App } from "./App";
+// Load the workspace only after authentication; public login never imports chat/Markdown.
+const App = lazy(() => import("./App").then((module) => ({ default: module.App })));
 import { LanguageProvider } from "./i18n";
 import "./styles.css";
-import "highlight.js/styles/github-dark.css";
 import { applyTheme, loadTheme } from "./theme";
 import { initAuthToken } from "./auth-token";
 import { installScrollbarGutterVar } from "./scrollbar-gutter";
@@ -24,7 +24,15 @@ createRoot(document.getElementById("root")!).render(
 	<StrictMode>
 		<LanguageProvider>
 			<PasskeyGate>
-				<App />
+				<Suspense
+					fallback={
+						<div className="boot-wait" role="status" aria-label="Loading">
+							…
+						</div>
+					}
+				>
+					<App />
+				</Suspense>
 			</PasskeyGate>
 		</LanguageProvider>
 	</StrictMode>,

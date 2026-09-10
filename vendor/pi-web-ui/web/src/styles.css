@@ -4140,7 +4140,7 @@ body:not(.has-wallpaper)::after {
 	 * 左边镜像），列中线永远与外部输入框中线重合；stable 还保证滚动条
 	 * 出现/消失时整列不跳动。叠加层滚动条平台（mac 触控）gutter 为 0，无影响。 */
 	scrollbar-gutter: stable both-edges;
-	/* 钉底时惰性窗口化自己做 scrollTop 补偿（LazyMount / MessageList sweep、
+	/* 钉底时有界行窗口自己做 scrollTop 补偿（useRowWindow / useBottomScroll、
 	 * MO/RO 再钉），浏览器原生滚动锚定会与之叠加导致双重跳动，关掉。 */
 	overflow-anchor: none;
 }

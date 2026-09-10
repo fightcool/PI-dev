@@ -12,7 +12,12 @@
 		"pi-web-ui": "bin/pi-web-ui.mjs"
 	},
 	"main": "bin/pi-web-ui.mjs",
+	"imports": {
+		"#usage": "./lib/usage/token-usage.mjs",
+		"#governance": "./lib/usage/governance.mjs"
+	},
 	"files": [
+		"lib/",
 		"bin/",
 		"dist/",
 		"web/dist/",

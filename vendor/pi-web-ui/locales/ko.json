@@ -735,6 +735,8 @@
     "settingsViewToolsSchemaHint": "model에게 전달하는 function-calling 도구 정의예요(name / description / parameters). 시스템 프롬프트 본문과 합쳐져 전체 초기 컨텍스트가 돼요. 읽기 전용이에요.",
     "settingsViewToolsSchemaEmpty": "세션이 아직 준비되지 않아 도구 schema가 없어요.",
     "settingsSkills": "스킬",
+    "settingsSkillCountLegend": "활성화 / 설치됨",
+    "settingsSkillDisabledHint": "비활성화된 스킬은 목록에 남지만 이후 모델 요청의 스킬 카탈로그에서는 제외됩니다. 필요할 때 여기에서 활성화하세요.",
     "settingsReview": "목표 검토",
     "settingsReviewDesc": "별도의 목표 검토 세션을 위한 추가 프롬프트와 스킬을 설정해요. 메인 세션 설정은 바뀌지 않아요.",
     "settingsReviewSkills": "검토에 사용 가능한 스킬",

@@ -735,6 +735,8 @@
     "settingsViewToolsSchemaHint": "Le definizioni degli strumenti function-calling inviate al modello (nome / descrizione / parametri), combinate con il testo del prompt di sistema per formare il contesto iniziale completo. Sola lettura.",
     "settingsViewToolsSchemaEmpty": "Sessione non ancora pronta — nessuno schema strumenti disponibile.",
     "settingsSkills": "Skill",
+    "settingsSkillCountLegend": "Abilitate / Installate",
+    "settingsSkillDisabledHint": "Le skill disabilitate restano nell'elenco, ma sono escluse dal catalogo delle successive richieste al modello. Abilitale qui quando necessario.",
     "settingsReview": "Revisione obiettivo",
     "settingsReviewDesc": "Configura istruzioni aggiuntive e skill per la sessione isolata di revisione degli obiettivi; la sessione principale non è influenzata.",
     "settingsReviewSkills": "Skill disponibili per la revisione",

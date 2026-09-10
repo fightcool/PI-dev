@@ -59,9 +59,6 @@ export function pickTemplatePrompt(t: { systemPrompt: string; systemPromptEn?: s
 
 /** 名字去空白折叠后非空且 ≤ 60 字符（工具参数可读，允许中文）。 */
 const NAME_MAX = 60;
-/** 模型 id 上限（"provider/id"，含斜杠与自定义模型目录 id）。 */
-const MODEL_MAX = 200;
-
 /**
  * 内置默认模板（第一次运行时种子进列表；用户改动后以 <dataDir> 文件为准）。
  * 文案改编自 pi-subagents 社区项目（tintinweb / nicobailon）的角色提示词,

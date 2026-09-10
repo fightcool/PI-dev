@@ -22,10 +22,18 @@ jobs:
         run: bash scripts/bootstrap.sh
       - name: Environment tests
         run: npm test
+      - name: Application types and unit tests
+        run: npm run typecheck && npm run test:unit
       - name: Python isolation test
         run: .venv/bin/python -m pytest tests/test_environment.py -q
       - name: Service smoke without systemd
         run: node scripts/ci-smoke.mjs
+      - name: Application protocol smoke
+        run: npm run test:smoke
+      - name: Install test browser
+        run: cd vendor/pi-web-ui && npx --no-install playwright-core install --with-deps chromium
+      - name: Browser performance and navigation regression
+        run: npm run test:performance
       - name: Publication safety checks
         run: npm run check:publish
       - name: Dependency audit

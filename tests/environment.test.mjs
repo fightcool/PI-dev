@@ -17,7 +17,7 @@ import {
   validateGovernance,
   assessInputBudget,
   assessToolOutput,
-} from "../scripts/governance.mjs";
+} from "../vendor/pi-web-ui/lib/usage/governance.mjs";
 
 const config = () => ({
   root: ROOT,
@@ -59,6 +59,7 @@ test("runtime overrides inherited old-instance paths and activates the project v
       { PI_WEB_CWD: "/root", PI_WEB_PORT: "8787" },
     );
     assert.equal(env.PI_WEB_CWD, ROOT);
+    assert.equal(env.PI_WEB_MANAGED, "1");
     assert.equal(env.PI_WEB_PORT, "8788");
     assert.equal(env.PI_CODING_AGENT_DIR, "/tmp/pi-dev-agent");
     // 不设置 PI_CODING_AGENT_SESSION_DIR：SDK 0.85.1 不读它写盘，但 pi-web-ui

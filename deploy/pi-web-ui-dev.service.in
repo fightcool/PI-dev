@@ -1,25 +1,29 @@
+# 🍞 AI Breadcrumb: @COUPLED scripts/service.mjs, tests/service.test.mjs
+# @WHY Unlimited delayed restarts recover crashes; explicit systemctl stop stays stopped.
+# Install-time defaults: PI_DEV_HEAP_MB=1024 PI_DEV_MEMORY_HIGH=1536M PI_DEV_MEMORY_MAX=2G.
+# For an 8 GiB host, recommended opt-in: PI_DEV_HEAP_MB=2048 PI_DEV_MEMORY_HIGH=3G PI_DEV_MEMORY_MAX=4G.
+# Overrides require reinstalling the unit after an explicit stop; no automatic host sizing.
 [Unit]
 Description=PI-dev isolated coding workstation
 Wants=network-online.target
 After=network-online.target
-StartLimitIntervalSec=120
-StartLimitBurst=3
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-WorkingDirectory=@ROOT@
+WorkingDirectory=@WORKSPACE@
 ExecStart=@NODE@ @START@
 Environment=@CONFIG_ENV@
-Environment=NODE_OPTIONS=--max-old-space-size=1024
-Restart=on-failure
+Environment=NODE_OPTIONS=--max-old-space-size=@HEAP_MB@
+Restart=always
 RestartSec=10
 TimeoutStopSec=30
 KillMode=control-group
 UMask=0077
 NoNewPrivileges=true
 MemoryAccounting=true
-MemoryHigh=1536M
-MemoryMax=2G
+MemoryHigh=@MEMORY_HIGH@
+MemoryMax=@MEMORY_MAX@
 TasksMax=256
 
 [Install]

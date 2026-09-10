@@ -735,6 +735,8 @@
     "settingsViewToolsSchemaHint": "Die an das Modell gesendeten Function-Calling-Werkzeugdefinitionen (name / description / parameters); sie bilden zusammen mit dem System-Prompt-Text den vollständigen Ausgangskontext. Nur lesbar.",
     "settingsViewToolsSchemaEmpty": "Sitzung noch nicht bereit – kein Werkzeug-Schema verfügbar.",
     "settingsSkills": "Skills",
+    "settingsSkillCountLegend": "Aktiviert / Installiert",
+    "settingsSkillDisabledHint": "Deaktivierte Skills bleiben aufgelistet, werden aber bei nachfolgenden Modellanfragen nicht in den Skill-Katalog aufgenommen. Bei Bedarf hier aktivieren.",
     "settingsReview": "Zielprüfung",
     "settingsReviewDesc": "Zusätzliche Anweisungen und Skills für die isolierte Zielprüfungs-Sitzung konfigurieren; die Hauptsitzung bleibt unverändert.",
     "settingsReviewSkills": "Für die Prüfung verfügbare Skills",

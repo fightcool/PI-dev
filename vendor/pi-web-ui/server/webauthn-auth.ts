@@ -4,7 +4,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   generateRegistrationOptions, verifyRegistrationResponse,
   generateAuthenticationOptions, verifyAuthenticationResponse,
-  type AuthenticatorTransport, type AuthenticatorTransportFuture, type RegistrationResponseJSON, type AuthenticationResponseJSON,
+  type AuthenticatorTransportFuture, type RegistrationResponseJSON, type AuthenticationResponseJSON,
 } from "@simplewebauthn/server";
 
 type Credential = { id: string; publicKey: string; counter: number; transports?: AuthenticatorTransportFuture[] };

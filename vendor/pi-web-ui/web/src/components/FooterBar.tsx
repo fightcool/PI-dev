@@ -408,9 +408,3 @@ function formatTokens(n: number): string {
 	if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}K`;
 	return String(n);
 }
-
-function formatCost(cost: number): string {
-	if (cost <= 0) return "0";
-	if (cost < 0.0001) return "<0.0001";
-	return cost.toFixed(4).replace(/\.?0+$/, "");
-}

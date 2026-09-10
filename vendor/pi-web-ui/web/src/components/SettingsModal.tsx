@@ -38,7 +38,6 @@ import type {
 } from "../types";
 import {
 	clearPromptHistory,
-	DEFAULT_PROMPT_HISTORY_SETTINGS,
 	loadPromptHistory,
 	loadPromptHistorySettings,
 	savePromptHistorySettings,

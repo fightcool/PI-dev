@@ -39,7 +39,7 @@ check(
   "built vendor Web frontend",
 );
 const webUiSdk = readJson(
-  join(ROOT, "node_modules/pi-web-ui/node_modules/@earendil-works/pi-coding-agent/package.json"),
+  join(ROOT, "vendor/pi-web-ui/node_modules/@earendil-works/pi-coding-agent/package.json"),
 );
 check(webUiSdk.version === "0.85.1", `Web UI Pi SDK ${webUiSdk.version}`);
 check(
