@@ -106,7 +106,7 @@ theme switching, and a full settings panel — tuned for daily development.
 - **Switchable engine** — `PI_WEB_ENGINE=pi|dsh` (default `pi`). The pi engine runs the agent in-process via the pi SDK; the **DSH engine** runs the official [`@deepseek-ai/dsh`](https://github.com/deepseek-ai/dsh) (DeepSeek Harness) runtime as a subprocess. `/api/health` reports `engine`; the footer shows a DSH badge.
 - **Same wire protocol** — the DSH engine implements the same WebSocket protocol, so goal mode, SCM, background tasks, settings, plugins, terminals, message-delta & snapshots all work identically.
 - **Native goal machinery** — DSH's own goal state machine + round-driver auto-continues rounds; the model judges completion/blocked (no separate review session). The goal wizard drives it via the model's `ask_user_question`.
-- **Real image blocks** — photos are sent as true image content to vision-capable DeepSeek models (e.g. `deepseek-v4-flash-vision-exp`); text-only models get a text-transcription bridge instead.
+- **Real image blocks** — photos are sent as true image content to vision-capable DeepSeek models (e.g. the official `deepseek-flash`, i.e. DeepSeek-V4.1-Flash); text-only models get a text-transcription bridge instead.
 - **Question dialog** — the model's `ask_user_question` surfaces as a browser dialog (single/multi-select + free text) with queueing and a countdown.
 - **Tools & MCP bridge** — plugin AI tools and external MCP servers (`mcp.json`) are bridged into the DSH runtime, so the DSH model can call them (executed server-side).
 - **Skill enable/disable** — the DSH skill catalog is exposed in Settings; disabling a skill filters it out of the model's view at runtime.

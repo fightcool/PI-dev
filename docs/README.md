@@ -16,6 +16,7 @@
 ## 运维与交付规范
 
 - [OPERATIONS.md](OPERATIONS.md)：安装与通用维护。
+- [MODEL-ROUTING.md](MODEL-ROUTING.md)：DeepSeek 模型路由与官方事实的对齐记录（核对日期、来源、实例侧覆盖块）。
 - [PM2-PRODUCTION.md](PM2-PRODUCTION.md)：正式服务管理及生产维护边界。
 - [PM2-SHADOW.md](PM2-SHADOW.md)：隔离候选发布，不能当作生产升级入口。
 

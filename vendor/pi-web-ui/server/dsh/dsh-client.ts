@@ -24,6 +24,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bilingual } from "../i18n.js";
+import { DEEPSEEK_FLASH } from "../model-routing.js";
 
 /** 项目依赖解析（tsc 编译后 dist/server/dsh/ 里向上找 node_modules）。 */
 const require = createRequire(import.meta.url);
@@ -66,7 +67,7 @@ export interface DshRuntimeOptions {
 	cwd: string;
 	/** provider 路由（deepseek-official）。 */
 	provider?: string;
-	/** 模型 id（deepseek-v4-flash / deepseek-v4-pro）。 */
+	/** 模型 id（官方 Flash 路由：deepseek-flash）。 */
 	model?: string;
 	/** 每次请求输出上限。 */
 	maxTokens?: number;
@@ -141,7 +142,7 @@ export class DshRuntime {
 	constructor(opts: DshRuntimeOptions) {
 		this.cwd = resolve(opts.cwd);
 		this.provider = opts.provider ?? "deepseek-official";
-		this.model = opts.model ?? "deepseek-v4-flash";
+		this.model = opts.model ?? DEEPSEEK_FLASH.id;
 		this.maxTokens = opts.maxTokens;
 		this.sessionRoot = opts.sessionRoot;
 		this.dataDir = opts.dataDir;

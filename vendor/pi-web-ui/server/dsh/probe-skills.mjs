@@ -145,7 +145,7 @@ const fail = (msg) => {
 };
 
 try {
-	await req("initialize", { cwd: HERE, provider: "deepseek-official", model: "deepseek-v4-flash" });
+	await req("initialize", { cwd: HERE, provider: "deepseek-official", model: "deepseek-flash" });
 	console.log("initialize OK");
 
 	await req("skills/register", { name: "alpha", description: "alpha skill", content: "alpha content" });

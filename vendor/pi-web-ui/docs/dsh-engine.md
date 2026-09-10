@@ -86,7 +86,7 @@
 ### 2.7 ⭐ 二期：视觉桥 + 用户提问桥 + 交互式调研向导（均实证通过）
 **视觉桥**（真图片，替代 v1 文本占位）：
 - DSH 附件机制：`dsh-attachment`（ctx.attachments 服务，base 已挂 attachment-local 存储后端）+ `ImageAttachmentRef`（durable，含 sha256 哈希）+ `EncodedImageAttachment`（base64 wire 格式）。image 块 = `{type:'image', attachment: ref}`。
-- **仅 `deepseek-v4-flash-vision-exp` 模型支持图片**（adapter 默认目录 inputModalities: [text,image]）；flash/pro 是 text-only 路由 → 图片被省略（模型会说"只接受文本"）。DSH_MODELS 现在带 per-model vision 标记，前端据此启用/禁用图片粘贴。
+- **视觉（官方 2026-09-10 后）**：`deepseek-flash`（DeepSeek-V4.1-Flash）原生多模态，adapter 目录由 `override.patch.yml` 显式声明 `inputModalities: [text, image]`；旧 `deepseek-v4-flash-vision-exp` 已退役。DSH_MODELS 带 per-model vision 标记，前端据此启用/禁用图片粘贴。
 - RPC：`attachment/save`（base64 → ref，调 ctx.attachments.saveImage，字节/媒体类型校验）+ `attachment/read`（ref → base64，回放补图）。模型请求侧由 dsh-llm-deepseek adapter 自动把 ref 转 file-id/inline parts。
 - 接入：buildContentBlocks 的 imageData/工作区图片文件 → save → image 块；乐观消息带 dataUrl 图块；user/message 事件回放时 hydrateImageBlocks 异步读回补 dataUrl。
 - 实测：vision-exp 模型准确描述项目截图（"pi-web-ui 设置面板"+ 读出 UI 文字）。
@@ -224,7 +224,7 @@ E:/pi-web-ui/server/dsh/
 ### 4.1 引擎主体收尾（已基本完成；goal 已改为 DSH 原生，见 §2.6）
 - **目标（goal）**：✅ 完成 —— DSH 原生 goal 域（goal-rpc wrapper RPC + goal/change 事件翻译 + round-driver 自动轮次 + 模型自判定 complete/blocked）。与 pi 引擎差异（设计意图）：无独立审查会话；完成由模型自判定；locked 开关透传不映射行为（DSH 目标持续到 complete/blocked/轮尽）；reviewModel 忽略（无独立审查者）。
 - **设置面板**：第二轮后全量存储回显（promptMode/customSystemPrompt/terminalToolsEnabled/terminalBash/thinkingWrap/toolsWrap/disabledSkills/disabledExtensions/disabledPlugins/reviewPrompt 经 ClientStateStore 持久化，跨重连存活）；仅 prompt 相关变化才重启运行时（DSH_PERSONA env 注入）；技能/扩展空列表显示 DSH 说明文案；vision tab 隐藏。模型配置表单仍"不支持"（DSH 只有内置 deepseek 模型）。
-- **视觉桥**：✅ 完成（§2.7）—— 真 image block（attachment/save + read RPC + vision-exp 模型 + 回放补图）。图片附件/工作区图片文件都走附件存储。注意：仅 deepseek-v4-flash-vision-exp 模型看图。
+- **视觉桥**：✅ 完成（§2.7）—— 真 image block（attachment/save + read RPC + 视觉模型 + 回放补图）。图片附件/工作区图片文件都走附件存储。模型目录见 `override.patch.yml` 的 `llm-deepseek` 行（现为官方 `deepseek-flash`）。
 - **模型配置表单（models.json）**：DSH 引擎返回空 providers 列表 + 保存报"不支持"。**v1 可接受**（DSH 只有内置 deepseek 模型）。
 - **对话框（dialog_response）/ 扩展 UI 桥**：DSH 侧已有提问桥（question_pending/question_answer，§2.7）；pi 扩展 dialog（dialog_response）v1 仍忽略。
 - **目标调研向导（startGoalWizard）**：✅ 完成（§2.7）—— 交互式（模型 ask_user_question 逐题提问 + 前端对话框 + GOAL: 收敛 + 自动设目标）。
@@ -298,7 +298,7 @@ E:/pi-web-ui/server/dsh/
 22. **auth.json 形状与路径**：pi 引擎形状 `{<provider>:{type:"api_key",key}}`，dsh 必须同形状（clear-provider-key-test 断言）；路径尊重 PI_CODING_AGENT_DIR（getAgentDir()），硬编码 ~/.pi/agent 会让测试/部署的临时 agent 目录隔离失效。⚠️ **clear-provider-key-test 会破坏真实 ~/.pi/agent/auth.json 的 deepseek key**（pi/dsh 都一样）——跑之前备份，跑完恢复。
 23. **sdk-jsonrpc 插件可扩展**：官方包 export HarnessSdkJsonRpcServer/apply/Config/inject/name，可 import 子类化加 RPC 方法（goal-rpc.mjs 的模式）；inject 要加新服务依赖（"goals"）；loader 对插件文件的裸 import 走 node ESM 解析（混树安全，官方插件同理）。
 24. **JSON-RPC 面无法触发 /goal 命令**：prompt 直进 inbox，命令运行时（ctx.commands）拦截不到；唯一可靠触发 = 扩展 RPC 方法直调 ctx.goals 服务动词。
-25. **图片只对 vision 模型可用**：dsh-llm-deepseek adapter 默认目录仅 `deepseek-v4-flash-vision-exp` 有 inputModalities:[text,image]；flash/pro text-only → 图片被省略（模型会说"只接受文本"）。视觉标记必须 per-model。
+25. **图片只对声明了视觉的模型可用**：目录由 `override.patch.yml` 的 `llm-deepseek.models` 显式声明（官方 `deepseek-flash` 为 `inputModalities:[text,image]`）；未声明的路由按 text-only 处理 → 图片被省略。视觉标记必须 per-model。
 26. **dsh-tool-ask-user 不在 base bundle**：base 只挂 user-questions 服务；ask_user_question 工具要 override.patch.yml 手动 insert（否则模型说"没有该工具"）。
 27. **提问桥单 pending**：ctx.userQuestions 一个 context 只一个 provider；ask() 阻塞期间新提问报"已有提问等待回答"。前端 question_pending 只显示一个；提交前每题需 selected 或 custom 非空。
 28. **附件字节校验**：attachment/save 用 saveImage（内部校验媒体类型/字节/像素上限），非 png/jpeg/webp/gif 或超限报错 → 调用方回退文本占位。

@@ -308,11 +308,11 @@ export const zh = {
 	inputPlaceholder: "输入内容",
 	questionTimeout: "⏳ 剩余 {s} 秒，超时将自动取消",
 	questionTimeoutExpired: "提问已超时，正在恢复对话…",
-	modelNoVision: "当前模型 {name} 不支持图片，请切换到 DeepSeek V4 Flash Vision (exp)",
+	modelNoVision: "当前模型 {name} 不支持图片，请切换到 DeepSeek-V4.1-Flash（deepseek-flash）",
 	dshSkillsNote: "DSH 引擎使用运行时内置技能（dsh-skill），暂不支持在设置面板启停",
 	dshExtensionsNote: "DSH 引擎无 pi 扩展体系，能力由运行时内置（MCP/subagent/goal/plan/skill 等）",
 	dshReviewPromptNote: "DSH 无独立审查会话：此指令将随目标轮次附加到系统提示词，供模型在目标轮次中遵守",
-	dshVisionHiddenNote: "DSH 引擎直接支持图片输入（仅 DeepSeek V4 Flash Vision (exp) 模型），无需视觉桥转写",
+	dshVisionHiddenNote: "DSH 引擎直接支持图片输入（官方 deepseek-flash 自带视觉），无需视觉桥转写",
 	dshNoReviewModel: "DSH 无独立审查模型：目标由模型自判定完成/受阻，轮次上限即自动迭代次数",
 
 	/* sound settings */
@@ -1315,12 +1315,12 @@ const en: Record<keyof typeof zh, string> = {
 	optionPreview: "Option preview",
 	questionTimeout: "⏳ {s}s left — auto-cancels on timeout",
 	questionTimeoutExpired: "Question timed out, resuming conversation…",
-	modelNoVision: "Current model {name} doesn't support images — switch to DeepSeek V4 Flash Vision (exp)",
+	modelNoVision: "Current model {name} doesn't support images — switch to DeepSeek-V4.1-Flash (deepseek-flash)",
 	dshSkillsNote: "DSH uses runtime-built-in skills (dsh-skill); toggling is not supported in settings yet",
 	dshExtensionsNote:
 		"DSH has no pi extension system; capabilities are runtime-built-in (MCP/subagent/goal/plan/skill…)",
 	dshReviewPromptNote: "DSH has no separate reviewer: this text is appended to the system prompt for goal rounds",
-	dshVisionHiddenNote: "DSH supports real image input (DeepSeek V4 Flash Vision (exp) only) — no vision bridge needed",
+	dshVisionHiddenNote: "DSH supports real image input (the official deepseek-flash model is natively multimodal) — no vision bridge needed",
 	dshNoReviewModel:
 		"DSH has no separate reviewer model — the model self-certifies goal completion; max rounds = auto-iteration count",
 	noOptions: "(no options)",

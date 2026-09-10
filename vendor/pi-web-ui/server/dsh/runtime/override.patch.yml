@@ -11,11 +11,14 @@
     root: !!js process.env.DSH_SESSION_ROOT ?? dshHomePath('sessions')
 
 # Agent 默认模型 —— initialize() 每次都带 provider/model，这里只兜底。
+# 官方 2026-09-10 起 Flash 路由只有 deepseek-flash（DeepSeek-V4.1-Flash）；
+# 旧 id deepseek-v4-flash / deepseek-v4-flash-vision-exp 已退役、deepseek-v4-pro 自
+# 2026-09-14 04:00 UTC 起转发，故不再作为默认值（docs/MODEL-ROUTING.md）。
 - id: agent-default-model
   name: "@deepseek-ai/dsh-agent-default-model"
   config:
     provider: !!js process.env.DSH_DEFAULT_PROVIDER ?? 'deepseek-official'
-    model: !!js process.env.DSH_DEFAULT_MODEL ?? 'deepseek-v4-flash'
+    model: !!js process.env.DSH_DEFAULT_MODEL ?? 'deepseek-flash'
 
 # 部署人设（默认空；pi-web-ui 设置面板可注入）。
 - id: system-prompt
@@ -56,6 +59,19 @@
         sandbox: danger-full-access
         approval: never
     defaultPreset: workspace-write-never
+
+# DeepSeek 官方模型目录 —— 显式列表替换 adapter 默认值（默认值仍广告已退役的
+# deepseek-v4-flash / deepseek-v4-pro / deepseek-v4-flash-vision-exp）。
+# deepseek-flash 自带 inputModalities: [text, image]，官方图像默认 640k 像素 / 1MiB。
+- id: llm-deepseek
+  name: "@deepseek-ai/dsh-llm-deepseek"
+  config:
+    models:
+      - id: deepseek-flash
+        name: DeepSeek-V4.1-Flash
+        contextWindow: 1000000
+        maxTokens: 384000
+        inputModalities: [text, image]
 
 # ── 新行（plain insert）─────────────────────────────────────────────────────
 - insert:

@@ -104,7 +104,7 @@ const fail = (msg) => {
 };
 
 try {
-	await req("initialize", { cwd: HERE, provider: "deepseek-official", model: "deepseek-v4-flash" });
+	await req("initialize", { cwd: HERE, provider: "deepseek-official", model: "deepseek-flash" });
 	console.log("initialize OK");
 
 	// ---- 1. tools/sync：pi JSON Schema（required 数组形式）→ DSH 属性映射 ----

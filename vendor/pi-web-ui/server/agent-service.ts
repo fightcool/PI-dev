@@ -66,6 +66,7 @@ import { GoalService } from "./goal-service.js";
 import { MarkerService } from "./marker-service.js";
 import { SlashCommandsService, parseSlash } from "./slash-commands.js";
 import { ModelAdminService } from "./model-admin.js";
+import { filterRoutableModels } from "./model-routing.js";
 import { FilesService, MACHINE_ROOT, workspacePath } from "./files-service.js";
 import {
 	isExtensionDisabled,
@@ -5017,7 +5018,9 @@ export class ClientSession {
 		try {
 			const mr = this.runtime.services.modelRuntime;
 			const available = await mr.getAvailable();
-			const models = available.map((m) => ({
+			// 退役/退场的 DeepSeek id 不再作为可选路由（历史绑定仍能经 getModel 解析）。
+			// 见 server/model-routing.ts 与 docs/MODEL-ROUTING.md。
+			const models = filterRoutableModels(available).map((m) => ({
 				id: `${m.provider}/${m.id}`,
 				name: m.name,
 				provider: m.provider,
