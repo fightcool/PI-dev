@@ -47,8 +47,12 @@ export function validateConfig(config) {
 }
 
 export function isMain(url) {
-  if (!process.argv[1]) return false;
-  try { return realpathSync(fileURLToPath(url)) === realpathSync(process.argv[1]); }
+  // PM2's fork container imports ESM without replacing argv[1]. Its IPC child
+  // exposes the application entry as pm_exec_path; other imports remain inert.
+  const entry = typeof process.send === "function" && process.env.pm_exec_path
+    ? process.env.pm_exec_path : process.argv[1];
+  if (!entry) return false;
+  try { return realpathSync(fileURLToPath(url)) === realpathSync(entry); }
   catch { return false; }
 }
 
