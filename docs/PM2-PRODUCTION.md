@@ -90,6 +90,7 @@ unit 使用 `Type=simple`、`Restart=on-failure`、`KillMode=control-group`、`T
 1. 在未运行的独立 candidate 中准备明确提交的源码、锁定依赖与构建产物，运行相关测试和发布检查。确认 build-info 提交与所选版本一致，稳定工具可用；不要在 current 所指在线版本上重新构建或安装依赖。
 2. 记录旧 current 目标，保留该 release 与稳定工具。通过运行实例的 control socket quiesce 并等待 active conversations、pending messages 均为零；忙碌、无法确认或超过等待期限时取消升级，并恢复接收工作。
 3. 从服务进程之外的维护任务停止 `pi-dev-pm2.service`，在同一部署目录中创建临时链接并通过一次 rename 原子替换 current，然后通过 manager `start` 启动新版本。已有进程状态没有迁移能力，维护窗口内连接会断开。
+   - **PM2 → PM2 升级必须先停止当前 PM2 单元再换链接**：单元已 `active` 时 manager `start` 是空操作，旧进程会继续用旧代码服务（链接换了但进程没换）。判断依据是「新 PID 是否出现」，不要只看命令返回码。
    - **维护任务必须跑在服务进程之外的独立 cgroup**（例如 `systemd-run --user --unit=pi-dev-switch --collect ...`）。两个 unit 都是 `KillMode=control-group`：从被托管进程里派生的维护脚本会在 `systemctl stop` 时被一并杀死，切换卡在「已停服务、未换链接」的中间态。
    - **首次切换必须 `stop` + `disable` 旧 UI unit 与 watchdog**（`pi-web-ui-dev.service`、`pi-web-ui-dev-watchdog.{service,timer}`）。旧 unit 若仍是 `enabled` 且 `WantedBy=default.target`，**任何** `daemon-reload` 都会把它拉起来并抢占 8788（本文件所在的服务器在 2026-09-10 实际发生过），站点会在未受管状态下运行可编辑 checkout。
 4. 核实新 PID、服务健康、build-info 提交、公网前端资源与 WebSocket 鉴权，再恢复接收工作。manager status 只提供观测信息；manager start/restart 本身不做 quiesce、健康验收或回滚。
@@ -121,7 +122,7 @@ journalctl --user -u pi-dev-switch.service --no-pager
 | 候选验证 | 在候选目录内实跑：root `npm test` 171/171、`check:publish` PASS、`typecheck` PASS、渠道单元 + 三个端到端套件全通过、`test:smoke` 41/41；`build-info.json` 提交与 `release-source.json` 一致、`protocolVersion` 16 |
 | 切换验收 | PM2 应用 `pi-dev-web` online（restarts 0）、`/api/health` pid/工作区/引擎一致、公网 `dev.ftai.cc` 首页发的是该 release 的前端入口、匿名 WebSocket 返回 401、带鉴权的只读探测收到 `channel_state`（protocol 16 生效） |
 | 旧入口退役 | `pi-web-ui-dev.service` = disabled/inactive，watchdog service/timer = disabled/inactive；`pi-dev-pm2.service` = enabled/active（唯一生产管理者） |
-| 事故与根因 | 首次尝试时维护脚本在被托管进程的 cgroup 内执行，停 unit 时被连带杀死，`current` 未切换；约 47 分钟后一次 `daemon-reload` 把仍是 `enabled` 的旧 unit 拉起并接管 8788，站点在未受管状态下运行可编辑 checkout。二次尝试改用 `systemd-run --user`（独立 cgroup）并显式 `disable` 旧 unit/watchdog 后成功。以上两条已写入上面的步骤 3。 |
+| 事故与根因 | ① 首次尝试时维护脚本在被托管进程的 cgroup 内执行，停 unit 时被连带杀死，`current` 未切换；约 47 分钟后一次 `daemon-reload` 把仍是 `enabled` 的旧 unit 拉起并接管 8788，站点在未受管状态下运行可编辑 checkout。二次尝试改用 `systemd-run --user`（独立 cgroup）并显式 `disable` 旧 unit/watchdog 后成功。② 后续一次 PM2 → PM2 升级失败：脚本未先停 PM2 单元（单元已 active → `start` 空操作），旧进程继续服务，脚本按「新 PID 未出现」判定失败并自动回滚（约 3 秒中断，`current` 与线上进程都回到旧版本）。修好后重跑成功。三条教训均已写入上面的步骤 3。 |
 | 回滚 | 旧 release `e92430be376b` 与其稳定工具仍完整保留；回滚即「停 unit → 原子恢复旧 current → `manager start` → 验收」 |
 
 ## 实现与验证
