@@ -154,6 +154,17 @@ export interface TranscribeOptions {
 	systemPrompt?: string;
 	/** 转写提示词与错误文案的服务端语言（默认英文）。 */
 	lang?: ServerLang;
+	/** 旁路调用的用量上报（DEV-CON §7：探测/旁路调用要单独标注来源，不能凭空消失）。 */
+	onUsage?: (usage: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		total: number;
+		cost: number;
+		provider: string;
+		modelId: string;
+	}) => void;
 }
 
 /**
@@ -216,6 +227,21 @@ export async function transcribeImages(
 			signal: ac.signal,
 			maxTokens: MAX_TRANSCRIBE_TOKENS,
 		});
+		// 先上报用量（即使后面判为异常终止，token 也已经真实产生）。
+		try {
+			options.onUsage?.({
+				input: msg.usage.input ?? 0,
+				output: msg.usage.output ?? 0,
+				cacheRead: msg.usage.cacheRead ?? 0,
+				cacheWrite: msg.usage.cacheWrite ?? 0,
+				total: msg.usage.totalTokens ?? (msg.usage.input ?? 0) + (msg.usage.output ?? 0),
+				cost: msg.usage.cost?.total ?? 0,
+				provider: String(model.provider),
+				modelId: String(model.id),
+			});
+		} catch {
+			/* 用量上报尽力而为，绝不能影响转写结果 */
+		}
 		if (msg.stopReason === "error" || msg.stopReason === "aborted") {
 			throw new Error(
 				msg.errorMessage ||

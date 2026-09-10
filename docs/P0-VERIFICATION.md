@@ -67,7 +67,8 @@ runtime.session.agent.getApiKey = (provider) => this.channels.credentialFor(id, 
 - 累计只取终结事件（`message_end`/`turn_end`），并按消息身份去重；
 - 请求级视图（`current`）覆盖更新，流式期间即可见，但不计入 run/session；
 - 计入 `cacheRead`/`cacheWrite`/`cost`/`reasoning`；
-- 归属：每次 provider 请求发出时记录当时的绑定快照（渠道/凭据名/模型/绑定版本/配置版本），晚到的用量按该快照归属；来源标注 `user`/`retry`/`subagent`/`compaction`（子代理是独立会话，不会并进父会话）。
+- 归属：每次 provider 请求发出时记录当时的绑定快照（渠道/凭据名/模型/绑定版本/配置版本），晚到的用量按该快照归属；来源标注 `user`/`retry`/`subagent`/`compaction`/`vision`（子代理是独立会话，不会并进父会话）。
+- 旁路调用（§7 要求「探测分别标注来源」）：视觉桥转写通过 `vision-bridge.ts#onUsage` 上报真实用量并记为 `source=vision`；压缩摘要走 SDK 内部 `completeSimple`、不产生消息事件，改为用 `compaction_start`/`compaction_end` 的**会话统计差值**记为 `source=compaction`（差值非正时不记）。两条路径的归属都取自请求时绑定，`modelId` 统一为裸模型 id，能与普通请求在归属表里合并。
 
 ## 5. 存储与恢复
 
@@ -98,9 +99,9 @@ runtime.session.agent.getApiKey = (provider) => this.channels.credentialFor(id, 
 npm test                          # 171 passed / 0 failed
 
 # 应用单测：渠道模型/存储/服务/账户 + 既有回归
-npm run test:channels:unit        # 44 passed（channel-* 四个文件）
-env -u NODE_ENV npm --prefix vendor/pi-web-ui exec vitest run   # 615 passed / 74 files
-timeout 900 npm run test:smoke    # 41/41 通过（含新增 channel-isolation / channel-multiclient）
+npm run test:channels:unit        # 46 passed（channel-* 四个文件 + usage-attribution）
+env -u NODE_ENV npm --prefix vendor/pi-web-ui exec vitest run   # 620 passed / 75 files
+timeout 1200 npm run test:smoke   # 41/41 通过（含新增 channel-isolation / channel-multiclient）
 
 # 浏览器回归（Chromium，合成数据，无真实模型）
 npm run test:performance          # login / synthetic-20/200/1000 全部 passed
@@ -122,7 +123,7 @@ npm run test:channels:browser     # Chromium：渠道分组/禁用原因/待生�
 1. **DSH 引擎**：明确回 `phase:"rejected"`（换模型=重启运行时），未做任何 DSH 热切换改造。
 2. **真实供应商账户查询**：未接入任何真实账号；适配器只对本地替身端点验证。OpenAI 网关的 `quota` 语义（单位/换算）需要真实网关注入后才算验收。
 3. **run 内 turn 边界切换**：SDK 支持但本期不启用（见 §2 取舍）。
-4. **旁路调用的用量归属**：压缩摘要（走 SDK 内部 `completeSimple`，只在 SDK 会话统计里可见）、视觉桥（usage 被丢弃）、目标复核（独立 `ModelRuntime`）尚未接入归属与来源标注。
+4. **旁路调用的用量归属**：视觉桥与压缩摘要已接入（见 §4）；**目标复核/向导**（独立 `ModelRuntime`，`goal-service.ts`）仍是独立计费路径，未接入本会话归属。压缩差值法只覆盖压缩本身的调用，若压缩期间发生其他模型调用会被一并算入（当前 SDK 行为不会）。
 5. **多客户端并发编辑渠道配置**：已实现「每条命令先从磁盘对齐 + 哈希冲突检测 + 合并写入」，并有双客户端端到端用例（`tests/channel-multiclient-test.mjs`）；仍未经两个真实浏览器的人工并发验证。
 6. **渠道界面的验收范围**：已有 Chromium 断言（`npm run test:channels:browser`）覆盖渠道分组、禁用原因、有效/待生效提示、底部渠道、组合命令携带的 revision、用量归属与「未归属」标记；**未**断言渠道设置页的增删改与账户面板，也**未**做移动端视口与真实设备人工验收。
 7. **非中英文语言包的渠道文案**：新增 88 个 key 已按中文顺序填入 8 个语言包以保证一一对应，但暂时使用英文原文作为占位译文（运行时行为与缺 key 回落英文一致）；正式译文待补。

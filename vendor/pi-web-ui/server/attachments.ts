@@ -45,6 +45,20 @@ export interface AttachmentContext {
 	 * 缺省英文。agent-service 接线 getLang: () => this.getLang()。
 	 */
 	getLang?: () => ServerLang;
+	/**
+	 * 旁路模型调用（视觉桥）的用量上报钩子（DEV-CON §7）。不传则不记，
+	 * 但实现方必须能标注来源，否则这些 token 会从统计里消失。
+	 */
+	recordUsage?: (usage: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		total: number;
+		cost: number;
+		provider: string;
+		modelId: string;
+	}) => void;
 }
 
 export async function buildAttachmentMessages(
@@ -277,6 +291,7 @@ export async function buildAttachmentMessages(
 									vLang,
 								),
 								lang: vLang,
+								onUsage: ctx.recordUsage,
 							},
 						);
 						visionBridgeCache.set(batchHash, transcript);

@@ -572,6 +572,8 @@ export interface Conversation {
 	 * （= SDK 每次 provider 请求前）时写入，使晚到的用量结果仍归属到当时的绑定。
 	 */
 	lastRequestBinding: RequestBindingSnapshot | null;
+	/** 压缩前的会话统计基线：压缩摘要的 token 用会话统计差值归属为 source=compaction。 */
+	compactionBaseline: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost: number } | null;
 	/** Last time any SDK event arrived for this conversation. */
 	lastSdkEventAt: number;
 	/** Set once the stall notice has been sent for the current silent period;
@@ -1820,6 +1822,7 @@ export class ClientSession {
 			lastSdkEventAt: Date.now(),
 			usageTracker: new TokenUsageTracker(),
 			lastRequestBinding: null,
+			compactionBaseline: null,
 
 			stallNoticed: false,
 			goal: this.makeGoalStatus(),
@@ -2134,6 +2137,98 @@ export class ClientSession {
 		}
 	}
 
+	/** 会话统计总量（缺失时为 null）；压缩用量归属的唯一来源。 */
+	private sessionUsageTotals(): { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost: number } | null {
+		try {
+			const s = this.session.getSessionStats();
+			return {
+				input: s.tokens.input,
+				output: s.tokens.output,
+				cacheRead: s.tokens.cacheRead,
+				cacheWrite: s.tokens.cacheWrite,
+				total: s.tokens.total,
+				cost: s.cost,
+			};
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * 把压缩期间的会话统计差值记成一条 source=compaction 的用量。
+	 * 压缩不产生 message 事件，若不这么做，摘要消耗的 token 只会在 SDK 会话统计里
+	 * 出现，无法按来源区分（§7）。差值 <= 0 时不记（避免把别的调用算到压缩头上）。
+	 */
+	private recordCompactionUsage(conv: Conversation): void {
+		const before = conv.compactionBaseline;
+		conv.compactionBaseline = null;
+		if (!before) return;
+		const after = this.sessionUsageTotals();
+		if (!after) return;
+		const delta = {
+			input: after.input - before.input,
+			output: after.output - before.output,
+			cacheRead: after.cacheRead - before.cacheRead,
+			cacheWrite: after.cacheWrite - before.cacheWrite,
+			total: after.total - before.total,
+			cost: Math.max(0, after.cost - before.cost),
+		};
+		if (delta.total <= 0 && delta.cost <= 0) return;
+		conv.usageTracker.record(
+			{
+				scope: "final",
+				identity: null,
+				input: Math.max(0, delta.input),
+				output: Math.max(0, delta.output),
+				cacheRead: Math.max(0, delta.cacheRead),
+				cacheWrite: Math.max(0, delta.cacheWrite),
+				total: Math.max(0, delta.total),
+				cost: delta.cost,
+				role: "assistant",
+			},
+			Date.now(),
+			this.bindingAttribution(conv, "compaction"),
+		);
+	}
+
+	/**
+	 * 由「请求时绑定」生成归属字段。modelId 取裸模型 id（与消息事件里的
+	 * message.model 同名），保证旁路/压缩与普通请求在归属表里同一行可合并。
+	 */
+	private bindingAttribution(conv: Conversation, source: string): Record<string, unknown> {
+		const binding = conv.lastRequestBinding;
+		const ref = binding?.modelId ?? "";
+		const slash = ref.indexOf("/");
+		return {
+			source,
+			channelId: binding?.channelId,
+			credentialKeyName: binding?.credentialKeyName,
+			providerId: binding?.providerId,
+			modelId: slash > 0 ? ref.slice(slash + 1) : ref || undefined,
+			bindingRevision: binding?.bindingRevision,
+			configRevision: binding?.configRevision,
+		};
+	}
+
+	/** 旁路调用（视觉桥）的用量归属：来源标 vision，归属到发起请求的对话（§7）。 */
+	private recordBypassUsage(usage: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		total: number;
+		cost: number;
+		provider: string;
+		modelId: string;
+	}): void {
+		const conv = this.conv;
+		conv.usageTracker.record(
+			{ scope: "final", identity: null, ...usage, role: "assistant" },
+			Date.now(),
+			this.bindingAttribution(conv, "vision"),
+		);
+	}
+
 	/** 用量来源标注（§7）：子代理/重试/压缩摘要分别标注，其余为用户请求。 */
 	private usageSource(conv: Conversation): "user" | "retry" | "subagent" | "compaction" {
 		if (conv.isSubagent) return "subagent";
@@ -2294,11 +2389,15 @@ export class ClientSession {
 			case "compaction_start": {
 				conv.compactionState = { reason: event.reason, startedAt: Date.now() };
 				conv.lastCompactionTokens = null;
+				// 压缩摘要走 SDK 内部 completeSimple，不产生 message 事件；用会话统计差值
+				// 把这段 token 归属为 source=compaction（§7：摘要来源必须可区分）。
+				conv.compactionBaseline = this.sessionUsageTotals();
 				this.flushSnapshot();
 				break;
 			}
 			case "compaction_end": {
 				conv.compactionState = null;
+				this.recordCompactionUsage(conv);
 				if (event.errorMessage) {
 					this.emit({
 						type: "notice",
@@ -3631,6 +3730,8 @@ export class ClientSession {
 					session: this.session,
 					// issue #91：附件/视觉桥文案按客户端 UI 语言出中英（英文默认）。
 					getLang: () => this.getLang(),
+					// DEV-CON §7：视觉桥是真实计费的旁路调用，用量单独标注来源。
+					recordUsage: (usage) => this.recordBypassUsage(usage),
 				},
 				attachments,
 			);
