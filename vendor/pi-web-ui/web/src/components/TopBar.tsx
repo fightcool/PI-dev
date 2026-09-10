@@ -495,36 +495,38 @@ export function TopBar({
 							<span className="chip-sub">v{chat.appVersion ?? chat.update?.current ?? "…"}</span>
 						</span>
 					) : (
-					<Dropdown
-						trigger={
-							<>
-								<FiDownload />
-								<span className="chip-sub">v{chat.update?.current ?? "…"}</span>
-								{chat.update && !chat.update.upToDate && (
-									<span
-										className="update-dot"
-										title={t("updateAvailable", {
-											version: chat.update.latest ?? "",
-										})}
-									/>
-								)}
-								{updatesCount > 0 && <span className="update-badge">{t("updatesAllBadge", { n: updatesCount })}</span>}
-							</>
-						}
-						open={updateOpen}
-						onOpenChange={(v) => {
-							setUpdateOpen(v);
-							if (v) {
-								send({ type: "check_update" });
-								send({ type: "check_updates_all" });
+						<Dropdown
+							trigger={
+								<>
+									<FiDownload />
+									<span className="chip-sub">v{chat.update?.current ?? "…"}</span>
+									{chat.update && !chat.update.upToDate && (
+										<span
+											className="update-dot"
+											title={t("updateAvailable", {
+												version: chat.update.latest ?? "",
+											})}
+										/>
+									)}
+									{updatesCount > 0 && (
+										<span className="update-badge">{t("updatesAllBadge", { n: updatesCount })}</span>
+									)}
+								</>
 							}
-						}}
-						fit
-					>
-						<div className="dd-header">{t("update")}</div>
-						{renderUpdateBody()}
-						{renderAllUpdatesBody()}
-					</Dropdown>
+							open={updateOpen}
+							onOpenChange={(v) => {
+								setUpdateOpen(v);
+								if (v) {
+									send({ type: "check_update" });
+									send({ type: "check_updates_all" });
+								}
+							}}
+							fit
+						>
+							<div className="dd-header">{t("update")}</div>
+							{renderUpdateBody()}
+							{renderAllUpdatesBody()}
+						</Dropdown>
 					)}
 
 					<a

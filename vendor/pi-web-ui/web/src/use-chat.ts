@@ -256,7 +256,15 @@ type Action =
 	| { type: "tool_status"; status: ToolStatus }
 	| { type: "notice"; notice: Notice }
 	| { type: "dismiss_notice"; id: number }
-	| { type: "ready"; serverVersion: string; protocolVersion?: number; engine?: string; appVersion?: string; managed?: boolean; tabs?: string[] }
+	| {
+			type: "ready";
+			serverVersion: string;
+			protocolVersion?: number;
+			engine?: string;
+			appVersion?: string;
+			managed?: boolean;
+			tabs?: string[];
+	  }
 	| { type: "sessions"; sessions: SessionSummary[] }
 	| {
 			type: "conversations";

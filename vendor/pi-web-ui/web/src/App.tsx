@@ -716,6 +716,7 @@ export function App() {
 									toolStatuses={chat.toolStatuses}
 									onEdit={onEditMessage}
 									onKillBash={() => send({ type: "abort_bash" })}
+									onRetry={() => send({ type: "retry_last" })}
 									onRemoveQueued={onRemoveQueued}
 									thinkingWrap={chat.settings?.thinkingWrap ?? true}
 									toolsWrap={chat.settings?.toolsWrap ?? true}

@@ -1788,6 +1788,61 @@ export class DshClientSession {
 		});
 	}
 
+	/** 手动重试上次失败的模型调用：找到最后一条用户提问并重发一次
+	 *  （DSH 运行时以 prompt 驱动回合，无 triggerTurn 语义）。流式中 /
+	 *  无可重试失败时只发 notice 拒绝。 */
+	async retryLast(): Promise<void> {
+		const conv = this.conv;
+		try {
+			if (this.quiesceBlocked()) return;
+			if (conv.isStreaming) {
+				this.emit({
+					type: "notice",
+					level: "info",
+					text: "对话正在生成中，无需重试",
+					textEn: "The conversation is still generating — no need to retry",
+				});
+				return;
+			}
+			let failed = false;
+			for (let i = conv.messages.length - 1; i >= 0; i--) {
+				const m = conv.messages[i]!;
+				if (m.role !== "assistant") continue;
+				failed = !!m.errorMessage;
+				break;
+			}
+			if (!failed) {
+				this.emit({
+					type: "notice",
+					level: "info",
+					text: "没有可重试的失败：上一轮没有报错结束",
+					textEn: "Nothing to retry: the last turn did not end with an error",
+				});
+				return;
+			}
+			let lastUser = "";
+			for (let i = conv.messages.length - 1; i >= 0; i--) {
+				const m = conv.messages[i]!;
+				if (m.role !== "user") continue;
+				lastUser = m.content
+					.map((c) => ("text" in c ? (c.text as string) : ""))
+					.join("")
+					.trim();
+				if (lastUser) break;
+			}
+			const lang = this.getLang();
+			await this.prompt(lastUser || pick(lang, "请继续", "Please continue", "dsh.prompt.continue"));
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `手动重试失败：${(err as Error).message}`,
+				textEn: `Manual retry failed: ${(err as Error).message}`,
+			});
+		}
+		this.flushSnapshot();
+	}
+
 	// -----------------------------------------------------------------------
 	// 后台任务
 	// -----------------------------------------------------------------------

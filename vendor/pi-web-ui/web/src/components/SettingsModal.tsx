@@ -340,6 +340,11 @@ export function SettingsModal({ chat, send, terminal, onSwitchToTerminal, onClos
 	useEffect(() => {
 		setIdleMsDraft(String(settings?.terminalBashIdleMs ?? 15000));
 	}, [settings?.terminalBashIdleMs]);
+	// 模型报错自动重试次数：本地草稿（失焦/回车提交，0 = 失败即停）。
+	const [retryDraft, setRetryDraft] = useState<string>(String(settings?.retryMaxAttempts ?? 6));
+	useEffect(() => {
+		setRetryDraft(String(settings?.retryMaxAttempts ?? 6));
+	}, [settings?.retryMaxAttempts]);
 
 	if (!settings) return null;
 
@@ -410,6 +415,7 @@ export function SettingsModal({ chat, send, terminal, onSwitchToTerminal, onClos
 		visionBridgePromptMode?: "append" | "replace";
 		visionBridgePrompt?: string;
 		subagentDefaultModel?: string | null;
+		retryMaxAttempts?: number;
 		reviewPrompt?: string;
 		reviewDisabledSkills?: string[];
 		markersEnabled?: boolean;
@@ -1132,6 +1138,33 @@ export function SettingsModal({ chat, send, terminal, onSwitchToTerminal, onClos
 									<FiMessageSquare className="set-section-icon" />
 									{t("settingsMessageDisplay")}
 								</div>
+								<div className="set-field">
+									<label className="set-field-label" htmlFor="model-retry-max">
+										{t("modelRetryAttempts")}
+									</label>
+									<input
+										id="model-retry-max"
+										className="set-input"
+										type="number"
+										min={0}
+										max={100}
+										step={1}
+										value={retryDraft}
+										onChange={(e) => setRetryDraft(e.target.value)}
+										onBlur={() => {
+											const n = Math.min(100, Math.max(0, Math.floor(Number(retryDraft) || 0)));
+											setRetryDraft(String(n));
+											if (n !== settings.retryMaxAttempts) {
+												setPartial({ retryMaxAttempts: n });
+											}
+										}}
+										onKeyDown={(e) => {
+											if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+										}}
+									/>
+									<p className="set-hint">{t("modelRetryHint")}</p>
+								</div>
+								<hr className="set-sep" />
 								<ToggleRow
 									title={t("thinkingWrap")}
 									tip={t("thinkingWrapDesc")}

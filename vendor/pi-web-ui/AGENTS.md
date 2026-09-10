@@ -184,10 +184,13 @@ npm run test:smoke   # 零 token 协议冒烟聚合跑器
 > 详细文档见 `docs/release.md`
 
 ```bash
-# 升版本 → 自检构建 → git commit → git push → npm publish
+# 升版本 → 写 CHANGELOG（含 npm run changelog:i18n 自动记文案增量）→ 自检构建 → commit → push → 打 tag（Action 自动建 Release）→ npm publish
 npm run typecheck && npm run build
+npm run changelog:i18n   # 文案有增减时必跑：自动刷新 CHANGELOG Unreleased 的 ### i18n
+# 预览 Release 说明（只看不发）：node scripts/release-notes.mjs X.Y.Z --base v<上个版本>
 git add -A && git commit -m "feat(xxx): 描述"
 git push origin main
+git tag vX.Y.Z && git push origin vX.Y.Z   # tag 带 v 前缀，数字与 npm 版本一致；推送后 Action 自动创建/更新 GitHub Release（含现场生成的 ### i18n），无需手跑 gh release create
 npm publish
 ```
 

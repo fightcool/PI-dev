@@ -100,13 +100,7 @@ export function getServerString(lang: ServerLang, key: string): string | undefin
  *   pick(lang, `剩${n}个`, `${n} left`, "k.items.left", { n })
  *   → table: `"残り{n}件"`. Slots missing from `vars` stay literal.
  */
-export function pick(
-	lang: ServerLang,
-	zh: string,
-	en: string,
-	key?: string,
-	vars?: Record<string, unknown>,
-): string {
+export function pick(lang: ServerLang, zh: string, en: string, key?: string, vars?: Record<string, unknown>): string {
 	if (isZh(lang)) return zh;
 	if (key) {
 		const hit = getServerString(lang, key);

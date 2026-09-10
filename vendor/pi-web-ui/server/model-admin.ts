@@ -214,6 +214,20 @@ export class ModelAdminService {
 		return data[provider]?.activeKeyName ?? null;
 	}
 
+	/** Whether a named key still exists for a provider (no side effects, no
+	 *  notices). Restore paths use this to drop stale per-project references
+	 *  silently instead of going through activate (which notifies). */
+	hasProviderKey(provider: string, keyName: string): boolean {
+		const pid = provider.trim();
+		const targetName = keyName.trim();
+		if (!pid || !targetName) return false;
+		try {
+			return this.readProviderKeys()[pid]?.keys.some((k) => k.name === targetName) ?? false;
+		} catch {
+			return false;
+		}
+	}
+
 	/** Seed a provider's key list from an EXISTING auth.json credential (legacy
 	 *  configs written before the multi-key store existed) so the store stays
 	 *  authoritative and the UI shows the current active key immediately even
@@ -404,36 +418,43 @@ export class ModelAdminService {
 	}
 
 	/** Make a stored API key the ACTIVE one for a built-in provider by NAME (the
-	 *  server resolves the stored value from the name). */
-	async activateProviderKey(provider: string, keyName: string): Promise<void> {
+	 *  server resolves the stored value from the name). Returns true when the
+	 *  key is (now) active, false when it doesn't exist or the switch failed.
+	 *  `silent` suppresses all notices — for automatic project restores, which
+	 *  must self-heal stale references without spamming the user. */
+	async activateProviderKey(provider: string, keyName: string, opts?: { silent?: boolean }): Promise<boolean> {
 		const pid = provider.trim();
 		const targetName = keyName.trim();
+		const silent = opts?.silent === true;
+		const notice = (msg: ServerMessage) => {
+			if (!silent) this.host.emit(msg);
+		};
 		try {
 			const data = this.readProviderKeys();
 			const entry = data[pid];
 			const target = entry?.keys.find((k) => k.name === targetName);
 			if (!target) {
-				this.host.emit({
+				notice({
 					type: "notice",
 					level: "error",
 					text: `${pid} 的密钥「${targetName}」不存在`,
 					textEn: `Key "${targetName}" for ${pid} does not exist`,
 				});
-				return;
+				return false;
 			}
 			if (entry.activeKeyName === targetName) {
-				this.host.emit({
+				notice({
 					type: "notice",
 					level: "info",
 					text: `「${targetName}」已是当前密钥`,
 					textEn: `"${targetName}" is already the active key`,
 				});
-				return;
+				return true;
 			}
 			entry.activeKeyName = targetName;
 			this.writeProviderKeys(data);
 			await this.applyActiveKey(pid, target.apiKey);
-			this.host.emit({
+			notice({
 				type: "notice",
 				level: "info",
 				text: `⚡ 已切换到 ${pid} 的「${targetName}」`,
@@ -442,15 +463,18 @@ export class ModelAdminService {
 			await this.host.pushModels();
 			await this.listProviders();
 			this.listProviderKeys();
+			return true;
 		} catch (err) {
-			this.host.emit({
+			notice({
 				type: "notice",
 				level: "error",
 				text: `切换密钥失败：${(err as Error).message}`,
 				textEn: `Failed to switch key: ${(err as Error).message}`,
 			});
+			return false;
+		} finally {
+			if (!silent) this.host.flushSnapshot();
 		}
-		this.host.flushSnapshot();
 	}
 
 	/** Remove a stored API key by NAME. If it was active, the first remaining key

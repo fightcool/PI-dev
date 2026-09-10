@@ -94,10 +94,38 @@
 	--control-bg: #1a1d26;
 	--control-border: #262a35;
 	/* ---- 聊天背景图（壁纸，issue #100）：none = 关闭；主题可自带一张，
-	   用户在设置 → 消息显示里填地址则优先用用户的。---- */
+	   用户在设置 → 消息显示里填地址则优先用用户的。图铺在整个视口最底层，
+	   容器背景优先——某区背景透明就露图、不透明就挡图；大区域背景由独立
+	   变量（--topbar-bg/--statusbar-bg/--panel-bg）控制，默认半透明（透图率
+	   --wallpaper-panel-alpha，62% = 62% 容器色 + 38% 透图），主题想在某区
+	   不显示壁纸就把对应变量覆盖回实色（如 var(--bg-elev)），想完全透图则
+	   设 transparent。---- */
 	--bg-image: none;
 	--bg-image-dim: 0.78;
 	--bg-image-blur: 0px;
+	--wallpaper-panel-alpha: 62%;
+	--topbar-bg: color-mix(in srgb, var(--bg-elev) var(--wallpaper-panel-alpha, 62%), transparent);
+	--statusbar-bg: color-mix(in srgb, var(--bg-elev) var(--wallpaper-panel-alpha, 62%), transparent);
+	--panel-bg: color-mix(in srgb, var(--bg-elev) var(--wallpaper-panel-alpha, 62%), transparent);
+	/* 卡片/控件底板：工具调用卡、提示词模板卡、快捷短语、左右折叠按钮、顶栏
+	   chips 等组件表面，与三大区域共用 --wallpaper-panel-alpha（默认 62% 容器色
+	   + 38% 透图）。主题想在哪类组件不显示壁纸就覆盖回实色（如 var(--bg-elev)
+	   / var(--bg-elev2)）；卡片级（--card-bg，bg-elev 色）与控件级（--chip-bg，
+	   bg-elev2 色）分开，hover 态用 accent-soft 不受影响。 */
+	--card-bg: color-mix(in srgb, var(--bg-elev) var(--wallpaper-panel-alpha, 62%), transparent);
+	--chip-bg: color-mix(in srgb, var(--bg-elev2) var(--wallpaper-panel-alpha, 62%), transparent);
+	/* 中间消息区背景：与卡片同式（默认 62% 容器色 + 38% 透图），让消息气泡
+	   （thinking/toolcall/bashblock 等，也用 --card-bg）站在统一的半透明玻璃
+	   面上；气泡叠上面会略实一点形成层次，仍带边框。主题可覆盖回 transparent
+	   恢复「消息区全透、壁纸从卡片间隙露出」的旧形态。 */
+	--msgs-bg: color-mix(in srgb, var(--bg-elev) var(--wallpaper-panel-alpha, 62%), transparent);
+	/* 输入框盒子：与控件级底板同式，共用 --wallpaper-panel-alpha（与 --chip-bg
+	   同 alpha），主题无需单独覆盖——想调厚薄直接调 --wallpaper-panel-alpha。 */
+	--inputbox-bg: color-mix(in srgb, var(--bg-elev2) var(--wallpaper-panel-alpha, 62%), transparent);
+	/* 下拉弹窗/菜单背景（声音/语言/主题/模型选择/思考强度/版本更新等 .dd-menu）：
+	   必须实色——密集列表叠在消息流上，半透会透出底下文字无法阅读；
+	   所以默认直接用 --bg-elev2 实色，不跟随 --chip-bg 的壁纸半透。 */
+	--menu-bg: var(--bg-elev2);
 }
 
 * {
@@ -123,6 +151,11 @@ body {
 	display: flex;
 	flex-direction: column;
 	height: 100%;
+	/* 抬到 body 全屏壁纸层（z-index:0）之上；内部各定位元素（resize-handle
+	   z-index:10 等）的相对次序不变。无壁纸时 body 伪元素 display:none，
+	   这两行不影响布局。 */
+	position: relative;
+	z-index: 1;
 }
 
 /* ============================================================
@@ -152,8 +185,8 @@ body {
  * 注意：基础 .msg-collapsed / .fp-markdown-zoom > .md 带 width:100%，与
  * 520px margin 叠加会恒溢出主列 520px（整页横向滚动条）。其余条目都是
  * 无显式宽度的块，margin 自动收缩可用宽；width:auto 对它们是无操作的。
- * 另外 .msg-collapsed 是 <button>：display:flex + width:auto 会被浏览器
- * 按 fit-content 收缩成窄条，必须显式 calc(100% - 520px)（同浮层写法）。 */
+ * 另外 .msg-collapsed 基础带 width:100%，直接加 520px margin 会溢出，
+ * 所以用显式 calc(100% - 520px)（同浮层写法）把边距扣进宽度里。 */
 @media (min-width: 1860px) {
 	/* 消息列内部元素（在 .messages 滚动容器里）：内容盒被 scrollbar-gutter
 	 * both-edges 左右各扣掉 --msgs-gutter（JS 实测滚动条宽，见
@@ -215,7 +248,7 @@ body {
 	width: 240px;
 	flex-shrink: 0;
 	min-height: 0;
-	background: var(--bg-elev);
+	background: var(--panel-bg, var(--bg-elev));
 	border-right: 1px solid var(--border);
 	position: relative;
 }
@@ -277,7 +310,7 @@ body.panel-resizing {
 	height: 24px;
 	border: 1px solid var(--control-border, var(--border));
 	border-radius: 6px;
-	background: var(--control-bg, var(--bg-elev2));
+	background: var(--chip-bg, var(--control-bg, var(--bg-elev2)));
 	color: var(--control-fg, var(--text-dim));
 	font-size: 13px;
 	cursor: pointer;
@@ -308,7 +341,7 @@ body.panel-resizing {
 	align-items: center;
 	justify-content: center;
 	border: none;
-	background: var(--bg-elev);
+	background: var(--card-bg, var(--bg-elev));
 	color: var(--control-fg, var(--text-dim));
 	font-size: 14px;
 	cursor: pointer;
@@ -322,7 +355,7 @@ body.panel-resizing {
 	padding: 5px;
 	border: 1px solid var(--control-border, var(--border));
 	border-radius: 8px;
-	background: var(--control-bg, var(--bg-elev2));
+	background: var(--chip-bg, var(--control-bg, var(--bg-elev2)));
 	transition:
 		border-color 0.15s,
 		color 0.15s;
@@ -334,7 +367,7 @@ body.panel-resizing {
 	border-left: 1px solid var(--border);
 }
 .panel-rail:hover {
-	background: var(--bg-elev2);
+	background: var(--chip-bg, var(--bg-elev2));
 	color: var(--accent);
 }
 .panel-rail:hover svg {
@@ -1261,6 +1294,20 @@ body.lp-resizing .lp-sash.dragging::after {
 	color: var(--on-amber);
 }
 
+/* copy icons : copy file/folder name or absolute path to clipboard */
+.file-attach.copy {
+	background: rgba(148, 163, 184, 0.14);
+	color: var(--text-dim);
+}
+.file-attach.copy:hover {
+	background: var(--text-dim);
+	color: var(--bg);
+}
+.file-attach.copy.copied {
+	background: var(--green);
+	color: #fff;
+}
+
 /* --------------------------------------------------------------- attachments */
 
 .attach-row {
@@ -1396,7 +1443,7 @@ body.lp-resizing .lp-sash.dragging::after {
 	padding: 3px 12px;
 	border: 1px solid var(--border);
 	border-radius: 999px;
-	background: var(--bg-elev);
+	background: var(--card-bg, var(--bg-elev));
 	color: var(--text-dim);
 	font-size: 12px;
 	cursor: pointer;
@@ -1421,7 +1468,7 @@ body.lp-resizing .lp-sash.dragging::after {
 	margin: 6px 0;
 	border: 1px dashed rgba(139, 92, 246, 0.45);
 	border-radius: 8px;
-	background: var(--accent-soft);
+	background: var(--card-bg, var(--accent-soft));
 	overflow: hidden;
 }
 
@@ -1518,7 +1565,7 @@ body.lp-resizing .lp-sash.dragging::after {
 	margin: 8px 0;
 	border: 1px solid var(--border);
 	border-radius: 8px;
-	background: var(--bg-elev2);
+	background: var(--card-bg, var(--bg-elev2));
 	overflow: hidden;
 }
 
@@ -1610,7 +1657,7 @@ body.lp-resizing .lp-sash.dragging::after {
 	border: 1px solid var(--border);
 	border-radius: 999px;
 	overflow: hidden;
-	background: var(--bg-elev2);
+	background: var(--chip-bg, var(--bg-elev2));
 	flex-shrink: 0;
 }
 .view-switch button {
@@ -2515,7 +2562,7 @@ body.lp-resizing .lp-sash.dragging::after {
 	gap: 8px;
 	padding: 5px 16px;
 	border-top: 1px solid var(--border);
-	background: var(--bg-elev);
+	background: var(--statusbar-bg, var(--bg-elev));
 	font-size: 11px;
 	color: var(--text-faint);
 	white-space: nowrap;
@@ -2875,7 +2922,7 @@ body.lp-resizing .lp-sash.dragging::after {
 	gap: 12px;
 	padding: 10px 16px;
 	border-bottom: 1px solid var(--border);
-	background: var(--bg-elev);
+	background: var(--topbar-bg, var(--bg-elev));
 	flex-shrink: 0;
 }
 
@@ -3371,7 +3418,7 @@ body.lp-resizing .lp-sash.dragging::after {
 	padding: 5px 10px;
 	border: 1px solid var(--border);
 	border-radius: 999px;
-	background: var(--bg-elev2);
+	background: var(--chip-bg, var(--bg-elev2));
 	color: var(--text);
 	font-size: 12.5px;
 	cursor: pointer;
@@ -3447,11 +3494,12 @@ body.lp-resizing .lp-sash.dragging::after {
 	position: absolute;
 	top: calc(100% + 6px);
 	right: 0;
-	min-width: 240px;
-	max-width: 340px;
-	max-height: 420px;
+	min-width: 340px;
+	max-width: 480px;
+	max-height: 520px;
 	overflow-y: auto;
-	background: var(--bg-elev2);
+	/* 实色兜底：即使主题/旧缓存没定义 --menu-bg，也不许透出底下消息流 */
+	background: var(--menu-bg, var(--bg-elev2));
 	border: 1px solid var(--border);
 	border-radius: 10px;
 	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
@@ -4027,20 +4075,28 @@ body.lp-resizing .lp-sash.dragging::after {
 	min-height: 0;
 	display: flex;
 	flex-direction: column;
-	/* 壁纸层（::before 图片 / ::after 压暗）是绝对定位，超出圆角/模糊边缘
-	   不得外溢到输入栏——裁剪由 wrapper 承担（滚动仍在内部 .messages）。 */
+	/* container for the narrow-only message inset below (keeps row content
+	   clear of the rail without moving boxes, scrollbar or centers). */
+	container-type: inline-size;
+	container-name: msgs;
+	/* 中间聊天区玻璃底（--msgs-bg，默认与卡片/面板同 alpha 半透）；无壁纸或
+	   主题覆盖回 transparent 时不影响原纯色/全透表现。仍保持 overflow:hidden
+	   防止消息内容横向溢出。 */
+	background: var(--msgs-bg, transparent);
 	overflow: hidden;
 }
 
 /* ---- 聊天背景图（壁纸，issue #100）----
- * body.has-wallpaper 时 .messages-wrap 叠两层：::before 放图片（cover 居中，
- * 可模糊；scale 盖住模糊边缘），::after 用 --bg 按 --bg-image-dim 压暗，
- * 保证浅色/深色文字都可读。图片来源：主题的 --bg-image，或用户在设置 →
- * 消息显示里填的地址（wallpaper.ts 写同名内联变量，优先于主题）。
- * 无壁纸时两层 display:none，不影响原有纯色背景与性能。 */
-.messages-wrap::before {
+ * body.has-wallpaper 时在文档最底层铺两层全屏壁纸（position:fixed，覆盖
+ * 整个视口：含左右面板、顶栏、底栏）：::before 放图片（cover 居中、可模糊，
+ * scale 盖住模糊边缘），::after 用 --bg 按 --bg-image-dim 压暗，保证浅色/
+ * 深色文字都可读。图片来源：主题的 --bg-image，或用户在设置 → 消息显示里
+ * 填的地址（wallpaper.ts 写同名内联变量，优先于主题）。壁纸层之上是
+ * .app（position:relative; z-index:1，见 .app）；无壁纸时两层 display:none，
+ * 不影响原有纯色背景与性能。 */
+body.has-wallpaper::before {
 	content: "";
-	position: absolute;
+	position: fixed;
 	inset: 0;
 	z-index: 0;
 	background-image: var(--bg-image, none);
@@ -4051,24 +4107,28 @@ body.lp-resizing .lp-sash.dragging::after {
 	transform: scale(1.04);
 	pointer-events: none;
 }
-.messages-wrap::after {
+body.has-wallpaper::after {
 	content: "";
-	position: absolute;
+	position: fixed;
 	inset: 0;
 	z-index: 0;
 	background: var(--bg);
 	opacity: var(--bg-image-dim, 0.78);
 	pointer-events: none;
 }
-body:not(.has-wallpaper) .messages-wrap::before,
-body:not(.has-wallpaper) .messages-wrap::after {
+body:not(.has-wallpaper)::before,
+body:not(.has-wallpaper)::after {
 	display: none;
 }
-/* 消息列提到壁纸层之上；列表本身透明，壁纸从卡片间隙透出。 */
-.messages-wrap > .messages {
-	position: relative;
-	z-index: 1;
-}
+/* 容器背景优先于壁纸：各区域是否露图完全由自身背景决定（transparent → 露图，
+ * 不透明 → 挡图）。顶栏/底栏/左右面板的背景是独立变量（--topbar-bg /
+ * --statusbar-bg / --panel-bg，见 :root），卡片/控件/代码面/消息区用 --card-bg /
+ * --chip-bg / --inputbox-bg / --msgs-bg，默认全部半透明（共用
+ * --wallpaper-panel-alpha），壁纸从各处透出；主题把某变量覆盖回实色即关闭
+ * 该区壁纸。终端视图的 xterm
+ * canvas 读 --term-bg（含 canvas 背景/容器背景），默认实色不参与；半透明主题
+ * 把它设成 color-mix 半透明即可随整体透图，仍可独立覆盖回实色保可读。
+ * 无壁纸时 body 两层 display:none，半透明变量叠在纯色上色差极小。 */
 
 .messages {
 	flex: 1;
@@ -4427,7 +4487,7 @@ span.msg-editor-hint svg {
 	box-sizing: border-box;
 	border: 1px solid var(--border-soft);
 	border-radius: 8px;
-	background: var(--bg-elev1);
+	background: var(--card-bg, var(--bg-elev2));
 	color: var(--text-dim);
 	font-size: 12px;
 	text-align: left;
@@ -4439,8 +4499,12 @@ span.msg-editor-hint svg {
 }
 .msg-collapsed:hover {
 	border-color: var(--border);
-	background: var(--bg-elev2);
+	background: var(--chip-bg, var(--bg-elev2));
 	color: var(--text);
+}
+.msg-collapsed:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
 }
 
 .msg-collapsed-role {
@@ -4592,7 +4656,7 @@ span.msg-editor-hint svg {
 	margin: 10px 0;
 }
 .codeblock pre {
-	background: var(--code-bg) !important;
+	background: var(--chip-bg, var(--code-bg)) !important;
 	border: 1px solid var(--border);
 	border-radius: 8px;
 	padding: 10px 0;
@@ -4734,7 +4798,7 @@ span.msg-editor-hint svg {
 	margin: 8px 0;
 	border: 1px solid var(--border-soft);
 	border-radius: 8px;
-	background: var(--glow-015);
+	background: var(--card-bg, var(--glow-015));
 }
 
 .thinking-icon {
@@ -4844,7 +4908,7 @@ span.msg-editor-hint svg {
 	margin: 8px 0;
 	border: 1px solid var(--border);
 	border-radius: 8px;
-	background: var(--bg-elev);
+	background: var(--card-bg, var(--bg-elev));
 	overflow: hidden;
 }
 
@@ -5094,7 +5158,7 @@ div.chead[role="button"]:focus-visible,
 	white-space: pre;
 	overflow: auto;
 	max-height: 200px;
-	background: var(--bg-elev2);
+	background: var(--chip-bg, var(--bg-elev2));
 	border: 1px solid var(--border-soft);
 	border-radius: 6px;
 	padding: 8px 10px;
@@ -5104,7 +5168,7 @@ div.chead[role="button"]:focus-visible,
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	background: var(--code-bg);
+	background: var(--chip-bg, var(--code-bg));
 	border: 1px solid var(--border-soft);
 	border-radius: 6px;
 	padding: 8px 10px;
@@ -5141,7 +5205,7 @@ div.chead[role="button"]:focus-visible,
 	margin: 0;
 	max-height: 320px;
 	overflow: auto;
-	background: var(--code-bg);
+	background: var(--chip-bg, var(--code-bg));
 	border: 1px solid var(--border-soft);
 	border-radius: 6px;
 	padding: 8px 10px;
@@ -5187,7 +5251,7 @@ div.chead[role="button"]:focus-visible,
 	margin: 8px 0;
 	border: 1px solid var(--border);
 	border-radius: 8px;
-	background: var(--code-bg);
+	background: var(--card-bg, var(--code-bg));
 	overflow: hidden;
 }
 
@@ -5243,7 +5307,7 @@ div.chead[role="button"]:focus-visible,
 .queued-bubble {
 	position: relative;
 	max-width: min(85%, 720px);
-	background: var(--accent-soft);
+	background: var(--card-bg, var(--accent-soft));
 	border: 1px dashed rgba(139, 92, 246, 0.35);
 	border-radius: 12px;
 	padding: 8px 12px;
@@ -5319,13 +5383,38 @@ div.chead[role="button"]:focus-visible,
 	white-space: normal;
 }
 
+/* 报错耗尽后的手动重试入口：红色卡片里唯一的操作键 */
+.msg-error-text {
+	display: block;
+	min-width: 0;
+}
+
+.msg-retry-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	margin-top: 8px;
+	padding: 4px 14px;
+	font-size: 13px;
+	line-height: 1.6;
+	color: var(--red);
+	background: transparent;
+	border: 1px solid rgba(248, 113, 113, 0.55);
+	border-radius: 999px;
+	cursor: pointer;
+}
+
+.msg-retry-btn:hover {
+	background: rgba(248, 113, 113, 0.14);
+}
+
 /* 大模型 API 瞬时报错自动重试中的温和提示（琥珀色，非红）：替代一闪而过的红色报错 */
 .retry-notice {
 	display: flex;
 	align-items: center;
 	gap: 8px;
 	color: var(--amber-text);
-	background: rgba(251, 191, 36, 0.08);
+	background: var(--card-bg, rgba(251, 191, 36, 0.08));
 	border: 1px solid rgba(251, 191, 36, 0.3);
 	border-radius: 8px;
 	padding: 8px 12px;
@@ -5490,7 +5579,7 @@ div.chead[role="button"]:focus-visible,
 	position: relative; /* 右上角 ✏️ 编辑按钮的定位基准 */
 	border: 1px solid var(--border);
 	border-radius: 12px;
-	background: var(--bg-elev);
+	background: var(--card-bg, var(--bg-elev));
 	color: var(--text-dim);
 	text-align: left;
 	cursor: pointer;
@@ -5598,7 +5687,7 @@ div.chead[role="button"]:focus-visible,
 }
 .empty-templates-reset:hover {
 	color: var(--text-dim);
-	background: var(--bg-elev);
+	background: var(--card-bg, var(--bg-elev));
 }
 
 /* ---- 提示词模板 modal ---- */
@@ -5874,18 +5963,20 @@ div.chead[role="button"]:focus-visible,
 	gap: var(--rail-gap, 27px);
 }
 
-/* Invisible hover bridge: extends the rail's hover zone leftward over the
-   chip area, so the mouse can travel from the ticks onto a question chip
-   without the chips fading out. pointer-events are only enabled while the
-   rail is hovered — otherwise the bridge would block clicks on the
-   conversation underneath. */
+/* Invisible hover bridge: spans the full chip area so the transparent hover
+   zone sits flush with the question title buttons' left edge — the mouse can
+   travel from the ticks onto a chip (and between chips) without the chips
+   fading out. width = rail-to-chip-left distance: chips are 210px wide and
+   sit 6px left of the rail, so the whole span is 216px. pointer-events are
+   only enabled while the rail is hovered — otherwise even this strip would
+   block the conversation underneath. */
 .qn-rail::before {
 	content: "";
 	position: absolute;
 	top: 0;
 	bottom: 0;
 	right: 100%;
-	width: 260px;
+	width: 216px;
 	pointer-events: none;
 }
 .qn-rail:hover::before {
@@ -5994,9 +6085,9 @@ div.chead[role="button"]:focus-visible,
 	opacity: 1;
 }
 .qn-rail.many:not(:hover) .qn-list {
-	/* Hide immediately when the mouse leaves the rail — the hover bridge
-	   (::before, 260px left of the ticks) keeps :hover alive while the mouse
-	   travels onto the list, so no lingering delay is needed. */
+	/* Hide immediately when the mouse leaves the rail — the list itself is a
+	   child of the rail, so hovering it keeps :hover alive while the mouse
+	   travels onto it, no lingering delay is needed. */
 	transition:
 		opacity 0.15s ease,
 		visibility 0s;
@@ -6123,6 +6214,28 @@ div.chead[role="button"]:focus-visible,
 .msg-flash {
 	border-radius: 8px;
 	animation: qn-flash 1.6s ease-out;
+}
+
+/* Narrow messages area (desktop only — phones hide the rail outright, so no
+   gutter is reserved there): shift message rows left of the rail zone so
+   boxes (including visible cards like .msg-collapsed) never slide under the
+   rail. margin-left stays auto so rows right-align at the gutter on
+   860–960px and fill minus the gutter below 860px; left edges stay put.
+   Threshold 960px covers the <~936px overlap zone. Scrollbar, centers and
+   input untouched. */
+@media (min-width: 641px) {
+	@container msgs (max-width: 960px) {
+		.msg,
+		.msg-collapsed,
+		.msg-lazy-ph {
+			margin-right: 48px;
+		}
+		.msg-collapsed {
+			/* div fills available width minus the margin (no button
+			   shrink-to-fit), so rows stay uniform full-bleed. */
+			width: auto;
+		}
+	}
 }
 
 @media (max-width: 640px) {
@@ -6464,7 +6577,7 @@ div.chead[role="button"]:focus-visible,
 	display: flex;
 	flex-direction: column;
 	gap: 8px;
-	background: var(--bg-elev2);
+	background: var(--inputbox-bg, var(--bg-elev2));
 	border: 1px solid var(--border);
 	border-radius: 16px;
 	padding: 10px;

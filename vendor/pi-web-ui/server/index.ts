@@ -638,6 +638,8 @@ export interface DispatchSession {
 	removeQueued(kind: "steer" | "followUp", text: string): void;
 	abort(): Promise<void>;
 	abortBash(): Promise<void>;
+	/** 手动重试上次失败的模型调用（自动重试次数用完、已停止标红后）。 */
+	retryLast(): Promise<void>;
 	killBackgroundServer(port?: number, taskId?: string): Promise<boolean>;
 	killAllBackgroundServers(): Promise<string[]>;
 	listBgServers(): Promise<void>;
@@ -996,6 +998,9 @@ wss.on("connection", (ws) => {
 			case "abort_bash":
 				void cs.abortBash();
 				break;
+			case "retry_last":
+				void cs.retryLast();
+				break;
 			case "kill_background_server":
 				void cs.killBackgroundServer(msg.port, msg.taskId);
 				break;
@@ -1246,6 +1251,7 @@ wss.on("connection", (ws) => {
 					visionBridgePromptMode: msg.visionBridgePromptMode,
 					visionBridgePrompt: msg.visionBridgePrompt,
 					subagentDefaultModel: (msg as { subagentDefaultModel?: string | null }).subagentDefaultModel,
+					retryMaxAttempts: (msg as { retryMaxAttempts?: number }).retryMaxAttempts,
 					reviewPrompt: msg.reviewPrompt,
 					reviewDisabledSkills: msg.reviewDisabledSkills,
 					markersEnabled: (msg as { markersEnabled?: boolean }).markersEnabled,

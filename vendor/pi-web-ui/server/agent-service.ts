@@ -989,6 +989,8 @@ export class ClientSession {
 		conv.listed = true;
 		conv.title = subagentTitle(prompt);
 		this.convs.set(conv.id, conv);
+		// 子代理不走 bindSession——这里同样注入面板的重试次数覆盖。
+		this.applyRetryOverrides();
 		// 扩展绑定（rpc 模式；uiContext 只给无害的 mock theme/status 槽，避免与主对话
 		// 的 widget 冲突。无 uiContext 时扩展的 ctx.ui.theme.fg 会打到 TUI 真 theme
 		// 代理上抛 "Theme not initialized"，每个扩展一条 error toast。）
@@ -1871,6 +1873,10 @@ export class ClientSession {
 			},
 		});
 		conv.unsubscribe = conv.session.subscribe((event) => this.onEvent(conv, event));
+		// 新会话 / 切换会话 / 强杀重建的必经之路：刚创建的 runtime 用的是 SDK
+		// 默认重试 3 次——这里把面板的 retryMaxAttempts 覆盖注入，否则“设了 6
+		// 次还是按 3 次重试”。已存在会话重复注入是幂等的（同值覆盖）。
+		this.applyRetryOverrides();
 		this.scheduleSnapshot();
 		this.webUi.refresh();
 		this.startWidgetsTimer();
@@ -3023,8 +3029,11 @@ export class ClientSession {
 	setProviderApiKey(provider: string, apiKey: string): Promise<void> {
 		return this.modelAdmin.setProviderApiKey(provider, apiKey);
 	}
-	clearProviderApiKey(provider: string): Promise<void> {
-		return this.modelAdmin.clearProviderApiKey(provider);
+	async clearProviderApiKey(provider: string): Promise<void> {
+		await this.modelAdmin.clearProviderApiKey(provider);
+		// The provider is back to unconfigured — drop its key preference in
+		// EVERY project, otherwise each project switch re-tries a restore.
+		this.stateStore.deleteProviderEverywhere(provider.trim());
 	}
 	listProviders(): Promise<void> {
 		return this.modelAdmin.listProviders();
@@ -3059,37 +3068,43 @@ export class ClientSession {
 		if (active) this.stateStore.saveProjectProviderKey(this.clientId, this.cwd, provider, active);
 	}
 	async activateProviderKey(provider: string, keyName: string): Promise<void> {
-		await this.modelAdmin.activateProviderKey(provider, keyName);
-		this.stateStore.saveProjectProviderKey(this.clientId, this.cwd, provider, keyName);
+		const ok = await this.modelAdmin.activateProviderKey(provider, keyName);
+		// Only remember existing keys — a failed switch (deleted key) must not
+		// plant a stale reference that errors on every later project switch.
+		if (ok) this.stateStore.saveProjectProviderKey(this.clientId, this.cwd, provider, keyName);
+		else this.stateStore.deleteProjectProviderKey(this.clientId, this.cwd, provider);
 	}
 	async removeProviderKey(provider: string, keyName: string): Promise<void> {
 		await this.modelAdmin.removeProviderKey(provider, keyName);
-		const saved = this.stateStore.getProjectProviderKey(this.clientId, this.cwd, provider);
-		if (saved === keyName) {
-			const active = this.modelAdmin.getActiveKeyName(provider);
-			if (active) this.stateStore.saveProjectProviderKey(this.clientId, this.cwd, provider, active);
-			else this.stateStore.deleteProjectProviderKey(this.clientId, this.cwd, provider);
-		}
+		// The deletion may have been made from another project: every project
+		// still pinned to the deleted key must follow the key that took over
+		// (or drop the pin when no keys remain), not just the current one.
+		const active = this.modelAdmin.getActiveKeyName(provider);
+		this.stateStore.repointDeletedKeyEverywhere(provider, keyName, active);
 	}
 
 	/** Restore per-project provider keys when entering a project. For each
 	 *  provider that has a saved key for `cwd`, activate it if it differs from
-	 *  the current global active. Silent — no notice spam on project switch. */
+	 *  the current global active. Silent + self-healing: a saved key deleted
+	 *  elsewhere is dropped without notifying (a noisy error here is what
+	 *  haunted project switches after a key deletion). */
 	private async restoreProjectProviderKeysForCwd(cwd: string): Promise<void> {
 		const saved = this.stateStore.getProjectProviderKeys(this.clientId, cwd);
 		if (!saved) return;
 		for (const [provider, keyName] of Object.entries(saved)) {
 			const cur = this.modelAdmin.getActiveKeyName(provider);
 			if (cur === keyName) continue;
-			try {
-				await this.modelAdmin.activateProviderKey(provider, keyName);
-			} catch {
-				// saved key may have been deleted — ignore
+			if (!this.modelAdmin.hasProviderKey(provider, keyName)) {
+				this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
+				continue;
 			}
+			const ok = await this.modelAdmin.activateProviderKey(provider, keyName, { silent: true });
+			if (!ok) this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
 		}
 	}
 
-	/** When a model is set, ensure its provider's per-project key is restored. */
+	/** When a model is set, ensure its provider's per-project key is restored.
+	 *  Silent + self-healing like the bulk restore above. */
 	private async restoreKeyForModel(modelId: string, cwd: string): Promise<void> {
 		const slash = modelId.indexOf("/");
 		if (slash <= 0) return;
@@ -3098,9 +3113,12 @@ export class ClientSession {
 		if (!saved) return;
 		const cur = this.modelAdmin.getActiveKeyName(provider);
 		if (cur === saved) return;
-		try {
-			await this.modelAdmin.activateProviderKey(provider, saved);
-		} catch {}
+		if (!this.modelAdmin.hasProviderKey(provider, saved)) {
+			this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
+			return;
+		}
+		const ok = await this.modelAdmin.activateProviderKey(provider, saved, { silent: true });
+		if (!ok) this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
 	}
 
 	/** Remember the just-selected model (and the key that was active for its
@@ -3188,11 +3206,14 @@ export class ClientSession {
 	async setSettings(partial: {
 		promptMode?: PromptMode;
 		customSystemPrompt?: string;
+		promptTemplate?: string;
+		promptOverrides?: Record<string, string>;
 		disabledSkills?: string[];
 		disabledExtensions?: string[];
 		terminalToolsEnabled?: boolean;
 		terminalBash?: boolean;
 		terminalBashIdleMs?: number;
+		editSoftEnabled?: boolean;
 		thinkingWrap?: boolean;
 		toolsWrap?: boolean;
 		visionBridgeEnabled?: boolean;
@@ -3200,11 +3221,14 @@ export class ClientSession {
 		visionBridgePromptMode?: PromptMode;
 		visionBridgePrompt?: string;
 		subagentDefaultModel?: string | null;
+		retryMaxAttempts?: number;
 		reviewPrompt?: string;
 		reviewDisabledSkills?: string[];
 		disabledPlugins?: string[];
 		markersEnabled?: boolean;
 		disabledMarkers?: string[];
+		quickPhrases?: string[];
+		quickPhrasesEnabled?: boolean;
 	}): Promise<void> {
 		const { markersEnabled, disabledMarkers, quickPhrasesSeeded, ...rest } = partial as {
 			markersEnabled?: boolean;
@@ -3514,6 +3538,87 @@ export class ClientSession {
 		// 只停止智能体运行本身；AI 在后台启动的服务由「后台任务」面板单独
 		// 管理（可逐个停止或全部关闭），不会在停止对话时被连带杀掉。
 		await this.interruptRun(this.conv, "已停止");
+		this.flushSnapshot();
+	}
+
+	/** 手动重试上次失败的模型调用：自动重试次数（retryMaxAttempts）用完后
+	 *  本轮已停止并标红，用户点「重试」再触发一轮 LLM 调用。不新增用户气泡——
+	 *  用 display:false 的 custom 消息 triggerTurn 续跑，模型基于完整上下文
+	 * （含上次报错）继续生成。流式中 / 无可重试失败时只发 notice 拒绝。 */
+	async retryLast(): Promise<void> {
+		const conv = this.conv;
+		try {
+			if (this.quiesceBlocked()) return;
+			const s = this.session;
+			if (s.isStreaming) {
+				this.emit({
+					type: "notice",
+					level: "info",
+					text: "对话正在生成中，无需重试",
+					textEn: "The conversation is still generating — no need to retry",
+				});
+				return;
+			}
+			if (conv.retryState) {
+				this.emit({
+					type: "notice",
+					level: "info",
+					text: "正在自动重试中，稍候即可",
+					textEn: "Auto-retry is in progress — please wait",
+				});
+				return;
+			}
+			// 最后一轮失败的证据：末尾 stopReason=error 的 assistant 消息。
+			let failed: { errorMessage?: unknown; stopReason?: unknown } | null = null;
+			try {
+				const msgs = s.agent.state.messages;
+				for (let i = msgs.length - 1; i >= 0; i--) {
+					const m = msgs[i] as { role?: unknown; errorMessage?: unknown; stopReason?: unknown };
+					if (m.role !== "assistant") continue;
+					if ((typeof m.errorMessage === "string" && m.errorMessage.trim()) || m.stopReason === "error") {
+						failed = m;
+					}
+					break;
+				}
+			} catch {
+				// 会话替换中——按无可重试处理
+			}
+			if (!failed) {
+				this.emit({
+					type: "notice",
+					level: "info",
+					text: "没有可重试的失败：上一轮没有报错结束",
+					textEn: "Nothing to retry: the last turn did not end with an error",
+				});
+				return;
+			}
+			// 轨迹用：下一轮 agent_start 消费（否则插件回退为「继续执行」）。
+			conv.pendingTask = "手动重试上次失败的模型请求";
+			await s.sendCustomMessage(
+				{
+					customType: "manual-retry",
+					content: [
+						{
+							type: "text",
+							text: "（系统：用户点击了「重试」。请基于完整上下文重新发起上一次失败的模型请求，继续完成用户的任务。）",
+						},
+					],
+					display: false,
+				},
+				{ triggerTurn: true },
+			);
+			conv.promptedSinceActive = true;
+			conv.lastActiveAt = Date.now();
+			conv.lastSdkEventAt = Date.now();
+			conv.stallNoticed = false;
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `手动重试失败：${(err as Error).message}`,
+				textEn: `Manual retry failed: ${(err as Error).message}`,
+			});
+		}
 		this.flushSnapshot();
 	}
 

@@ -98,6 +98,9 @@ interface MessageListProps {
 	onEdit?: (messageId: string, text: string, attachments?: PromptAttachment[]) => void;
 	/** Kill the running bash command from its tool card (agent run continues). */
 	onKillBash?: () => void;
+	/** Manually retry the last failed model call (forwarded to the red error
+	 *  on the last message; sends the server `retry_last` message). */
+	onRetry?: () => void;
 	/** Remove one queued prompt (the ✕ on a pending bubble). */
 	onRemoveQueued?: (kind: "steer" | "followUp", text: string) => void;
 	/** 思考文本是否换行（设置面板开关；false = 不换行横向滚动）。 */
@@ -116,6 +119,7 @@ export function MessageList({
 	toolStatuses,
 	onEdit,
 	onKillBash,
+	onRetry,
 	onRemoveQueued,
 	thinkingWrap,
 	toolsWrap,
@@ -751,6 +755,7 @@ export function MessageList({
 								toolStatuses={toolStatuses}
 								streaming={state.isStreaming}
 								onKillBash={onKillBash}
+								onRetry={m.id === lastId ? onRetry : undefined}
 								toolsWrap={toolsWrap}
 								thinkingWrap={thinkingWrap}
 								isLast={m.id === lastId}

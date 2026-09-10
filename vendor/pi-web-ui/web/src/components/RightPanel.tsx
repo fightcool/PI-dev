@@ -1,7 +1,10 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
+	FiCheck,
 	FiChevronRight,
 	FiChevronsRight,
+	FiClipboard,
+	FiCopy,
 	FiDownload,
 	FiFile,
 	FiFolder,
@@ -67,6 +70,68 @@ export const RightPanel = memo(function RightPanel({
 	const ctxDir = useRef("");
 	const ctxProject = useRef<{ path: string; name: string } | null>(null);
 	const fileInput = useRef<HTMLInputElement>(null);
+
+	// ---- 复制名称 / 复制路径（hover 显示，点后 ✓ 1.2s 回显） ----
+	const [copiedKey, setCopiedKey] = useState<string | null>(null);
+	const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	useEffect(() => {
+		// 卸载时清掉回显 timer，避免 setState 落到已卸载组件。
+		return () => {
+			if (copyTimer.current) clearTimeout(copyTimer.current);
+		};
+	}, []);
+
+	const markCopied = useCallback((key: string) => {
+		setCopiedKey(key);
+		if (copyTimer.current) clearTimeout(copyTimer.current);
+		copyTimer.current = setTimeout(() => setCopiedKey(null), 1200);
+	}, []);
+
+	/** 非安全上下文（http）下 navigator.clipboard 可能缺失，走 textarea 兜底。 */
+	const fallbackCopy = (text: string): boolean => {
+		try {
+			const ta = document.createElement("textarea");
+			ta.value = text;
+			ta.style.position = "fixed";
+			ta.style.opacity = "0";
+			document.body.appendChild(ta);
+			ta.select();
+			const ok = document.execCommand("copy");
+			document.body.removeChild(ta);
+			return ok;
+		} catch {
+			return false;
+		}
+	};
+
+	const copyText = useCallback(
+		(text: string, key: string) => {
+			if (!text) return;
+			const done = () => markCopied(key);
+			const fail = () => onNotice("error", t("slashCopyFailed"));
+			const nav = navigator as Navigator & { clipboard?: Clipboard };
+			if (nav.clipboard?.writeText) {
+				void nav.clipboard.writeText(text).then(done, () => {
+					if (fallbackCopy(text)) done();
+					else fail();
+				});
+			} else if (fallbackCopy(text)) done();
+			else fail();
+		},
+		[markCopied, onNotice, t],
+	);
+
+	/** 复制用的绝对路径：机器浏览已是绝对路径直接用；工作区相对路径拼上 cwd。 */
+	const absPathOf = useCallback(
+		(p: string): string => {
+			if (!p) return cwd;
+			if (/^[A-Za-z]:$/.test(p)) return `${p}/`;
+			if (p.startsWith("/") || /^[A-Za-z]:([/]|$)/.test(p)) return p;
+			const root = cwd.replace(/\\/g, "/").replace(/\/+$/, "");
+			return root ? `${root}/${p}` : p;
+		},
+		[cwd],
+	);
 
 	/** 文件夹行 → set_cwd 可用的绝对路径：机器浏览（绝对 wire 路径）直接用；
 	 *  工作区相对路径拼上 cwd；机器根本身不能作项目。 */
@@ -372,9 +437,28 @@ export const RightPanel = memo(function RightPanel({
 										type="button"
 										className="file-attach ref"
 										data-tip={t("linkFolderTip")}
+										aria-label={t("linkFolderTip")}
 										onClick={() => onAttach(e.path, e.name, "reference", true)}
 									>
 										<FiLink />
+									</button>
+									<button
+										type="button"
+										className={`file-attach copy${copiedKey === `name:${e.path}` ? " copied" : ""}`}
+										data-tip={t("copyName")}
+										aria-label={t("copyName")}
+										onClick={() => copyText(e.name, `name:${e.path}`)}
+									>
+										{copiedKey === `name:${e.path}` ? <FiCheck /> : <FiCopy />}
+									</button>
+									<button
+										type="button"
+										className={`file-attach copy${copiedKey === `path:${e.path}` ? " copied" : ""}`}
+										data-tip={t("copyPath")}
+										aria-label={t("copyPath")}
+										onClick={() => copyText(absPathOf(e.path), `path:${e.path}`)}
+									>
+										{copiedKey === `path:${e.path}` ? <FiCheck /> : <FiClipboard />}
 									</button>
 								</div>
 							) : (
@@ -432,9 +516,28 @@ export const RightPanel = memo(function RightPanel({
 										type="button"
 										className="file-attach ref"
 										data-tip={t("referenceTip")}
+										aria-label={t("referenceTip")}
 										onClick={() => onAttach(e.path, e.name, "reference")}
 									>
 										<FiLink />
+									</button>
+									<button
+										type="button"
+										className={`file-attach copy${copiedKey === `name:${e.path}` ? " copied" : ""}`}
+										data-tip={t("copyName")}
+										aria-label={t("copyName")}
+										onClick={() => copyText(e.name, `name:${e.path}`)}
+									>
+										{copiedKey === `name:${e.path}` ? <FiCheck /> : <FiCopy />}
+									</button>
+									<button
+										type="button"
+										className={`file-attach copy${copiedKey === `path:${e.path}` ? " copied" : ""}`}
+										data-tip={t("copyPath")}
+										aria-label={t("copyPath")}
+										onClick={() => copyText(absPathOf(e.path), `path:${e.path}`)}
+									>
+										{copiedKey === `path:${e.path}` ? <FiCheck /> : <FiClipboard />}
 									</button>
 								</div>
 							),
