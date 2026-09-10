@@ -607,6 +607,13 @@ interface Conversation {
 	 *  TOOL_WATCHDOG_TIMEOUT_MS gets the session aborted instead of hanging
 	 *  the conversation forever (the SDK bash tool has no default timeout). */
 	toolWatchdogs: Map<string, ReturnType<typeof setTimeout>>;
+	/** 本端正在流式输出时收到「其他端完成了这个会话的节点」→ 置位，本轮 agent_end
+	 *  结束后自动从磁盘接力重载（不打断本端正在跑的工作）。 */
+	pendingDiskReload?: boolean;
+	/** 接力重载正在进行——避免两个并发广播对同一对话重复换 runtime。 */
+	reloadInFlight?: boolean;
+	/** 上次看到的磁盘转录签名（mtimeMs:size）——用于接入/回到页面时判断是否需要追平。 */
+	diskSig?: string;
 }
 
 /** 轨迹事件 payload 封顶（可直接广播/持久化，不撑爆 storage.json）。 */
@@ -845,6 +852,12 @@ export class ClientSession {
 	pluginBgTasksProvider: (() => BgServer[]) | undefined = undefined;
 	/** index.ts 注入：停止插件任务（kill_background_server with taskId）。 */
 	pluginStopBgTask: ((taskId: string) => boolean) | undefined = undefined;
+	/** AgentService 注入：本端完成一个节点（transcript 已落盘）→ 广播给其他端，
+	 *  让它们刷新会话列表并接力重载同一会话。 */
+	onSessionPersisted: ((file: string, cwd: string) => void) | undefined = undefined;
+	/** AgentService 注入：本端改变了会话列表本身（删除/改名/新建落盘）→ 广播给
+	 *  其他端刷新列表。 */
+	onSessionsListChanged: ((cwd: string) => void) | undefined = undefined;
 	/** 上一轮注入会话的插件工具名集合（用于检测注销/移除）。 */
 	private appliedPluginToolNames = new Set<string>();
 
@@ -1860,9 +1873,9 @@ export class ClientSession {
 		for (const sink of [...this.sinks]) sink(msg);
 	}
 
-	/** (Re)attach event plumbing to the ACTIVE conversation's session. */
-	private async bindSession(): Promise<void> {
-		const conv = this.conv;
+	/** (Re)attach extension binding + event plumbing to ONE conversation's session.
+	 *  多端接力重载（reloadConversationFromDisk）也走这里，保证与新建/切换同一套绑定。 */
+	private async bindConversation(conv: Conversation): Promise<void> {
 		conv.unsubscribe?.();
 		conv.session = conv.runtime.session;
 		await conv.session.bindExtensions({
@@ -1873,6 +1886,52 @@ export class ClientSession {
 			},
 		});
 		conv.unsubscribe = conv.session.subscribe((event) => this.onEvent(conv, event));
+		this.updateDiskSig(conv);
+	}
+
+	/** 记录某对话当前磁盘转录的签名（mtimeMs:size），用于判断是否需要接力重载。 */
+	private updateDiskSig(conv: Conversation): void {
+		try {
+			const file = conv.session.sessionFile;
+			if (!file) {
+				conv.diskSig = undefined;
+				return;
+			}
+			const st = statSync(file);
+			conv.diskSig = `${st.mtimeMs}:${st.size}`;
+		} catch {
+			conv.diskSig = undefined;
+		}
+	}
+
+	/** 磁盘转录是否比本端内存状态新（本端上次记录之后被其他端写过）。 */
+	private diskSigChanged(conv: Conversation): boolean {
+		const file = conv.session.sessionFile;
+		if (!file) return false;
+		try {
+			const st = statSync(file);
+			return conv.diskSig !== `${st.mtimeMs}:${st.size}`;
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * 接入 / 回到页面时追平：本端活动会话的磁盘文件若比内存新（离开期间另一端
+	 * 完成了工作，且没有新广播可收），就从磁盘接力重载。
+	 * 覆盖「页面重连但 clientId 未变 → 服务端复用内存 ClientSession」的缺口。
+	 */
+	syncActiveFromDiskIfStale(): void {
+		if (this.disposed) return;
+		const conv = this.convs.get(this.activeId);
+		if (!conv || conv.session.isStreaming || conv.reloadInFlight) return;
+		if (!conv.session.sessionFile || !this.diskSigChanged(conv)) return;
+		void this.reloadConversationFromDisk(conv);
+	}
+
+	/** (Re)attach event plumbing to the ACTIVE conversation's session. */
+	private async bindSession(): Promise<void> {
+		await this.bindConversation(this.conv);
 		// 新会话 / 切换会话 / 强杀重建的必经之路：刚创建的 runtime 用的是 SDK
 		// 默认重试 3 次——这里把面板的 retryMaxAttempts 覆盖注入，否则“设了 6
 		// 次还是按 3 次重试”。已存在会话重复注入是幂等的（同值覆盖）。
@@ -2245,6 +2304,10 @@ export class ClientSession {
 				}
 				this.scheduleSessionsRefresh();
 				this.refreshConversationTitle(conv);
+				// 多端接力：一轮结束（transcript 已落盘）→ 先补做期间挂起的重载，
+				// 再把「节点完成」广播给其他端（刷新列表 + 拉动同一会话的端）。
+				void this.flushPendingDiskReloads();
+				this.broadcastPersistedNode(conv);
 				// 内联标记不在此兜底扫最后一条 assistant：每条气泡结束已走 message_end
 				// 即时解析（含中间文本块）；这里再扫会把最后一条标记重复执行（todo 重复建号）。
 
@@ -3903,6 +3966,8 @@ export class ClientSession {
 			// A fresh transcript appeared in the sessions dir — the next listing
 			// must see it, not the pre-newChat fridge snapshot.
 			this.invalidateSessionInfos();
+			// 多端：新会话让其他端的列表也跟上。
+			this.onSessionsListChanged?.(this.cwd);
 			// New session seeds with the ModelRuntime default model — restore the
 			// model the user had selected in the previous chat.
 			if (prevModel && this.sharedModelRuntime) {
@@ -4126,9 +4191,8 @@ export class ClientSession {
 		await this.pushSessions();
 	}
 
-	private async pushSessions(): Promise<void> {
-		if (!this.sessionsRequested) return;
-		if (!this.sessionsRequested) return;
+	private async pushSessions(force = false): Promise<void> {
+		if (!this.sessionsRequested && !force) return;
 		try {
 			// Sessions live in the SDK default per-project dir
 			// (<agentDir>/sessions/--<cwd>--/), the same files the pi CLI/TUI
@@ -4150,6 +4214,131 @@ export class ClientSession {
 			this.emit({ type: "sessions", sessions: sorted });
 		} catch {
 			this.emit({ type: "sessions", sessions: [] });
+		}
+	}
+
+	/** 其他端在本项目下写入/新建/删除/改名了会话 → 让本端的会话列表跟上。
+	 *  列表按 cwd 过滤：不同项目不必理会（切到该项目时本来就会 refreshSessions）。 */
+	notifyExternalSessionsChanged(cwd: string): void {
+		if (this.disposed || cwd !== this.cwd) return;
+		// 3s 的 session-info 冰箱会端回旧列表，这里先击穿再重列。force：即使本端还
+		// 没打开过历史面板也推（推送的数据会在前端 state 里就位，开抽屉即见）。
+		this.invalidateSessionInfos();
+		void this.pushSessions(true);
+	}
+
+	/** 本端一个节点完成（transcript 已落盘）→ 广播给其他端（列表刷新 + 接力重载）。
+	 *  子代理/内存会话没有 sessionFile，或会话正被替换时静默跳过。 */
+	private broadcastPersistedNode(conv: Conversation): void {
+		try {
+			const file = conv.session.sessionFile;
+			if (!file) return;
+			// 记下自己刚写入的签名，避免下次接入时把自己的写当作「其他端的更新」重载。
+			this.updateDiskSig(conv);
+			this.onSessionPersisted?.(file, conv.cwd);
+		} catch {
+			/* 无文件 / 会话正被替换 — 无需广播 */
+		}
+	}
+
+	/** 其他端完成了该会话文件的一个节点 → 若本端持有它，从磁盘接力重载。
+	 *  本端正在流式输出/有排队消息时置 pending，由本轮 agent_end 补做（绝不打断）。 */
+	async reloadIfHolding(file: string): Promise<void> {
+		if (this.disposed) return;
+		let target: string;
+		try {
+			target = resolve(file);
+		} catch {
+			return;
+		}
+		for (const conv of this.convs.values()) {
+			const own = conv.session.sessionFile;
+			if (!own || resolve(own) !== target) continue;
+			if (conv.reloadInFlight) {
+				conv.pendingDiskReload = true;
+				continue;
+			}
+			if (conv.session.isStreaming || conv.queueSteering.length > 0 || conv.queueFollowUp.length > 0) {
+				conv.pendingDiskReload = true;
+				continue;
+			}
+			await this.reloadConversationFromDisk(conv);
+		}
+	}
+
+	/** 本端一轮结束（agent_end）后，补做期间收到的接力重载。 */
+	private async flushPendingDiskReloads(): Promise<void> {
+		for (const conv of [...this.convs.values()]) {
+			if (!conv.pendingDiskReload || conv.session.isStreaming) continue;
+			await this.reloadConversationFromDisk(conv);
+		}
+	}
+
+	/**
+	 * 从磁盘重新载入一个对话的 runtime（多端接力）：其他端完成节点后，把本端该
+	 * 会话的内存状态换成磁盘上的最新 transcript。**就地替换**——保留对话 id、
+	 * 所属项目与终端，并重置按对话隔离的消息序列化缓存。
+	 * 调用方必须保证该对话当前没有本地流式输出 / 排队消息。
+	 */
+	private async reloadConversationFromDisk(conv: Conversation): Promise<void> {
+		const file = conv.session.sessionFile;
+		if (!file || conv.session.isStreaming || this.disposed) return;
+		if (conv.reloadInFlight) {
+			conv.pendingDiskReload = true;
+			return;
+		}
+		if (conv.queueSteering.length > 0 || conv.queueFollowUp.length > 0) {
+			conv.pendingDiskReload = true;
+			return;
+		}
+		conv.reloadInFlight = true;
+		conv.pendingDiskReload = false;
+		try {
+			const sessionManager = SessionManager.open(file);
+			const oldRuntime = conv.runtime;
+			const runtime = await createAgentSessionRuntime(this.makeRuntimeFactory(conv.terminals, undefined, conv.id), {
+				cwd: conv.cwd,
+				agentDir: this.agentDir,
+				sessionManager,
+			});
+			// 先停旧事件订阅、释放旧 runtime（解除其扩展绑定），再换新的：避免两个
+			// runtime 的扩展同时挂在 webUi 上产生重复 widget/status。
+			conv.unsubscribe?.();
+			conv.unsubscribe = undefined;
+			try {
+				await oldRuntime.dispose();
+			} catch {
+				/* 旧 runtime 释放失败不影响接力结果 */
+			}
+			this.clearAllToolWatchdogs(conv);
+			conv.runtime = runtime;
+			conv.session = runtime.session;
+			// 消息集合变了：清掉按对话隔离的序列化缓存，强制重建 UI 消息数组。
+			conv.msgIds = new Map();
+			conv.nextMsgId = 1;
+			conv.userSeqByTs = new Map();
+			conv.uiMessageCache = new Map();
+			conv.lastMessagesSig = "";
+			conv.lastMessagesArray = [];
+			conv.deltaSeq = 0;
+			conv.queueSteering = [];
+			conv.queueFollowUp = [];
+			conv.toolStartTimes = new Map();
+			await this.bindConversation(conv);
+			this.applyRetryOverrides();
+			if (conv.id === this.activeId) this.flushSnapshot(true);
+			this.emitConversations();
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "warning",
+				text: `接力刷新会话失败：${(err as Error).message}`,
+				textEn: `Failed to refresh the session from disk: ${(err as Error).message}`,
+			});
+		} finally {
+			conv.reloadInFlight = false;
+			// 重载期间又收到节点完成（已置 pending）→ 补做一次。
+			if (conv.pendingDiskReload && !this.disposed) void this.flushPendingDiskReloads();
 		}
 	}
 
@@ -4246,6 +4435,7 @@ export class ClientSession {
 			// still contains the deleted transcript.
 			this.invalidateSessionInfos();
 			await this.refreshSessions();
+			this.onSessionsListChanged?.(this.cwd);
 		} catch (err) {
 			this.emit({
 				type: "notice",
@@ -4279,6 +4469,7 @@ export class ClientSession {
 			this.setConversationTitleForFile(abs, trimmed);
 			this.invalidateSessionInfos();
 			await this.refreshSessions();
+			this.onSessionsListChanged?.(this.cwd);
 		} catch (err) {
 			this.emit({
 				type: "notice",
@@ -5227,6 +5418,8 @@ export class AgentService {
 		// BEFORE attachSink so the notice rides the initial pending-notice flush.
 		cs.notifyInterrupted(this.stateStore.takeInterrupted(clientId));
 		cs.attachSink(send);
+		// 接入/回到页面时追平：离开期间另一端完成的工作，这里按磁盘新鲜度补上。
+		cs.syncActiveFromDiskIfStale();
 		// Forward hooks (set once by index.ts) to every session.
 		cs.onQuit = this.onQuit;
 		cs.onToolEvent = this.onToolEvent;
@@ -5237,6 +5430,11 @@ export class AgentService {
 		cs.pluginBgTasksProvider = this.pluginBgTasksProvider;
 		cs.pluginStopBgTask = this.pluginStopBgTask;
 		cs.isQuiesced = () => this.quiesced;
+		// 多端同步：本端完成节点 / 会话列表变化 → 广播给其他客户端。
+		// 节点完成 → 对方刷新列表 + 若持有同一会话则从磁盘接力重载；
+		// 列表变化（新建/删除/改名）→ 对方只刷新列表。
+		cs.onSessionPersisted = (file, cwd) => this.broadcastSessionPersisted(cs.clientId, file, cwd);
+		cs.onSessionsListChanged = (cwd) => this.broadcastSessionsListChanged(cs.clientId, cwd);
 		// 插件宿主工作区跟随：初次接入也同步一次（恢复的 lastCwd 可能≠服务启动目录），
 		// notifyCwd 幂等去重；此后 set_cwd 成功时由 cs.onCwdChanged 继续驱动。
 		cs.onCwdChanged = (abs) => this.onClientCwdChanged?.(abs);
@@ -5285,6 +5483,24 @@ export class AgentService {
 
 	get(clientId: string): ClientSession | undefined {
 		return this.clients.get(clientId);
+	}
+
+	/** 一个客户端完成一个节点（transcript 已落盘）→ 其他端刷新会话列表；持有
+	 *  同一会话的端从磁盘接力重载（节点粒度，不打扰正在流式输出的端）。 */
+	private broadcastSessionPersisted(originClientId: string, file: string, cwd: string): void {
+		for (const cs of this.clients.values()) {
+			if (cs.clientId === originClientId) continue;
+			cs.notifyExternalSessionsChanged(cwd);
+			void cs.reloadIfHolding(file);
+		}
+	}
+
+	/** 会话列表本身变化（新建落盘 / 删除 / 改名）→ 其他同项目端刷新列表。 */
+	private broadcastSessionsListChanged(originClientId: string, cwd: string): void {
+		for (const cs of this.clients.values()) {
+			if (cs.clientId === originClientId) continue;
+			cs.notifyExternalSessionsChanged(cwd);
+		}
 	}
 
 	async disposeAll(): Promise<void> {

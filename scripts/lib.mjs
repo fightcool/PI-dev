@@ -87,7 +87,9 @@ export function runtimeEnv(config, base = process.env) {
     PI_WEB_DATA_DIR: config.dataDir,
     PI_WEB_ENGINE: "pi",
     PI_CODING_AGENT_DIR: config.agentDir,
-    PI_CODING_AGENT_SESSION_DIR: join(config.agentDir, "sessions"),
+    // 不要设置 PI_CODING_AGENT_SESSION_DIR：SDK 0.85.1 不读它写盘（仍写
+    // <agentDir>/sessions/--<cwd>--/），但 pi-web-ui 会把它当 sessionDir 传给
+    // 非递归的 list()/listAll()，导致「历史对话 / 最近项目」列表恒为空。
     PI_WEB_TOKEN: token,
     // The public hostname is fixed for this deployment. Callers can still
     // override it explicitly when running an isolated local instance.

@@ -61,6 +61,9 @@ test("runtime overrides inherited old-instance paths and activates the project v
     assert.equal(env.PI_WEB_CWD, ROOT);
     assert.equal(env.PI_WEB_PORT, "8788");
     assert.equal(env.PI_CODING_AGENT_DIR, "/tmp/pi-dev-agent");
+    // 不设置 PI_CODING_AGENT_SESSION_DIR：SDK 0.85.1 不读它写盘，但 pi-web-ui
+    // 会把它当 sessionDir 传给非递归的 list()/listAll()，导致历史列表恒为空。
+    assert.equal(env.PI_CODING_AGENT_SESSION_DIR, undefined);
     assert.equal(env.VIRTUAL_ENV, join(ROOT, ".venv"));
     assert.ok(env.PATH.startsWith(join(ROOT, ".venv/bin")));
     assert.equal(env.PI_WEB_TOKEN.length, 64);

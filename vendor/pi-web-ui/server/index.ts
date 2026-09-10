@@ -1376,13 +1376,16 @@ wss.on("connection", (ws) => {
 							// 插件清单【先于】快照推送：前端渲染历史消息前就拿到 renderer
 							// 注册表（plugin-fence.ts），`` ```lang `` 围栏才能立即命中插件；
 							// 否则消息先落成普通代码块，清单后到也不会重渲。
-							cs.flushSnapshot();
+							// forceFull：同一 clientId 重连会复用内存 ClientSession，增量快照的
+							// baseRev 是新 socket 没有的（前端只能再 get_state 自愈）。首个快照
+							// 恒发全量，重连一次到位——也保证多端接力后的追平状态能到达。
+							cs.flushSnapshot(true);
 						})
 						.catch(() => {
 							if (closed) return;
 							// ensureLoaded 失败（如磁盘读错）不能卡死快照——前端 30s 无消息
 							// 会重连，重连又失败会陷入循环。至少把状态推下去。
-							cs.flushSnapshot();
+							cs.flushSnapshot(true);
 						});
 					// hello may carry the UI locale — persist it before replaying
 					// anything queued during startup (issue #91).
