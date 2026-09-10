@@ -63,6 +63,14 @@ export interface GoalHost {
 	lang?: () => ServerLang;
 	/** 目标模式总开关（设置面板「目标审查」页可关）。关 → 拒绝设目标/调研/审查。 */
 	goalModeEnabled: () => boolean;
+	/**
+	 * 复核/调研是独立的 ModelRuntime + 独立会话，用量不会进主会话统计
+	 * （DEV-CON §7：复核必须单独标注来源）。这里把该会话的用量上报给主会话归属表。
+	 */
+	recordUsage?: (
+		source: "review" | "wizard",
+		usage: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost: number; provider?: string; modelId?: string },
+	) => void;
 }
 
 /** System prompt for the goal-wizard session. The wizard asks the user a few
@@ -108,6 +116,32 @@ export class GoalService {
 	private static readonly WIZARD_IDLE_TIMEOUT_MS = 5 * 60_000;
 	/** Absolute deadline for the whole wizard session (model latency guard). */
 	private static readonly WIZARD_MAX_TOTAL_MS = 20 * 60_000;
+
+	/**
+	 * 复核/调研各自用独立的 ModelRuntime + 独立会话，用量不会进主会话统计
+	 * （DEV-CON §7：复核必须单独标注来源）。这里把该会话的累计用量上报给主会话归属表。
+	 * 尽力而为：读不到统计或上报失败都不影响复核/调研结果。
+	 */
+	private reportIsolatedUsage(
+		session: { getSessionStats?: () => { tokens?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number }; cost?: number } },
+		source: "review" | "wizard",
+	): void {
+		try {
+			const stats = session.getSessionStats?.();
+			const t = stats?.tokens;
+			if (!this.host.recordUsage || !t) return;
+			this.host.recordUsage(source, {
+				input: t.input ?? 0,
+				output: t.output ?? 0,
+				cacheRead: t.cacheRead ?? 0,
+				cacheWrite: t.cacheWrite ?? 0,
+				total: t.total ?? (t.input ?? 0) + (t.output ?? 0),
+				cost: stats?.cost ?? 0,
+			});
+		} catch {
+			/* 用量上报尽力而为 */
+		}
+	}
 
 	constructor(private readonly host: GoalHost) {
 		// Restore last-used goal/review preferences so model & rounds survive reload.
@@ -641,6 +675,7 @@ export class GoalService {
 					refinedGoal = lines.slice(1).join(" ").trim();
 				}
 			}
+			this.reportIsolatedUsage(wizard, "wizard");
 			await srv.session.dispose();
 		} catch (err) {
 			this.host.emit({
@@ -1023,6 +1058,7 @@ export class GoalService {
 			const reviewCap = g.locked && g.maxRounds > 0 ? g.maxRounds : 0; // 0 = no cap
 			const reviewer = srv.session;
 			await reviewer.prompt(this.reviewerPrompt(goalText, g.round, reviewCap, finalText, diff, reviewPrompt));
+			this.reportIsolatedUsage(reviewer, "review");
 
 			// Parse the reviewer's final output (expected to be a JSON object).
 			const raw = reviewer.getLastAssistantText() ?? "";

@@ -36,7 +36,7 @@ PI_DEV_DEPLOY_ROOT=/srv/pi-dev node scripts/release.mjs stop
 
 其他支持动作：start、reload、delete。它们仅针对配置的应用名称与独立PM2_HOME；不支持操作全部PM2应用的命令。root package的release:check用于只读检查，不等于构建与发布验收。
 
-`PI_DEV_CONFIG_DIR`、`PM2_HOME`若指定，必须是deploy/shared下不同目录。`PI_DEV_SHADOW_PORT`可选择其他未占用的高位端口，但禁止8787、8788和原型预留8791。
+`PI_DEV_CONFIG_DIR`、`PM2_HOME`若指定，必须是deploy/shared下不同目录。`PI_DEV_SHADOW_PORT`可选择其他未占用的高位端口，但禁止8787、8788和运维预留8791。
 
 ## 发布流程
 

@@ -8,4 +8,5 @@
  * its own copy in web/src/protocol-version.ts; scripts/check-protocol-sync.mjs
  * verifies the two never drift.
  */
-export const PROTOCOL_VERSION = 15;
+/* 🍞 @COUPLED server/protocol.ts — 协议改动必须同时 bump 两份版本号（scripts/check-protocol-sync.mjs 校验） */
+export const PROTOCOL_VERSION = 16;

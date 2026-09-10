@@ -1,10 +1,20 @@
+/* 🍞 @COUPLED web/src/components/ModelThinking.tsx, web/src/app/chat-view.tsx — 📖 docs/DEV-CON-PROPOSAL.md §6 */
 import { memo, useEffect, useRef, useState } from "react";
 import { FiSend, FiSquare, FiPaperclip, FiArrowUp, FiGrid } from "react-icons/fi";
-import type { ClientMessage, ModelInfo, ProviderKeyInfo, SlashCommandInfo, UiMessage, UiState } from "../types";
+import type {
+	ClientMessage,
+	ModelInfo,
+	ProviderKeyInfo,
+	SlashCommandInfo,
+	UiChannelBindingView,
+	UiMessage,
+	UiState,
+} from "../types";
 import { useT, useI18n } from "../i18n";
 import { isRasterImage } from "../image-paste";
 import { recordModelUsage } from "../model-usage";
 import { loadPromptHistory, pushPromptHistory } from "../prompt-history";
+import type { ChannelApi, ChannelCommandResult, ChannelStateMsg } from "../use-chat";
 
 import { ModelThinking } from "./ModelThinking";
 import { useTemplates } from "./PromptTemplates";
@@ -66,6 +76,14 @@ interface ChatInputProps {
 	/** Stored API keys per built-in provider (masked) — drives the picker's
 	 *  multi-key grouping (click a model under a key to switch to it). */
 	providerKeys: Record<string, ProviderKeyInfo[]>;
+	/** DEV-CON 渠道快照：有渠道时模型下拉按渠道分组，否则保持原有渲染。 */
+	channelState: ChannelStateMsg | null;
+	/** 当前对话的有效/待生效绑定视图（快照自带）。 */
+	channelBinding: UiChannelBindingView | null | undefined;
+	/** 渠道命令回执（按 commandId），用于展示最新一次切换结果。 */
+	channelResults: Record<string, ChannelCommandResult>;
+	/** DEV-CON 渠道命令 API（channel_select / 默认值 / 账户查询 …）。 */
+	channelApi: ChannelApi;
 	/** 输入框上方的快捷短语（点击即发送；与文件引用 chips 是两套独立 UI，互不干扰）。 */
 	quickPhrases: string[];
 	quickPhrasesEnabled: boolean;
@@ -88,6 +106,10 @@ export const ChatInput = memo(function ChatInput({
 	onSent,
 	onManageModels,
 	providerKeys,
+	channelState,
+	channelBinding,
+	channelResults,
+	channelApi,
 	quickPhrases,
 	quickPhrasesEnabled,
 }: ChatInputProps) {
@@ -727,6 +749,10 @@ export const ChatInput = memo(function ChatInput({
 							send={send}
 							onManageModels={onManageModels}
 							providerKeys={providerKeys}
+							channelState={channelState}
+							channelBinding={channelBinding}
+							channelResults={channelResults}
+							channelApi={channelApi}
 							compact
 						/>
 					</div>

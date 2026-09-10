@@ -8,7 +8,7 @@
 | --- | --- |
 | [前期项目评估](assessment.md) | 保留源码风险与方案比较。多Agent接入、独立控制台优先、M0–M5排期及旧工期已失效；其他问题先重新核实 |
 | [v1.2架构讨论](architecture-v1.2.md) | 产品范围收敛后的架构背景，有效要求已合并到开发基准，不再单独维护 |
-| [只读原型记录](readonly-prototype.md) | 暂停前原型的代码位置、运行方法、测试与已知问题，不代表渠道功能完成 |
+| [只读原型记录](readonly-prototype.md) | 已移除原型（`dev-con/`）的代码位置、运行方法、测试与已知问题；**原型代码及专用测试已从仓库删除**，本文件仅作历史复查 |
 
 旧路径 `docs/DEV-CON-ASSESSMENT.md`、`docs/SYSTEM-ARCHITECTURE-REVIEW.md`、`docs/DEV-CON-IMPLEMENTATION.md` 仅保留兼容跳转。开发者从旧链接进入时应先读当前基准，不顺着归档中的“下一步”恢复已撤销任务。
 

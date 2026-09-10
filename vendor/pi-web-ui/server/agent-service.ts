@@ -22,6 +22,10 @@ import { existsSync, readFileSync, rmSync, statSync, mkdirSync, watch } from "no
 import { delimiter, dirname, join, resolve, sep } from "node:path";
 // @ts-expect-error Host runtime module is JavaScript by design.
 import { normalizeUsageEvent, TokenUsageTracker } from "#usage";
+import { ChannelService } from "./dev-con/channel-service.js";
+import { AccountRegistry } from "./dev-con/channel-accounts.js";
+import type { ChannelRecord, ChannelSelection, RequestBindingSnapshot } from "./dev-con/channel-model.js";
+import type { ChannelServiceHost } from "./dev-con/channel-service.js";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
@@ -112,6 +116,7 @@ import type {
 	QuestionAnswer,
 	ServerMessage,
 	SessionSummary,
+	UiChannelBindingView,
 	UiMessage,
 	UiQuestion,
 	UiState,
@@ -562,6 +567,13 @@ export interface Conversation {
 	 *  STALL_NOTIFY_MS is probably a half-open API connection. */
 	/** Unified event-level token accounting for current/run/cumulative views. */
 	usageTracker: TokenUsageTracker;
+	/**
+	 * 请求发出时固定的渠道/凭据/模型与绑定版本（§7）：在 Agent.getApiKey 被调用
+	 * （= SDK 每次 provider 请求前）时写入，使晚到的用量结果仍归属到当时的绑定。
+	 */
+	lastRequestBinding: RequestBindingSnapshot | null;
+	/** 压缩前的会话统计基线：压缩摘要的 token 用会话统计差值归属为 source=compaction。 */
+	compactionBaseline: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost: number } | null;
 	/** Last time any SDK event arrived for this conversation. */
 	lastSdkEventAt: number;
 	/** Set once the stall notice has been sent for the current silent period;
@@ -1498,6 +1510,15 @@ export class ClientSession {
 			lang: () => this.getLang(),
 			// 目标模式总开关（设置面板「目标审查」页）：关 → 目标入口一律拒绝。
 			goalModeEnabled: () => this.settingsSvc.current.goalModeEnabled !== false,
+			// DEV-CON §7：复核/调研用独立 ModelRuntime，用量单独标注来源并归到发起它的对话。
+			recordUsage: (source, usage) => {
+				const conv = this.conv;
+				conv.usageTracker.record(
+					{ scope: "final", identity: null, role: "assistant", ...usage },
+					Date.now(),
+					this.bindingAttribution(conv, source),
+				);
+			},
 			activeConvId: () => this.activeId,
 			activeConv: () => this.conv,
 			getConv: (id) => this.convs.get(id),
@@ -1520,6 +1541,8 @@ export class ClientSession {
 		// Prune dead background tasks every 30s (only spawns netstat/lsof while
 		// the list is non-empty). unref: must not keep the process alive.
 		this.bg.start();
+		this.accounts = new AccountRegistry();
+		this.channels = new ChannelService(this.makeChannelHost(agentDir), this.accounts);
 	}
 
 	static async create(clientId: string, cwd: string, stateStore: ClientStateStore): Promise<ClientSession> {
@@ -1776,6 +1799,22 @@ export class ClientSession {
 
 	/** Wrap a fresh runtime as a new conversation record. */
 	private makeConversation(runtime: AgentSessionRuntime, id: string, terminals: TerminalManager): Conversation {
+		// DEV-CON 凭据隔离（P0）：SDK 在每次请求前调用 Agent.getApiKey(provider)
+		// （pi-agent-core agent-loop.js:191），显式返回值优先于 auth.json / runtime
+		// override（pi-ai auth/resolve.js:33）。这里按「对话绑定」返回命名凭据正文，
+		// 从而让两个对话用同一服务商的不同 key 而互不改写全局 auth.json。
+		// 未绑定时返回 undefined → 完全保留原有全局解析行为。
+		runtime.session.agent.getApiKey = (provider: string) => {
+			try {
+				const key = this.channels.credentialFor(id, provider);
+				// §7：请求发出时固定渠道/凭据/模型与绑定版本（晚到的用量按此归属）。
+				const conv = this.convs.get(id);
+				if (conv) conv.lastRequestBinding = this.channels.bindingSnapshotFor(id);
+				return key;
+			} catch {
+				return undefined;
+			}
+		};
 		return {
 			id,
 			title: conversationTitle(runtime.session),
@@ -1791,6 +1830,8 @@ export class ClientSession {
 			lastActiveAt: Date.now(),
 			lastSdkEventAt: Date.now(),
 			usageTracker: new TokenUsageTracker(),
+			lastRequestBinding: null,
+			compactionBaseline: null,
 
 			stallNoticed: false,
 			goal: this.makeGoalStatus(),
@@ -1864,6 +1905,9 @@ export class ClientSession {
 		// Reconnect: push the built-in provider key list (multi-key grouping in the
 		// model picker needs it even before the client asks).
 		this.modelAdmin.listProviderKeys();
+		// Reconnect：推送渠道状态（渠道列表/默认值/本对话绑定），否则重连后
+		// 底栏只能显示快照里的那一个绑定。
+		this.pushChannelState();
 		// PTYs are conversation-owned and survive a socket reconnect.
 		this.pushTerminals();
 	}
@@ -1883,6 +1927,17 @@ export class ClientSession {
 		if (this.disposed) return;
 		// eslint-disable-next-line unicorn/no-useless-spread -- snapshot: handlers may unsubscribe mid-emit
 		for (const sink of [...this.sinks]) sink(msg);
+	}
+
+	/** DEV-CON：实例级广播入口（渠道状态由 AgentService 分发给全部客户端；
+	 *  其他客户端的 ClientSession 收到后推给自己的 sinks）。 */
+	emitExternal(msg: ServerMessage): void {
+		this.emit(msg);
+	}
+
+	/** 某个客户端的 chat 会话已释放（避免对已 dispose 的会话再推）。 */
+	isDisposedSession(): boolean {
+		return this.disposed;
 	}
 
 	/** (Re)attach extension binding + event plumbing to ONE conversation's session.
@@ -2091,9 +2146,120 @@ export class ClientSession {
 		}
 	}
 
+	/** 会话统计总量（缺失时为 null）；压缩用量归属的唯一来源。 */
+	private sessionUsageTotals(): { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost: number } | null {
+		try {
+			const s = this.session.getSessionStats();
+			return {
+				input: s.tokens.input,
+				output: s.tokens.output,
+				cacheRead: s.tokens.cacheRead,
+				cacheWrite: s.tokens.cacheWrite,
+				total: s.tokens.total,
+				cost: s.cost,
+			};
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * 把压缩期间的会话统计差值记成一条 source=compaction 的用量。
+	 * 压缩不产生 message 事件，若不这么做，摘要消耗的 token 只会在 SDK 会话统计里
+	 * 出现，无法按来源区分（§7）。差值 <= 0 时不记（避免把别的调用算到压缩头上）。
+	 */
+	private recordCompactionUsage(conv: Conversation): void {
+		const before = conv.compactionBaseline;
+		conv.compactionBaseline = null;
+		if (!before) return;
+		const after = this.sessionUsageTotals();
+		if (!after) return;
+		const delta = {
+			input: after.input - before.input,
+			output: after.output - before.output,
+			cacheRead: after.cacheRead - before.cacheRead,
+			cacheWrite: after.cacheWrite - before.cacheWrite,
+			total: after.total - before.total,
+			cost: Math.max(0, after.cost - before.cost),
+		};
+		if (delta.total <= 0 && delta.cost <= 0) return;
+		conv.usageTracker.record(
+			{
+				scope: "final",
+				identity: null,
+				input: Math.max(0, delta.input),
+				output: Math.max(0, delta.output),
+				cacheRead: Math.max(0, delta.cacheRead),
+				cacheWrite: Math.max(0, delta.cacheWrite),
+				total: Math.max(0, delta.total),
+				cost: delta.cost,
+				role: "assistant",
+			},
+			Date.now(),
+			this.bindingAttribution(conv, "compaction"),
+		);
+	}
+
+	/**
+	 * 由「请求时绑定」生成归属字段。modelId 取裸模型 id（与消息事件里的
+	 * message.model 同名），保证旁路/压缩与普通请求在归属表里同一行可合并。
+	 */
+	private bindingAttribution(conv: Conversation, source: string): Record<string, unknown> {
+		const binding = conv.lastRequestBinding;
+		const ref = binding?.modelId ?? "";
+		const slash = ref.indexOf("/");
+		return {
+			source,
+			channelId: binding?.channelId,
+			credentialKeyName: binding?.credentialKeyName,
+			providerId: binding?.providerId,
+			modelId: slash > 0 ? ref.slice(slash + 1) : ref || undefined,
+			bindingRevision: binding?.bindingRevision,
+			configRevision: binding?.configRevision,
+		};
+	}
+
+	/** 旁路调用（视觉桥）的用量归属：来源标 vision，归属到发起请求的对话（§7）。 */
+	private recordBypassUsage(usage: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		total: number;
+		cost: number;
+		provider: string;
+		modelId: string;
+	}): void {
+		const conv = this.conv;
+		conv.usageTracker.record(
+			{ scope: "final", identity: null, ...usage, role: "assistant" },
+			Date.now(),
+			this.bindingAttribution(conv, "vision"),
+		);
+	}
+
+	/** 用量来源标注（§7）：子代理/重试/压缩摘要分别标注，其余为用户请求。 */
+	private usageSource(conv: Conversation): "user" | "retry" | "subagent" | "compaction" {
+		if (conv.isSubagent) return "subagent";
+		if (conv.compactionState) return "compaction";
+		if (conv.retryState) return "retry";
+		return "user";
+	}
+
 	private onEvent(conv: Conversation, event: AgentSessionEvent): void {
 		const usageEvent = normalizeUsageEvent(event);
-		if (usageEvent) conv.usageTracker.record(usageEvent);
+		if (usageEvent) {
+			const binding = conv.lastRequestBinding;
+			conv.usageTracker.record(usageEvent, Date.now(), {
+				source: this.usageSource(conv),
+				channelId: binding?.channelId,
+				credentialKeyName: binding?.credentialKeyName,
+				modelId: binding?.modelId,
+				providerId: binding?.providerId,
+				bindingRevision: binding?.bindingRevision,
+				configRevision: binding?.configRevision,
+			});
+		}
 		// Any SDK event proves the run is alive — feeds the stall watchdog below.
 		conv.lastSdkEventAt = Date.now();
 		conv.stallNoticed = false;
@@ -2232,11 +2398,15 @@ export class ClientSession {
 			case "compaction_start": {
 				conv.compactionState = { reason: event.reason, startedAt: Date.now() };
 				conv.lastCompactionTokens = null;
+				// 压缩摘要走 SDK 内部 completeSimple，不产生 message 事件；用会话统计差值
+				// 把这段 token 归属为 source=compaction（§7：摘要来源必须可区分）。
+				conv.compactionBaseline = this.sessionUsageTotals();
 				this.flushSnapshot();
 				break;
 			}
 			case "compaction_end": {
 				conv.compactionState = null;
+				this.recordCompactionUsage(conv);
 				if (event.errorMessage) {
 					this.emit({
 						type: "notice",
@@ -2304,6 +2474,9 @@ export class ClientSession {
 					// 结束信号丢失等），清掉，否则横幅会卡住不消失。
 					conv.retryState = null;
 				}
+				// DEV-CON 切换时点：本轮真正结束（不会自动重试）才应用待生效选择，
+				// 在途请求与工具已按原绑定跑完（docs/DEV-CON-PROPOSAL.md §5）。
+				if (!event.willRetry) void this.channels.onConversationSettled(conv.id);
 				// 轨迹事件：本轮结束（放最前——aborted 中断路径也会 break，
 				// 轨迹里必须留下「已停止」而不是凭空消失）。
 				try {
@@ -2592,14 +2765,17 @@ export class ClientSession {
 		};
 		try {
 			const s = this.session.getSessionStats();
+			const usage = conv.usageTracker.snapshot();
 			stats = {
 				totalMessages: s.totalMessages,
 				tokens: {
 					...s.tokens,
-					request: conv.usageTracker.snapshot().current,
-					run: conv.usageTracker.snapshot().turn,
+					request: usage.current,
+					run: usage.turn,
 				},
-
+				// §7 归属：来源/渠道/模型维度；只含引用，不含密钥。
+				attribution: conv.usageTracker.attributionList(),
+				runId: conv.usageTracker.runId,
 				cost: s.cost,
 				contextUsage: (() => {
 					const cu = s.contextUsage;
@@ -2659,6 +2835,8 @@ export class ClientSession {
 			version: ++this.version,
 			piConfigured: this.isPiConfigured(),
 			piAgentInstalled: this.isPiCliInstalled(),
+			// DEV-CON：当前对话的有效/待生效渠道绑定（无渠道时 null）。
+			channelBinding: this.channels.bindingViewMessage(this.activeId),
 			stats,
 		};
 	}
@@ -3104,6 +3282,16 @@ export class ClientSession {
 
 	/** 模型/服务商配置管理 —— 自包含模块，见 model-admin.ts。 */
 	private readonly modelAdmin!: ModelAdminService;
+	/**
+	 * DEV-CON 渠道服务（渠道档案 / 对话绑定 / 组合切换 / 账户查询）。
+	 * 见 docs/DEV-CON-PROPOSAL.md §4–§7；宿主能力在构造器里注入，服务本体不碰 fs 细节。
+	 */
+	private readonly channels!: ChannelService;
+	/** 账户查询注册表（有界超时/限频/缓存）；默认适配器见 channel-accounts.ts。 */
+	private readonly accounts!: AccountRegistry;
+	/** 渠道状态是实例级事实：由 AgentService 广播给全部客户端（多端看到同一有效绑定）。
+	 *  未设置时退化为单端推送（如纯单机测试）。 */
+	onChannelBroadcast: ((msg: ServerMessage) => void) | undefined = undefined;
 
 	/** Persist an api-key credential for a provider (auth.json). */
 	setProviderApiKey(provider: string, apiKey: string): Promise<void> {
@@ -3224,6 +3412,8 @@ export class ClientSession {
 	 *  project gets the remembered model; an in-progress one keeps what it had and
 	 *  the user switches via the picker. Silent on failure (model no longer in catalog). */
 	private async restoreProjectModelForCwd(cwd: string): Promise<void> {
+		// 有显式渠道绑定的对话以绑定为准，不被旧的“项目默认模型/key”覆盖。
+		if (this.channels.hasConversationBinding(this.activeId)) return;
 		const savedModel = this.stateStore.getProjectModel(this.clientId, cwd);
 		if (!savedModel) return;
 		try {
@@ -3549,6 +3739,8 @@ export class ClientSession {
 					session: this.session,
 					// issue #91：附件/视觉桥文案按客户端 UI 语言出中英（英文默认）。
 					getLang: () => this.getLang(),
+					// DEV-CON §7：视觉桥是真实计费的旁路调用，用量单独标注来源。
+					recordUsage: (usage) => this.recordBypassUsage(usage),
 				},
 				attachments,
 			);
@@ -3951,6 +4143,8 @@ export class ClientSession {
 		}
 		// Completed work is an evictable cache, not a reason to reject new chats.
 		this.maintenance.reap();
+		// The carried-over model must keep its channel/credential attribution.
+		const previousConversationId = this.activeId;
 		// The outgoing conversation is left behind — apply the running-list
 		// lifecycle. Removal is deferred until the new chat exists so the active
 		// conversation stays valid during the (async) runtime creation.
@@ -3988,6 +4182,8 @@ export class ClientSession {
 					// model no longer resolvable — keep the default
 				}
 			}
+			// DEV-CON：把上一对话的渠道绑定一并带过去（模型已经带过去了）。
+			this.channels.inheritBinding(previousConversationId, conv.id);
 			this.emitConversations();
 			this.goalSvc.emitGoalStatus();
 			this.pushTerminals();
@@ -5112,6 +5308,142 @@ export class ClientSession {
 		this.flushSnapshot();
 	}
 
+	// ---------------------------------------------------------------------------
+	// DEV-CON channels（渠道配置 / 组合切换 / 账户查询）
+	// 唯一基准：docs/DEV-CON-PROPOSAL.md §4（配置所有权/组合命令/回执）、§5（切换场景）
+	// ---------------------------------------------------------------------------
+
+	/** 宿主能力注入：渠道服务不直接依赖 ClientSession 内部结构（同 ModelAdminHost 模式）。 */
+	private makeChannelHost(agentDir: string): ChannelServiceHost {
+		return {
+			agentDir,
+			// 对话 id 只在客户端内唯一（c1/c2…），绑定存储键需要 clientId 防碰撞。
+			clientId: this.clientId,
+			emit: (msg) => this.emit(msg),
+			broadcast: (msg) => (this.onChannelBroadcast ? this.onChannelBroadcast(msg) : this.emit(msg)),
+			flushSnapshot: () => this.flushSnapshot(),
+			hasProvider: (providerId) => {
+				try {
+					return this.runtime.services.modelRuntime.getProviders().some((p) => p.id === providerId);
+				} catch {
+					return false;
+				}
+			},
+			getModel: (providerId, modelId) => {
+				try {
+					const m = this.runtime.services.modelRuntime.getModel(providerId, modelId);
+					return m ? { id: m.id, name: m.name ?? m.id } : null;
+				} catch {
+					return null;
+				}
+			},
+			keyNames: (providerId) => this.modelAdmin.keyNameList(providerId),
+			resolveKeyValue: (providerId, keyName) => this.modelAdmin.resolveProviderKeyValue(providerId, keyName),
+			setConversationModel: (conversationId, modelId) => this.setConversationModel(conversationId, modelId),
+			activeConversationId: () => this.activeId,
+			conversationExists: (id) => this.convs.has(id),
+			isBusy: (id) => this.convs.get(id)?.session.isStreaming ?? false,
+			hasQueue: (id) => {
+				const conv = this.convs.get(id);
+				return !!conv && (conv.queueSteering.length > 0 || conv.queueFollowUp.length > 0);
+			},
+			// 取不到统计时保守地当成「已有消息」，避免默认值静默重绑未知对话。
+			conversationHasMessages: (id) => {
+				try {
+					return (this.convs.get(id)?.session.getSessionStats().totalMessages ?? 0) > 0;
+				} catch {
+					return true;
+				}
+			},
+			cwd: () => this.cwd,
+		};
+	}
+
+	/** 渠道命令的唯一生效点：只改目标对话的 SDK 会话模型，不写全局 auth/models。 */
+	private async setConversationModel(conversationId: string, modelId: string): Promise<void> {
+		const conv = this.convs.get(conversationId);
+		if (!conv) throw new Error("对话不存在");
+		const slash = modelId.indexOf("/");
+		if (slash <= 0 || slash === modelId.length - 1) throw new Error(`无效的模型 ID：${modelId}`);
+		const model = this.runtime.services.modelRuntime.getModel(modelId.slice(0, slash), modelId.slice(slash + 1));
+		if (!model) throw new Error(`模型不存在：${modelId}`);
+		await conv.session.setModel(model);
+	}
+
+	/** 快照里当前对话的绑定视图（读内存，无 IO）。 */
+	channelBindingView(): UiChannelBindingView {
+		return this.channels.bindingViewMessage(this.activeId);
+	}
+
+	/** list_channels：只回本端当前状态（不广播，避免多端刷屏）。先从磁盘对齐，
+	 *  否则另一端/外部修改后本端会一直回旧值且无法从冲突中恢复。 */
+	pushChannelState(): void {
+		this.channels.refresh();
+		this.emit(this.channels.stateMessage());
+	}
+
+	async selectChannel(input: {
+		commandId: string;
+		conversationId?: string;
+		channelId: string;
+		credentialKeyName?: string | null;
+		modelId: string;
+		expectedConfigRevision?: number;
+		expectedBindingRevision?: number;
+	}): Promise<void> {
+		await this.channels.select({
+			commandId: input.commandId,
+			conversationId: input.conversationId,
+			selection: {
+				channelId: input.channelId,
+				credentialKeyName: input.credentialKeyName,
+				modelId: input.modelId,
+			},
+			expectedConfigRevision: input.expectedConfigRevision,
+			expectedBindingRevision: input.expectedBindingRevision,
+		});
+	}
+
+	async clearChannelBinding(commandId: string, conversationId?: string): Promise<void> {
+		await this.channels.clearBinding({ commandId, conversationId });
+	}
+
+	async saveChannelConfig(
+		commandId: string,
+		channel: Partial<ChannelRecord> & { id?: string },
+		expectedConfigRevision?: number,
+	): Promise<void> {
+		await this.channels.saveChannel({ commandId, channel, expectedConfigRevision });
+	}
+
+	async deleteChannelConfig(commandId: string, channelId: string, expectedConfigRevision?: number): Promise<void> {
+		await this.channels.deleteChannel({ commandId, channelId, expectedConfigRevision });
+	}
+
+	async setChannelDefault(input: {
+		commandId: string;
+		scope: "instance" | "project";
+		selection: { channelId: string; credentialKeyName?: string | null; modelId: string } | null;
+		expectedConfigRevision?: number;
+	}): Promise<void> {
+		await this.channels.setDefault({
+			commandId: input.commandId,
+			scope: input.scope,
+			selection: input.selection
+				? {
+						channelId: input.selection.channelId,
+						credentialKeyName: input.selection.credentialKeyName,
+						modelId: input.selection.modelId,
+					}
+				: null,
+			expectedConfigRevision: input.expectedConfigRevision,
+		});
+	}
+
+	async queryChannelAccount(commandId: string, channelId: string): Promise<void> {
+		await this.channels.queryAccount({ commandId, channelId });
+	}
+
 	/** Set the thinking level for future turns. */
 	setThinking(level: string): void {
 		try {
@@ -5386,6 +5718,12 @@ export class AgentService {
 		// 节点完成 → 对方刷新列表 + 若持有同一会话则从磁盘接力重载；
 		// 列表变化（新建/删除/改名）→ 对方只刷新列表。
 		cs.onSessionPersisted = (file, cwd) => this.broadcastSessionPersisted(cs.clientId, file, cwd);
+		// DEV-CON：渠道状态是实例级事实 → 广播给所有客户端（多端看到同一有效绑定）。
+		cs.onChannelBroadcast = (msg) => {
+			for (const other of this.clients.values()) {
+				if (!other.isDisposedSession()) other.emitExternal(msg);
+			}
+		};
 		cs.onSessionsListChanged = (cwd) => this.broadcastSessionsListChanged(cs.clientId, cwd);
 		// 插件宿主工作区跟随：初次接入也同步一次（恢复的 lastCwd 可能≠服务启动目录），
 		// notifyCwd 幂等去重；此后 set_cwd 成功时由 cs.onCwdChanged 继续驱动。

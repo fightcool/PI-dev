@@ -1,3 +1,4 @@
+/* 🍞 @COUPLED server/model-admin.ts（hasApiKey 写入契约） — 📖 docs/DEV-CON-PROPOSAL.md §4 */
 import { useEffect, useRef, useState } from "react";
 import { FiCheck, FiDownload, FiEdit2, FiPlus, FiTrash2, FiX } from "react-icons/fi";
 import type { ClientMessage, ProviderKeyInfo, ProviderStatus, UiModelConfigEntry, UiProviderConfig } from "../types";
@@ -54,6 +55,8 @@ interface Draft {
 	api: string;
 	baseUrl: string;
 	apiKey: string;
+	/** 服务端已保存密钥（不回传正文）；用 placeholder 提示，不预填。 */
+	hasApiKey: boolean;
 	authHeader: boolean;
 	models: DraftModel[];
 }
@@ -73,6 +76,7 @@ const emptyDraft = (): Draft => ({
 	api: "openai-completions",
 	baseUrl: "",
 	apiKey: "",
+	hasApiKey: false,
 	authHeader: true,
 	models: [emptyModel()],
 });
@@ -83,7 +87,9 @@ function toDraft(p: UiProviderConfig): Draft {
 		name: p.name ?? "",
 		api: p.api ?? "openai-completions",
 		baseUrl: p.baseUrl ?? "",
-		apiKey: p.apiKey ?? "",
+		// 服务端不再回传密钥正文（§4）：这里始终从空开始，留空 = 保留已保存的值。
+		apiKey: "",
+		hasApiKey: p.hasApiKey === true,
 		authHeader: p.authHeader ?? false,
 		models: (p.models.length ? p.models : [emptyModel()]).map((m) => ({
 			id: m.id,
@@ -716,7 +722,7 @@ export function ModelConfigModal({
 											type="password"
 											value={editing.apiKey}
 											onChange={(e) => setEditing({ ...editing, apiKey: e.target.value })}
-											placeholder={t("apiKeyHint")}
+											placeholder={editing.hasApiKey && !editing.apiKey ? t("apiKeySaved") : t("apiKeyHint")}
 										/>
 									</label>
 									<label className="field check">

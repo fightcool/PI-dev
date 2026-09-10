@@ -1,3 +1,4 @@
+/* 🍞 @COUPLED web/src/components/ChannelSettings.tsx — 📖 docs/DEV-CON-PROPOSAL.md §6 */
 import { useEffect, useRef, useState } from "react";
 import {
 	FiArchive,
@@ -12,6 +13,7 @@ import {
 	FiMessageSquare,
 	FiPackage,
 	FiPlus,
+	FiRadio,
 	FiRefreshCw,
 	FiSend,
 	FiSettings,
@@ -29,6 +31,9 @@ import { PluginSettingsForm } from "./PluginSettingsForm";
 import type {
 	ClientMessage,
 	CommandDef,
+	ModelInfo,
+	ProviderKeyInfo,
+	ProviderStatus,
 	UiExtensionInfo,
 	UiPluginCatalogEntry,
 	UiPluginInfo,
@@ -36,6 +41,8 @@ import type {
 	UiSkillInfo,
 	UiSubagentTemplate,
 } from "../types";
+import type { ChannelApi, ChannelCommandResult, ChannelStateMsg } from "../use-chat";
+import { ChannelSettings } from "./ChannelSettings";
 import {
 	clearPromptHistory,
 	loadPromptHistory,
@@ -89,8 +96,18 @@ interface SettingsModalProps {
 		}[];
 		state?: { cwd: string; conversationId: string } | null;
 		activeConversationId?: string | null;
+		/** DEV-CON 渠道快照（channel_state）+ 回执（按 commandId）。 */
+		channelState: ChannelStateMsg | null;
+		channelResults: Record<string, ChannelCommandResult>;
+		/** 命名密钥（仅名称 + 是否 active），渠道表单按名称引用。 */
+		providerKeys: Record<string, ProviderKeyInfo[]>;
+		/** 有效模型（选默认模型用）与已注册服务商（派生可选 providerId）。 */
+		models: ModelInfo[];
+		providers: ProviderStatus[];
 	};
 	send: (msg: ClientMessage) => boolean;
+	/** DEV-CON 渠道命令 API（channel_save / channel_delete / 默认值 / 账户查询）。 */
+	channelApi: ChannelApi;
 	terminal: SettingsTerminalBridge;
 	/** Switch the top-level view to the terminal (uninstall runs there). */
 	onSwitchToTerminal: () => void;
@@ -193,9 +210,10 @@ type SettingsTab =
 	| "review"
 	| "vision"
 	| "presets"
-	| "subagent-templates";
+	| "subagent-templates"
+	| "channels";
 
-export function SettingsModal({ chat, send, terminal, onSwitchToTerminal, onClose }: SettingsModalProps) {
+export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerminal, onClose }: SettingsModalProps) {
 	const t = useT();
 	const { locale } = useI18n();
 	// {{token}} 元数据文案键是动态的（promptTok_<token>[,_desc]），用 tt 跳过字面量类型。
@@ -349,6 +367,10 @@ export function SettingsModal({ chat, send, terminal, onSwitchToTerminal, onClos
 
 	const skillCount = `${settings.skills.filter((s) => s.enabled).length}/${settings.skills.length}`;
 	const reviewSkillCount = `${settings.reviewSkills.filter((s) => s.enabled).length}/${settings.reviewSkills.length}`;
+	// 渠道表单可选的服务商：已注册服务商 + 有可用模型的服务商（去重排序；空 id 丢弃）。
+	const channelProviderIds = [...new Set([...chat.providers.map((p) => p.id), ...chat.models.map((m) => m.provider)])]
+		.filter((id) => !!id)
+		.sort((a, b) => a.localeCompare(b));
 
 	const tabs: {
 		id: SettingsTab;
@@ -378,6 +400,8 @@ export function SettingsModal({ chat, send, terminal, onSwitchToTerminal, onClos
 		// DSH：无视觉桥概念（真图片直通 vision 模型），隐藏该分区。
 		...(isDsh ? [] : [{ id: "vision" as const, icon: <FiEye />, label: t("settingsVisionBridge") }]),
 		{ id: "presets", icon: <FiSliders />, label: t("settingsPresets"), count: settings.presets.length },
+		// DEV-CON 渠道：没有渠道配置的实例也显示（这是唯一的渠道配置入口）。
+		{ id: "channels", icon: <FiRadio />, label: t("settingsChannels"), count: chat.channelState?.channels.length ?? 0 },
 		// DSH：无子代理概念，隐藏该分区。
 		...(isDsh
 			? []
@@ -2314,6 +2338,25 @@ export function SettingsModal({ chat, send, terminal, onSwitchToTerminal, onClos
 										))}
 									</div>
 								)}
+							</div>
+						)}
+
+						{/* ---- DEV-CON channels ------------------------------------------ */}
+						{tab === "channels" && (
+							<div className="set-section">
+								<div className="set-section-title">
+									<FiRadio className="set-section-icon" />
+									{t("settingsChannels")}
+								</div>
+								<p className="set-hint">{t("settingsChannelsDesc")}</p>
+								<ChannelSettings
+									channelState={chat.channelState}
+									channelResults={chat.channelResults}
+									channelApi={channelApi}
+									providerIds={channelProviderIds}
+									providerKeys={chat.providerKeys}
+									models={chat.models}
+								/>
 							</div>
 						)}
 					</div>

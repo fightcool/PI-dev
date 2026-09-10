@@ -3435,6 +3435,59 @@ export class DshClientSession {
 		this.emit({ type: "provider_keys", keys: {} });
 	}
 
+	// DEV-CON 渠道能力：DSH 换模型 = 重启运行时（会中止全部运行），不能提供 Pi 式热切换，
+	// 因此这里明确回「不支持」而不是假装成功（docs/DEV-CON-PROPOSAL.md §2/§5）。
+	pushChannelState(): void {
+		this.emit({
+			type: "channel_state",
+			configRevision: 0,
+			bindingRevision: 0,
+			channels: [],
+			instanceDefault: null,
+			projectDefault: null,
+			bindings: [],
+			pending: [],
+			accounts: [],
+		});
+	}
+
+	private channelUnsupported(commandId: string): void {
+		this.emit({
+			type: "channel_command_result",
+			commandId,
+			ok: false,
+			phase: "rejected",
+			error: "DSH 引擎不支持渠道热切换（换模型即重启运行时）",
+			errorEn: "The DSH engine does not support hot channel switching (changing the model restarts the runtime)",
+			configRevision: 0,
+			bindingRevision: 0,
+		});
+	}
+
+	async selectChannel(msg: { commandId: string }): Promise<void> {
+		this.channelUnsupported(msg.commandId);
+	}
+
+	async clearChannelBinding(commandId: string): Promise<void> {
+		this.channelUnsupported(commandId);
+	}
+
+	async saveChannelConfig(commandId: string): Promise<void> {
+		this.channelUnsupported(commandId);
+	}
+
+	async deleteChannelConfig(commandId: string): Promise<void> {
+		this.channelUnsupported(commandId);
+	}
+
+	async setChannelDefault(input: { commandId: string }): Promise<void> {
+		this.channelUnsupported(input.commandId);
+	}
+
+	async queryChannelAccount(commandId: string): Promise<void> {
+		this.channelUnsupported(commandId);
+	}
+
 	async addProviderKey(_provider: string, _apiKey: string, _name?: string): Promise<void> {
 		this.emit({
 			type: "notice",

@@ -34,19 +34,64 @@ export function snapshot(count) {
   };
 }
 
+/**
+ * Minimal but complete settings fixture (the settings modal returns null without
+ * it). Only list/string fields the panel dereferences unconditionally are filled;
+ * everything else is an empty/off default so the panel renders without errors.
+ */
+export function settingsFixture() {
+  return {
+    promptMode: 'append', customSystemPrompt: '', promptTemplate: '', promptOverrides: {},
+    disabledSkills: [], disabledExtensions: [], disabledPlugins: [], disabledMarkers: [],
+    terminalToolsEnabled: true, terminalBash: false, terminalBashIdleMs: 0,
+    editSoftEnabled: false, questionnaireEnabled: true, goalModeEnabled: true,
+    thinkingWrap: true, toolsWrap: true,
+    visionBridgeEnabled: true, visionBridgeModel: null, visionBridgePromptMode: 'append', visionBridgePrompt: '',
+    reviewPrompt: '', reviewDisabledSkills: [], reviewSkills: [],
+    effectiveSystemPrompt: '', promptSourceDefaults: {}, promptTokens: [],
+    skills: [], extensions: [], markers: [], markersEnabled: {}, toolsSchema: [],
+    presets: [], quickPhrases: [], quickPhrasesEnabled: false, retryMaxAttempts: 3,
+    subagentDefaultModel: null, subagentModels: [], subagentTemplates: [], subagentDefaultTemplates: {},
+  };
+}
+
 export function socketReply(message, state) {
+  // DEV-CON channel fixtures are opt-in: only a state carrying channelState gets
+  // channel replies, so the performance scenarios (which never set it) keep the
+  // exact same traffic profile.
+  const channels = state?.channelState;
+  const channelStateMsg = channels ? [{ type: 'channel_state', ...channels }] : [];
   switch (message.type) {
     case 'hello': return [
       { type: 'ready', serverVersion: 'synthetic', managed: true, engine: 'pi' },
       { type: 'plugins', plugins: [plugin], epoch: 1 },
       { type: 'snapshot', state },
+      { type: 'settings_state', settings: state?.settingsState ?? settingsFixture() },
+      ...channelStateMsg,
     ];
+    case 'list_channels': return channelStateMsg;
+    case 'list_provider_keys': return channels ? [{ type: 'provider_keys', keys: state.providerKeys ?? {} }] : [];
+    case 'channel_select':
+    case 'channel_binding_clear':
+    case 'channel_save':
+    case 'channel_delete':
+    case 'channel_set_default':
+    case 'channel_query_account': {
+      if (!channels) return [];
+      const ok = !message.modelId || message.modelId.startsWith('main/');
+      return [{ type: 'channel_command_result', commandId: message.commandId, ok, phase: ok ? 'applied' : 'rejected',
+        conversationId: message.conversationId ?? state.conversationId,
+        channelId: message.channelId, error: ok ? undefined : 'synthetic rejection',
+        configRevision: channels.configRevision, bindingRevision: channels.bindingRevision }];
+    }
     // Older baseline bundles explicitly ask after ready; resync remains supported.
     case 'get_state': return [{ type: 'snapshot', state }];
-    case 'list_models': return [{ type: 'models', models: [] }];
+    case 'list_models': return [{ type: 'models', models: state?.models ?? [] }];
     case 'list_files': return [{ type: 'files', cwd: '/synthetic', files: [] }];
     case 'list_commands': return [{ type: 'slash_commands', commands: [] }];
     case 'get_commands': return [{ type: 'commands', commands: [], path: '/synthetic/commands.json' }];
+    case 'get_settings': return [{ type: 'settings_state', settings: state?.settingsState ?? settingsFixture() }];
+    case 'list_subagent_templates': return [];
     case 'list_sessions': return [{ type: 'sessions', sessions: [] }];
     case 'list_projects': return [{ type: 'projects', projects: [] }];
     case 'list_conversations': return [{ type: 'conversations', conversations: [], activeId: 'assessment' }];

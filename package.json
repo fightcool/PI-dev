@@ -13,10 +13,6 @@
     "configure": "node scripts/configure.mjs",
     "setup:dependencies": "node scripts/dependencies.mjs",
     "dev": "node scripts/dev.mjs",
-    "dev-con": "node dev-con/cli.mjs",
-    "test:dev-con": "node --test tests/dev-con-*.test.mjs",
-    "test:dev-con:browser": "node tests/dev-con-browser.mjs",
-    "test:dev-con:integration": "node tests/dev-con-integration.mjs",
     "build": "node scripts/build.mjs",
     "typecheck": "npm --prefix vendor/pi-web-ui run typecheck",
     "test:unit": "npm --prefix vendor/pi-web-ui test",
@@ -30,6 +26,10 @@
     "test": "node --test tests/*.test.mjs",
     "check:publish": "node scripts/check-publish.mjs",
     "diagnostics:usage": "node scripts/diagnostics/analyze-usage.mjs",
+    "test:channels:unit": "npm --prefix vendor/pi-web-ui run test:channels:unit",
+    "test:channels": "npm --prefix vendor/pi-web-ui run test:channels",
+    "test:channels:multi": "npm --prefix vendor/pi-web-ui run test:channels:multi",
+    "test:channels:browser": "node tests/channels/browser-ui.mjs",
     "release:check": "node scripts/release.mjs"
   },
   "dependencies": {

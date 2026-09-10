@@ -2,6 +2,11 @@
  * Wire protocol between the browser client and the pi-web-ui server.
  * Pure JSON over WebSocket. The web frontend mirrors these types in
  * web/src/types.ts (kept in sync by hand — types only, no shared runtime code).
+ * 🍞 @COUPLED dev-con/channel-service.ts (channel_state / channel_command_result 的发出方)
+ *   @COUPLED web/src/use-chat.ts（reducer 消费）、web/src/components/ModelChannelPicker.tsx
+ *   📖 docs/DEV-CON-PROPOSAL.md §4–§7、docs/P0-VERIFICATION.md
+ *   @CONTRACT 本文件必须保持纯类型导出（scripts/check-protocol-sync.mjs 守护）；改动需同步 bump
+ *              server/protocol-version.ts 与 web/src/protocol-version.ts。
  */
 
 // ---------------------------------------------------------------------------
@@ -76,6 +81,104 @@ export interface UiModelInfo {
 	provider: string;
 	/** Whether the model accepts image input (SDK `input` includes "image"). */
 	vision: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// DEV-CON channels (渠道配置 / 绑定 / 账户) — 见 docs/DEV-CON-PROPOSAL.md §4–§7
+// ---------------------------------------------------------------------------
+
+/** 渠道里的命名凭据引用（只有名称，没有密钥正文/掩码）。keyName="active" 表示
+ *  跟随该服务商当前 active key。 */
+export interface UiCredentialRef {
+	providerId: string;
+	keyName: string;
+}
+
+/** 一次「渠道 + 端点 + 凭据 + 模型」选择。 */
+export interface UiChannelSelection {
+	channelId: string;
+	endpointId: string;
+	credentialRef: UiCredentialRef | null;
+	/** 完整模型 id（"provider/model"）。 */
+	modelId: string;
+}
+
+/** 渠道档案视图（引用 models.json/runtime 的服务商，不复制模型目录或密钥）。 */
+export interface UiChannelInfo {
+	id: string;
+	displayName: string;
+	providerId: string;
+	endpointId: string;
+	credentialRef: UiCredentialRef | null;
+	accountRef: string | null;
+	enabled: boolean;
+	/** 该服务商的命名密钥（仅名称 + 是否 active）。 */
+	keys: { keyName: string; active: boolean }[];
+	/** 引用的命名凭据已不存在（UI 需提示重新选择）。 */
+	keyMissing: boolean;
+	/** 引用的服务商已不在 runtime。 */
+	providerMissing: boolean;
+}
+
+/** 对话绑定（含配置版本与绑定版本，旧回执据此被拒绝）。 */
+export interface UiChannelBinding extends UiChannelSelection {
+	conversationId: string;
+	bindingRevision: number;
+	configRevision: number;
+	lastUsedAt: number;
+	/** 渠道显示名（渠道可能已被删除，此时为 null）。 */
+	channelName?: string | null;
+}
+
+/** 等待本轮结束再生效的选择。 */
+export interface UiChannelPending extends UiChannelSelection {
+	conversationId: string;
+	bindingRevision: number;
+	/** 提交该选择的命令 id（回执对应用）。 */
+	commandId: string;
+}
+
+/** 账户余额/配额状态。status 语义见 DEV-CON §7：
+ *  unsupported=该渠道无可用查询方式；ok=本次成功；failed=本次失败；
+ *  stale=本次失败但保留了上次成功结果（checkedAt 是上次成功时间）。 */
+export interface UiAccountStatus {
+	accountRef: string;
+	kind: string;
+	status: "unsupported" | "ok" | "failed" | "stale";
+	scope?: string;
+	unit?: string;
+	balance?: number;
+	quota?: { used?: number; limit?: number; remaining?: number; unit?: string };
+	checkedAt?: number;
+	staleSince?: number;
+	error?: string;
+}
+
+/** 当前对话的绑定视图（有效 + 待生效 + 来源）。 */
+export interface UiChannelBindingView {
+	effective: UiChannelBinding | null;
+	pending: UiChannelBinding | null;
+	/** 有效选择的来源：对话自身 / 项目默认 / 实例默认 / 未设置。 */
+	source: "conversation" | "project" | "instance" | "none";
+}
+
+/** 用量归属桶（§7）：按来源/渠道/模型归组；只含引用，不含密钥。 */
+export interface UiUsageAttribution {
+	/** 来源：user / retry / subagent / compaction / vision / review / wizard / probe / system。 */
+	source: string;
+	channelId: string | null;
+	credentialKeyName: string | null;
+	providerId: string;
+	modelId: string;
+	bindingRevision: number | null;
+	configRevision: number | null;
+	requests: number;
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	total: number;
+	cost: number;
 }
 
 export interface UiState {
@@ -153,6 +256,12 @@ export interface UiState {
 	 * API key form directly; false → offer auto-install first.
 	 */
 	piAgentInstalled: boolean;
+	/**
+	 * DEV-CON 渠道绑定视图（当前对话）：有效选择 + 待生效选择 + 来源。
+	 * 有效值来自服务端认可的绑定；待生效值表示「已受理、等本轮结束后应用」。
+	 * 缺省/undefined = 该实例没有渠道功能（例如未启用或 DSH 引擎）。
+	 */
+	channelBinding?: UiChannelBindingView | null;
 	/** Live session stats for the footer status bar. */
 	stats: {
 		totalMessages: number;
@@ -166,6 +275,10 @@ export interface UiState {
 				request?: { input: number; output: number; total: number };
 				run?: { input: number; output: number; total: number };
 			};
+			/** 按来源/渠道/模型归组的累计用量（§7）。缺省 = 未提供归属。 */
+			attribution?: UiUsageAttribution[];
+			/** 本次 run 的标识（服务端生成；用于把晚到事件归回原运行）。 */
+			runId?: string | null;
 			cost: number;
 			contextUsage: {
 			tokens: number | null;
@@ -443,6 +556,55 @@ export type ClientMessage =
 	 *  active key, the first remaining key becomes active (or the provider
 	 *  returns to unconfigured when no key is left). */
 	| { type: "remove_provider_key"; provider: string; keyName: string }
+	// -- DEV-CON channels (配置 / 组合切换 / 账户查询) --------------------------
+	/** 请求渠道状态（也由服务端在 attach 与每次变更后主动推送）。 */
+	| { type: "list_channels" }
+	/**
+	 * 组合命令：一次提交渠道 + 命名凭据 + 模型。服务端校验版本、按「空闲立即 /
+	 * 正在生成则待生效」应用，并用 channel_command_result 回执确认最终状态。
+	 * credentialKeyName 省略时用渠道档案的默认凭据；null = 跟随服务商 active key。
+	 * expectedConfigRevision / expectedBindingRevision 用于拒绝基于旧状态的提交。
+	 */
+	| {
+			type: "channel_select";
+			commandId: string;
+			conversationId?: string;
+			channelId: string;
+			credentialKeyName?: string | null;
+			modelId: string;
+			expectedConfigRevision?: number;
+			expectedBindingRevision?: number;
+	  }
+	/** 清除当前对话的渠道绑定（回到项目/实例默认或全局 active key）。 */
+	| { type: "channel_binding_clear"; commandId: string; conversationId?: string; expectedBindingRevision?: number }
+	/** 新增/更新渠道档案（引用已注册服务商，不写 models.json / 不传密钥）。 */
+	| {
+			type: "channel_save";
+			commandId: string;
+			channel: {
+				id?: string;
+				displayName: string;
+				providerId: string;
+				endpointId?: string;
+				credentialRef?: UiCredentialRef | null;
+				accountRef?: string | null;
+				enabled?: boolean;
+				extra?: Record<string, unknown>;
+			};
+			expectedConfigRevision?: number;
+	  }
+	/** 删除渠道（同时清理引用它的默认值与绑定）。 */
+	| { type: "channel_delete"; commandId: string; channelId: string; expectedConfigRevision?: number }
+	/** 设置项目/实例默认（只影响尚未发言的对话，不重绑正在运行的对话）。 */
+	| {
+			type: "channel_set_default";
+			commandId: string;
+			scope: "instance" | "project";
+			selection: { channelId: string; credentialKeyName?: string | null; modelId: string } | null;
+			expectedConfigRevision?: number;
+	  }
+	/** 查询渠道账户余额/配额（有界超时、限频、缓存；不支持时明确报 unsupported）。 */
+	| { type: "channel_query_account"; commandId: string; channelId: string }
 	// -- custom model config (agentDir/models.json) ---------------------------
 	| { type: "list_models_config" }
 	/** Upsert one provider (api/baseUrl/apiKey + its models) into models.json. */
@@ -847,7 +1009,13 @@ export interface UiProviderConfig {
 	/** api type: openai-completions / openai-responses / anthropic-messages / google-generative-ai. */
 	api?: string;
 	baseUrl?: string;
+	/**
+	 * 只写字段：浏览器提交新密钥时使用。服务端从不回传密钥正文或掩码（§4），
+	 * 读取请用 hasApiKey；提交时留空表示「保留已保存的密钥」。
+	 */
 	apiKey?: string;
+	/** 服务端是否已保存该服务商的 apiKey（不回传密钥本身）。 */
+	hasApiKey?: boolean;
 	authHeader?: boolean;
 	/** headers are NOT returned to the browser — they can contain Authorization
 	 *  / API-key values; saveModelConfig preserves them server-side. */
@@ -1345,6 +1513,37 @@ export type ServerMessage =
 	| { type: "providers_status"; providers: ProviderStatus[] }
 	/** All stored API keys per built-in provider (masked). Keyed by providerId. */
 	| { type: "provider_keys"; keys: Record<string, ProviderKeyInfo[]> }
+	/** DEV-CON 渠道状态（服务端权威，attach 时与每次变更后推送；密钥值/掩码不出现）。 */
+	| {
+			type: "channel_state";
+			/** 渠道配置版本（渠道/默认值变更时 +1）。 */
+			configRevision: number;
+			/** 全局绑定版本（任何对话绑定变更时 +1）。 */
+			bindingRevision: number;
+			channels: UiChannelInfo[];
+			instanceDefault: UiChannelSelection | null;
+			/** 当前项目的默认选择（其他项目的默认不下发）。 */
+			projectDefault: UiChannelSelection | null;
+			bindings: UiChannelBinding[];
+			pending: UiChannelPending[];
+			accounts: UiAccountStatus[];
+	  }
+	/** 渠道命令回执：commandId 对应请求，phase 说明最终状态。
+	 *  applied=已生效；pending=已受理待本轮结束；rejected=失败（原绑定保留）；
+	 *  conflict=版本冲突需刷新；superseded=被更新的选择取代。 */
+	| {
+			type: "channel_command_result";
+			commandId: string;
+			ok: boolean;
+			phase: "applied" | "pending" | "rejected" | "conflict" | "superseded";
+			conversationId?: string;
+			channelId?: string;
+			error?: string;
+			errorEn?: string;
+			binding?: UiChannelBinding;
+			configRevision: number;
+			bindingRevision: number;
+	  }
 	/** Result of a fetch_models probe: ok + the advertised models (id plus
 	 *  whatever metadata the endpoint provided — contextWindow / vision input /
 	 *  reasoning / name / maxTokens — same shape as models.json rows), or an
