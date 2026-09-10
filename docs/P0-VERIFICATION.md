@@ -109,6 +109,15 @@ runtime.session.agent.getApiKey = (provider) => this.channels.credentialFor(id, 
 | `server/dev-con/channel-service.ts` | ~297 | 命令层：串行化、回执、待生效、校验 |
 | `server/dev-con/channel-config.ts` | ~184 | 配置命令：渠道 CRUD、默认值、账户查询 |
 
+## 9. P4 首个切片：跨渠道/项目/时间的用量历史
+
+按用户指示实施 §8 的 P4 首个切片（范围变更已在基准文档第 2/8 节记录）。只做「持久化 + 只读聚合」，不建长期计费平台：
+
+- **持久化**：`recordUsage()` 是唯一入口（普通请求、重试、子代理、压缩摘要、视觉桥、目标复核/向导都经过它），每条终结用量记录以 append-only JSONL 落到 `<agentDir>/dev-con/usage-history.jsonl`（0600；超过 8 MiB 轮转到 `.1`，只保留一代，读取时两代都读）。崩溃最多丢最后一行；写历史失败绝不影响编码请求。
+- **聚合**（纯函数 + 存储分离，`server/dev-con/usage-history.ts`）：按 `channel` / `project`(cwd) / `model` / `source` / `day`(UTC) 分组，输出每组请求数、输入/输出/缓存读写/total、估算费用、**未知价格请求数**、首末时间，以及总计；支持时间窗（含端点），扫描上限 20 万行（超出标记 `truncated`）；损坏行跳过并计数。
+- **协议/界面**：`usage_history_query` → `usage_history`（协议版本 17）；用量详情面板新增「用量历史」区：分组按钮 + 时间窗（今天/7 天/30 天/全部）+ 聚合表 + 合计行 + 窗口/不完整/损坏说明。分组键缺名字只显示原值并标未归属；未知价格显示「（n 条未知价格）」而不并入费用。DSH 引擎明确回「不提供逐请求用量历史」，不伪造数据。
+- **验证**：单测 8 例（五种分组、时间窗、无归属、未知价格计数、轮转、损坏行、扫描上限、文件权限）；端到端在真实 dist server 上跑两次真实（替身 provider）请求后查询历史，断言按渠道分组得到 `ch-a`/`ch-b` 各 1 条、按项目得到 workdir、按天得到 UTC 日期，且 token/缓存字段逐请求与替身上报一致（input 96 / output 12 / cacheRead 20 / cacheWrite 4）、无价目的模型记为未知价格而不是 0；Chromium 断言历史区渲染、分组切换会按新口径查询并带时间窗下界、未归属行可见。
+
 ## 复现方式与本次实测结果
 
 ```bash
@@ -117,7 +126,7 @@ npm test                          # 174 passed / 0 failed
 
 # 应用单测：渠道模型/存储/服务/账户 + 既有回归
 npm run test:channels:unit        # 46 passed（channel-* 四个文件 + usage-attribution）
-env -u NODE_ENV npm --prefix vendor/pi-web-ui exec vitest run   # 620 passed / 75 files
+env -u NODE_ENV npm --prefix vendor/pi-web-ui exec vitest run   # 629 passed / 76 files
 timeout 1200 npm run test:smoke   # 41/41 通过（含新增 channel-isolation / channel-multiclient）
 
 # 浏览器回归（Chromium，合成数据，无真实模型）
@@ -126,7 +135,7 @@ npm run test:performance          # login / synthetic-20/200/1000 全部 passed
 # 端到端：真实 dist server + 两个对话 + 两把 key + 本地替身模型端点
 npm run build && npm run test:channels
 npm run test:channels:multi       # 两个客户端：广播一致/外部冲突可见且可恢复/绑定互不覆盖
-npm run test:channels:browser     # Chromium（桌面 + 移动视口）：选择器/设置页/账户状态/用量归属+逐请求记录 20 项断言
+npm run test:channels:browser     # Chromium（桌面 + 移动视口）：选择器/设置页/账户状态/用量归属/逐请求记录/用量历史 23 项断言
 ```
 
 > 注：`vitest` 必须在 `NODE_ENV` 未设为 `production` 的环境下运行，否则 React 会解析到生产构建，既有的 DOM 用例会以 `act(...) is not supported in production builds` 失败（与本次改动无关）。
@@ -142,6 +151,6 @@ npm run test:channels:browser     # Chromium（桌面 + 移动视口）：选择
 3. **run 内 turn 边界切换**：SDK 支持但本期不启用（见 §2 取舍）。
 4. **旁路调用的用量归属**：视觉桥、压缩摘要、目标复核与目标向导均已接入（见 §4 与 `goal-service.ts#reportIsolatedUsage`）；仍未接入的是模型目录探测（只 GET /models，不产生 token）。压缩用会话统计差值，若压缩期间发生其他模型调用会被一并算入（当前 SDK 行为不会）。
 5. **多客户端并发编辑渠道配置**：已实现「每条命令先从磁盘对齐 + 哈希冲突检测 + 合并写入」，并有双客户端端到端用例（`tests/channel-multiclient-test.mjs`）；仍未经两个真实浏览器的人工并发验证。
-6. **渠道界面的验收范围**：`npm run test:channels:browser` 用真实 Chromium 覆盖 20 项断言——渠道分组、禁用/服务商缺失原因、有效/待生效提示、底部渠道、组合命令携带的 revision、用量归属与「未归属」标记、渠道设置页列表与账户状态（ok/unsupported/stale 与真实数值）、`channel_query_account`、带 `expectedConfigRevision` 的 `channel_save`，逐请求记录表（时间/来源/渠道/模型/费用、未知价格标注、计价依据说明），以及**移动端视口**（390×844，触屏）下同样的选择流程。**未**做真实设备/真机人工验收与真实供应商账号下的界面验收。
+6. **渠道界面的验收范围**：`npm run test:channels:browser` 用真实 Chromium 覆盖 23 项断言——渠道分组、禁用/服务商缺失原因、有效/待生效提示、底部渠道、组合命令携带的 revision、用量归属与「未归属」标记、渠道设置页列表与账户状态（ok/unsupported/stale 与真实数值）、`channel_query_account`、带 `expectedConfigRevision` 的 `channel_save`，逐请求记录表（时间/来源/渠道/模型/费用、未知价格标注、计价依据说明），以及**移动端视口**（390×844，触屏）下同样的选择流程。**未**做真实设备/真机人工验收与真实供应商账号下的界面验收。
 7. **非中英文语言包的渠道文案**：新增 88 个 key 已按中文顺序填入 8 个语言包以保证一一对应，但暂时使用英文原文作为占位译文（运行时行为与缺 key 回落英文一致）；正式译文待补。
 8. **既有认证面加固**（recovery 限频、CSRF、query token、health 信息）：见 §7，需独立排期。

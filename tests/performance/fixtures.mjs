@@ -70,6 +70,17 @@ export function socketReply(message, state) {
       ...channelStateMsg,
     ];
     case 'list_channels': return channelStateMsg;
+    case 'usage_history_query':
+      return [{
+        type: 'usage_history', reqId: message.reqId, ok: true, groupBy: message.groupBy,
+        from: message.from ?? null, to: message.to ?? null,
+        rows: [
+          { key: 'ch-a', requests: 2, input: 90, output: 38, cacheRead: 20, cacheWrite: 5, total: 153, cost: 0.03, unpricedRequests: 0, firstAt: 1700000000000, lastAt: 1700000005000 },
+          { key: 'unattributed', requests: 1, input: 10, output: 2, cacheRead: 0, cacheWrite: 0, total: 12, cost: 0, unpricedRequests: 1, firstAt: 1700000006000, lastAt: 1700000006000 },
+        ],
+        totals: { requests: 3, input: 100, output: 40, cacheRead: 20, cacheWrite: 5, total: 165, cost: 0.03, unpricedRequests: 1 },
+        scanned: 3, skipped: 0, truncated: false,
+      }];
     case 'list_provider_keys': return channels ? [{ type: 'provider_keys', keys: state.providerKeys ?? {} }] : [];
     case 'channel_select':
     case 'channel_binding_clear':

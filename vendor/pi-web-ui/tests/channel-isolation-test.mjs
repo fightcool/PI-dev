@@ -61,6 +61,18 @@ const mock = createServer(async (req, res) => {
 	res.write(
 		`data: ${JSON.stringify({ id: "chan", object: "chat.completion.chunk", created: Date.now(), model: payload.model, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`,
 	);
+	// 真实 provider 语义：开启 include_usage 后，最后一个 chunk 带 usage（含缓存明细）。
+	// 没有它就无法在端到端里验证「token 落进用量历史」这条链路。
+	res.write(
+		`data: ${JSON.stringify({
+			id: "chan",
+			object: "chat.completion.chunk",
+			created: Date.now(),
+			model: payload.model,
+			choices: [],
+			usage: { prompt_tokens: 120, completion_tokens: 12, prompt_tokens_details: { cached_tokens: 20, cache_write_tokens: 4 } },
+		})}\n\n`,
+	);
 	res.write("data: [DONE]\n\n");
 	res.end();
 });
@@ -167,6 +179,12 @@ const runCommand = async (client, type, payload = {}) => {
 
 const readAuth = () => JSON.parse(readFileSync(join(agentDir, "auth.json"), "utf8"));
 
+/** 用量历史查询（P4 首个切片）：发出请求并按 reqId 匹配结果。 */
+const queryHistory = async (client, groupBy, reqId = Math.floor(Math.random() * 1e6)) => {
+	client.send({ type: "usage_history_query", reqId, groupBy });
+	return client.waitForType("usage_history", (m) => m.reqId === reqId, 20000);
+};
+
 try {
 	await waitForPort(PORT);
 	const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
@@ -235,6 +253,37 @@ try {
 	check("both conversation bindings are published", bindings.some((b) => b.conversationId === convA && b.channelId === "ch-a") && bindings.some((b) => b.conversationId === convB && b.channelId === "ch-b"));
 	check("snapshot exposes the active conversation binding", client.state?.channelBinding?.effective?.channelId === "ch-b", JSON.stringify(client.state?.channelBinding ?? null));
 	check("global auth.json untouched after all switches", readAuth().mock?.key === ORIGINAL_ACTIVE);
+
+	// 7b) P4 首个切片：两次真实运行都已落盘到用量历史，且按渠道/项目分组可查。
+	const byChannel = await queryHistory(client, "channel");
+	const channelRows = byChannel.rows.map((r) => [r.key, r.requests]);
+	check(
+		"usage history groups the two real runs by their own channel",
+		byChannel.ok === true && channelRows.some(([k, n]) => k === "ch-a" && n >= 1) && channelRows.some(([k, n]) => k === "ch-b" && n >= 1),
+		JSON.stringify(channelRows),
+	);
+	const perRequest = {
+		input: byChannel.totals.input / byChannel.totals.requests,
+		output: byChannel.totals.output / byChannel.totals.requests,
+		cacheRead: byChannel.totals.cacheRead / byChannel.totals.requests,
+		cacheWrite: byChannel.totals.cacheWrite / byChannel.totals.requests,
+	};
+	check(
+		"usage history totals match the mock's reported usage (tokens + cache survive persistence)",
+		byChannel.totals.requests === 2 &&
+			byChannel.totals.total === byChannel.totals.input + byChannel.totals.output + byChannel.totals.cacheRead + byChannel.totals.cacheWrite &&
+			perRequest.input === 96 && perRequest.output === 12 && perRequest.cacheRead === 20 && perRequest.cacheWrite === 4,
+		`${JSON.stringify(byChannel.totals)} perRequest=${JSON.stringify(perRequest)}`,
+	);
+	check(
+		"usage history marks unpriced requests instead of claiming a zero cost (mock model has no price table)",
+		byChannel.scanned >= 2 && byChannel.totals.unpricedRequests === 2 && byChannel.totals.cost === 0,
+		JSON.stringify({ unpriced: byChannel.totals.unpricedRequests, cost: byChannel.totals.cost }),
+	);
+	const byProject = await queryHistory(client, "project");
+	check("usage history can group by project (cwd)", byProject.rows.some((r) => r.key === workdir), JSON.stringify(byProject.rows.map((r) => r.key)));
+	const windowed = await queryHistory(client, "day");
+	check("usage history groups by UTC day", windowed.rows.every((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.key)), JSON.stringify(windowed.rows.map((r) => r.key)));
 
 	// 8) 组合命令的失败路径：模型不属于该渠道服务商 → 明确拒绝，绑定保持。
 	const bad = await runCommand(client, "channel_select", { conversationId: convB, channelId: "ch-b", modelId: "mock/missing-model" });

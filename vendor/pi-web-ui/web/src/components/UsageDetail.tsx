@@ -16,6 +16,8 @@
 import type { UiChannelInfo, UiState, UiUsageAttribution,
 	UiUsageRecord } from "../types";
 import { useT, type Translate } from "../i18n";
+import type { UsageHistoryMsg, UsageHistoryWindow } from "../use-chat";
+import { UsageHistory } from "./UsageHistory";
 
 /** 令牌数的人类可读格式（FooterBar 与明细表共用）。 */
 export function formatTokens(n: number): string {
@@ -64,6 +66,8 @@ export function UsageDetail({
 	cost,
 	attribution,
 	recentRequests,
+	usageHistory,
+	onQueryUsageHistory,
 	runId,
 	channels,
 }: {
@@ -72,6 +76,9 @@ export function UsageDetail({
 	attribution?: UiUsageAttribution[];
 	/** §7 最近若干条逐请求记录（时间 + 计价依据）。 */
 	recentRequests?: UiUsageRecord[];
+	/** P4：用量历史（跨渠道/项目/时间）；null = 尚未查询。 */
+	usageHistory?: UsageHistoryMsg | null;
+	onQueryUsageHistory?: (groupBy: UsageHistoryMsg["groupBy"], window: UsageHistoryWindow) => void;
 	runId?: string | null;
 	channels: UiChannelInfo[];
 }) {
@@ -220,6 +227,7 @@ export function UsageDetail({
 					<div className="usage-cost-note">{t("usageCostBasisNote")}</div>
 				</>
 			)}
+			{onQueryUsageHistory && <UsageHistory history={usageHistory ?? null} channels={channels} onQuery={onQueryUsageHistory} />}
 		</div>
 	);
 }

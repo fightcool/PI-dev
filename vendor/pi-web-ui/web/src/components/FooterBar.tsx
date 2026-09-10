@@ -14,13 +14,15 @@
 import { useEffect, useRef, useState } from "react";
 import { FiFolder } from "react-icons/fi";
 import type { UiChannelBinding } from "../types";
-import type { ChatState } from "../use-chat";
+import type { ChatState , UsageHistoryMsg, UsageHistoryWindow } from "../use-chat";
 import { useT } from "../i18n";
 import { cacheMetrics, estimateStreamTokens, streamRate, trimRateSamples, type RateSample } from "../cache-stats";
 import { UsageDetail, formatTokens } from "./UsageDetail";
 
 interface FooterBarProps {
 	chat: ChatState;
+	/** P4：用量历史查询（只读）；未提供时用量详情不显示历史区。 */
+	onQueryUsageHistory?: (groupBy: UsageHistoryMsg["groupBy"], window: UsageHistoryWindow) => number;
 	send: (
 		msg:
 			{ type: "complete_path"; path: string } | { type: "set_cwd"; path: string } | { type: "make_dir"; path: string },
@@ -35,7 +37,7 @@ const MACHINE_ROOT = "@root";
  * workspace path — click the path to open a directory picker (browse into
  * folders, go up, create folders, or pick one as the working directory).
  */
-export function FooterBar({ chat, send }: FooterBarProps) {
+export function FooterBar({ chat, send, onQueryUsageHistory }: FooterBarProps) {
 	const t = useT();
 	const state = chat.state;
 	const [editing, setEditing] = useState(false);
@@ -316,6 +318,8 @@ export function FooterBar({ chat, send }: FooterBarProps) {
 						cost={s.cost}
 						attribution={s.attribution}
 						recentRequests={s.recentRequests}
+						usageHistory={chat.usageHistory}
+						onQueryUsageHistory={onQueryUsageHistory}
 						runId={s.runId}
 						channels={channels}
 					/>

@@ -3488,6 +3488,24 @@ export class DshClientSession {
 		this.channelUnsupported(commandId);
 	}
 
+	/** P4 用量历史：DSH 引擎不记录逐请求归属，明确回空结果而不是伪造数据。 */
+	async queryUsageHistory(reqId: number, query: { groupBy: "channel" | "project" | "model" | "source" | "day" }): Promise<void> {
+		this.emit({
+			type: "usage_history",
+			reqId,
+			ok: false,
+			error: "DSH 引擎不提供逐请求用量历史",
+			groupBy: query.groupBy,
+			from: null,
+			to: null,
+			rows: [],
+			totals: { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, unpricedRequests: 0 },
+			scanned: 0,
+			skipped: 0,
+			truncated: false,
+		});
+	}
+
 	async addProviderKey(_provider: string, _apiKey: string, _name?: string): Promise<void> {
 		this.emit({
 			type: "notice",

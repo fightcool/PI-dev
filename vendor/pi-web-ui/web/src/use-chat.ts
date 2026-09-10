@@ -81,6 +81,11 @@ export interface Notice {
 export type ChannelStateMsg = Extract<ServerMessage, { type: "channel_state" }>;
 /** 渠道命令回执（`channel_command_result`）—— 按 commandId 与提交匹配。 */
 export type ChannelCommandResult = Extract<ServerMessage, { type: "channel_command_result" }>;
+export type UsageHistoryMsg = Extract<ServerMessage, { type: "usage_history" }>;
+/** 用量历史的时间窗（今天按 UTC 切分，与聚合口径一致）。 */
+export type UsageHistoryWindow = "all" | "today" | "7d" | "30d";
+const startOfUtcDay = (ms: number) => Date.UTC(new Date(ms).getUTCFullYear(), new Date(ms).getUTCMonth(), new Date(ms).getUTCDate());
+
 
 /** channel_save 的渠道档案 payload（直接从协议派生，避免手工镜像漂移）。 */
 export type ChannelSaveInput = Extract<ClientMessage, { type: "channel_save" }>["channel"];
@@ -112,6 +117,8 @@ export interface ChannelApi {
 		selection: { channelId: string; credentialKeyName?: string | null; modelId: string } | null,
 	) => string | null;
 	queryChannelAccount: (channelId: string) => string | null;
+	/** P4 首个切片：用量历史查询（只读聚合）。返回 reqId，结果在 state.usageHistory。 */
+	queryUsageHistory: (groupBy: UsageHistoryMsg["groupBy"], window: UsageHistoryWindow) => number;
 }
 
 /** 回执只用于「最近一次命令结果」展示：保留上限，超出丢最旧的（对象键序 = 插入序）。 */
@@ -194,6 +201,8 @@ export interface ChatState {
 	providerKeys: Record<string, ProviderKeyInfo[]>;
 	/** DEV-CON 渠道快照（channel_state）；null = 尚未收到（无渠道功能的实例保持 null）。 */
 	channelState: ChannelStateMsg | null;
+	/** P4 首个切片：最近一次用量历史查询结果（只读聚合）。 */
+	usageHistory: UsageHistoryMsg | null;
 	/** 渠道命令回执，按 commandId 保留最近一条，供 UI 显示最新一次结果。 */
 	channelResults: Record<string, ChannelCommandResult>;
 	/** Result of the last install_pi_agent run (null while not started/running). */
@@ -346,6 +355,7 @@ type Action =
 	| { type: "providers_status"; providers: ProviderStatus[] }
 	| { type: "provider_keys"; keys: Record<string, ProviderKeyInfo[]> }
 	| { type: "channel_state"; channelState: ChannelStateMsg }
+	| { type: "usage_history"; history: UsageHistoryMsg }
 	| { type: "channel_command_result"; result: ChannelCommandResult }
 	| {
 			type: "fetch_models_result";
@@ -699,6 +709,8 @@ function reducer(state: ChatState, action: Action): ChatState {
 			return { ...state, providerKeys: action.keys };
 		case "channel_state":
 			return { ...state, channelState: action.channelState };
+		case "usage_history":
+			return { ...state, usageHistory: action.history };
 		case "channel_command_result":
 			return { ...state, channelResults: rememberChannelResult(state.channelResults, action.result) };
 		case "fetch_models_result":
@@ -888,6 +900,7 @@ export function useChat() {
 		providers: [],
 		providerKeys: {},
 		channelState: null,
+		usageHistory: null,
 		channelResults: {},
 		installResult: null,
 		pathCompletions: [],
@@ -1134,6 +1147,9 @@ export function useChat() {
 					break;
 				case "channel_state":
 					dispatch({ type: "channel_state", channelState: msg });
+					break;
+				case "usage_history":
+					dispatch({ type: "usage_history", history: msg });
 					break;
 				case "channel_command_result":
 					dispatch({ type: "channel_command_result", result: msg });
@@ -1412,6 +1428,7 @@ export function useChat() {
 	const channelSendRef = useRef(send);
 	channelSendRef.current = send;
 	const channelApiRef = useRef<ChannelApi | null>(null);
+	const usageReqIdRef = useRef(0);
 	if (!channelApiRef.current) {
 		const command = (build: (commandId: string) => ClientMessage): string | null => {
 			const commandId = randomUuid();
@@ -1473,6 +1490,15 @@ export function useChat() {
 				})),
 			queryChannelAccount: (channelId) =>
 				command((commandId) => ({ type: "channel_query_account", commandId, channelId })),
+			// P4 首个切片：用量历史查询（只读）。reqId 自增，结果按 reqId 匹配。
+			queryUsageHistory: (groupBy, window) => {
+				usageReqIdRef.current += 1;
+				const reqId = usageReqIdRef.current;
+				const now = Date.now();
+				const from = window === "all" ? undefined : window === "today" ? startOfUtcDay(now) : now - (window === "7d" ? 7 : 30) * 86_400_000;
+				channelSendRef.current({ type: "usage_history_query", reqId, groupBy, ...(from === undefined ? {} : { from }) });
+				return reqId;
+			},
 		};
 	}
 

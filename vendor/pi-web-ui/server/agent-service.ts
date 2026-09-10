@@ -26,6 +26,7 @@ import { ChannelService } from "./dev-con/channel-service.js";
 import { AccountRegistry } from "./dev-con/channel-accounts.js";
 import type { ChannelRecord, ChannelSelection, RequestBindingSnapshot } from "./dev-con/channel-model.js";
 import type { ChannelServiceHost } from "./dev-con/channel-service.js";
+import { UsageHistoryStore, type UsageHistoryRecord } from "./dev-con/usage-history.js";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
@@ -572,6 +573,8 @@ export interface Conversation {
 	 * （= SDK 每次 provider 请求前）时写入，使晚到的用量结果仍归属到当时的绑定。
 	 */
 	lastRequestBinding: RequestBindingSnapshot | null;
+	/** 最近一条已写入用量历史记录的 id（避免同一记录重复落盘）。 */
+	lastPersistedUsageId: string | null;
 	/** 压缩前的会话统计基线：压缩摘要的 token 用会话统计差值归属为 source=compaction。 */
 	compactionBaseline: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost: number } | null;
 	/** Last time any SDK event arrived for this conversation. */
@@ -1513,11 +1516,7 @@ export class ClientSession {
 			// DEV-CON §7：复核/调研用独立 ModelRuntime，用量单独标注来源并归到发起它的对话。
 			recordUsage: (source, usage) => {
 				const conv = this.conv;
-				conv.usageTracker.record(
-					{ scope: "final", identity: null, role: "assistant", ...usage },
-					Date.now(),
-					this.bindingAttribution(conv, source),
-				);
+				this.recordUsage(conv, { scope: "final", identity: null, role: "assistant", ...usage }, this.bindingAttribution(conv, source));
 			},
 			activeConvId: () => this.activeId,
 			activeConv: () => this.conv,
@@ -1543,6 +1542,7 @@ export class ClientSession {
 		this.bg.start();
 		this.accounts = new AccountRegistry();
 		this.channels = new ChannelService(this.makeChannelHost(agentDir), this.accounts);
+		this.usageHistory = new UsageHistoryStore(join(agentDir, "dev-con", "usage-history.jsonl"));
 	}
 
 	static async create(clientId: string, cwd: string, stateStore: ClientStateStore): Promise<ClientSession> {
@@ -1831,6 +1831,7 @@ export class ClientSession {
 			lastSdkEventAt: Date.now(),
 			usageTracker: new TokenUsageTracker(),
 			lastRequestBinding: null,
+			lastPersistedUsageId: null,
 			compactionBaseline: null,
 
 			stallNoticed: false,
@@ -2146,6 +2147,52 @@ export class ClientSession {
 		}
 	}
 
+	/**
+	 * 记录用量并落盘到用量历史（唯一入口）。所有 record() 调用点都必须走这里，
+	 * 否则「界面能看到、历史查不到」的缺口会再次出现。
+	 */
+	private recordUsage(conv: Conversation, normalized: unknown, attribution: Record<string, unknown>, now = Date.now()): void {
+		conv.usageTracker.record(normalized, now, attribution);
+		const newest = conv.usageTracker.records()[0] as UsageHistoryRecord | undefined;
+		if (!newest || newest.id === conv.lastPersistedUsageId) return;
+		conv.lastPersistedUsageId = newest.id;
+		this.usageHistory.append(newest);
+	}
+
+	/** P4：只读用量历史聚合（按渠道/项目/模型/来源/天）。 */
+	async queryUsageHistory(
+		reqId: number,
+		query: { groupBy: "channel" | "project" | "model" | "source" | "day"; from?: number; to?: number },
+	): Promise<void> {
+		try {
+			const result = this.usageHistory.query({ groupBy: query.groupBy, from: query.from, to: query.to });
+			this.emit({
+				type: "usage_history",
+				reqId,
+				ok: true,
+				groupBy: result.groupBy,
+				from: result.from,
+				to: result.to,
+				rows: result.rows,
+				totals: {
+					requests: result.totals.requests,
+					input: result.totals.input,
+					output: result.totals.output,
+					cacheRead: result.totals.cacheRead,
+					cacheWrite: result.totals.cacheWrite,
+					total: result.totals.total,
+					cost: result.totals.cost,
+					unpricedRequests: result.totals.unpricedRequests,
+				},
+				scanned: result.scanned,
+				skipped: result.skipped,
+				truncated: result.truncated,
+			});
+		} catch (err) {
+			this.emit({ type: "usage_history", reqId, ok: false, error: (err as Error).message, groupBy: query.groupBy, from: null, to: null, rows: [], totals: { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, unpricedRequests: 0 }, scanned: 0, skipped: 0, truncated: false });
+		}
+	}
+
 	/** 会话统计总量（缺失时为 null）；压缩用量归属的唯一来源。 */
 	private sessionUsageTotals(): { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost: number } | null {
 		try {
@@ -2183,7 +2230,8 @@ export class ClientSession {
 			cost: Math.max(0, after.cost - before.cost),
 		};
 		if (delta.total <= 0 && delta.cost <= 0) return;
-		conv.usageTracker.record(
+		this.recordUsage(
+			conv,
 			{
 				scope: "final",
 				identity: null,
@@ -2195,7 +2243,6 @@ export class ClientSession {
 				cost: delta.cost,
 				role: "assistant",
 			},
-			Date.now(),
 			this.bindingAttribution(conv, "compaction"),
 		);
 	}
@@ -2233,11 +2280,7 @@ export class ClientSession {
 		modelId: string;
 	}): void {
 		const conv = this.conv;
-		conv.usageTracker.record(
-			{ scope: "final", identity: null, ...usage, role: "assistant" },
-			Date.now(),
-			this.bindingAttribution(conv, "vision"),
-		);
+		this.recordUsage(conv, { scope: "final", identity: null, ...usage, role: "assistant" }, this.bindingAttribution(conv, "vision"));
 	}
 
 	/** 用量来源标注（§7）：子代理/重试/压缩摘要分别标注，其余为用户请求。 */
@@ -2252,7 +2295,7 @@ export class ClientSession {
 		const usageEvent = normalizeUsageEvent(event);
 		if (usageEvent) {
 			const binding = conv.lastRequestBinding;
-			conv.usageTracker.record(usageEvent, Date.now(), {
+			this.recordUsage(conv, usageEvent, {
 				source: this.usageSource(conv),
 				conversationId: conv.id,
 				cwd: conv.cwd,
@@ -3295,6 +3338,11 @@ export class ClientSession {
 	private readonly channels!: ChannelService;
 	/** 账户查询注册表（有界超时/限频/缓存）；默认适配器见 channel-accounts.ts。 */
 	private readonly accounts!: AccountRegistry;
+	/**
+	 * P4 首个切片：逐请求用量历史的实例私有存储（append-only JSONL）。
+	 * 写入只发生在 recordUsage()；查询是只读聚合，不参与计费、不改写会话。
+	 */
+	private readonly usageHistory!: UsageHistoryStore;
 	/** 渠道状态是实例级事实：由 AgentService 广播给全部客户端（多端看到同一有效绑定）。
 	 *  未设置时退化为单端推送（如纯单机测试）。 */
 	onChannelBroadcast: ((msg: ServerMessage) => void) | undefined = undefined;
