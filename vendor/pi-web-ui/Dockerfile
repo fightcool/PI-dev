@@ -26,9 +26,17 @@ RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/lib ./lib
 COPY --from=build /app/web/dist ./web/dist
-ENV PI_WEB_PORT=8787
+COPY --from=build /app/themes ./themes
+COPY --from=build /app/plugins ./plugins
+COPY --from=build /app/bin ./bin
+COPY --from=build /app/extensions ./extensions
+ENV PI_WEB_PORT=8787 \
+    PI_WEB_DATA_DIR=/app/.pi-web \
+    PI_CODING_AGENT_DIR=/app/.pi-agent
+RUN mkdir -p /app/.pi-web /app/.pi-agent \
+    && chown node:node /app/.pi-web /app/.pi-agent
 EXPOSE 8787
-# Session data (per-client chat history) lives here — mount a volume.
-VOLUME ["/app/.pi-web"]
+# Application and SDK state have distinct persistent volumes.
+VOLUME ["/app/.pi-web", "/app/.pi-agent"]
 USER node
 CMD ["node", "dist/server/index.js"]

@@ -46,7 +46,7 @@ BENCH_WEB_ROOT=/path/to/baseline/web/dist BENCH_ASSERT=0 BENCH_ITERATIONS=5 npm 
 
 - 两份锁文件干净安装及完整 `npm run build` 已通过。
 - `npm run typecheck` 已通过。
-- 根 `npm test`：147/147通过；应用 `npm run test:unit`：68个测试文件、549/549通过。
+- 根 `npm test`：148/148通过，包含PM2 ESM包装器回归。应用 `npm run test:unit`：68个测试文件、549/549通过。
 - `npm --prefix vendor/pi-web-ui run lint`：0警告、0错误；协议单源检查通过。
 - `.venv/bin/python -m pytest tests/test_environment.py -q`：1项通过。
 - `node scripts/ci-smoke.mjs`：隔离真实服务，健康/工作区/鉴权/3个前端资源/WS升级通过。
@@ -54,7 +54,11 @@ BENCH_WEB_ROOT=/path/to/baseline/web/dist BENCH_ASSERT=0 BENCH_ITERATIONS=5 npm 
 - `npm run check:publish`、`git diff --check`通过。
 - 独立复核发现production环境可能漏装构建依赖，已显式 `npm ci --include=dev`。
 
-真实PM2候选演练结果在完成后补录；Docker当前主机未安装，未进行真实docker build/up。线上服务未切换，因此上述UI优化尚未对当前公网实例生效。首次正式切换仍应在维护窗口确认活动会话、备份和回滚路径。
+- 多设备会话列表同步及节点接力真实协议测试通过（隔离的本地模型mock）。
+- 开发入口实际启动8890和5173，工作区正确，退出后两个端口均释放。
+- 实际PM2 6.0.8演练：在临时目录安装PM2，独立PM2_HOME与8790端口，从提交 `ba3796a` 两次完整归档/安装/构建/发布（约68秒、66秒），current正确切换；rollback约3.5秒恢复candidate-one，之后完整smoke通过，临时PM2 daemon已停止。首次演练发现PM2 ESM包装器不修改argv[1]，修正isMain并新增IPC包装器回归后复测成功。
+
+Docker当前主机未安装，未进行真实docker build/up；根compose与vendor独立应用compose均已解析检查，vendor卷和运行路径也已对齐。实际PM2演练的候选release及临时PM2安装已精确清理，保留无凭据的结果汇总。线上服务未切换，因此上述UI优化尚未对当前公网实例生效。首次正式切换仍应在维护窗口确认活动会话、备份和回滚路径。
 
 ## 保留的边界
 
