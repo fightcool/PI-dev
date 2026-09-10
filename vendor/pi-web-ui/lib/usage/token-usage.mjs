@@ -76,6 +76,9 @@ export function normalizeUsageEvent(event) {
   const cacheWrite = num(usage.cacheWrite ?? usage.cache_creation_input_tokens ?? 0);
   const total = num(usage.totalTokens ?? usage.total ?? input + output + cacheRead + cacheWrite);
   const cost = num(usage.cost?.total ?? usage.cost ?? 0);
+  // §7 计价依据：SDK 在请求时按模型价目表算出 usage.cost；没有 cost 对象就是「未知价格」，
+  // 不能把 0 当成免费（未知价格展示为空而不是 0）。
+  const costProvided = Boolean(usage.cost && typeof usage.cost === "object");
   const type = event?.type;
   const scope = type === "message_end" || type === "turn_end" ? "final" : "partial";
   return {
@@ -87,6 +90,7 @@ export function normalizeUsageEvent(event) {
     cacheWrite,
     total,
     cost,
+    costProvided,
     reasoning: Number.isFinite(usage.reasoning) ? usage.reasoning : undefined,
     provider: typeof message?.provider === "string" ? message.provider : undefined,
     modelId: typeof message?.model === "string" ? message.model : undefined,
@@ -112,10 +116,14 @@ export class TokenUsageTracker {
   #runId = null;
   #requests = 0;
   #attribution = new Map();
+  #records = [];
+  #recordLimit = 100;
+  #recordSeq = 0;
   #lastError = null;
 
   constructor(limits = {}) {
     this.limits = { ...DEFAULT_USAGE_LIMITS, ...limits };
+    this.#recordLimit = Number.isInteger(this.limits.maxRecords) && this.limits.maxRecords > 0 ? this.limits.maxRecords : 100;
   }
 
   /** 开始一次 run（agent_start）。runId 用于快照与归属。 */
@@ -155,7 +163,48 @@ export class TokenUsageTracker {
     addTokens(this.#cumulative, tokens);
     if (normalized.role === "assistant") this.#requests += 1;
     this.attribute(tokens, normalized, attribution);
+    this.pushRecord(tokens, normalized, now, attribution);
     return this.snapshot(now);
+  }
+
+  /**
+   * 逐请求记录（§7：稳定请求/事件标识、对话/运行、渠道引用、模型、绑定/配置版本、用量、时间、计价依据）。
+   * 有界环形缓冲：只保留最近 N 条，供界面展示与后续的时间/项目汇总，不影响聚合口径。
+   */
+  pushRecord(tokens, normalized, now, attribution) {
+    this.#recordSeq += 1;
+    const record = {
+      /** 稳定标识：优先用 provider 响应 id（或 role+timestamp），否则用 run 内序号。 */
+      id: normalized.identity ?? `${this.#runId ?? "run"}#${this.#recordSeq}`,
+      at: now,
+      runId: this.#runId,
+      conversationId: attribution.conversationId ?? null,
+      cwd: attribution.cwd ?? null,
+      source: USAGE_SOURCES.includes(attribution.source) ? attribution.source : "user",
+      channelId: attribution.channelId ?? null,
+      credentialKeyName: attribution.credentialKeyName ?? null,
+      providerId: normalized.provider ?? attribution.providerId ?? "unknown",
+      modelId: normalized.responseModel ?? normalized.modelId ?? attribution.modelId ?? "unknown",
+      bindingRevision: attribution.bindingRevision ?? null,
+      configRevision: attribution.configRevision ?? null,
+      input: tokens.input,
+      output: tokens.output,
+      cacheRead: tokens.cacheRead,
+      cacheWrite: tokens.cacheWrite,
+      total: tokens.total,
+      cost: tokens.cost,
+      /** "sdk-model-pricing" = 由 SDK 按当时模型价目表算出；"unknown" = 事件未带价目（未知价格）。 */
+      costBasis: normalized.costProvided ? "sdk-model-pricing" : "unknown",
+      currency: normalized.costProvided ? "USD" : null,
+    };
+    this.#records.push(record);
+    if (this.#records.length > this.#recordLimit) this.#records.splice(0, this.#records.length - this.#recordLimit);
+    return record;
+  }
+
+  /** 最近的逐请求记录（新→旧；有界，不含密钥）。 */
+  records() {
+    return [...this.#records].reverse().map((r) => ({ ...r }));
   }
 
   /** 按来源/渠道/模型归组累计（不用今天的配置推断过去：归属随事件一起记录）。 */
@@ -211,6 +260,7 @@ export class TokenUsageTracker {
       requests: this.#requests,
       streaming: this.#current.scope === "partial",
       error: this.#lastError,
+      records: this.records(),
     };
   }
 
@@ -239,6 +289,8 @@ export class TokenUsageTracker {
     this.#finalized.clear();
     this.#requests = 0;
     this.#attribution.clear();
+    this.#records = [];
+    this.#recordSeq = 0;
     this.#runId = null;
     this.#lastError = null;
     this.#startedAt = null;

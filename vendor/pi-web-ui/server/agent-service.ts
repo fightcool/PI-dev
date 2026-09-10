@@ -2210,6 +2210,8 @@ export class ClientSession {
 		const slash = ref.indexOf("/");
 		return {
 			source,
+			conversationId: conv.id,
+			cwd: conv.cwd,
 			channelId: binding?.channelId,
 			credentialKeyName: binding?.credentialKeyName,
 			providerId: binding?.providerId,
@@ -2252,6 +2254,8 @@ export class ClientSession {
 			const binding = conv.lastRequestBinding;
 			conv.usageTracker.record(usageEvent, Date.now(), {
 				source: this.usageSource(conv),
+				conversationId: conv.id,
+				cwd: conv.cwd,
 				channelId: binding?.channelId,
 				credentialKeyName: binding?.credentialKeyName,
 				modelId: binding?.modelId,
@@ -2776,6 +2780,8 @@ export class ClientSession {
 				// §7 归属：来源/渠道/模型维度；只含引用，不含密钥。
 				attribution: conv.usageTracker.attributionList(),
 				runId: conv.usageTracker.runId,
+				// §7 逐请求记录（有界，新→旧）：稳定标识 + 时间 + 计价依据，供详情面板展示。
+				recentRequests: conv.usageTracker.records().slice(0, 50),
 				cost: s.cost,
 				contextUsage: (() => {
 					const cu = s.contextUsage;

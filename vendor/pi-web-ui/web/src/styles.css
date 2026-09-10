@@ -10399,3 +10399,49 @@ button.source-default-toggle {
 		min-width: 0;
 	}
 }
+
+/* DEV-CON §7：逐请求用量记录表（有界，新→旧；时间 + 计价依据）。 */
+.usage-recent {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 12px;
+	margin-top: 4px;
+}
+.usage-recent th,
+.usage-recent td {
+	padding: 3px 6px;
+	text-align: right;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 14ch;
+}
+.usage-recent th:first-child,
+.usage-recent td:first-child,
+.usage-recent th:nth-child(2),
+.usage-recent td:nth-child(2),
+.usage-recent th:nth-child(3),
+.usage-recent td:nth-child(3) {
+	text-align: left;
+}
+.usage-recent thead th {
+	color: var(--muted, #8a8f98);
+	font-weight: 500;
+	border-bottom: 1px solid var(--border, #2a2d34);
+}
+.usage-recent tbody tr + tr td {
+	border-top: 1px solid color-mix(in srgb, var(--border, #2a2d34) 45%, transparent);
+}
+.usage-unknown-price {
+	color: var(--warn, #d0a215);
+	cursor: help;
+}
+@media (max-width: 560px) {
+	.usage-recent {
+		font-size: 11px;
+	}
+	.usage-recent th,
+	.usage-recent td {
+		max-width: 9ch;
+	}
+}
