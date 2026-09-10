@@ -56,6 +56,8 @@ npm run pm2 -- stop
 
 状态查询先检查 unit；inactive 或 failed 时不会调用 PM2。active 时还检查 supervisor PID 是否存活，再捕获 `jlist` 并仅输出白名单字段，绝不输出原始环境。尚未就绪时会报错，可稍后重试。build-info 描述的是 **current 链接目标**，不能单独证明正在运行的进程已切换到该版本。
 
+`status` 只做观测：它只读取 unit 状态、PM2 白名单字段与 current 的 build-info，不写 unit、不 reload、不启动进程。
+
 本 CLI 不提供 `logs`。应用日志位于 `shared/logs/pm2-out.log`、`shared/logs/pm2-error.log`；如需排查，可由操作人本地查看，分享前人工脱敏。不要粘贴原始 `pm2 jlist`、进程环境或 PM2 状态转储。不要执行另一套 `pm2 startup`、`pm2 resurrect` 或后台 `pm2 start` 来接管生产应用。
 
 ## 资源与 unit 行为
@@ -88,10 +90,39 @@ unit 使用 `Type=simple`、`Restart=on-failure`、`KillMode=control-group`、`T
 1. 在未运行的独立 candidate 中准备明确提交的源码、锁定依赖与构建产物，运行相关测试和发布检查。确认 build-info 提交与所选版本一致，稳定工具可用；不要在 current 所指在线版本上重新构建或安装依赖。
 2. 记录旧 current 目标，保留该 release 与稳定工具。通过运行实例的 control socket quiesce 并等待 active conversations、pending messages 均为零；忙碌、无法确认或超过等待期限时取消升级，并恢复接收工作。
 3. 从服务进程之外的维护任务停止 `pi-dev-pm2.service`，在同一部署目录中创建临时链接并通过一次 rename 原子替换 current，然后通过 manager `start` 启动新版本。已有进程状态没有迁移能力，维护窗口内连接会断开。
+   - **维护任务必须跑在服务进程之外的独立 cgroup**（例如 `systemd-run --user --unit=pi-dev-switch --collect ...`）。两个 unit 都是 `KillMode=control-group`：从被托管进程里派生的维护脚本会在 `systemctl stop` 时被一并杀死，切换卡在「已停服务、未换链接」的中间态。
+   - **首次切换必须 `stop` + `disable` 旧 UI unit 与 watchdog**（`pi-web-ui-dev.service`、`pi-web-ui-dev-watchdog.{service,timer}`）。旧 unit 若仍是 `enabled` 且 `WantedBy=default.target`，**任何** `daemon-reload` 都会把它拉起来并抢占 8788（本文件所在的服务器在 2026-09-10 实际发生过），站点会在未受管状态下运行可编辑 checkout。
 4. 核实新 PID、服务健康、build-info 提交、公网前端资源与 WebSocket 鉴权，再恢复接收工作。manager status 只提供观测信息；manager start/restart 本身不做 quiesce、健康验收或回滚。
 5. 若新版本未通过验收，停止 PM2 unit，原子恢复旧 current，重新启动并验证旧版本。保留失败版本及脱敏诊断供调查；不要在恢复过程中删除共享数据、配置或稳定工具。
 
 只需重启当前版本时，也应先完成工作排空，再执行 `npm run pm2 -- restart`。初次迁移脚本包含旧 systemd 服务的特定回退逻辑，不能直接当成后续 PM2 到 PM2 的通用升级器。
+
+## 生产升级记录与脚本
+
+`scripts/maintenance/switch-production-release.mjs` 把上面的人工步骤固化成一个可复用的维护任务（PM2 → PM2，含旧 unit 退役）。它只读 runtime 配置的路径与端口，不读取或复制任何凭据，并在每个阶段写入 `deploy/shared/maintenance/switch-status.json`：
+
+```bash
+# 在未运行的独立 candidate 中准备好 releases/<id>（提交、锁文件、构建产物、验证）后：
+systemd-run --user --unit=pi-dev-switch --collect \
+  --setenv=SWITCH_WAIT_MINUTES=45 \
+  --working-directory=/home/dev/PI-dev \
+  "$HOME/.local/share/pi-dev/deploy/tools/node/bin/node" \
+  /home/dev/PI-dev/scripts/maintenance/switch-production-release.mjs <releaseId(12hex)>
+journalctl --user -u pi-dev-switch.service --no-pager
+```
+
+阶段：quiesce → 排空（active/pending 均归零，超时即中止并恢复接收）→ 停用并 disable 旧 unit/watchdog → 原子替换 current → `manager start` → 验收（新 PID、健康、build-info 与 release-source 一致、公网入口发的是该版本前端、匿名 WebSocket 仍被 401 拒绝）→ `unquiesce`。失败时原子回退旧 release 并重启 PM2；PM2 起不来则用旧 unit 兜底保证站点可用（并在状态文件中标注）。`--collect` 的 transient unit 在退出时可能打印一条 "Failed to open …/transient/…: No such file or directory"，属清理噪声。
+
+### 2026-09-10 生产升级（`e92430be376b` → `2420ad6c7fe5`）
+
+| 项 | 结果 |
+| --- | --- |
+| 版本 | `current` 指向 `releases/2420ad6c7fe5`，提交 `2420ad6c7fe57a427d7964ed3da2891e9a066dbb`（DEV-CON P0–P3 合并提交） |
+| 候选验证 | 在候选目录内实跑：root `npm test` 171/171、`check:publish` PASS、`typecheck` PASS、渠道单元 + 三个端到端套件全通过、`test:smoke` 41/41；`build-info.json` 提交与 `release-source.json` 一致、`protocolVersion` 16 |
+| 切换验收 | PM2 应用 `pi-dev-web` online（restarts 0）、`/api/health` pid/工作区/引擎一致、公网 `dev.ftai.cc` 首页发的是该 release 的前端入口、匿名 WebSocket 返回 401、带鉴权的只读探测收到 `channel_state`（protocol 16 生效） |
+| 旧入口退役 | `pi-web-ui-dev.service` = disabled/inactive，watchdog service/timer = disabled/inactive；`pi-dev-pm2.service` = enabled/active（唯一生产管理者） |
+| 事故与根因 | 首次尝试时维护脚本在被托管进程的 cgroup 内执行，停 unit 时被连带杀死，`current` 未切换；约 47 分钟后一次 `daemon-reload` 把仍是 `enabled` 的旧 unit 拉起并接管 8788，站点在未受管状态下运行可编辑 checkout。二次尝试改用 `systemd-run --user`（独立 cgroup）并显式 `disable` 旧 unit/watchdog 后成功。以上两条已写入上面的步骤 3。 |
+| 回滚 | 旧 release `e92430be376b` 与其稳定工具仍完整保留；回滚即「停 unit → 原子恢复旧 current → `manager start` → 验收」 |
 
 ## 实现与验证
 
