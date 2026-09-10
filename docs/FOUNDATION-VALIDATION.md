@@ -1,5 +1,9 @@
 # 结构、发布与性能整改验收
 
+<!-- 🍞 AI Breadcrumb — @COUPLED DEV-CON-PROPOSAL.md, PM2-PRODUCTION.md -->
+
+> **历史验收记录，不是当前开发计划。** 正文中的“本轮”“未来dev-con”和在线状态均对应下述基线；当前功能以 [DEV-CON-PROPOSAL.md](DEV-CON-PROPOSAL.md) 为准，正式运维以 [PM2-PRODUCTION.md](PM2-PRODUCTION.md) 为准。
+
 日期：2026-09-10（服务器UTC）。基线：`47d3049`。实现分支：`feature/project-foundation`，独立worktree开发，在线 `/home/dev/PI-dev` 服务未停止、重启或切换。
 
 ## 已完成的改动

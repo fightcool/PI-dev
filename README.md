@@ -1,14 +1,20 @@
 # PI-dev
 
-可复现的远程 AI 开发环境。一个仓库管理工具链、定制 pi-web-ui、验证和部署入口；私有配置与会话独立持久化。未来的 `dev-con/` 是旁路管理面，见 [开发提案](docs/DEV-CON-PROPOSAL.md)。
+<!-- 🍞 AI Breadcrumb — @COUPLED docs/DEV-CON-PROPOSAL.md, docs/STRUCTURE.md, docs/README.md -->
+
+可复现的个人远程 AI 开发环境，以 Pi 为核心，保留 pi-web-ui 现有 Pi/DSH 引擎架构。一个仓库管理工具链、定制工作台、验证和部署；私有配置与会话独立持久化。当前渠道功能的唯一开发范本是 [PI-dev 多渠道开发基准](docs/DEV-CON-PROPOSAL.md)，统一架构、范围、阶段与验收。功能实现仍暂停，`dev-con/` 暂保留为旧只读原型。
 
 ## 从哪里开始
 
+- [唯一开发基准](docs/DEV-CON-PROPOSAL.md)：Pi多渠道配置、热切换、Token/费用、账户查询的需求、设计约束和验收。
+- [文档导航](docs/README.md)：区分开发基准、工程规范与历史材料。
+- [领域词汇](CONTEXT.md)：渠道、绑定、热切换、费用与余额的含义。
+- [DEV-CON历史材料](docs/history/dev-con/README.md)：前期评估、架构讨论和暂停原型，均非当前计划。
 - [目录结构与开发边界](docs/STRUCTURE.md)：各目录的归属、源码与运行数据的区别。
 - [安装与运维](docs/OPERATIONS.md)：配置、服务维护和升级。
 - [PM2 正式运行管理](docs/PM2-PRODUCTION.md)：统一进程、日志、开机恢复与版本切换。
 - [PM2 候选发布与回滚](docs/PM2-SHADOW.md)：隔离候选端口与验证。
-- [性能与验收](docs/FOUNDATION-VALIDATION.md)：本轮修改、测量方法及结果。
+- [既有性能与验收记录](docs/FOUNDATION-VALIDATION.md)：指定基线的修改和测量，不代表本期完成状态。
 - [历史环境验收](docs/history/ENVIRONMENT-VALIDATION.md)：早期环境迁移记录，不代表当前部署状态。
 
 ## 环境基线
@@ -29,7 +35,7 @@ npm run dev
 
 bootstrap 下载并校验项目内工具链，使用锁文件安装依赖、构建并生成本机配置。它不会安装系统软件或自动停止在线服务。已经准备好工具链时可用 `npm run setup:dependencies` 和 `npm run build`。
 
-`npm run dev` 使用当前 checkout 的 `.dev/config` 与 `.dev/state`，前端 `http://localhost:5173`，后端 `127.0.0.1:8890`；首次使用需要为这个开发实例单独配置授权。在线8788、候选8790、后续dev-con8791保持分开。远程开发可用SSH隧道转发5173。
+`npm run dev` 使用当前 checkout 的 `.dev/config` 与 `.dev/state`，前端 `http://localhost:5173`，后端 `127.0.0.1:8890`；首次使用需要为这个开发实例单独配置授权。在线8788、候选8790与原型预留8791保持分开。远程开发可用SSH隧道转发5173。
 
 ```bash
 npm run build             # vendor应用及版本信息
@@ -69,6 +75,6 @@ npm run pm2 -- restart
 
 根 [Dockerfile](Dockerfile) 与 [compose.yaml](compose.yaml) 复用相同应用构建，显式持久化配置、Web数据、Agent数据和工作区。`docker compose up -d --build` 是创建/更新实例的部署动作，应在确认端口及数据目录后由操作者执行。容器的Python为Debian工具链，不承诺与宿主机uv虚拟环境相同；需要项目专用运行时的workspace应单独配置镜像。
 
-默认 `lean` 只加载pi-context-prune；`full` 增加已锁定扩展。切换profile用 `node scripts/configure.mjs --profile=full`，然后在维护窗口重启所管理的实例。其他Agent的skills/config由后续dev-con适配器管理，这里不自动复制或清理用户目录。
+默认 `lean` 只加载pi-context-prune；`full` 增加已锁定扩展。切换profile用 `node scripts/configure.mjs --profile=full`，然后在维护窗口重启所管理的实例。Claude Code、Codex CLI 等外部原生 Agent 的配置与资源管理不在项目集成范围内。
 
 本仓库公开。Pi能执行运行用户权限下的命令，workspace选择不是安全沙箱；公开入口须有认证及正确的WebSocket反代。依赖安装执行第三方生命周期脚本，版本升级需要锁文件差异与回归验证。Python3.10的后续迁移应独立安排。

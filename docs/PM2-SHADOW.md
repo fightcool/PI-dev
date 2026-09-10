@@ -1,6 +1,8 @@
 # PM2候选发布与回滚
 
-该入口管理独立的候选实例，默认端口8790、名称pi-dev-shadow。它不会自动接管8788在线systemd服务。会话/终端驻留进程内，PM2仅使用单实例fork；切换版本会重启候选进程。
+<!-- 🍞 AI Breadcrumb — @COUPLED PM2-PRODUCTION.md, STRUCTURE.md -->
+
+该入口管理独立的候选实例，默认端口8790、名称pi-dev-shadow。它不会自动接管8788正式实例；正式运行规则见 [PM2-PRODUCTION.md](PM2-PRODUCTION.md)。会话/终端驻留进程内，PM2仅使用单实例fork；切换版本会重启候选进程。
 
 ## 目录
 
@@ -34,7 +36,7 @@ PI_DEV_DEPLOY_ROOT=/srv/pi-dev node scripts/release.mjs stop
 
 其他支持动作：start、reload、delete。它们仅针对配置的应用名称与独立PM2_HOME；不支持操作全部PM2应用的命令。root package的release:check用于只读检查，不等于构建与发布验收。
 
-`PI_DEV_CONFIG_DIR`、`PM2_HOME`若指定，必须是deploy/shared下不同目录。`PI_DEV_SHADOW_PORT`可选择其他未占用的高位端口，但禁止8787、8788和dev-con8791。
+`PI_DEV_CONFIG_DIR`、`PM2_HOME`若指定，必须是deploy/shared下不同目录。`PI_DEV_SHADOW_PORT`可选择其他未占用的高位端口，但禁止8787、8788和原型预留8791。
 
 ## 发布流程
 

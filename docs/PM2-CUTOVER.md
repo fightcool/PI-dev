@@ -1,5 +1,9 @@
 # PM2上线迁移记录
 
+<!-- 🍞 AI Breadcrumb — @COUPLED PM2-PRODUCTION.md, DEV-CON-PROPOSAL.md -->
+
+> **特定迁移的历史记录，不是后续部署计划。** 下文授权、操作顺序和状态仅描述当时事务，不作为今后迁移、重启或整理工作树的授权。正式运行规则见 [PM2-PRODUCTION.md](PM2-PRODUCTION.md)，当前功能开发见 [DEV-CON-PROPOSAL.md](DEV-CON-PROPOSAL.md)。
+
 日期：2026-09-10。用户已特别授权版本切换上线及PM2统一管理。本记录描述已准备的事务；最终执行状态以部署目录 `shared/migrations/status.json` 为准。
 
 ## 目标布局

@@ -1,5 +1,7 @@
 # 安装与运维
 
+<!-- 🍞 AI Breadcrumb — @COUPLED PM2-PRODUCTION.md, PM2-SHADOW.md, STRUCTURE.md -->
+
 当前基线是Linux非root用户、4 vCPU / 8 GiB服务器。正式进程管理使用 [PM2-PRODUCTION.md](PM2-PRODUCTION.md)，下文systemd UI命令保留为迁移前及恢复兼容入口。程序源码集中在仓库，配置与会话按实例保存，见 [STRUCTURE.md](STRUCTURE.md)。早期4 GiB迁移记录已归档到 [history/ENVIRONMENT-VALIDATION.md](history/ENVIRONMENT-VALIDATION.md)。
 
 ## 安装
@@ -19,13 +21,13 @@ npm run check:publish
 
 ## 配置与开发实例
 
-默认配置目录 `~/.config/pi-dev`，Web数据与Agent状态在 `~/.local/share/pi-dev/`。可显式设置 `PI_DEV_CONFIG_DIR`、`PI_DEV_STATE_DIR`、`PI_DEV_PORT`、`PI_DEV_CWD`，或使用configure的 `--workspace`、`--state-dir`、`--data-dir`、`--agent-dir`、`--port`、`--profile` 参数。所有实例使用不同的状态目录；8787和dev-con8791不可分配给UI。
+默认配置目录 `~/.config/pi-dev`，Web数据与Agent状态在 `~/.local/share/pi-dev/`。可显式设置 `PI_DEV_CONFIG_DIR`、`PI_DEV_STATE_DIR`、`PI_DEV_PORT`、`PI_DEV_CWD`，或使用configure的 `--workspace`、`--state-dir`、`--data-dir`、`--agent-dir`、`--port`、`--profile` 参数。所有实例使用不同的状态目录；8787和原型预留8791不可分配给UI。
 
 `runtime.root`描述可执行代码来源，`workspaceDir`描述智能体工作区。加载配置时使用当前脚本所在的实际代码根，保留workspace和私有状态；旧配置没有workspaceDir时沿用旧root作为工作区。受管理的扩展包路径随代码目录迁移，用户显式添加的包设置保留。
 
 `npm run dev`自动使用checkout内 `.dev/config`、`.dev/state`、8890后端和5173前端。它不会导入线上模型授权。私有配置由操作人在本地管理；测试自行生成夹具，禁止把实际访问口令或会话内容写入日志。
 
-## systemd维护
+## 旧 UI systemd 兼容维护
 
 ```bash
 node scripts/service.mjs status
@@ -46,7 +48,7 @@ node scripts/service.mjs disable
 
 服务限制涵盖Node及其子进程；构建、终端、语言服务器也可能计入cgroup。V8 old-space只限制JS堆，不包含全部RSS或子进程。不要用增加内存代替前端性能优化。
 
-当前默认保护基线为MemoryHigh1536M、MemoryMax2G、Node old-space1024MiB。安装时可通过 `PI_DEV_HEAP_MB`、`PI_DEV_MEMORY_HIGH`、`PI_DEV_MEMORY_MAX` 明确覆盖；校验要求 heap < MemoryHigh ≤ MemoryMax。在8GiB机器上，可以按实测工作负载选择 `PI_DEV_HEAP_MB=2048 PI_DEV_MEMORY_HIGH=3G PI_DEV_MEMORY_MAX=4G`，但需预留系统和其他应用空间。重新安装unit后才生效，修改这些变量不会阻止stop/disable等维护操作。验收包括 `vmstat`、cgroup memory.events/PSI、任务并发和持续15–30分钟的交互，不能用瞬时空闲数证明容量充足。
+以下默认值仅适用于旧 `pi-web-ui-dev.service` 兼容入口：MemoryHigh1536M、MemoryMax2G、Node old-space1024MiB。当前正式PM2资源基线见 [PM2-PRODUCTION.md](PM2-PRODUCTION.md)，不能混用两者的默认值和停止行为。安装时可通过 `PI_DEV_HEAP_MB`、`PI_DEV_MEMORY_HIGH`、`PI_DEV_MEMORY_MAX` 明确覆盖；校验要求 heap < MemoryHigh ≤ MemoryMax。在8GiB机器上，可以按实测工作负载选择 `PI_DEV_HEAP_MB=2048 PI_DEV_MEMORY_HIGH=3G PI_DEV_MEMORY_MAX=4G`，但需预留系统和其他应用空间。重新安装unit后才生效，修改这些变量不会阻止stop/disable等维护操作。验收包括 `vmstat`、cgroup memory.events/PSI、任务并发和持续15–30分钟的交互，不能用瞬时空闲数证明容量充足。
 
 ## 发布与回滚
 
