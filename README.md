@@ -45,6 +45,8 @@ npm test                  # 根工程/配置/服务/发布测试（含用量口�
 npm run test:unit         # 应用单元测试
 npm run test:channels:unit # 渠道模型/存储/服务/账户单测
 npm run test:channels     # 端到端：双对话双密钥隔离（需先 build）
+npm run test:channels:multi # 端到端：两个客户端（广播一致/冲突可见可恢复/绑定不互相覆盖）
+npm run test:channels:browser # Chromium：渠道选择器/待生效/用量归属的界面断言
 npm run test:smoke        # 自包含协议冒烟
 npm run test:performance  # Chromium，合成数据，无真实模型调用
 npm run check:publish

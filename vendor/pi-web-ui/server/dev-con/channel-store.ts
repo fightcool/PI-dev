@@ -37,6 +37,8 @@ export interface LoadedCatalog {
 	/** 文件内容哈希；文件不存在为 null。写入时用于冲突复核。 */
 	hash: string | null;
 	exists: boolean;
+	/** 文件存在但无法解析（调用方不得用空目录覆盖内存态）。 */
+	parseError?: boolean;
 }
 
 export type SaveResult =
@@ -66,8 +68,8 @@ export function loadCatalog(agentDir: string): LoadedCatalog {
 	try {
 		raw = JSON.parse(text);
 	} catch {
-		// 损坏文件不静默覆盖：标记 exists 让上层先备份/报告。
-		return { catalog: defaultCatalog(), hash, exists: true };
+		// 损坏文件不静默覆盖：标记 parseError 让上层保留内存态并暴露问题。
+		return { catalog: defaultCatalog(), hash, exists: true, parseError: true };
 	}
 	return { catalog: normalizeCatalog(raw), hash, exists: true };
 }

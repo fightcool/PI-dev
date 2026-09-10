@@ -13,7 +13,7 @@
 | --- | --- | --- |
 | 凭据隔离 | 用 SDK 现成的请求级取钥钩子 `Agent.getApiKey` 实现**对话级凭据**；渠道切换不写 `auth.json`、不改共享 `ModelRuntime` 的全局 override | `server/agent-service.ts` `makeConversation()`（注入 `getApiKey`）；`server/dev-con/channel-service.ts#credentialFor`；`tests/channel-isolation-test.mjs` |
 | 切换时点 | SDK 在**每个 provider 请求前**重新解析模型与密钥（`agent-loop.js:191`、`agent-session.js:304`），因此「本轮结束后应用」是可实现的窄边界：空闲立即应用，忙则待生效并在 `agent_end` 落定 | `server/dev-con/channel-model.ts#planSwitch`；`server/agent-service.ts` `agent_end` → `onConversationSettled` |
-| 命令与状态 | 普通渠道选择收敛为单条 `channel_select` 命令（渠道+凭据+模型），服务端串行化 + `configRevision`/`bindingRevision` 复核，回执 `channel_command_result` 带 `phase`（applied/pending/rejected/conflict/superseded） | `server/dev-con/channel-service.ts`；`tests/unit/channel-service.test.ts` |
+| 命令与状态 | 普通渠道选择收敛为单条 `channel_select` 命令（渠道+凭据+模型），服务端串行化 + `configRevision`/`bindingRevision` 复核，回执 `channel_command_result` 带 `phase`（applied/pending/rejected/conflict/superseded）；外部改写文件时冲突可见、刷新后可用新版本重试成功（可恢复） | `server/dev-con/channel-service.ts`（`enqueue` 每条命令先从磁盘对齐、`refresh()`）；`tests/unit/channel-service.test.ts`；`tests/channel-multiclient-test.mjs` |
 | 用量身份 | 只有 `message_end`/`turn_end` 的**终结值**累加，并按消息身份（`responseId` 或 role+timestamp）去重；`message_update` 只更新请求级视图；补齐 `totalTokens`/`cacheRead`/`cacheWrite`/`cost` | `lib/usage/token-usage.mjs`；`tests/token-usage.test.mjs` |
 | 存储与恢复 | 渠道元数据落在 `<agentDir>/dev-con/channels.json` 旁路文件，**只存引用**（providerId/keyName/modelId），原子写 + 哈希复核；密钥仍在 `provider-keys.json`/`auth.json`，模型目录仍在 `models.json` | `server/dev-con/channel-store.ts`；`tests/unit/channel-store.test.ts` |
 | 账户查询 | 首批适配器 = OpenAI 兼容自建网关（`/api/user/self`）+ OpenRouter；**必须由渠道显式配置账户端点**，否则返回 `unsupported`；有界超时/体积上限/禁重定向/限频/缓存/失败保留旧值 | `server/dev-con/channel-accounts.ts`；`tests/unit/channel-accounts.test.ts` |
@@ -32,6 +32,13 @@ runtime.session.agent.getApiKey = (provider) => this.channels.credentialFor(id, 
 ```
 
 `credentialFor` 只认**已生效**绑定（待生效选择不影响本轮在途请求），命中的密钥正文只在该调用内部返回，不进入任何出站消息。未绑定渠道的对话返回 `undefined`，完全保留原有全局解析路径（向后兼容）。
+
+**绑定键的作用域（多端实测修正）**：对话 id 形如 `c1`/`c2`，**只在单个客户端内唯一**（`agent-service.ts#nextConversationId`），而 `channels.json` 是全实例共享的；早期实现直接用 conversationId 当键，两个客户端的「c1」会互相覆盖。现在存储键为 `<clientId>::<conversationId>`，对外（`channel_state`/回执）仍只暴露裸 conversationId。因此：
+
+- **实例级共享**：渠道档案、项目/实例默认、账户状态、`configRevision`——广播给所有客户端（`tests/channel-multiclient-test.mjs` 断言两端 `configRevision` 一致）；
+- **客户端隔离**：对话绑定只发布给所属客户端（A05「多端看到相同有效绑定」在实现上等于「同一端的同一对话在任何时刻看到同一服务端确认状态」+「配置与版本一致」）。
+
+**外部修改/多端并发**：每条命令在执行前都从磁盘重读目录（`enqueue` → `refresh()`），因此另一端刚写入的渠道立即可见；写入前用内容哈希复核，冲突时不覆盖外部编辑、并向所有端重推真实状态；绑定写入采用「重载 + 按 bindingRevision 合并」，两端的绑定共存。文件损坏（解析失败）时保留内存态，不因一次读失败把渠道列表清空。
 
 **边界与取舍**：`session.setModel()` 的 `checkAuth` 仍按共享存储判定，所以对话级凭据要求该服务商**至少已有一把全局密钥**（UI 的密钥列表天然满足）。压缩摘要、视觉桥、目标复核等旁路调用仍读取全局 `ModelRuntime`（已记录，见文末未验证项）。
 
@@ -91,18 +98,22 @@ runtime.session.agent.getApiKey = (provider) => this.channels.credentialFor(id, 
 npm test                          # 171 passed / 0 failed
 
 # 应用单测：渠道模型/存储/服务/账户 + 既有回归
-npm run test:channels:unit        # 40 passed（channel-* 四个文件）
+npm run test:channels:unit        # 44 passed（channel-* 四个文件）
 env -u NODE_ENV npm --prefix vendor/pi-web-ui exec vitest run   # 615 passed / 74 files
-timeout 900 npm run test:smoke    # 39/39 通过（含新增 channel-isolation-test）
+timeout 900 npm run test:smoke    # 41/41 通过（含新增 channel-isolation / channel-multiclient）
 
 # 浏览器回归（Chromium，合成数据，无真实模型）
 npm run test:performance          # login / synthetic-20/200/1000 全部 passed
 
 # 端到端：真实 dist server + 两个对话 + 两把 key + 本地替身模型端点
 npm run build && npm run test:channels
+npm run test:channels:multi       # 两个客户端：广播一致/外部冲突可见且可恢复/绑定互不覆盖
+npm run test:channels:browser     # Chromium：渠道分组/禁用原因/待生效/组合命令版本/用量归属断言
 ```
 
 > 注：`vitest` 必须在 `NODE_ENV` 未设为 `production` 的环境下运行，否则 React 会解析到生产构建，既有的 DOM 用例会以 `act(...) is not supported in production builds` 失败（与本次改动无关）。
+
+`npm run test:channels:browser` 在真实 Chromium（合成快照 + 模拟 WS，无真实服务/模型）中断言：有效渠道与待生效渠道同时可见、底部显示有效渠道、选择器按 4 个渠道分组、停用/服务商缺失渠道带原因且没有可点条目、点击「渠道 A + 密钥 2 + 模型」只发出**一条**带 `expectedConfigRevision`/`expectedBindingRevision` 的 `channel_select`、用量详情按来源/渠道展示且无渠道行为「Unattributed」。
 
 `npm run test:channels` 的断言（全部通过）：渠道保存/回执、会话 A 用**非 active** 的「密钥 1」发请求、会话 B 用「密钥 2」、A 的绑定不被 B 的运行改写、选择渠道不改写 `auth.json`、`channel_state` 发布两个绑定、快照暴露当前对话绑定、未知模型被拒绝且原绑定保留、畸形 WS 帧不杀进程。
 
@@ -112,7 +123,7 @@ npm run build && npm run test:channels
 2. **真实供应商账户查询**：未接入任何真实账号；适配器只对本地替身端点验证。OpenAI 网关的 `quota` 语义（单位/换算）需要真实网关注入后才算验收。
 3. **run 内 turn 边界切换**：SDK 支持但本期不启用（见 §2 取舍）。
 4. **旁路调用的用量归属**：压缩摘要（走 SDK 内部 `completeSimple`，只在 SDK 会话统计里可见）、视觉桥（usage 被丢弃）、目标复核（独立 `ModelRuntime`）尚未接入归属与来源标注。
-5. **多客户端并发编辑渠道配置**：已实现哈希冲突检测与合并写入，但未做两个真实浏览器的并发用例。
-6. **渠道界面的浏览器断言**：浏览器回归（`test:performance`）只覆盖登录与合成会话渲染，未针对渠道选择器/待生效提示/账户面板写断言；桌面与移动端的人工验收（A11）仍未做。
+5. **多客户端并发编辑渠道配置**：已实现「每条命令先从磁盘对齐 + 哈希冲突检测 + 合并写入」，并有双客户端端到端用例（`tests/channel-multiclient-test.mjs`）；仍未经两个真实浏览器的人工并发验证。
+6. **渠道界面的验收范围**：已有 Chromium 断言（`npm run test:channels:browser`）覆盖渠道分组、禁用原因、有效/待生效提示、底部渠道、组合命令携带的 revision、用量归属与「未归属」标记；**未**断言渠道设置页的增删改与账户面板，也**未**做移动端视口与真实设备人工验收。
 7. **非中英文语言包的渠道文案**：新增 88 个 key 已按中文顺序填入 8 个语言包以保证一一对应，但暂时使用英文原文作为占位译文（运行时行为与缺 key 回落英文一致）；正式译文待补。
 8. **既有认证面加固**（recovery 限频、CSRF、query token、health 信息）：见 §7，需独立排期。

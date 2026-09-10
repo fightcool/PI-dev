@@ -5207,6 +5207,8 @@ export class ClientSession {
 	private makeChannelHost(agentDir: string): ChannelServiceHost {
 		return {
 			agentDir,
+			// 对话 id 只在客户端内唯一（c1/c2…），绑定存储键需要 clientId 防碰撞。
+			clientId: this.clientId,
 			emit: (msg) => this.emit(msg),
 			broadcast: (msg) => (this.onChannelBroadcast ? this.onChannelBroadcast(msg) : this.emit(msg)),
 			flushSnapshot: () => this.flushSnapshot(),
@@ -5263,8 +5265,10 @@ export class ClientSession {
 		return this.channels.bindingViewMessage(this.activeId);
 	}
 
-	/** list_channels：只回本端当前状态（不广播，避免多端刷屏）。 */
+	/** list_channels：只回本端当前状态（不广播，避免多端刷屏）。先从磁盘对齐，
+	 *  否则另一端/外部修改后本端会一直回旧值且无法从冲突中恢复。 */
 	pushChannelState(): void {
+		this.channels.refresh();
 		this.emit(this.channels.stateMessage());
 	}
 

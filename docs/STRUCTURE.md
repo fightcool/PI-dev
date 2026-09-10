@@ -38,6 +38,8 @@ Node `#usage` / `#governance` package imports 让源码与编译产物引用同�
 - `npm run test:performance`：模拟HTTP/WS的浏览器回归；不接触真实服务或模型。
 - `npm run test:channels:unit`：渠道模型/存储/服务/账户的纯逻辑单测。
 - `npm run test:channels`：端到端双对话双密钥隔离验证（先 `npm run build`，使用本地替身模型端点）。
+- `npm run test:channels:multi`：端到端多客户端验证（广播一致、外部修改冲突可恢复、绑定键按 clientId 隔离）。
+- `npm run test:channels:browser`：真实 Chromium 下的渠道界面断言（合成数据 + 模拟 WS）。
 - `npm run check:publish`：交付文件及常见秘密检查。
 
 开发数据 `.dev/`、依赖、构建输出与Python虚拟环境均不进入Git。测试夹具自行生成配置及测试令牌；测试不能调用 `loadConfig()` 去读取操作人的实际凭据。

@@ -9,13 +9,13 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { ServerMessage } from "../../server/protocol.js";
 import { ChannelService, type ChannelServiceHost } from "../../server/dev-con/channel-service.js";
 import { loadCatalog, channelStorePath } from "../../server/dev-con/channel-store.js";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 type Receipt = Extract<ServerMessage, { type: "channel_command_result" }>;
 type State = Extract<ServerMessage, { type: "channel_state" }>;
 
 /** 假宿主：两个对话 + 一个 provider + 两把命名密钥。 */
-function makeHost(dir: string) {
+function makeHost(dir: string, clientId = "test-client") {
 	const emitted: ServerMessage[] = [];
 	const busy = new Set<string>();
 	const queued = new Set<string>();
@@ -25,6 +25,7 @@ function makeHost(dir: string) {
 	const applied: { conversationId: string; modelId: string }[] = [];
 	const host: ChannelServiceHost = {
 		agentDir: dir,
+		clientId,
 		emit: (msg) => emitted.push(msg),
 		broadcast: (msg) => emitted.push(msg),
 		flushSnapshot: () => undefined,
@@ -296,5 +297,67 @@ describe("channel service — defaults, persistence and requests", () => {
 		const text = readFileSync(channelStorePath(dir), "utf8");
 		expect(text).not.toContain("sk-one");
 		expect(text).not.toContain("apiKey");
+	});
+
+	it("surfaces an external file change as a conflict and recovers after refresh (A02)", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
+		expect(h.lastReceipt("s")?.configRevision).toBe(1);
+
+		// 外部工具直接改了 channels.json（另一个进程/人手编辑）。
+		const onDisk = JSON.parse(readFileSync(channelStorePath(dir), "utf8"));
+		onDisk.channels.push(channelDraft("ch-ext", null));
+		onDisk.configRevision = 7;
+		writeFileSync(channelStorePath(dir), JSON.stringify(onDisk, null, 2) + "\n");
+
+		// 本端用旧版本提交 → 必须 conflict，且不得静默覆盖外部编辑。
+		await svc.saveChannel({ commandId: "stale", channel: channelDraft("ch-2", null), expectedConfigRevision: 1 });
+		expect(h.lastReceipt("stale")).toMatchObject({ ok: false, phase: "conflict" });
+		expect(loadCatalog(dir).catalog.channels.map((c) => c.id).sort()).toEqual(["ch-1", "ch-ext"]);
+
+		// 收到 conflict 后服务已经对齐磁盘，再用新版本重试就能成功（可恢复）。
+		const fresh = h.lastState();
+		expect(fresh?.configRevision).toBe(7);
+		await svc.saveChannel({
+			commandId: "retry",
+			channel: channelDraft("ch-2", null),
+			expectedConfigRevision: h.lastReceipt("stale")?.configRevision,
+		});
+		expect(h.lastReceipt("retry")?.ok).toBe(true);
+		expect(loadCatalog(dir).catalog.channels.map((c) => c.id).sort()).toEqual(["ch-1", "ch-2", "ch-ext"]);
+	});
+
+	it("keeps bindings of two clients apart even when both use conversation id c1", async () => {
+		const a = makeHost(dir, "client-a");
+		const svcA = new ChannelService(a.host);
+		await svcA.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
+		const b = makeHost(dir, "client-b");
+		const svcB = new ChannelService(b.host);
+		// 两个客户端都会把自己的第一个对话叫 c1 —— 存储键必须按 clientId 分开。
+		await svcA.select({ commandId: "a1", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m1" } });
+		await svcB.select({ commandId: "b1", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m2" } });
+		const catalog = loadCatalog(dir).catalog;
+		expect(catalog.bindings["client-a::c1"]?.modelId).toBe("main/m1");
+		expect(catalog.bindings["client-b::c1"]?.modelId).toBe("main/m2");
+		// 每端只看到自己的对话绑定，且 conversationId 已剥掉前缀。
+		expect(svcA.bindingViewMessage("c1").effective?.modelId).toBe("main/m1");
+		expect(svcB.bindingViewMessage("c1").effective?.modelId).toBe("main/m2");
+		expect(a.lastState()?.bindings.map((x) => x.conversationId)).toEqual(["c1"]);
+		expect(a.lastState()?.bindings.map((x) => x.modelId)).toEqual(["main/m1"]);
+	});
+
+	it("merges bindings written by another client instead of clobbering them", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
+		// 另一端（独立实例，共享同一个 agentDir）先写了自己的绑定。
+		const other = new ChannelService(makeHost(dir, "other-client").host);
+		await other.select({ commandId: "other", conversationId: "c2", selection: { channelId: "ch-1", modelId: "main/m1" } });
+		// 本端随后写自己的绑定 → 两边的绑定都要在文件里。
+		await svc.select({ commandId: "mine", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m2" } });
+		const catalog = loadCatalog(dir).catalog;
+		expect(catalog.bindings["other-client::c2"]?.modelId).toBe("main/m1");
+		expect(catalog.bindings["test-client::c1"]?.modelId).toBe("main/m2");
 	});
 });

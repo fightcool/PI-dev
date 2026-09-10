@@ -44,12 +44,14 @@ import {
 	type CredentialRef,
 	type RequestBindingSnapshot,
 } from "./channel-model.js";
-import { catalogHash, loadCatalog, saveCatalog } from "./channel-store.js";
+import { loadCatalog, saveCatalog } from "./channel-store.js";
 import type { AccountRegistry } from "./channel-accounts.js";
 
 /** 渠道服务依赖的宿主能力（由 ClientSession 实现）。 */
 export interface ChannelServiceHost {
 	agentDir: string;
+	/** 本会话所属客户端 id：对话 id 只在客户端内唯一（c1/c2…），因此绑定键必须带 clientId。 */
+	clientId: string;
 	emit: (msg: ServerMessage) => void;
 	/** 跨客户端广播（多端看到同一有效绑定）。 */
 	broadcast: (msg: ServerMessage) => void;
@@ -110,6 +112,28 @@ export class ChannelService {
 		this.bindingRevision = Math.max(0, ...Object.values(this.catalog.bindings).map((b) => b.bindingRevision ?? 0));
 	}
 
+	// -- conversation binding keys ---------------------------------------------
+	// 对话 id 形如 c1/c2，只在单个客户端内唯一；而 channels.json 是全实例共享的。
+	// 若直接用 conversationId 当键，两个客户端的「c1」会互相覆盖（实测），所以存储键
+	// 用 "<clientId>::<conversationId>"，对外（channel_state/回执）仍只暴露裸 conversationId。
+
+	/** 存储键（仅本 client 的对话会写入该键空间）。 */
+	private key(conversationId: string): string {
+		return `${this.host.clientId}::${conversationId}`;
+	}
+
+	/** 本 client 对应 conversationId 的存储绑定。 */
+	private storedBinding(conversationId: string): ChannelBinding | undefined {
+		return this.catalog.bindings[this.key(conversationId)];
+	}
+
+	/** 存储键 → 对外视图（剥掉 clientId 前缀；不是本 client 的返回 null）。 */
+	private ownBindingView(conversationId: string, binding: ChannelBinding): Omit<ChannelBinding, "conversationId"> & { conversationId: string } | null {
+		const prefix = `${this.host.clientId}::`;
+		if (!conversationId.startsWith(prefix)) return null;
+		return { ...binding, conversationId: conversationId.slice(prefix.length) };
+	}
+
 	// -- state -----------------------------------------------------------------
 
 	/**
@@ -117,7 +141,7 @@ export class ChannelService {
 	 * 项目/实例默认（§4：修改默认不悄悄重绑已运行对话）。
 	 */
 	effectiveSelectionFor(conversationId: string): { selection: ChannelSelection | null; source: BindingSource } {
-		const stored = this.catalog.bindings[conversationId];
+		const stored = this.storedBinding(conversationId);
 		if (stored?.channelId) return { selection: toSelection(stored), source: "conversation" };
 		if (this.host.conversationHasMessages(conversationId)) return { selection: null, source: "none" };
 		const cwd = this.host.cwd();
@@ -146,7 +170,7 @@ export class ChannelService {
 	bindingSnapshotFor(conversationId: string): RequestBindingSnapshot | null {
 		const { selection } = this.effectiveSelectionFor(conversationId);
 		if (!selection) return null;
-		const stored = this.catalog.bindings[conversationId];
+		const stored = this.storedBinding(conversationId);
 		const channel = this.catalog.channels.find((c) => c.id === selection.channelId);
 		return {
 			channelId: selection.channelId,
@@ -161,7 +185,7 @@ export class ChannelService {
 
 	/** 该对话是否已有显式渠道绑定（未发言对话不应被旧的“项目默认模型”覆盖）。 */
 	hasConversationBinding(conversationId: string): boolean {
-		return Boolean(this.catalog.bindings[conversationId]?.channelId);
+		return Boolean(this.storedBinding(conversationId)?.channelId);
 	}
 
 	/**
@@ -169,12 +193,12 @@ export class ChannelService {
 	 * 否则新对话会只剩下模型而没有渠道/凭据归属。
 	 */
 	inheritBinding(fromConversationId: string, toConversationId: string): void {
-		const source = this.catalog.bindings[fromConversationId];
-		if (!source || source.conversationId === toConversationId) return;
-		if (this.catalog.bindings[toConversationId]?.channelId) return;
+		const source = this.storedBinding(fromConversationId);
+		if (!source || fromConversationId === toConversationId) return;
+		if (this.storedBinding(toConversationId)?.channelId) return;
 		this.bindingRevision += 1;
 		this.commitBindings({
-			[toConversationId]: makeBinding({
+			[this.key(toConversationId)]: makeBinding({
 				conversationId: toConversationId,
 				selection: toSelection(source),
 				configRevision: this.catalog.configRevision,
@@ -186,7 +210,7 @@ export class ChannelService {
 
 	/** 有效/待生效绑定的只读视图（快照 UI 用）。 */
 	bindingViewFor(conversationId: string): { effective: ChannelBinding | null; pending: ChannelBinding | null; source: BindingSource } {
-		const stored = this.catalog.bindings[conversationId] ?? null;
+		const stored = this.storedBinding(conversationId) ?? null;
 		const { selection, source } = this.effectiveSelectionFor(conversationId);
 		const effective =
 			stored ??
@@ -250,7 +274,10 @@ export class ChannelService {
 			channels: this.channelViews(),
 			instanceDefault: this.catalog.instanceDefault,
 			projectDefault: this.catalog.projectDefaults[this.host.cwd()] ?? null,
-			bindings: Object.values(this.catalog.bindings).map((b) => this.decorate(b)),
+			bindings: Object.entries(this.catalog.bindings)
+				.map(([id, b]) => this.ownBindingView(id, b))
+				.filter((b): b is NonNullable<typeof b> => b !== null)
+				.map((b) => this.decorate(b)),
 			pending: [...this.pending.values()].map((p) => ({
 				conversationId: p.conversationId,
 				...toSelection(p.selection),
@@ -268,9 +295,16 @@ export class ChannelService {
 
 	// -- plumbing --------------------------------------------------------------
 
-	/** 所有变更串行化：服务端排序保证旧回执不可能晚于新状态。 */
+	/**
+	 * 所有变更串行化：服务端排序保证旧回执不可能晚于新状态，且每条命令都**先从磁盘对齐**
+	 * ——本端内存可能是别的客户端写入前的快照（多端下命令会以旧状态为准而误报「不存在」）。
+	 */
 	private enqueue<T>(fn: () => T | Promise<T>): Promise<T> {
-		const next = this.queue.then(fn, fn);
+		const task = async (): Promise<T> => {
+			this.refresh();
+			return fn();
+		};
+		const next = this.queue.then(task, task);
 		this.queue = next.catch(() => undefined);
 		return next;
 	}
@@ -308,6 +342,8 @@ export class ChannelService {
 			error: what === "channel" ? "渠道配置已被其他端修改，请刷新后重试" : "对话绑定已被其他端修改，请刷新后重试",
 			errorEn: what === "channel" ? "Channel config changed elsewhere; refresh and retry" : "Conversation binding changed elsewhere; refresh and retry",
 		});
+		// 冲突后把真实状态推给所有端，避免 UI 停在旧值上无法恢复（A02）。
+		this.pushState();
 	}
 
 	// -- commands --------------------------------------------------------------
@@ -330,7 +366,7 @@ export class ChannelService {
 				this.conflictReceipt(input.commandId, "channel");
 				return;
 			}
-			if (!checkBindingRevision(this.catalog.bindings[conversationId]?.bindingRevision ?? 0, input.expectedBindingRevision).ok) {
+			if (!checkBindingRevision(this.storedBinding(conversationId)?.bindingRevision ?? 0, input.expectedBindingRevision).ok) {
 				this.conflictReceipt(input.commandId, "binding");
 				return;
 			}
@@ -393,7 +429,7 @@ export class ChannelService {
 			bindingRevision: this.bindingRevision,
 			now: Date.now(),
 		});
-		this.commitBindings({ [conversationId]: binding });
+		this.commitBindings({ [this.key(conversationId)]: binding });
 		this.receipt({ commandId, ok: true, phase: "applied", conversationId, channelId: selection.channelId, binding });
 		this.pushState();
 	}
@@ -419,13 +455,13 @@ export class ChannelService {
 				this.receipt({ commandId: input.commandId, ok: false, phase: "rejected", conversationId, error: "对话不存在", errorEn: "Conversation not found" });
 				return;
 			}
-			if (!checkBindingRevision(this.catalog.bindings[conversationId]?.bindingRevision ?? 0, input.expectedBindingRevision).ok) {
+			if (!checkBindingRevision(this.storedBinding(conversationId)?.bindingRevision ?? 0, input.expectedBindingRevision).ok) {
 				this.conflictReceipt(input.commandId, "binding");
 				return;
 			}
 			this.pending.delete(conversationId);
 			this.bindingRevision += 1;
-			this.commitBindings({ [conversationId]: null });
+			this.commitBindings({ [this.key(conversationId)]: null });
 			this.receipt({ commandId: input.commandId, ok: true, phase: "applied", conversationId });
 			this.pushState();
 		});
@@ -500,7 +536,10 @@ export class ChannelService {
 			const { catalog, detachedConversations } = detachChannel(this.catalog, input.channelId);
 			const next: ChannelCatalog = { ...catalog, configRevision: this.catalog.configRevision + 1 };
 			if (!this.commitConfig(next)) return this.conflictReceipt(input.commandId, "channel");
-			for (const id of detachedConversations) this.pending.delete(id);
+			for (const id of detachedConversations) {
+				const prefix = `${this.host.clientId}::`;
+				if (id.startsWith(prefix)) this.pending.delete(id.slice(prefix.length));
+			}
 			this.bindingRevision += 1;
 			this.receipt({ commandId: input.commandId, ok: true, phase: "applied", channelId: input.channelId });
 			this.pushState();
@@ -637,16 +676,39 @@ export class ChannelService {
 		this.pending.delete(conversationId);
 	}
 
+	/**
+	 * 重新从磁盘读取渠道目录（多端/外部编辑后刷新）。
+	 * 保留内存中更高的绑定版本（本端刚写的可能还没进文件）与待生效选择；
+	 * 不改变 bindingRevision 的单调性。冲突后可恢复的关键：刷新一次就能拿到别人写入的
+	 * configRevision，用新版本重试即能成功（§4「已知外部修改不能被静默覆盖」+ 可恢复）。
+	 */
+	refresh(): void {
+		const loaded = loadCatalog(this.host.agentDir);
+		// 文件损坏时保留内存态（不得因一次读写失误把渠道列表清空）。
+		if (loaded.parseError) return;
+		const merged: Record<string, ChannelBinding> = { ...loaded.catalog.bindings };
+		for (const [id, binding] of Object.entries(this.catalog.bindings)) {
+			const other = merged[id];
+			if (!other || (binding.bindingRevision ?? 0) >= (other.bindingRevision ?? 0)) merged[id] = binding;
+		}
+		this.catalog = { ...loaded.catalog, bindings: pruneBindings(merged) };
+		this.hash = loaded.hash;
+		this.bindingRevision = Math.max(
+			this.bindingRevision,
+			...Object.values(this.catalog.bindings).map((b) => b.bindingRevision ?? 0),
+		);
+	}
+
 	// -- persistence -----------------------------------------------------------
 
 	/**
 	 * 渠道/默认值写入：先落盘成功再提交内存。
-	 * 失败（外部修改/不可写）时内存保持原状，由调用方回 conflict 回执。
+	 * 失败（外部修改/不可写）时**重新对齐磁盘状态**，让用户刷新后能用新版本重试。
 	 */
 	private commitConfig(next: ChannelCatalog): boolean {
 		const result = saveCatalog(this.host.agentDir, next, this.hash);
 		if (!result.ok) {
-			this.hash = catalogHash(this.host.agentDir);
+			this.refresh();
 			return false;
 		}
 		this.catalog = next;

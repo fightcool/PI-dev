@@ -28,6 +28,8 @@
     "diagnostics:usage": "node scripts/diagnostics/analyze-usage.mjs",
     "test:channels:unit": "npm --prefix vendor/pi-web-ui run test:channels:unit",
     "test:channels": "npm --prefix vendor/pi-web-ui run test:channels",
+    "test:channels:multi": "npm --prefix vendor/pi-web-ui run test:channels:multi",
+    "test:channels:browser": "node tests/channels/browser-ui.mjs",
     "release:check": "node scripts/release.mjs"
   },
   "dependencies": {
