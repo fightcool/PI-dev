@@ -19,6 +19,7 @@
 | [P0 技术验证结论](P0-VERIFICATION.md) | 第9节七项的实现结论、证据与未验证项 | 否，只记录结论与证据 |
 | [CONTEXT.md](../CONTEXT.md) | 领域词汇定义 | 否，不放排期和架构决策 |
 | [STRUCTURE.md](STRUCTURE.md) | 目录、源码/数据、依赖及工程入口边界 | 否，实施时遵循其工程约束 |
+| [P0 技术验证结论](P0-VERIFICATION.md) §7 | 入口安全与实际加固记录 | 否，结论与证据 |
 | [OPERATIONS.md](OPERATIONS.md)、[PM2-PRODUCTION.md](PM2-PRODUCTION.md)、[PM2-SHADOW.md](PM2-SHADOW.md) | 安装、正式运行和候选发布规则 | 否，不能据此自动部署 |
 | [历史材料索引](history/dev-con/README.md) | 前期评估、架构讨论、原型与当时验证 | 否，不得据此恢复旧范围 |
 | 原 SYSTEM-ARCHITECTURE-REVIEW / ASSESSMENT / IMPLEMENTATION 路径 | 旧链接兼容入口 | 否，仅跳转到本文件或归档 |
