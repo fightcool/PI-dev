@@ -19,8 +19,10 @@ const RELEASES = join(BASE, "releases");
 const CURRENT = join(BASE, "current");
 
 const commit = process.argv[2];
-if (!commit || !/^[a-f0-9]{7,40}$/.test(commit)) throw new Error("用法：prepare-release.mjs <commit> [releaseId]");
-const resolved = execFileSync("git", ["rev-parse", commit], { cwd: DEV_ROOT, encoding: "utf8" }).trim();
+if (!commit) throw new Error("用法：prepare-release.mjs <commit|ref> [releaseId]");
+// 允许 HEAD / 分支名等 ref：先解析再使用（解析失败即报错退出）。
+const resolved = execFileSync("git", ["rev-parse", `${commit}^{commit}`], { cwd: DEV_ROOT, encoding: "utf8" }).trim();
+if (!/^[a-f0-9]{40}$/.test(resolved)) throw new Error(`无法解析为提交：${commit}`);
 const id = process.argv[3] ?? resolved.slice(0, 12);
 const target = join(RELEASES, id);
 if (existsSync(target)) throw new Error(`release 已存在：${id}（先确认是否就是要用的版本）`);
