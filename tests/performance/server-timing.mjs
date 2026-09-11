@@ -54,6 +54,13 @@ mkdirSync(workspace, { recursive: true });
 const big = writeSyntheticSession({ agentDir, cwd: workspace, messages: BIG_MESSAGES, id: "big" });
 const small = writeSyntheticSession({ agentDir, cwd: workspace, messages: SMALL_MESSAGES, id: "small" });
 
+/** A full snapshot carries the whole array; a delta carries only the appended tail. */
+function messageCountOf(msg) {
+	if (Array.isArray(msg.state?.messages)) return msg.state.messages.length;
+	if (Array.isArray(msg.appended)) return `+${msg.appended.length}`;
+	return "?";
+}
+
 const timingLines = [];
 const server = spawn(process.execPath, ["--import", require.resolve("tsx"), "server/index.ts"], {
 	cwd: APP_ROOT,
@@ -206,6 +213,20 @@ try {
 	send({ type: "switch_session", path: smallTarget?.path ?? big });
 	await waitForSnapshot();
 	record("switch_session 重复目标（no-op）", performance.now() - tNoop, await nextTiming());
+
+	// ---- 5) project list scan is cached (the first call is what EVERY call used to cost) ----
+	const firstProjects = performance.now();
+	send({ type: "list_projects" });
+	await waitFor("projects");
+	const firstMs = performance.now() - firstProjects;
+	const secondProjects = performance.now();
+	send({ type: "list_projects" });
+	await waitFor("projects");
+	record(
+		"list_projects 首次（改前每次都是这个成本）",
+		firstMs,
+		`同一会话内二次 = ${Math.round(performance.now() - secondProjects)}ms`,
+	);
 
 	console.log("\n── 汇总 ──");
 	for (const row of rows) console.log(`${String(Math.round(row.ms)).padStart(7)}ms  ${row.name}`);

@@ -4702,12 +4702,32 @@ export class ClientSession {
 
 	private readonly sessionHistory = new SessionHistoryCache((cwd) => SessionManager.list(cwd, piSessionsRoot()));
 
+	/** Every-project scan for the project switcher. `listAll` parses EVERY persisted
+	 *  transcript (measured ~0.25s for 9 files / 16 MiB) and used to run uncached on
+	 *  every attach and every cwd change.
+	 *  @PERF TTL 30s：会话增删/改名/跨端完成都会经 invalidateSessionInfos 立即失效，
+	 *  这个窗口只用来吸收同一次交互内的重复请求；值取长是因为列表本身只用于项目切换
+	 *  器（粗粒度），而每次重算都是全量磁盘解析。 */
+	private readonly projectSessions = new SessionHistoryCache(
+		() => SessionManager.listAll(piSessionsRoot()),
+		30_000,
+	);
+
+	/** Fixed key: the all-projects scan ignores cwd (see projectSessions). */
+	private static readonly ALL_PROJECTS_KEY = "*";
+
 	private loadSessionInfos(cwd = this.cwd): Promise<SessionInfo[]> {
 		return this.sessionHistory.get(cwd);
 	}
 
+	private loadAllSessionInfos(): Promise<SessionInfo[]> {
+		return this.projectSessions.get(ClientSession.ALL_PROJECTS_KEY);
+	}
+
 	private invalidateSessionInfos(cwd = this.cwd): void {
 		this.sessionHistory.invalidate(cwd);
+		// The all-projects set is a superset — any per-project change affects it.
+		this.projectSessions.invalidate(ClientSession.ALL_PROJECTS_KEY);
 	}
 
 	/** Push the persisted session list to the client (client-requested). */
@@ -5333,7 +5353,7 @@ export class ClientSession {
 			const removedProjects = new Set(this.stateStore.getRemovedProjects(this.clientId));
 			const map = new Map<string, number>();
 			for (const p of saved.projects) map.set(p.path, p.lastUsed);
-			const all = await SessionManager.listAll(piSessionsRoot());
+			const all = await this.loadAllSessionInfos();
 			for (const s of all) {
 				if (s.cwd) {
 					const t = s.modified.getTime();

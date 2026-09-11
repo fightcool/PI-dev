@@ -103,6 +103,15 @@ describe("SessionHistoryCache", () => {
 		expect(await cache.get("/b")).toEqual(infos("b"));
 	});
 
+	it("retains several projects so switching back does not rescan", async () => {
+		const load = vi.fn().mockImplementation((cwd: string) => Promise.resolve(infos(cwd)));
+		const cache = new SessionHistoryCache(load);
+		await cache.get("/a");
+		await cache.get("/b");
+		expect(await cache.get("/a")).toEqual(infos("/a"));
+		expect(load).toHaveBeenCalledTimes(2);
+	});
+
 	it("invalidating an unrelated project preserves the current cached result", async () => {
 		const load = vi.fn().mockResolvedValue(infos("a"));
 		const cache = new SessionHistoryCache(load);
