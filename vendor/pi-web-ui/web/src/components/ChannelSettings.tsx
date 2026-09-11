@@ -48,10 +48,21 @@ function AccountStatusLine({ status }: { status: UiAccountStatus | undefined }) 
 	if (status.checkedAt !== undefined)
 		bits.push(`${t("channelAccountCheckedAt")} ${new Date(status.checkedAt).toLocaleString()}`);
 	if (status.status === "stale") bits.push(t("channelAccountStaleTip"));
+	// 多币种明细（如 DeepSeek 官方可能同时给 CNY/USD）：逐条展示，不做无依据相加。
+	const breakdown = status.breakdown ?? [];
 	return (
 		<span className={`chan-acct ${status.status}`} title={status.error}>
 			{label}
 			{bits.length > 0 && ` · ${bits.join(" · ")}`}
+			{breakdown.length > 1 &&
+				breakdown.map((entry) => (
+					<span key={entry.currency} className="chan-acct-detail">
+						{" · "}
+						{entry.currency} {entry.total}
+						{(entry.granted > 0 || entry.toppedUp > 0) && `（${t("channelAccountGranted")} ${entry.granted} / ${t("channelAccountToppedUp")} ${entry.toppedUp}）`}
+					</span>
+				))}
+			{status.note && <span className="chan-acct-note"> · {status.note}</span>}
 		</span>
 	);
 }

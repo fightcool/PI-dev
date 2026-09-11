@@ -376,7 +376,7 @@ try {
 			const diagText = await resources.first().innerText();
 			check(
 				"diagnostics summary shows commit/protocol/unit and the privacy note",
-				diagText.includes("protocol v20") && diagText.includes("pi-dev-pm2.service=active") && diagText.includes("metadata only"),
+				diagText.includes("protocol v21") && diagText.includes("pi-dev-pm2.service=active") && diagText.includes("metadata only"),
 				diagText.split("\n").slice(-4).join(" / "),
 			);
 			sent = [];

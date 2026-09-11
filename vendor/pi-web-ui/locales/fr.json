@@ -1042,6 +1042,8 @@
     "channelAccountFailed": "Échec de la requête",
     "channelAccountStale": "Obsolète",
     "channelAccountStaleTip": "La dernière requête a échoué ; ci-dessous figure le dernier résultat réussi (l'heure est celle du dernier succès)",
+    "channelAccountGranted": "offert",
+    "channelAccountToppedUp": "rechargé",
     "channelAccountCheckedAt": "Interrogé à",
     "channelAccountBalance": "Solde",
     "channelAccountQuota": "Quota",

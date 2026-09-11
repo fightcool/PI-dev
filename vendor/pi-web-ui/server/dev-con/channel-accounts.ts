@@ -45,6 +45,10 @@ export interface AccountQueryResult {
 	/** 上次成功时间（失败时用于显示「旧值」）。 */
 	staleSince?: number;
 	error?: string;
+	/** 多币种明细（供应商可能返回多个币种）：逐条展示，不做无依据相加。 */
+	breakdown?: { currency: string; total: number; granted: number; toppedUp: number }[];
+	/** 供应商标注的状态说明（例如余额不足以调用）。 */
+	note?: string;
 }
 
 /** 供应商账户适配器契约。 */
@@ -162,6 +166,60 @@ export const openAiGatewayAdapter: AccountAdapter = {
 	},
 };
 
+/**
+ * DeepSeek 官方余额查询（官方文档：API Reference → Get User Balance）。
+ *   GET {base}/user/balance          base 默认 https://api.deepseek.com
+ *   Authorization: Bearer <api key>
+ *   200 → { is_available: boolean, balance_infos: [ { currency: "CNY"|"USD",
+ *            total_balance: string, granted_balance: string, topped_up_balance: string } ] }
+ * 诚实处理：金额是**字符串**（需转数字并保留两位精度）；可能返回多个币种（分别列出，不相加）；
+ * `is_available=false` 表示「余额不足以继续调用」，此时查询本身是成功的，用 note 标注而不是当作失败。
+ */
+export const deepSeekAdapter: AccountAdapter = {
+	kind: "deepseek",
+	match: (channel) => accountConfig(channel)?.kind === "deepseek",
+	async query({ channel, apiKey, signal }) {
+		const cfg = accountConfig(channel);
+		const base = (cfg?.url ?? "https://api.deepseek.com").replace(/\/+$/, "");
+		const res = await fetchJson(fetch, `${base}/user/balance`, { method: "GET", headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" } }, signal);
+		if (!res.ok) return { status: "failed", error: res.error };
+		const body = (res.body ?? {}) as { is_available?: unknown; balance_infos?: unknown };
+		const infos = Array.isArray(body.balance_infos) ? body.balance_infos : [];
+		const toNumber = (value: unknown): number | undefined => {
+			const n = typeof value === "string" ? Number(value.trim()) : typeof value === "number" ? value : Number.NaN;
+			return Number.isFinite(n) ? n : undefined;
+		};
+		const entries = infos
+			.map((raw) => {
+				const info = (raw ?? {}) as Record<string, unknown>;
+				const currency = typeof info.currency === "string" ? info.currency.trim() : "";
+				const total = toNumber(info.total_balance);
+				if (!currency || total === undefined) return null;
+				return {
+					currency,
+					total,
+					granted: toNumber(info.granted_balance) ?? 0,
+					toppedUp: toNumber(info.topped_up_balance) ?? 0,
+				};
+			})
+			.filter((entry): entry is { currency: string; total: number; granted: number; toppedUp: number } => entry !== null);
+		if (entries.length === 0) return { status: "failed", error: "账户接口未返回可识别的余额字段（balance_infos 为空或缺少 total_balance）" };
+		// 主条目：优先匹配渠道配置的币种，否则取第一条（官方通常只返回账户所属币种）。
+		const preferred = cfg?.unit ? entries.find((entry) => entry.currency === cfg.unit) : undefined;
+		const primary = preferred ?? entries[0];
+		const insufficient = body.is_available === false;
+		return {
+			status: "ok",
+			unit: primary.currency,
+			balance: primary.total,
+			quota: { limit: primary.total, remaining: primary.total, unit: primary.currency },
+			breakdown: entries,
+			note: insufficient ? "is_available=false：官方标注余额不足以继续调用" : undefined,
+			checkedAt: Date.now(),
+		};
+	},
+};
+
 /** OpenRouter：/api/v1/key 给出该 key 的限额与用量，/api/v1/credits 给出账户余额。 */
 export const openRouterAdapter: AccountAdapter = {
 	kind: "openrouter",
@@ -211,7 +269,7 @@ export class AccountRegistry {
 	private readonly inFlight = new Set<string>();
 
 	constructor(opts: AccountRegistryOptions = {}) {
-		this.adapters = opts.adapters ?? [openAiGatewayAdapter, openRouterAdapter];
+		this.adapters = opts.adapters ?? [deepSeekAdapter, openAiGatewayAdapter, openRouterAdapter];
 		this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 		this.cacheTtlMs = opts.cacheTtlMs ?? CACHE_TTL_MS;
 		this.minIntervalMs = opts.minIntervalMs ?? MIN_INTERVAL_MS;
@@ -233,6 +291,8 @@ export class AccountRegistry {
 			checkedAt: entry.checkedAt,
 			staleSince: entry.status === "failed" ? entry.staleSince : undefined,
 			error: entry.error,
+			breakdown: entry.breakdown,
+			note: entry.note,
 		}));
 	}
 
@@ -275,6 +335,8 @@ export class AccountRegistry {
 				accountRef,
 				kind: adapter.kind,
 				status: result.status,
+				breakdown: result.breakdown,
+				note: result.note,
 				scope: result.scope,
 				unit: result.unit,
 				balance: result.balance,

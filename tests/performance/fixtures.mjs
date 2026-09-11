@@ -76,8 +76,8 @@ export function socketReply(message, state) {
         thresholds: { warnPercent: 85, criticalPercent: 90, cooldownMs: 3600000 },
         bundle: {
           generatedAt: 1700000000000,
-          app: { node: 'v22.19.0', pid: 4242, uptimeSec: 3600, engine: 'pi', protocolVersion: 20 },
-          release: { commit: 'a'.repeat(40), appVersion: '0.72.0', protocolVersion: 20, builtAt: '2026-09-11T00:00:00Z', source: 'a'.repeat(40) },
+          app: { node: 'v22.19.0', pid: 4242, uptimeSec: 3600, engine: 'pi', protocolVersion: 21 },
+          release: { commit: 'a'.repeat(40), appVersion: '0.72.0', protocolVersion: 21, builtAt: '2026-09-11T00:00:00Z', source: 'a'.repeat(40) },
           instance: { configDir: '/synthetic/cfg', dataDir: '/synthetic/data', agentDir: '/synthetic/agent', workspaceDir: '/synthetic', host: '127.0.0.1', port: 8788, profile: 'lean' },
           units: [{ unit: 'pi-dev-pm2.service', active: 'active', enabled: 'enabled' }],
           resources: { at: 1700000000000, host: { hostname: 'synthetic-host', platform: 'linux', uptimeSec: 1, cpuCount: 4, loadAvg: [0, 0, 0], cpuPercent: 1, mem: { totalBytes: 1000, usedBytes: 100, availableBytes: 900, swapTotalBytes: 0, swapUsedBytes: 0 } }, app: { pid: 4242, node: 'v22.19.0', uptimeSec: 1, rssBytes: 1, heapUsedBytes: 1, heapTotalBytes: 2, externalBytes: 0, cgroup: { currentBytes: null, maxBytes: null, highBytes: null } }, disks: [], sources: { cpu: 'proc-stat', mem: 'proc-meminfo', disk: 'statfs', cgroup: 'unavailable' }, warnings: [] },

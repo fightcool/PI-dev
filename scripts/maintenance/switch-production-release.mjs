@@ -144,7 +144,7 @@ try {
 			log(`current already points at ${NEW_ID} but provenance differs; continuing with a normal switch`);
 		}
 	}
-	log(`serving pid=${initial.pid} quiesced=${initial.quiesced} active=${initial.activeConversations} pending=${initial.pendingMessages}`);
+	log(initial?.ok ? `serving pid=${initial.pid} quiesced=${initial.quiesced} active=${initial.activeConversations} pending=${initial.pendingMessages}` : "serving instance did not answer the control socket");
 	log(`current=${OLD_ID} → target=${NEW_ID}`);
 	phase("quiesce");
 	if (initial?.ok && !(await control("quiesce"))?.ok) throw new Error("quiesce failed");

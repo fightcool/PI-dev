@@ -88,7 +88,25 @@ runtime.session.agent.getApiKey = (provider) => this.channels.credentialFor(id, 
 
 ## 6. 账户查询
 
-结论：**不做通用余额平台**。适配器契约 + 两个首批实现（OpenAI 兼容自建网关、OpenRouter）；渠道必须在 `extra.account` 显式配置 `{ kind, url, unit, scale }` 才启用，否则状态为 `unsupported`（绝不从 Token 反推余额）。所有查询：5s 超时、64KiB 响应上限、`redirect:"manual"` 且 3xx 视为失败、每账户 10s 限频、5min 缓存；失败时保留上次成功结果与时间并标 `stale`（不显示为 0）。
+结论：**不做通用余额平台**。适配器契约 + 三个实现：**DeepSeek 官方**、OpenAI 兼容自建网关、OpenRouter。
+
+**DeepSeek 官方（已真实验收）**——官方范式（来源：DeepSeek API Docs → API Reference → Get User Balance）：
+
+```
+GET {base}/user/balance            # base 默认 https://api.deepseek.com
+Authorization: Bearer <api key>
+200 → { "is_available": bool,
+        "balance_infos": [ { "currency": "CNY"|"USD",
+                             "total_balance": "110.00",      # 字符串金额
+                             "granted_balance": "10.00",     # 未过期赠送
+                             "topped_up_balance": "100.00" } ] }   # 充值
+```
+
+实现要点（`deepSeekAdapter`）：金额按字符串解析（保留精度）；**多币种分别列出**（`breakdown`），不做无依据相加；主条目优先匹配渠道配置的币种，否则取第一条；`is_available=false`（官方含义：余额不足以继续调用）时查询仍算成功，用 `note` 标注而不是报失败；`balance_infos` 为空或缺 `total_balance` 视为**不可识别**（失败，不把 0 当余额）。
+
+真实验收：2026-09-11 用线上已配置的 deepseek 密钥（服务端读取、不打印）实调官方接口 → `status=ok`、`CNY 81.41`（充值 81.41 / 赠送 0）、`checkedAt` 有值。
+
+其余适配器：渠道必须在 `extra.account` 显式配置 `{ kind, url, unit, scale }` 才启用，否则状态为 `unsupported`（绝不从 Token 反推余额）。所有查询：5s 超时、64KiB 响应上限、`redirect:"manual"` 且 3xx 视为失败、每账户 10s 限频、5min 缓存；失败时保留上次成功结果与时间并标 `stale`（不显示为 0）。
 
 ## 7. 入口安全
 
