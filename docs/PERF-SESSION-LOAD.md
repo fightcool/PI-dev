@@ -87,11 +87,11 @@ vendor/pi-web-ui/web/src/perf-trace.ts, tests/performance/README.md -->
 | # | 目标 | 落点 | 状态 |
 | --- | --- | --- | --- |
 | 8 | 尾部优先 + 向上补全（大历史不再一次全量） | `server/history-window.ts`、`protocol.ts`、`agent-service.ts`、`web/src/components/MessageList.tsx`、`use-chat.ts` | ✅（协议 v22；搜索采用「先补全再搜」方案 A） |
-| 9 | 本地会话缓存（stale-while-revalidate），切回近 0 延迟 | 新增客户端缓存模块 | 待做 |
-| 10 | hover/列表打开时预取 | `web/src/components/LeftPanel.tsx` | 待做 |
+| 9 | 本地会话缓存（stale-while-revalidate） | — | ❌ 复核后不做（见下） |
+| 10 | hover/列表打开时预取 | — | ❌ 复核后不做（见下） |
 | 11 | runtime LRU 复用 | `server/agent-service.ts` | ❌ 复核后不做（见下：1.5s 是 jiti 磁盘缓存的**首次**成本，不是每次切换的成本） |
 | 12 | 会话/项目列表扫描加缓存与精确失效 | `server/session-history-cache.ts`、`agent-service.ts` | ✅ |
-| 13 | 首屏 bundle：对话区改为并行预取的动态 chunk + 只打包用到的 28 门语法 | `web/src/app/chat-view.tsx`、`web/src/highlight-subset.ts`、`rehype-highlight-subset.ts` | ✅（i18n 分语言见下） |
+| 13 | 首屏 bundle：对话区动态 chunk + 28 门语法 + **en 词典按语言加载** | `web/src/app/chat-view.tsx`、`highlight-subset.ts`、`rehype-highlight-subset.ts`、`i18n-en.ts` | ✅ |
 | 14 | 磁盘接力重载与首快照抢跑（双份全量 + 旧→新跳变） | `server/agent-service.ts`、`server/index.ts` | ✅（仅在「离开期间另一端写过」时触发） |
 
 ## 5. 验收口径
@@ -199,6 +199,17 @@ remark/rehype 栈本身（不是语法表）；再削要换 markdown 栈，收�
 独立 chunk 大约能省 zh 用户 **~15KB gz（≈ 入口 gz 的 28%）**，但要求
 ①把 2600 行的 i18n 模块重排为「基础 + 语言包」②语言切换走异步加载（需处理首帧时序，
 否则会闪一下中文）。属于「收益中等、改动面较大」，排在其他项之后。
+
+### P1-9 / P1-10 复核后不做（结论与依据）
+
+- **P1-9 本地会话缓存**：P1-8 之后切换会话只需传 ~25KB（首屏）且服务端分段约 70ms，占位状态
+  已经消除了「点了没反应」。本地缓存能再省一次往返（稳定网络 ~50–150ms），代价是一座
+  IndexedDB 缓存（配额/LRU/失效）+ 陈旧内容提示 + 与服务端 rev 链的对账，以及「先显示旧内容」
+  的观感风险。判据：等 `__piPerf()` 在真实链路上量到 `switch:… → paint > 500ms` 再做。
+- **P1-10 hover 预取**：切历史会话剩下的服务端成本是 runtime 创建（隔离探针 30–50ms）。
+  hover 预取要为「只是划过」的会话预先建 runtime（内存 + 扩展宿主生命周期），而
+  `displaceActive` 里那一整套保留规则正是为了避免误释放活跃宿主——收益 <50ms 换中等风险，
+  不划算。同样等实测数据再说。
 
 ### 客户端（P1-13 后）
 
