@@ -1230,6 +1230,8 @@ export class DshClientSession {
 			sessionId: conv.sessionId,
 			conversationId: this.activeId,
 			rev,
+			// DSH 引擎未实现尾部优先历史：始终视为「客户端持有全量」。
+			messagesOmitted: 0,
 			streamingMessage: conv.streaming ? conv.streaming.toUiMessage(conv.lastEventAt, this.model, "deepseek") : null,
 			isStreaming: conv.isStreaming,
 			model: {

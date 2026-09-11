@@ -870,6 +870,7 @@
     "noExtensions": "Nessuna estensione",
     "noPresets": "Ancora nessun preset (regola le impostazioni sopra, poi salvale come preset)",
     "loadingSession": "Caricamento sessione…",
+    "loadEarlierMessages": "Carica messaggi precedenti (altri {n})",
     "connectingServer": "Connessione al server pi-web-ui…",
     "localePacks": "Pacchetti lingua",
     "localeGetMore": "Scarica altre lingue",

@@ -870,6 +870,7 @@
     "noExtensions": "Sin extensiones por ahora",
     "noPresets": "Sin preajustes por ahora (primero ajuste los parámetros anteriores y guárdelos como combinación de preajuste)",
     "loadingSession": "Cargando sesión…",
+    "loadEarlierMessages": "Cargar mensajes anteriores ({n} más)",
     "connectingServer": "Conectando con el servidor de pi-web-ui…",
     "localePacks": "Paquetes de idioma",
     "localeGetMore": "Obtener más idiomas",

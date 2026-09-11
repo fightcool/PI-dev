@@ -36,8 +36,30 @@ async function scrollTo(page, count, end) {
   await visibleMessage(page, messageId(end ? count - 1 : 0));
 }
 
+/**
+ * 尾部优先历史（P1-8）：大历史首屏只带最近若干条，滚到顶部会自动补一页。
+ * 补页会做**视口锚定**（保持你正在看的内容不动），所以「滚到顶 → 立刻断言最老一条可见」
+ * 已经不成立：先等补页完成（「载入更早」入口消失），再滚一次顶，才到真正的历史开头。
+ */
+async function loadEarlierIfPresent(page) {
+  if (await page.locator('.msg-older-btn').count() === 0) return false;
+  // 不用真正「点击」：mock 在同一 tick 回包，元素会在点击动作进行中被卸载（Playwright
+  // 会一直重试到超时）。走的是同一个真实路径——滚到顶部后 onScroll 自动请求上一页。
+  await page.waitForFunction(() => document.querySelectorAll('.msg-older-btn').length === 0, null, { timeout: 5000 });
+  return true;
+}
+
 async function historyActions(page, result, options, count) {
-  await phase(page, result, options, 'scrollTop', () => scrollTo(page, count, false));
+  // 第一步：滚到顶。大历史会在这里自动补一页（锚定视口，所以此刻还不能断言最老一条可见）。
+  await phase(page, result, options, 'scrollTop', async () => {
+    await page.locator('.messages').evaluate((root) => {
+      root.scrollTop = 0;
+      root.dispatchEvent(new Event('scroll', { bubbles: true }));
+    });
+    result.tailFirst = (await loadEarlierIfPresent(page)) ? 'loaded-earlier' : 'complete-snapshot';
+  });
+  // 第二步：历史已补全，再滚一次顶就能看到真正的最老一条。
+  await phase(page, result, options, 'scrollTopOldest', () => scrollTo(page, count, false));
   await phase(page, result, options, 'unfoldOld', async () => {
     const folded = page.locator(`.msg-collapsed[data-msg-id="${messageId(1)}"]`);
     if (await folded.count() === 0) {

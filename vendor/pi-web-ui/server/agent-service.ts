@@ -55,6 +55,7 @@ import { SubagentArchive, type ArchivedSubagent } from "./subagent-archive.js";
 import { toSubagentSnapshot, subagentRunOutcome } from "./subagent-state.js";
 import { SessionHistoryCache } from "./session-history-cache.js";
 import { startTrace, traceStep, type TimingTrace } from "./timing.js";
+import { historyPage, snapshotWindow, SNAPSHOT_TAIL_MESSAGES } from "./history-window.js";
 import { searchSessionInfos } from "./session-search.js";
 import { BgServerTracker } from "./bg-servers.js";
 import {
@@ -566,6 +567,12 @@ export interface Conversation {
 	 *  with this still false counts as "opened but not continued" and is
 	 *  dismissed from the list. */
 	promptedSinceActive: boolean;
+	/** 尾部优先历史：本端上次发出的快照里省略了多少条更早消息（客户端据此显示
+	 *  「载入更早」；见 server/history-window.ts）。 */
+	historyOmitted: number;
+	/** 客户端已把本对话完整补全过 → 之后的全量快照不再截断（否则压缩/重同步
+	 *  发出的全量会把用户刚翻出来的历史又收回去）。 */
+	historyExpanded: boolean;
 	/** Last time this conversation became active — set_cwd picks the target
 	 *  project's most recently active conversation. */
 	lastActiveAt: number;
@@ -1853,6 +1860,8 @@ export class ClientSession {
 			listed: false,
 			promptedSinceActive: false,
 			lastActiveAt: Date.now(),
+			historyOmitted: 0,
+			historyExpanded: false,
 			lastSdkEventAt: Date.now(),
 			usageTracker: new TokenUsageTracker(),
 			lastRequestBinding: null,
@@ -3140,6 +3149,8 @@ export class ClientSession {
 			sessionFile: this.session.sessionFile,
 			conversationId: this.activeId,
 			rev,
+			// 客户端已持有的历史窗口（快照与增量共用同一口径：增量不改这个数）。
+			messagesOmitted: conv.historyOmitted,
 			streamingMessage,
 			isStreaming: this.session.isStreaming,
 			model: model
@@ -3209,14 +3220,44 @@ export class ClientSession {
 			this.emittedMessages = cur;
 			this.emittedConvId = this.activeId;
 			this.emittedRev = rev;
+			// 尾部优先：大历史只发最近若干条（@PERF 见 history-window.ts 的 @WHY）。
+			// emittedMessages 仍保留**完整**数组——增量路径靠它做身份遍历。
+			const window = snapshotWindow(cur, this.conv.historyExpanded);
+			this.conv.historyOmitted = window.omitted;
 			this.emit({
 				type: "snapshot",
-				state: { ...this.buildLightState(rev), messages: cur },
+				state: { ...this.buildLightState(rev), messages: window.messages },
 			});
 		}
 		// Build + serialize(JSON.stringify, via the sink) cost of this snapshot.
 		// Only recorded while a trace is attached — see timing.ts.
-		this.timing?.mark(`snap-${incremental ? "delta" : "full"}[${cur.length}]`);
+		this.timing?.mark(
+			incremental
+				? `snap-delta[${cur.length}]`
+				: `snap-full[${this.conv.historyExpanded ? cur.length : Math.min(cur.length, SNAPSHOT_TAIL_MESSAGES)}+${this.conv.historyOmitted}]`,
+		);
+	}
+
+	/**
+	 * 向上补历史（尾部优先的另一半）：「载入更早」与「搜索/问题导航需要全量」都走它。
+	 * 只读内存里的完整消息数组（当前活动对话），命中不到 before 时返回空页并置 complete
+	 * ——由客户端的下一次全量快照去校正，绝不猜内容（见 history-window.ts）。
+	 */
+	loadHistory(opts: { before?: string; limit?: number; all?: boolean } = {}): void {
+		if (this.disposed) return;
+		const conv = this.conv;
+		const page = historyPage(this.currentMessages(), opts);
+		// complete = 这一页之前没有更早的消息 → 客户端自此持有完整 transcript，
+		// 后续全量快照不再截断（否则刚翻出来的历史会被收回去）。
+		if (page.complete) conv.historyExpanded = true;
+		conv.historyOmitted = page.omittedBefore;
+		this.emit({
+			type: "message_page",
+			conversationId: this.activeId,
+			messages: page.messages,
+			omittedBefore: page.omittedBefore,
+			complete: page.complete,
+		});
 	}
 
 	/** Resolve a browser-bridged dialog (select/confirm/input) for this session. */

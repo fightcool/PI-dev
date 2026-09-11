@@ -870,6 +870,7 @@
     "noExtensions": "아직 plugin이 없어요",
     "noPresets": "아직 프리셋이 없어요(위의 설정을 먼저 조정한 뒤 프리셋 조합으로 저장하세요)",
     "loadingSession": "세션을 불러오는 중…",
+    "loadEarlierMessages": "이전 메시지 불러오기 ({n}개 더)",
     "connectingServer": "pi-web-ui 서버에 연결하는 중…",
     "localePacks": "언어 팩",
     "localeGetMore": "다른 언어 가져오기",

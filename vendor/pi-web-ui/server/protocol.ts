@@ -226,6 +226,14 @@ export interface UiState {
 	rev: number;
 	messages: UiMessage[];
 	/**
+	 * How many EARLIER messages this snapshot leaves out (0 = the client holds the
+	 * whole transcript). Large histories open tail-first so switching never ships
+	 * hundreds of KB the user is not looking at; `load_history` fills the rest in
+	 * (see server/history-window.ts). A full snapshot always carries the NEWEST
+	 * messages, so appends keep working against a truncated tail.
+	 */
+	messagesOmitted: number;
+	/**
 	 * Live partial assistant message while a run is streaming. The SDK keeps the
 	 * in-progress message in agent.state.streamingMessage — it only enters
 	 * `messages` once the turn finishes (message_end). Null when idle.
@@ -518,6 +526,12 @@ export type ClientMessage =
 	| { type: "set_locale"; locale: string }
 	/** Re-request the slash-command catalog (also pushed on attach / cwd change). */
 	| { type: "get_commands" }
+	/**
+	 * Ask for earlier messages of the ACTIVE conversation (tail-first history).
+	 * `before` = the client's oldest message id; `all: true` (search / question
+	 * navigation) returns everything older in one page regardless of `limit`.
+	 */
+	| { type: "load_history"; before?: string; limit?: number; all?: boolean }
 	| {
 			type: "prompt";
 			text: string;
@@ -1513,6 +1527,16 @@ export type ServerMessage =
 			tabs?: string[];
 	  }
 	| { type: "snapshot"; state: UiState }
+	| {
+			/** One page of EARLIER messages, answering `load_history`. The client
+			 *  PREPENDS these above what it already holds (deduped by id) and takes
+			 *  `omittedBefore` as its new "还有更早" count. */
+			type: "message_page";
+			conversationId: string;
+			messages: UiMessage[];
+			omittedBefore: number;
+			complete: boolean;
+	  }
 	| {
 			/** Incremental snapshot: everything EXCEPT `messages` travels in
 			 *  `state`, and only messages appended since baseRev ride in

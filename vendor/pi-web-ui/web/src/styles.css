@@ -5904,6 +5904,27 @@ div.chead[role="button"]:focus-visible,
 }
 
 .streaming-wait,
+/* 尾部优先历史：顶部「载入更早」入口（P1-8，见 docs/PERF-SESSION-LOAD.md） */
+.msg-older {
+	display: flex;
+	justify-content: center;
+	padding: 10px 0 4px;
+}
+.msg-older-btn {
+	font: inherit;
+	font-size: 12px;
+	color: var(--muted, #8b949e);
+	background: transparent;
+	border: 1px solid var(--border, #30363d);
+	border-radius: 999px;
+	padding: 4px 12px;
+	cursor: pointer;
+}
+.msg-older-btn:hover {
+	color: var(--fg, #e6edf3);
+	border-color: var(--fg, #e6edf3);
+}
+
 .boot-wait {
 	text-align: center;
 	color: var(--text-faint);

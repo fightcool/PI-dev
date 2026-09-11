@@ -83,7 +83,11 @@ The four scenarios per iteration are:
   and plugin code remains deferred. Select the local synthetic plugin and verify its
   mount, then select terminal and verify xterm is requested. No shell is started.
 - **200 messages:** measure history startup with the same bounded DOM budgets.
-- **1,000 messages:** measure startup, scroll to top, unfold an old collapsed message,
+- **1,000 messages (tail-first since protocol v22):** the mock now sends the same shape the
+  server does — the newest 40 messages plus `messagesOmitted`, answering `load_history` with the
+  missing prefix — so the scenario exercises the real path: measure startup, scroll to top
+  (which auto-loads the earlier page and anchors the viewport), scroll again to reach the true
+  oldest row, unfold an old collapsed message,
   scroll to bottom, search two old messages using next/previous, close search, jump
   via the first question-navigation tick, and use the return-to-bottom control.
   The search term occurs once in each of rows 0 and 2, beyond the collapsed preview.
