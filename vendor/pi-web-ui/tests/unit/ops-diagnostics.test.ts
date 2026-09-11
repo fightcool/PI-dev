@@ -36,8 +36,8 @@ describe("ops diagnostics bundle", () => {
 	it("assembles metadata and never carries secret material", () => {
 		const bundle = buildDiagnostics({
 			now: 42,
-			app: { node: "v22", pid: 7, uptimeSec: 3, engine: "pi", protocolVersion: 20 },
-			release: { commit: "a".repeat(40), appVersion: "0.72.0", protocolVersion: 20, builtAt: "2026-09-11T00:00:00Z", source: "a".repeat(40) },
+			app: { node: "v22", pid: 7, uptimeSec: 3, engine: "pi", protocolVersion: 21 },
+			release: { commit: "a".repeat(40), appVersion: "0.72.0", protocolVersion: 21, builtAt: "2026-09-11T00:00:00Z", source: "a".repeat(40) },
 			// 故意把合成标记塞进「不该出现的地方」（凭据名/环境）以验证组装不会把它带出去。
 			instance: { configDir: "/cfg", dataDir: "/data", agentDir: "/agent", workspaceDir: "/ws", host: "127.0.0.1", port: 8788, profile: "lean" },
 			units: [{ unit: "pi-dev-pm2.service", active: "active", enabled: "enabled" }],

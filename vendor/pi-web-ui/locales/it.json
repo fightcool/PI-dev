@@ -1042,6 +1042,8 @@
     "channelAccountFailed": "Query non riuscita",
     "channelAccountStale": "Obsoleto",
     "channelAccountStaleTip": "L'ultima query non è riuscita; sotto c'è l'ultimo risultato valido (l'ora è quella dell'ultimo successo)",
+    "channelAccountGranted": "omaggio",
+    "channelAccountToppedUp": "ricaricato",
     "channelAccountCheckedAt": "Interrogato il",
     "channelAccountBalance": "Saldo",
     "channelAccountQuota": "Quota",

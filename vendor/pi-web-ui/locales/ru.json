@@ -1042,6 +1042,8 @@
     "channelAccountFailed": "Запрос не удался",
     "channelAccountStale": "Устарело",
     "channelAccountStaleTip": "Последний запрос не удался; ниже — последний успешный результат (время — момент последнего успеха)",
+    "channelAccountGranted": "бонус",
+    "channelAccountToppedUp": "пополнено",
     "channelAccountCheckedAt": "Время запроса",
     "channelAccountBalance": "Баланс",
     "channelAccountQuota": "Квота",

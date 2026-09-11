@@ -4,7 +4,7 @@
  */
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import { AccountRegistry } from "../../server/dev-con/channel-accounts.js";
+import { AccountRegistry, deepSeekAdapter } from "../../server/dev-con/channel-accounts.js";
 import type { ChannelRecord } from "../../server/dev-con/channel-model.js";
 
 let servers: Server[] = [];
@@ -114,6 +114,69 @@ describe("account queries", () => {
 		expect(result.status).toBe("failed");
 		expect(result.error).toBe("查询超时");
 		expect(Date.now() - started).toBeLessThan(3_000);
+	});
+
+	it("parses the official DeepSeek /user/balance shape (CNY, string amounts, granted/topped-up split)", async () => {
+		let seenUrl = "";
+		let seenAuth = "";
+		const base = await stub((url, res) => {
+			seenUrl = url.pathname;
+			seenAuth = String((res.req?.headers.authorization ?? "").toString());
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ is_available: true, balance_infos: [{ currency: "CNY", total_balance: "110.00", granted_balance: "10.00", topped_up_balance: "100.00" }] }));
+		});
+		const channelWithDeepSeek = { ...channel(base), extra: { account: { kind: "deepseek", url: base } } };
+		const result = await registry().query(channelWithDeepSeek, () => "ds-key");
+		expect(seenUrl).toBe("/user/balance");
+		expect(seenAuth).toBe("Bearer ds-key");
+		expect(result).toMatchObject({ status: "ok", kind: "deepseek", unit: "CNY", balance: 110 });
+		expect(result.breakdown).toEqual([{ currency: "CNY", total: 110, granted: 10, toppedUp: 100 }]);
+		expect(result.note).toBeUndefined();
+	});
+
+	it("keeps multiple currencies separate and flags an insufficient balance", async () => {
+		const base = await stub((_url, res) => {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(
+				JSON.stringify({
+					is_available: false,
+					balance_infos: [
+						{ currency: "USD", total_balance: "3.50", granted_balance: "0.00", topped_up_balance: "3.50" },
+						{ currency: "CNY", total_balance: "25.00", granted_balance: "5.00", topped_up_balance: "20.00" },
+					],
+				}),
+			);
+		});
+		const channelWithDeepSeek = { ...channel(base), extra: { account: { kind: "deepseek", url: base, unit: "CNY" } } };
+		const result = await registry().query(channelWithDeepSeek, () => "ds-key");
+		// 主条目按渠道配置的币种选 CNY；多币种只在 breakdown 里分别列出，绝不相加。
+		expect(result).toMatchObject({ status: "ok", unit: "CNY", balance: 25 });
+		expect(result.breakdown?.map((entry) => entry.currency)).toEqual(["USD", "CNY"]);
+		expect(result.note).toContain("is_available=false");
+	});
+
+	it("reports DeepSeek failures honestly (empty balance_infos, non-JSON)", async () => {
+		const empty = await stub((_url, res) => {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ is_available: true, balance_infos: [] }));
+		});
+		const channelWithDeepSeek = { ...channel(empty), extra: { account: { kind: "deepseek", url: empty } } };
+		const missing = await registry().query(channelWithDeepSeek, () => "ds-key");
+		expect(missing.status).toBe("failed");
+		expect(missing.error).toContain("balance_infos");
+		// 缺 total_balance 的条目同样视为不可识别（不把 0 当余额）。
+		const partial = await stub((_url, res) => {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ is_available: true, balance_infos: [{ currency: "CNY", topped_up_balance: "1.00" }] }));
+		});
+		const partialResult = await registry().query({ ...channel(partial), extra: { account: { kind: "deepseek", url: partial } } }, () => "ds-key");
+		expect(partialResult.status).toBe("failed");
+	});
+
+	it("exposes the DeepSeek adapter with its documented kind", () => {
+		expect(deepSeekAdapter.kind).toBe("deepseek");
+		expect(deepSeekAdapter.match({ ...channel("https://api.deepseek.com"), extra: { account: { kind: "deepseek" } } })).toBe(true);
+		expect(deepSeekAdapter.match({ ...channel("https://x"), extra: { account: { kind: "openai-gateway" } } })).toBe(false);
 	});
 
 	it("rate-limits repeated queries and keeps the previous result", async () => {

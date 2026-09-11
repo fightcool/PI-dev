@@ -1042,6 +1042,8 @@
     "channelAccountFailed": "照会に失敗",
     "channelAccountStale": "期限切れ",
     "channelAccountStaleTip": "今回の照会は失敗しました。以下は前回成功した結果です（時刻は前回成功時のもの）",
+    "channelAccountGranted": "付与分",
+    "channelAccountToppedUp": "チャージ分",
     "channelAccountCheckedAt": "照会時刻",
     "channelAccountBalance": "残高",
     "channelAccountQuota": "クォータ",
