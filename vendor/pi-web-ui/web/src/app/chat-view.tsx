@@ -1,8 +1,7 @@
 /* 🍞 @COUPLED web/src/components/ChatInput.tsx, web/src/app/app-dialogs.tsx — 📖 docs/DEV-CON-PROPOSAL.md §6 */
-import { lazy, Suspense, useCallback, useLayoutEffect, useMemo, useRef } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { LeftPanel } from "../components/LeftPanel";
 import { RightPanel } from "../components/RightPanel";
-import { MessageList } from "../components/MessageList";
 import { ChatInput } from "../components/ChatInput";
 import { GoalBar } from "../components/GoalBar";
 import { useT } from "../i18n";
@@ -14,6 +13,11 @@ import type { useAttachments } from "./use-attachments";
 import { PanelRail, ResizeHandle, type usePanels } from "./panels";
 import { perfMarkPaint } from "../perf-trace";
 const Dialog = lazy(() => import("../components/Dialog").then((m) => ({ default: m.Dialog })));
+// 🍞 @PERF 对话区（MessageList → Message → markdown 渲染器 + highlight.js）改为动态 chunk：
+// 它以前是 App chunk 的**静态依赖**，于是「打开 WebSocket」必须等这 ~507KB（153KB gz）
+// 下载并执行完。现在 App 一执行就握手，markdown 下载与 hello→首份 snapshot 并行。
+// 对话区首屏必定要用，所以挂载后立刻预取——目的是并行，不是条件加载。
+const MessageList = lazy(() => import("../components/MessageList").then((m) => ({ default: m.MessageList })));
 const DshQuestionDialog = lazy(() =>
 	import("../components/DshQuestionDialog").then((m) => ({ default: m.DshQuestionDialog })),
 );
@@ -144,20 +148,29 @@ export function ChatView({
 			{!isMobile && <ResizeHandle side="left" width={leftWidth} onResize={resizeLeft} />}
 			<main className={wide ? "main wide-chat" : "main"}>
 				{chat.state && !chat.switching ? (
-					<MessageList
-						key={chat.state.conversationId ?? "boot"}
-						state={chat.state}
-						liveOutputs={chat.liveOutputs}
-						toolStatuses={chat.toolStatuses}
-						onEdit={onEditMessage}
-						onKillBash={onKillBash}
-						onRetry={onRetry}
-						onRemoveQueued={onRemoveQueued}
-						thinkingWrap={chat.settings?.thinkingWrap ?? true}
-						toolsWrap={chat.settings?.toolsWrap ?? false}
-						jumpTarget={searchJump}
-						onJumpDone={onJumpDone}
-					/>
+					// 对话区 chunk 还没到位时先占位（与首帧占位同一外观）。
+					<Suspense
+						fallback={
+							<div className="boot-wait" role="status">
+								{t("loadingSession")}
+							</div>
+						}
+					>
+						<MessageList
+							key={chat.state.conversationId ?? "boot"}
+							state={chat.state}
+							liveOutputs={chat.liveOutputs}
+							toolStatuses={chat.toolStatuses}
+							onEdit={onEditMessage}
+							onKillBash={onKillBash}
+							onRetry={onRetry}
+							onRemoveQueued={onRemoveQueued}
+							thinkingWrap={chat.settings?.thinkingWrap ?? true}
+							toolsWrap={chat.settings?.toolsWrap ?? false}
+							jumpTarget={searchJump}
+							onJumpDone={onJumpDone}
+						/>
+					</Suspense>
 				) : (
 					// 首帧加载与乐观切换共用同一个占位：切换时先揭掉上一个会话的内容，
 					// 目标快照一到（reducer 清掉 switching）立刻换成真实内容——不再出现

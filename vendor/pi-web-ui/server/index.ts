@@ -26,12 +26,21 @@ import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import express from "express";
 import compression from "compression";
 import { WebSocket, WebSocketServer } from "ws";
 import { VERSION, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { InitialSnapshotGate } from "./initial-snapshot-gate.js";
 import { logPhase, startTrace, type TimingTrace } from "./timing.js";
+
+/**
+ * Upper bound on waiting for an in-flight disk catch-up reload before sending the
+ * baseline anyway (see the hello handler). Reloads measure well under this; the
+ * bound only exists so a stuck reload can never leave the chat pane empty.
+ * @MAGIC 1500ms ≫ observed reload cost (open + runtime creation, ~0.1–0.3s).
+ */
+const BASELINE_DISK_SYNC_MAX_MS = 1500;
 import { PROTOCOL_VERSION } from "./protocol-version.js";
 import { AgentService, workspacePath, QuiesceRejectedError } from "./agent-service.js";
 import { isAbsoluteWirePath, wireToAbs } from "./files-service.js";
@@ -734,6 +743,9 @@ export interface TerminalManagerLike {
 
 export interface DispatchSession {
 	cwd: string;
+	/** In-flight disk catch-up reload for the active conversation, if any.
+	 *  Optional: the DSH engine session has no equivalent. */
+	diskSyncPending?(): Promise<void> | null;
 	prompt(text: string, attachments?: PromptAttachment[], queue?: boolean): Promise<void>;
 	/** Remove one queued prompt text (steer/followUp) — the ✕ on a pending bubble. */
 	removeQueued(kind: "steer" | "followUp", text: string): void;
@@ -1573,15 +1585,32 @@ wss.on("connection", (ws) => {
 						managed: MANAGED,
 						tabs: TABS ? [...TABS] : undefined,
 					});
-					// Open the gate and push the authoritative baseline NOW. Plugin activation
-					// used to gate this (with a 5s fallback), so a slow/hung plugin showed the
-					// user an empty chat pane for seconds; renderer fences arrive later and
+					// Open the gate and push the authoritative baseline. Plugin activation used to
+					// gate this (with a 5s fallback), so a slow/hung plugin showed the user an
+					// empty chat pane for seconds; renderer fences arrive later and
 					// plugin-fence.ts re-renders the misses when the catalog lands.
-					if (ENGINE === "pi") initialSnapshot.complete(() => cs.flushSnapshot(true));
-					trace?.mark("snapshot-sent");
-					// The user-visible number is now known: end the main trace here. Plugin
-					// activation continues behind it and is logged separately (logPhase).
-					finishHelloTrace?.({ snapWireB: lastSnapshotBytes, activeConvs: service.activeConversations() });
+					//
+					// @PERF One exception: a disk catch-up reload (another device wrote while we
+					// were away) is already in flight. Its own full flush would be dropped by the
+					// still-closed gate, so flushing NOW would send the STALE transcript and the
+					// reload would send a second full one — two multi-hundred-KB transfers plus a
+					// visible old→new jump. Wait for it instead (bounded, so a stuck reload can
+					// never leave the pane empty).
+					const baseline = () => {
+						if (ENGINE === "pi") initialSnapshot.complete(() => cs.flushSnapshot(true));
+						trace?.mark("snapshot-sent");
+						// The user-visible number is now known: end the main trace here. Plugin
+						// activation continues behind it and is logged separately (logPhase).
+						finishHelloTrace?.({ snapWireB: lastSnapshotBytes, activeConvs: service.activeConversations() });
+					};
+					const diskSync = cs.diskSyncPending?.();
+					if (diskSync) {
+						void Promise.race([diskSync, delay(BASELINE_DISK_SYNC_MAX_MS)]).then(() => {
+							if (!closed) baseline();
+						});
+					} else {
+						baseline();
+					}
 					const pluginsStartedAt = performance.now();
 					// Plugin catalog: re-scan + activate new dirs on every attach so
 					// freshly dropped plugins show up without a server restart.

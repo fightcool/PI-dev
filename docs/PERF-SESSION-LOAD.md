@@ -58,11 +58,29 @@ vendor/pi-web-ui/web/src/perf-trace.ts, tests/performance/README.md -->
 | 6 | 滚动/流式热点：贴底重复写、滚动期子树查询 | `message-list/useBottomScroll.ts`、`useRowWindow.ts` | ✅ |
 | 7 | 切换「先给帧」：乐观切换占位 | `web/src/use-chat.ts`、`chat-view.tsx` | ✅（点击→卸载旧内容→新快照到→挂载；与 P0-5 的 key 重挂载次数相同，没有额外代价） |
 
-**P0-5 为何暂缓**：拆开看，`key={conversationId}` 丢掉的三样东西里，`expanded`（展开的折叠行）
-和 `position`（滚动位置）本就应该在新会话里重置，只有行高测量缓存是净损失——而它按消息 id 索引，
-跨会话本来也不会命中，所以真实代价只是「多一轮测量 + 重渲染」。相对地，滚动/`escape` 语义有
-`@BUGFIX 2026-09-10` 的历史回归记录。等到能在真实环境用 `__piPerf()` 拆出“切→首帧”里
-markdown 解析、测量重排、布局各占多少，再决定是否动它。
+**P0-5 为何暂缓（并建议直接关闭这一项）**：P0-7 上线后它的前提已经不成立。
+
+1. 现在的切换路径是「点击 → `chat.switching=true` → 渲染占位（`chat-view.tsx:146` 的
+   `chat.state && !chat.switching`）→ 目标快照到达 → 挂载新会话」——**MessageList 在切换时
+   本来就会卸载一次**，这正是 P0-7 想要的效果。即便删掉 `key`，占位分支依然会卸载它，
+   删 key 的收益是 0；除非把旧会话内容继续挂着（那就退回「点了没反应」的观感）。
+2. 会丢掉的东西本来就不该保：`useRowWindow` 的行高缓存按消息 id 索引，新会话的消息 id 完全不同，
+   复用也不会命中；滚动位置、展开的折叠行、搜索状态**本来就该重置**，重挂载是免费且正确地做到这点。
+3. 改成手写重置的成本与风险更高：要在 `MessageList`/`useRowWindow`/`useBottomScroll` 各写一段
+   `useEffect(reset, [conversationId])`，而滚动语义有明确的回归历史
+   （`useBottomScroll.ts:4` 的 `@BUGFIX 2026-09-10`：escape 意图要在窗口切换与流式定稿之间保持）。
+   为省下一轮「测量 + 重渲染」（≤80 行，且这些行的 markdown 由 `memo(Markdown)` 按 text 缓存、
+   不会重解析）去动这段代码不划算。
+
+如果日后真实数据显示「挂载那一轮」确实是切换延迟的大头（用 `__piPerf()` 读 `switch:… → paint`
+与长任务），正确的方向不是删 key，而是让服务端在切换时先只发尾部若干条（即 P1-8），
+让首屏挂载的行数下降。
+
+**P1-11 为何复核后不做**：该项的前提是「每切一次历史会话都要重付扩展的 jiti 转译 1.5s」。
+复核发现 1569ms 是 jiti **磁盘转译缓存冷启动**时的一次性成本（同目录第二次是 1–2ms），
+不是每次切换都付；隔离探针里 `runtime` 段为 27–42ms，线上有 1 个扩展时的量级也是百毫秒级。
+也就是说：为了省 ~50–150ms 去保留多个 runtime（内存、扩展宿主生命周期、唤醒订阅等一批
+`displaceActive` 已明确保护的约束）风险明显大于收益。留待有真实分段数据证明它是大头时再做。
 
 ### P1（协议与数据面）
 
@@ -71,10 +89,10 @@ markdown 解析、测量重排、布局各占多少，再决定是否动它。
 | 8 | 尾部优先 + 向上分页加载（大历史不再一次全量） | `server/protocol.ts`、`agent-service.ts`、客户端 reducer | 待做（需协议 bump） |
 | 9 | 本地会话缓存（stale-while-revalidate），切回近 0 延迟 | 新增客户端缓存模块 | 待做 |
 | 10 | hover/列表打开时预取 | `web/src/components/LeftPanel.tsx` | 待做 |
-| 11 | runtime LRU 复用，避免切历史会话重付扩展转译 | `server/agent-service.ts` | 待做（内存上限需设计） |
+| 11 | runtime LRU 复用 | `server/agent-service.ts` | ❌ 复核后不做（见下：1.5s 是 jiti 磁盘缓存的**首次**成本，不是每次切换的成本） |
 | 12 | 会话/项目列表扫描加缓存与精确失效 | `server/session-history-cache.ts`、`agent-service.ts` | ✅ |
-| 13 | 首屏 bundle：markdown chunk 真正懒加载 + 关键 chunk 预加载 + i18n 分语言 | `web/vite.config.ts`、`index.html`、`web/src/i18n.tsx` | 待做 |
-| 14 | attach 时 `syncActiveFromDiskIfStale` 的整份 runtime 重建与首快照抢跑 | `server/agent-service.ts` | 待做（仅在“离开期间另一端写过”时触发） |
+| 13 | 首屏 bundle：对话区（含 markdown 渲染器）改为并行预取的动态 chunk | `web/src/app/chat-view.tsx` | ✅（i18n 分语言仍待做） |
+| 14 | 磁盘接力重载与首快照抢跑（双份全量 + 旧→新跳变） | `server/agent-service.ts`、`server/index.ts` | ✅（仅在「离开期间另一端写过」时触发） |
 
 ## 5. 验收口径
 
@@ -94,6 +112,27 @@ markdown 解析、测量重排、布局各占多少，再决定是否动它。
 浏览器: boot → ws:open → ws:ready → ws:snapshot → paint    （切换额外：switch:… → paint）
 ```
 
+## 5.5 部署记录
+
+| 时间 | 版本 | 结果 |
+| --- | --- | --- |
+| 2026-09-11 09:09 | `969ef2a76d18` → **`79525237ee6c`**（PR #21 合并提交） | 成功。排空 → 停 PM2 → 原子换 current → 启动 → 验收（新 PID / 健康 / build-info 与 release-source 一致 / 公网入口发新前端 / 匿名 WS 仍 401）→ unquiesce；中断约 4 秒；失败回滚目标 `969ef2a76d18` 保留 |
+
+### P1-8 的必要性（实测）
+
+真实形态的高熵会话快照（1460 条、含代码块与工具调用）压缩后仍然很大：
+
+| 样本 | raw | deflate level 1 | level 6 |
+| --- | --- | --- | --- |
+| 合成高熵会话 1460 条 | 1.60 MB | **385 KB**（4.3x） | 298 KB（5.5x） |
+| 线上最大会话的 snapshot | 2.76 MB | 估 ~460–640 KB | — |
+
+也就是说大历史每次切换都要在 wire 上传数百 KB；尾部优先（先发最近 ~30 条）能把它降到几十 KB。
+代价是要配套解决「客户端 search / 问题导航依赖完整 messages」——两种做法：
+①打开搜索或跳到最早已读位置时先补全历史（实现简单，但那一刻要等一次全量传输）；
+②服务端提供会话内搜索接口（体验最好，但要新增协议端点与实现）。
+这是 P1-8 落地前需要定的产品选择。
+
 ## 6. 进度与实测
 
 | 项 | 状态 |
@@ -107,7 +146,10 @@ markdown 解析、测量重排、布局各占多少，再决定是否动它。
 | P0-6 滚动路径减负 | ✅ |
 | P0-7 乐观切换占位 | ✅ |
 | P1-12 列表扫描缓存 | ✅ |
-| P1-8/9/10/11/13/14 | 待做 |
+| P1-13 首屏 bundle（对话区动态 chunk + 并行预取） | ✅ |
+| P1-14 接力重载与首快照抢跑 | ✅ |
+| P1-8 尾部优先分页 / P1-9 本地缓存 / P1-10 预取 / P1-13 的 i18n 分语言 | 待做 |
+| P1-11 runtime LRU | ❌ 复核后不做（理由见上） |
 
 ### 服务端（隔离实例探针，`node tests/performance/server-timing.mjs`）
 
@@ -119,6 +161,14 @@ markdown 解析、测量重排、布局各占多少，再决定是否动它。
 | list_projects | 每次 26 ms（小 fixture；线上 14 MiB 数据约 250 ms） | 首次同前，同交互内二次 2 ms |
 
 隔离实例没有线上的扩展与插件，绝对值远低于线上；这里用于确认改动没有把服务端改慢，及缓存/顺序确实生效。
+
+### 客户端（P1-13 后）
+
+| 项 | 改前 | 改后 |
+| --- | --- | --- |
+| App chunk | 222,420 raw | **174,679 raw**，静态依赖只剩 entry + react |
+| 「能开 WebSocket」前的 JS 水位 | index+react+App+**markdown** = 312 KB gz | index+react+App = **145 KB gz**（-167 KB） |
+| markdown 渲染器 | 阻塞 WS 握手 | 与 hello→首份 snapshot **并行**下载（挂载后立刻预取） |
 
 ### 客户端
 

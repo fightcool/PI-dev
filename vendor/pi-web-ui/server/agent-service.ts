@@ -1391,6 +1391,8 @@ export class ClientSession {
 	/** Opt-in phase trace for the connection/switch currently being served
 	 *  (see timing.ts). Set by attach(); snapshot build costs land on it. */
 	timing?: TimingTrace;
+	/** In-flight disk catch-up reload (see syncActiveFromDiskIfStale). */
+	private diskSync: Promise<void> | null = null;
 	/**
 	 * Per-conversation serialization caches (stable message ids, UiMessage
 	 * object cache, message-array signature, queue counts) live inside each
@@ -2011,13 +2013,26 @@ export class ClientSession {
 	 * 接入 / 回到页面时追平：本端活动会话的磁盘文件若比内存新（离开期间另一端
 	 * 完成了工作，且没有新广播可收），就从磁盘接力重载。
 	 * 覆盖「页面重连但 clientId 未变 → 服务端复用内存 ClientSession」的缺口。
+	 *
+	 * @PERF 重载本身会发一份全量快照；若不等它，hello 那份基线会先把**旧**内容
+	 * 发给客户端，紧接着再来一份重载后的全量——大会话等于多传一次数百 KB，
+	 * 用户还会看到一次“先旧后新”的跳变。`diskSyncPending` 让 hello 把基线排到
+	 * 重载之后（见 index.ts），於是只传一份且内容就是最新的。
 	 */
 	syncActiveFromDiskIfStale(): void {
 		if (this.disposed) return;
 		const conv = this.convs.get(this.activeId);
 		if (!conv || conv.session.isStreaming || conv.reloadInFlight) return;
 		if (!conv.session.sessionFile || !this.diskSigChanged(conv)) return;
-		void this.reloadConversationFromDisk(conv);
+		const running = this.reloadConversationFromDisk(conv).finally(() => {
+			if (this.diskSync === running) this.diskSync = null;
+		});
+		this.diskSync = running;
+	}
+
+	/** 正在进行的磁盘接力重载；hello 用它把首份基线排在重载之后。 */
+	diskSyncPending(): Promise<void> | null {
+		return this.diskSync;
 	}
 
 	/** (Re)attach event plumbing to the ACTIVE conversation's session. */
