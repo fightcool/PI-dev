@@ -591,20 +591,35 @@ if (existsSync(webDist)) {
 	app.use(compression());
 	app.use(
 		express.static(webDist, {
-			// Vite 产物文件名带内容 hash，可永久强缓存——业务发版后 hash 变化自然失效，
-			// index.html 由下方 catch-all 处理（sendFile 不走这里）
+			// Vite 产物文件名带内容 hash，可永久强缓存——业务发版后 hash 变化自然失效。
+			// @GOTCHA 对 `/` 的请求 **由 static 中间件直接返回 index.html**（不是下面的 catch-all），
+			// 所以 SPA 壳的缓存策略必须在这里也设一遍：否则它带 `public, max-age=0`，被反向代理
+			// 缓存后会出现「公网仍在发旧壳 → 部署验收误判失败并自动回滚」（2026-09-11 实际发生）。
 			setHeaders(res, filePath) {
 				if (filePath.includes(`${sep}assets${sep}`)) {
 					res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+					return;
+				}
+				if (/(^|[\\/])index\.html$/.test(filePath)) {
+					res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+					res.setHeader("Pragma", "no-cache");
 				}
 			},
 		}),
 	);
 	app.get(/^\/(?!api\/|ws).*/, (_req, res) => {
+		// SPA 壳必须每次回源校验：它引用带内容哈希的入口 JS，一旦被反向代理/浏览器缓存住，
+		// 发布新版本后会出现「公网还在发旧壳 → 部署验收误判失败并回滚」（2026-09-11 实际发生）。
+		// 带哈希的 /assets/* 仍是 immutable 长缓存（见上面的 express.static）。
+		// @GOTCHA sendFile 默认会自带 `Cache-Control: public, max-age=0`，用自己的头覆盖
+		// res.setHeader —— 必须走 sendFile 的选项（cacheControl:false + headers）才生效。
 		// Callback form: a failed stat here (npm i -g is mid-replacement of the
 		// package dir) responds 503 instead of crashing the request pipeline
 		// with an unhandled ENOENT stack trace.
-		res.sendFile(join(webDist, "index.html"), (err) => {
+		res.sendFile(join(webDist, "index.html"), {
+			cacheControl: false,
+			headers: { "Cache-Control": "no-cache, no-store, must-revalidate", Pragma: "no-cache" },
+		}, (err) => {
 			if (err && !res.headersSent) {
 				res.status(503).send("正在更新 pi-web-ui，请稍后刷新…");
 			}
