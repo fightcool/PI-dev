@@ -118,6 +118,16 @@ journalctl --user -u pi-dev-switch.service --no-pager
 
 阶段：quiesce → 排空（active/pending 均归零，超时即中止并恢复接收）→ 停用并 disable 旧 unit/watchdog → 原子替换 current → `manager start` → 验收（新 PID、健康、build-info 与 release-source 一致、公网入口发的是该版本前端、匿名 WebSocket 仍被 401 拒绝）→ `unquiesce`。失败时原子回退旧 release 并重启 PM2；PM2 起不来则用旧 unit 兜底保证站点可用（并在状态文件中标注）。`--collect` 的 transient unit 在退出时可能打印一条 "Failed to open …/transient/…: No such file or directory"，属清理噪声。
 
+### 2026-09-11 生产升级（`969ef2a76d18` → `79525237ee6c`）
+
+| 项 | 结果 |
+| --- | --- |
+| 版本 | `current` → `releases/79525237ee6c`，提交 `79525237ee6ccb8c94e3a3228ba24fa5c8a2f801`（PR #21：会话加载与切换性能） |
+| 候选构建 | 用 `scripts/lifecycle/release-build.mjs` 的 `buildRelease`（git archive + `npm run setup:dependencies` + `npm run build`，provenance 校验），另以 `uv sync --locked` 复用 `deploy/tools/python` 建 `.venv` 与已部署版本同形；候选目录顶层与线上版本逐项一致（仅多出 buildRelease 写的 `.release.json`） |
+| 候选验证 | 在候选目录内实跑：root `npm test` 174/174、`check:publish` PASS、`typecheck` PASS、vendor vitest 654/654、app smoke 41/41；`build-info.json` 提交与 `release-source.json` 一致、`protocolVersion` 21 |
+| 切换验收 | `phase=deployed`；新 PID 969503、`/api/health` 正常、公网入口发新前端（`index-ExyD3c3P.js`）、PM2 unit active；中断约 4 秒（09:08:58 排空完成 → 09:09:02 DEPLOYED） |
+| 回滚 | 目标 `releases/969ef2a76d18` 完整保留；脚本自带失败原子回滚 |
+
 ### 2026-09-10 生产升级（`e92430be376b` → `2420ad6c7fe5`）
 
 | 项 | 结果 |
