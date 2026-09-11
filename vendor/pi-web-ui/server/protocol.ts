@@ -398,6 +398,28 @@ export interface UiStorageSnapshot {
 	};
 }
 
+/** P4 运维：资源告警阈值默认值（界面只读展示，实际判定在服务端）。 */
+export interface UiOpsThresholds {
+	warnPercent: number;
+	criticalPercent: number;
+	cooldownMs: number;
+}
+
+/** P4 运维：诊断包（只含元数据；绝不含密钥值/会话内容/日志正文）。 */
+export interface UiDiagnostics {
+	generatedAt: number;
+	app: { node: string; pid: number; uptimeSec: number; engine: string; protocolVersion: number };
+	release: { commit: string | null; appVersion: string | null; protocolVersion: number | null; builtAt: string | null; source: string | null };
+	instance: { configDir: string; dataDir: string; agentDir: string; workspaceDir: string; host: string | null; port: number | null; profile: string | null };
+	units: { unit: string; active: string; enabled: string }[];
+	resources: UiResourceSnapshot;
+	storage: UiStorageSnapshot;
+	channels: { configRevision: number; count: number; enabledCount: number; bindings: number; pending: number; accounts: number; brokenRefs: number };
+	usage: { windowDays: number; requests: number; totalTokens: number; cost: number; unpricedRequests: number; bySource: Record<string, number>; byChannel: Record<string, number> };
+	environment: { platform: string; cpuCount: number; totalMemBytes: number };
+	warnings: string[];
+}
+
 // ---------------------------------------------------------------------------
 // Client -> Server
 // ---------------------------------------------------------------------------
@@ -718,6 +740,10 @@ export type ClientMessage =
 	| { type: "list_storage"; reqId: number }
 	/** P4 运维：设置用量历史保留天数（仅允许 0/7/30/90/365；0 = 只按大小轮转）。 */
 	| { type: "set_usage_retention"; maxAgeDays: number }
+	/** P4 运维：请求一份诊断包（只读元数据；reqId 回显在 diagnostics 里）。 */
+	| { type: "list_diagnostics"; reqId: number }
+	/** P4 运维：开关资源告警通知（磁盘/内存/unit 内存越线时提示一次）。 */
+	| { type: "set_ops_alerts"; enabled: boolean }
 	// -- P4 用量历史（跨渠道/项目/时间；只读聚合，不参与计费） ---------------
 	/** 查询实例私有用量历史（逐请求记录的只读聚合）。reqId 回显在 usage_history 里。 */
 	| {
@@ -1651,6 +1677,8 @@ export type ServerMessage =
 			pending: UiChannelPending[];
 			accounts: UiAccountStatus[];
 	  }
+	/** P4 运维：诊断包（只含元数据）+ 当前告警开关与阈值。 */
+	| { type: "diagnostics"; reqId: number; ok: boolean; error?: string; bundle?: UiDiagnostics; alertsEnabled?: boolean; thresholds?: UiOpsThresholds }
 	/** P4 运维：存储占用明细 + 保留策略（ok=false 时 storage 为空并带 error）。 */
 	| { type: "storage"; reqId: number; ok: boolean; error?: string; storage?: UiStorageSnapshot }
 	/** P4 候选：系统资源快照（ok=false 时 snapshot 为空并带 error）。 */

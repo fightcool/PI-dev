@@ -14,14 +14,15 @@
  * @COUPLED conversation-maintenance.ts / subagent-archive.ts: idle retirement and result restoration.
  * 📖 docs/conversation-lifecycle.md
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { existsSync, readFileSync, rmSync, statSync, mkdirSync, watch } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync, mkdirSync, watch, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve, sep } from "node:path";
 // @ts-expect-error Host runtime module is JavaScript by design.
 import { normalizeUsageEvent, TokenUsageTracker } from "#usage";
+import { PROTOCOL_VERSION } from "./protocol-version.js";
 import { ChannelService } from "./dev-con/channel-service.js";
 import { AccountRegistry } from "./dev-con/channel-accounts.js";
 import type { ChannelRecord, ChannelSelection, RequestBindingSnapshot } from "./dev-con/channel-model.js";
@@ -29,6 +30,8 @@ import type { ChannelServiceHost } from "./dev-con/channel-service.js";
 import { UsageHistoryStore, type UsageHistoryRecord } from "./dev-con/usage-history.js";
 import { collectResources } from "./dev-con/system-resources.js";
 import { measureAreas } from "./dev-con/storage-usage.js";
+import { buildDiagnostics, usageSummaryOf } from "./dev-con/ops-diagnostics.js";
+import { evaluateAlerts, markFired, ALERT_COOLDOWN_MS, ALERT_CRITICAL_PERCENT, ALERT_WARN_PERCENT, type OpsAlert } from "./dev-con/ops-alerts.js";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
@@ -1358,6 +1361,8 @@ export class ClientSession {
 		},
 	};
 	private widgetsTimer: ReturnType<typeof setInterval> | null = null;
+	/** P4 运维：资源告警周期定时器（unref；随会话释放）。 */
+	private alertTimer: ReturnType<typeof setInterval> | null = null;
 	/** Model-stall watchdog interval (see startStallTimer). */
 	private stallTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -1542,6 +1547,9 @@ export class ClientSession {
 		// Prune dead background tasks every 30s (only spawns netstat/lsof while
 		// the list is non-empty). unref: must not keep the process alive.
 		this.bg.start();
+		// P4 运维：资源告警周期检查（60 秒；unref 不阻止退出；开关与冷却见 checkResourceAlerts）。
+		this.alertTimer = setInterval(() => this.checkResourceAlerts(), 60_000);
+		this.alertTimer.unref?.();
 		this.accounts = new AccountRegistry();
 		this.channels = new ChannelService(this.makeChannelHost(agentDir), this.accounts);
 		this.usageHistory = new UsageHistoryStore(join(agentDir, "dev-con", "usage-history.jsonl"));
@@ -2183,6 +2191,176 @@ export class ClientSession {
 			this.emit({ type: "resources", reqId, ok: true, snapshot });
 		} catch (err) {
 			this.emit({ type: "resources", reqId, ok: false, error: (err as Error).message });
+		}
+	}
+
+	/**
+	 * P4 运维：资源告警（磁盘/内存/unit 内存越线提示一次，冷却 1 小时）。
+	 * 由 ClientSession 的周期定时器调用；同一实例的多个客户端共享模块级冷却表，
+	 * 因此不会重复刷通知。读不到的指标不告警（没有数据 ≠ 满了）。
+	 */
+	private static readonly alertLastFired = new Map<string, number>();
+	checkResourceAlerts(): void {
+		if (!this.opsAlertsEnabled()) return;
+		try {
+			const snapshot = collectResources({ disks: [{ path: this.cwd, label: "workspace" }, { path: this.agentDir, label: "agent" }] });
+			const alerts = evaluateAlerts({ resources: snapshot, lastFired: Object.fromEntries(ClientSession.alertLastFired), now: Date.now() });
+			if (alerts.length === 0) return;
+			const now = Date.now();
+			for (const alert of alerts) ClientSession.alertLastFired.set(alert.key, now);
+			this.emit({
+				type: "notice",
+				level: alerts.some((a) => a.level === "critical") ? "error" : "warning",
+				text: alerts.map((a) => this.alertText(a)).join("；"),
+				textEn: alerts.map((a) => this.alertTextEn(a)).join("; "),
+			});
+		} catch {
+			/* 告警检查失败绝不影响服务 */
+		}
+	}
+
+	private alertText(alert: OpsAlert): string {
+		const what = alert.id === "disk" ? `磁盘 ${alert.key.slice(5)}` : alert.id === "memory" ? "内存" : "unit 内存";
+		return `${what}使用率 ${alert.value}%（阈值 ${alert.threshold}%）`;
+	}
+
+	private alertTextEn(alert: OpsAlert): string {
+		const what = alert.id === "disk" ? `Disk ${alert.key.slice(5)}` : alert.id === "memory" ? "Memory" : "unit memory";
+		return `${what} usage ${alert.value}% (threshold ${alert.threshold}%)`;
+	}
+
+	/** 诊断用：本进程所属引擎（AgentService 即 pi 引擎；DSH 由另一个实现回答）。 */
+	private static readonly ENGINE = "pi";
+
+	/** 诊断用：构建与来源信息（读不到就是 null，不编造）。 */
+	private releaseInfo(): { commit: string | null; appVersion: string | null; protocolVersion: number | null; builtAt: string | null; source: string | null } {
+		const distDir = dirname(fileURLToPath(import.meta.url)); // <release>/vendor/pi-web-ui/dist/server
+		const read = (path: string): Record<string, unknown> | null => {
+			try {
+				return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+			} catch {
+				return null;
+			}
+		};
+		const build = read(join(distDir, "..", "build-info.json"));
+		const source = read(join(distDir, "..", "..", "..", "..", "release-source.json"));
+		return {
+			commit: typeof build?.commit === "string" ? build.commit : null,
+			appVersion: typeof build?.appVersion === "string" ? build.appVersion : null,
+			protocolVersion: typeof build?.protocolVersion === "number" ? build.protocolVersion : null,
+			builtAt: typeof build?.builtAt === "string" ? build.builtAt : null,
+			source: typeof source?.commit === "string" ? source.commit : null,
+		};
+	}
+
+	/** 诊断用：实例监听地址（来自应用进程环境；缺失为 null，不从别处推断）。 */
+	private instanceAddress(): { host: string | null; port: number | null } {
+		const port = Number(process.env.PI_WEB_PORT ?? "");
+		return { host: process.env.PI_WEB_HOST ?? null, port: Number.isInteger(port) && port > 0 ? port : null };
+	}
+
+	/** 诊断用：单位状态（只读；systemctl 不可用时如实报 unknown，不抛错）。 */
+	private unitStates(): { unit: string; active: string; enabled: string }[] {
+		return ["pi-dev-pm2.service", "pi-web-ui-dev.service", "pi-web-ui-dev-watchdog.timer"].map((unit) => {
+			const read = (property: "is-active" | "is-enabled"): string => {
+				try {
+					return execFileSync("systemctl", ["--user", property, unit], { encoding: "utf8", timeout: 3_000, stdio: ["ignore", "pipe", "ignore"] }).trim() || "unknown";
+				} catch (err) {
+					return (err as { stdout?: string }).stdout?.trim() || "unknown";
+				}
+			};
+			return { unit, active: read("is-active"), enabled: read("is-enabled") };
+		});
+	}
+
+	/** 告警开关（默认开；持久化在 dev-con/ops-settings.json）。 */
+	private opsSettingsPath(): string {
+		return join(this.agentDir, "dev-con", "ops-settings.json");
+	}
+
+	private opsAlertsEnabled(): boolean {
+		try {
+			const parsed = JSON.parse(readFileSync(this.opsSettingsPath(), "utf8")) as { alertsEnabled?: boolean };
+			return parsed?.alertsEnabled !== false;
+		} catch {
+			return true;
+		}
+	}
+
+	/** P4 运维：开关资源告警。 */
+	setOpsAlerts(enabled: boolean): void {
+		try {
+			mkdirSync(join(this.agentDir, "dev-con"), { recursive: true });
+			writeFileSync(this.opsSettingsPath(), JSON.stringify({ alertsEnabled: enabled === true }, null, 2) + "\n", { mode: 0o600 });
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: enabled ? "已开启资源告警" : "已关闭资源告警",
+				textEn: enabled ? "Resource alerts enabled" : "Resource alerts disabled",
+			});
+		} catch (err) {
+			this.emit({ type: "notice", level: "error", text: `保存告警设置失败：${(err as Error).message}` });
+		}
+		this.flushSnapshot();
+	}
+
+	/** P4 运维：诊断包（只含元数据；密钥值/会话内容/日志正文一律不包含）。 */
+	async listDiagnostics(reqId: number): Promise<void> {
+		try {
+			const addr = this.instanceAddress();
+			const resources = collectResources({ disks: [{ path: this.cwd, label: "workspace" }, { path: this.agentDir, label: "agent" }] });
+			const areas = measureAreas([
+				{ path: join(this.stateStore.dataDir, "uploads"), label: "uploads", note: "uploads-cleanable" },
+				{ path: join(this.agentDir, "sessions"), label: "sessions", note: "sessions-user-data" },
+				{ path: join(this.agentDir, "dev-con"), label: "channel-metadata", note: "channel-metadata-user-data" },
+			]);
+			const usageFull = this.usageHistory.query({ groupBy: "source" });
+			const usageByChannel = this.usageHistory.query({ groupBy: "channel" });
+			const channels = this.channels.stateMessage();
+			const bundle = buildDiagnostics({
+				now: Date.now(),
+				app: { node: process.version, pid: process.pid, uptimeSec: Math.round(process.uptime()), engine: ClientSession.ENGINE, protocolVersion: PROTOCOL_VERSION },
+				release: this.releaseInfo(),
+				instance: {
+					configDir: dirname(this.agentDir),
+					dataDir: this.stateStore.dataDir,
+					agentDir: this.agentDir,
+					workspaceDir: this.cwd,
+					host: addr.host,
+					port: addr.port,
+					profile: process.env.PI_DEV_PROFILE ?? null,
+				},
+				units: this.unitStates(),
+				resources,
+				storage: {
+					at: Date.now(),
+					areas,
+					totalBytes: areas.reduce((sum, area) => sum + area.bytes, 0),
+					retention: { ...this.usageHistory.readSettings(), fileBytes: this.usageHistory.fileBytes(), choices: [0, 7, 30, 90, 365] },
+				},
+				channels: {
+					configRevision: channels.configRevision,
+					count: channels.channels.length,
+					enabledCount: channels.channels.filter((c) => c.enabled).length,
+					bindings: channels.bindings.length,
+					pending: channels.pending.length,
+					accounts: channels.accounts.length,
+					brokenRefs: channels.channels.filter((c) => c.keyMissing || c.providerMissing).length,
+				},
+				usage: { ...usageSummaryOf(usageFull), byChannel: usageSummaryOf(usageByChannel).byChannel },
+				environment: { platform: process.platform, cpuCount: resources.host.cpuCount, totalMemBytes: resources.host.mem.totalBytes },
+				warnings: [...resources.warnings, ...areas.filter((a) => a.truncated).map((a) => `storage:${a.label} 已达遍历上限`)],
+			});
+			this.emit({
+				type: "diagnostics",
+				reqId,
+				ok: true,
+				bundle,
+				alertsEnabled: this.opsAlertsEnabled(),
+				thresholds: { warnPercent: ALERT_WARN_PERCENT, criticalPercent: ALERT_CRITICAL_PERCENT, cooldownMs: ALERT_COOLDOWN_MS },
+			});
+		} catch (err) {
+			this.emit({ type: "diagnostics", reqId, ok: false, error: (err as Error).message });
 		}
 	}
 

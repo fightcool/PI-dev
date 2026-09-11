@@ -84,6 +84,7 @@ export type ChannelCommandResult = Extract<ServerMessage, { type: "channel_comma
 export type UsageHistoryMsg = Extract<ServerMessage, { type: "usage_history" }>;
 export type ResourcesMsg = Extract<ServerMessage, { type: "resources" }>;
 export type StorageMsg = Extract<ServerMessage, { type: "storage" }>;
+export type DiagnosticsMsg = Extract<ServerMessage, { type: "diagnostics" }>;
 /** 用量历史的时间窗（今天按 UTC 切分，与聚合口径一致）。 */
 export type UsageHistoryWindow = "all" | "today" | "7d" | "30d";
 const startOfUtcDay = (ms: number) => Date.UTC(new Date(ms).getUTCFullYear(), new Date(ms).getUTCMonth(), new Date(ms).getUTCDate());
@@ -127,6 +128,10 @@ export interface ChannelApi {
 	listStorage: () => number;
 	/** P4 运维：设置用量历史保留天数（0 = 只按大小轮转）。 */
 	setUsageRetention: (maxAgeDays: number) => boolean;
+	/** P4 运维：请求诊断包（只读元数据）。返回 reqId，结果在 state.diagnostics。 */
+	listDiagnostics: () => number;
+	/** P4 运维：开关资源告警通知。 */
+	setOpsAlerts: (enabled: boolean) => boolean;
 }
 
 /** 回执只用于「最近一次命令结果」展示：保留上限，超出丢最旧的（对象键序 = 插入序）。 */
@@ -215,6 +220,8 @@ export interface ChatState {
 	resources: ResourcesMsg | null;
 	/** P4 运维：最近一次存储占用明细（只读）。 */
 	storage: StorageMsg | null;
+	/** P4 运维：最近一次诊断包（只读元数据）。 */
+	diagnostics: DiagnosticsMsg | null;
 	/** 渠道命令回执，按 commandId 保留最近一条，供 UI 显示最新一次结果。 */
 	channelResults: Record<string, ChannelCommandResult>;
 	/** Result of the last install_pi_agent run (null while not started/running). */
@@ -370,6 +377,7 @@ type Action =
 	| { type: "usage_history"; history: UsageHistoryMsg }
 	| { type: "resources"; resources: ResourcesMsg }
 	| { type: "storage"; storage: StorageMsg }
+	| { type: "diagnostics"; diagnostics: DiagnosticsMsg }
 	| { type: "channel_command_result"; result: ChannelCommandResult }
 	| {
 			type: "fetch_models_result";
@@ -729,6 +737,8 @@ function reducer(state: ChatState, action: Action): ChatState {
 			return { ...state, resources: action.resources };
 		case "storage":
 			return { ...state, storage: action.storage };
+		case "diagnostics":
+			return { ...state, diagnostics: action.diagnostics };
 		case "channel_command_result":
 			return { ...state, channelResults: rememberChannelResult(state.channelResults, action.result) };
 		case "fetch_models_result":
@@ -921,6 +931,7 @@ export function useChat() {
 		usageHistory: null,
 		resources: null,
 		storage: null,
+		diagnostics: null,
 		channelResults: {},
 		installResult: null,
 		pathCompletions: [],
@@ -1176,6 +1187,9 @@ export function useChat() {
 					break;
 				case "storage":
 					dispatch({ type: "storage", storage: msg });
+					break;
+				case "diagnostics":
+					dispatch({ type: "diagnostics", diagnostics: msg });
 					break;
 				case "channel_command_result":
 					dispatch({ type: "channel_command_result", result: msg });
@@ -1457,6 +1471,7 @@ export function useChat() {
 	const usageReqIdRef = useRef(0);
 	const resourcesReqIdRef = useRef(0);
 	const storageReqIdRef = useRef(0);
+	const diagnosticsReqIdRef = useRef(0);
 	if (!channelApiRef.current) {
 		const command = (build: (commandId: string) => ClientMessage): string | null => {
 			const commandId = randomUuid();
@@ -1530,6 +1545,14 @@ export function useChat() {
 				channelSendRef.current({ type: "list_storage", reqId: storageReqIdRef.current });
 				return storageReqIdRef.current;
 			},
+			// P4 运维：诊断包（只读元数据）。
+			listDiagnostics: () => {
+				diagnosticsReqIdRef.current += 1;
+				channelSendRef.current({ type: "list_diagnostics", reqId: diagnosticsReqIdRef.current });
+				return diagnosticsReqIdRef.current;
+			},
+			// P4 运维：开关资源告警。
+			setOpsAlerts: (enabled) => channelSendRef.current({ type: "set_ops_alerts", enabled }),
 			// P4 运维：设置用量历史保留天数（仅 0/7/30/90/365）。
 			setUsageRetention: (maxAgeDays) => channelSendRef.current({ type: "set_usage_retention", maxAgeDays }),
 			// P4 首个切片：用量历史查询（只读）。reqId 自增，结果按 reqId 匹配。

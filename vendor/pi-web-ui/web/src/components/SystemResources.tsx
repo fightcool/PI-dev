@@ -7,7 +7,7 @@
 import { memo, useEffect, useState } from "react";
 import { useT } from "../i18n";
 import type { UiResourceSnapshot } from "../types";
-import type { StorageMsg } from "../use-chat";
+import type { DiagnosticsMsg, StorageMsg } from "../use-chat";
 
 const DISK_WARN_PERCENT = 85;
 
@@ -32,6 +32,9 @@ export const SystemResources = memo(function SystemResources({
 	storage,
 	onLoadStorage,
 	onSetRetention,
+	diagnostics,
+	onLoadDiagnostics,
+	onSetOpsAlerts,
 }: {
 	snapshot: UiResourceSnapshot | null;
 	onRefresh: () => void;
@@ -39,6 +42,10 @@ export const SystemResources = memo(function SystemResources({
 	storage?: StorageMsg | null;
 	onLoadStorage?: () => void;
 	onSetRetention?: (days: number) => void;
+	/** P4 运维：诊断包（只读元数据；按需生成）。 */
+	diagnostics?: DiagnosticsMsg | null;
+	onLoadDiagnostics?: () => void;
+	onSetOpsAlerts?: (enabled: boolean) => void;
 }) {
 	const t = useT();
 	const [tick, setTick] = useState(0);
@@ -193,6 +200,60 @@ export const SystemResources = memo(function SystemResources({
 										</button>
 									))}
 									<span className="resource-source">{t("storageRetentionNote", { size: bytes(storage.storage.retention.fileBytes) })}</span>
+								</div>
+							)}
+						</>
+					)}
+				</div>
+			)}
+			{onLoadDiagnostics && (
+				<div className="resources-diagnostics">
+					<div className="resource-title">{t("diagnosticsTitle")}</div>
+					<div className="resources-actions">
+						<button type="button" className="chan-btn primary" onClick={onLoadDiagnostics}>
+							{t("diagnosticsGenerate")}
+						</button>
+						{diagnostics?.ok && diagnostics.bundle && (
+							<button
+								type="button"
+								className="chan-btn"
+								onClick={() => {
+									const bundle = diagnostics.bundle;
+									if (!bundle) return;
+									// 纯客户端下载：诊断包已在内存里，不需要服务端写文件。
+									const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+									const url = URL.createObjectURL(blob);
+									const link = document.createElement("a");
+									link.href = url;
+									link.download = `pi-dev-diagnostics-${new Date(bundle.generatedAt).toISOString().replaceAll(":", "-")}.json`;
+									link.click();
+									URL.revokeObjectURL(url);
+								}}
+							>
+								{t("diagnosticsDownload")}
+							</button>
+						)}
+						{onSetOpsAlerts && (
+							<button type="button" className="chan-btn" onClick={() => onSetOpsAlerts(!(diagnostics?.alertsEnabled ?? true))}>
+								{diagnostics?.alertsEnabled === false ? t("diagnosticsAlertsOff") : t("diagnosticsAlertsOn")}
+							</button>
+						)}
+					</div>
+					{diagnostics && !diagnostics.ok && <div className="set-hint">{diagnostics.error ?? t("diagnosticsUnavailable")}</div>}
+					{diagnostics?.ok && diagnostics.bundle && (
+						<>
+							<pre className="diagnostics-summary">{t("diagnosticsSummary", {
+								commit: diagnostics.bundle.release.commit?.slice(0, 12) ?? "—",
+								protocol: String(diagnostics.bundle.release.protocolVersion ?? diagnostics.bundle.app.protocolVersion),
+								engine: diagnostics.bundle.app.engine,
+								units: diagnostics.bundle.units.map((u) => `${u.unit}=${u.active}`).join(" "),
+							})}</pre>
+							<div className="resource-source">{t("diagnosticsPrivacy")}</div>
+							{diagnostics.bundle.warnings.length > 0 && (
+								<div className="resources-warnings">
+									{diagnostics.bundle.warnings.map((w) => (
+										<div key={w} className="chan-warn">{w}</div>
+									))}
 								</div>
 							)}
 						</>

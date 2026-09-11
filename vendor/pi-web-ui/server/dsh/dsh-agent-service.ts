@@ -28,6 +28,7 @@
 import { collectResources } from "../dev-con/system-resources.js";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
+import { PROTOCOL_VERSION } from "../protocol-version.js";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { BgServerTracker } from "../bg-servers.js";
@@ -3497,6 +3498,40 @@ export class DshClientSession {
 		} catch (err) {
 			this.emit({ type: "resources", reqId, ok: false, error: (err as Error).message });
 		}
+	}
+
+	/** P4 运维：诊断包（元数据；密钥值/会话内容/日志正文一律不含）。 */
+	async listDiagnostics(reqId: number): Promise<void> {
+		try {
+			const resources = collectResources({ disks: [{ path: this.cwd, label: "workspace" }] });
+			this.emit({
+				type: "diagnostics",
+				reqId,
+				ok: true,
+				bundle: {
+					generatedAt: Date.now(),
+					app: { node: process.version, pid: process.pid, uptimeSec: Math.round(process.uptime()), engine: "dsh", protocolVersion: PROTOCOL_VERSION },
+					release: { commit: null, appVersion: null, protocolVersion: null, builtAt: null, source: null },
+					instance: { configDir: dirname(this.agentDir), dataDir: this.dataDir, agentDir: this.agentDir, workspaceDir: this.cwd, host: process.env.PI_WEB_HOST ?? null, port: Number(process.env.PI_WEB_PORT ?? "") || null, profile: process.env.PI_DEV_PROFILE ?? null },
+					units: [],
+					resources,
+					storage: { at: Date.now(), areas: [], totalBytes: 0, retention: { maxAgeDays: 0, maxBytes: 0, fileBytes: 0, choices: [0, 7, 30, 90, 365] } },
+					channels: { configRevision: 0, count: 0, enabledCount: 0, bindings: 0, pending: 0, accounts: 0, brokenRefs: 0 },
+					usage: { windowDays: 0, requests: 0, totalTokens: 0, cost: 0, unpricedRequests: 0, bySource: {}, byChannel: {} },
+					environment: { platform: process.platform, cpuCount: resources.host.cpuCount, totalMemBytes: resources.host.mem.totalBytes },
+					warnings: ["DSH 引擎不提供渠道/用量历史元数据"],
+				},
+				alertsEnabled: false,
+				thresholds: { warnPercent: 85, criticalPercent: 90, cooldownMs: 3_600_000 },
+			});
+		} catch (err) {
+			this.emit({ type: "diagnostics", reqId, ok: false, error: (err as Error).message });
+		}
+	}
+
+	/** P4 运维：DSH 引擎不提供资源告警。 */
+	setOpsAlerts(_enabled: boolean): void {
+		this.emit({ type: "notice", level: "warning", text: "DSH 引擎不提供资源告警", textEn: "The DSH engine has no resource alerts" });
 	}
 
 	/** P4 运维：DSH 引擎没有逐请求历史，因此不提供存储明细与保留设置。 */

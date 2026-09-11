@@ -70,6 +70,24 @@ export function socketReply(message, state) {
       ...channelStateMsg,
     ];
     case 'list_channels': return channelStateMsg;
+    case 'list_diagnostics':
+      return [{
+        type: 'diagnostics', reqId: message.reqId, ok: true, alertsEnabled: true,
+        thresholds: { warnPercent: 85, criticalPercent: 90, cooldownMs: 3600000 },
+        bundle: {
+          generatedAt: 1700000000000,
+          app: { node: 'v22.19.0', pid: 4242, uptimeSec: 3600, engine: 'pi', protocolVersion: 20 },
+          release: { commit: 'a'.repeat(40), appVersion: '0.72.0', protocolVersion: 20, builtAt: '2026-09-11T00:00:00Z', source: 'a'.repeat(40) },
+          instance: { configDir: '/synthetic/cfg', dataDir: '/synthetic/data', agentDir: '/synthetic/agent', workspaceDir: '/synthetic', host: '127.0.0.1', port: 8788, profile: 'lean' },
+          units: [{ unit: 'pi-dev-pm2.service', active: 'active', enabled: 'enabled' }],
+          resources: { at: 1700000000000, host: { hostname: 'synthetic-host', platform: 'linux', uptimeSec: 1, cpuCount: 4, loadAvg: [0, 0, 0], cpuPercent: 1, mem: { totalBytes: 1000, usedBytes: 100, availableBytes: 900, swapTotalBytes: 0, swapUsedBytes: 0 } }, app: { pid: 4242, node: 'v22.19.0', uptimeSec: 1, rssBytes: 1, heapUsedBytes: 1, heapTotalBytes: 2, externalBytes: 0, cgroup: { currentBytes: null, maxBytes: null, highBytes: null } }, disks: [], sources: { cpu: 'proc-stat', mem: 'proc-meminfo', disk: 'statfs', cgroup: 'unavailable' }, warnings: [] },
+          storage: { at: 1700000000000, areas: [], totalBytes: 0, retention: { maxAgeDays: 0, maxBytes: 8, fileBytes: 0, choices: [0, 7, 30, 90, 365] } },
+          channels: { configRevision: 0, count: 0, enabledCount: 0, bindings: 0, pending: 0, accounts: 0, brokenRefs: 0 },
+          usage: { windowDays: 30, requests: 3, totalTokens: 165, cost: 0.03, unpricedRequests: 1, bySource: { user: 2, subagent: 1 }, byChannel: { 'ch-a': 2 } },
+          environment: { platform: 'linux', cpuCount: 4, totalMemBytes: 1000 },
+          warnings: ['synthetic warning'],
+        },
+      }];
     case 'list_storage':
       return [{
         type: 'storage', reqId: message.reqId, ok: true,

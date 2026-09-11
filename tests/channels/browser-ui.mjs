@@ -368,6 +368,20 @@ try {
 			sent = [];
 			await resources.locator("button.chan-btn", { hasText: "Recompute storage" }).first().click();
 			check("storage refresh asks for a new walk", sent.some((m) => m.type === "list_storage"), JSON.stringify(sent.at(-1) ?? null));
+			// P4 运维：诊断包（只读元数据）+ 告警开关。
+			sent = [];
+			await resources.locator("button.chan-btn", { hasText: "Generate diagnostics" }).first().click();
+			check("diagnostics button requests the bundle", sent.some((m) => m.type === "list_diagnostics"), JSON.stringify(sent.at(-1) ?? null));
+			await page2.waitForTimeout(400);
+			const diagText = await resources.first().innerText();
+			check(
+				"diagnostics summary shows commit/protocol/unit and the privacy note",
+				diagText.includes("protocol v20") && diagText.includes("pi-dev-pm2.service=active") && diagText.includes("metadata only"),
+				diagText.split("\n").slice(-4).join(" / "),
+			);
+			sent = [];
+			await resources.locator("button.chan-btn", { hasText: /Resource alerts:/ }).first().click();
+			check("alert toggle sends set_ops_alerts", sent.some((m) => m.type === "set_ops_alerts"), JSON.stringify(sent.at(-1) ?? null));
 			sent = [];
 			await resources.locator("button.chan-btn", { hasText: "Refresh channel state" }).first().click();
 			check("manual refresh asks for a new snapshot", sent.some((m) => m.type === "list_resources"), JSON.stringify(sent.at(-1) ?? null));

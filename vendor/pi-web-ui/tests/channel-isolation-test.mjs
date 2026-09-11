@@ -286,6 +286,25 @@ try {
 	const windowed = await queryHistory(client, "day");
 	check("usage history groups by UTC day", windowed.rows.every((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.key)), JSON.stringify(windowed.rows.map((r) => r.key)));
 
+	// 7c) P4 运维：诊断包只含元数据——合成密钥正文绝不能出现在载荷里。
+	client.send({ type: "list_diagnostics", reqId: 7 });
+	const diag = await client.waitForType("diagnostics", (m) => m.reqId === 7, 20000);
+	const diagText = JSON.stringify(diag);
+	check("diagnostics bundle is returned with metadata", diag.ok === true && Boolean(diag.bundle), diag.error ?? "");
+	check(
+		"diagnostics carries version/paths/unit and channel counts",
+		diag.bundle.app.protocolVersion === 20 && (diag.bundle.release.protocolVersion === null || typeof diag.bundle.release.protocolVersion === "number") &&
+			typeof diag.bundle.instance.agentDir === "string" && Array.isArray(diag.bundle.units) &&
+			diag.bundle.channels.count === 2 && diag.bundle.usage.requests >= 2,
+		JSON.stringify({ appProtocol: diag.bundle.app.protocolVersion, releaseProtocol: diag.bundle.release.protocolVersion, channels: diag.bundle.channels, usage: diag.bundle.usage.requests }),
+	);
+	check(
+		"diagnostics never leaks credential values (synthetic keys absent)",
+		!diagText.includes("sk-active-one") && !diagText.includes("sk-active-two") && !diagText.includes("apiKey"),
+		diagText.slice(0, 160),
+	);
+	check("diagnostics reports the alert switch and thresholds", typeof diag.alertsEnabled === "boolean" && diag.thresholds?.criticalPercent === 90);
+
 	// 8) 组合命令的失败路径：模型不属于该渠道服务商 → 明确拒绝，绑定保持。
 	const bad = await runCommand(client, "channel_select", { conversationId: convB, channelId: "ch-b", modelId: "mock/missing-model" });
 	check("unknown model is rejected with the previous binding kept", bad.ok === false && bad.phase === "rejected", bad.error ?? "");
