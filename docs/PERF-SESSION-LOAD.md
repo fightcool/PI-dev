@@ -50,25 +50,25 @@ vendor/pi-web-ui/web/src/perf-trace.ts, tests/performance/README.md -->
 
 | # | 目标 | 落点 |
 | --- | --- | --- |
-| 1 | 首份 snapshot 不再等插件激活，兜底超时 5 s → 亚秒 | `server/index.ts` hello 链、`server/initial-snapshot-gate.ts` |
-| 2 | 项目密钥/模型恢复的**网络刷新**移出关键路径 | `server/agent-service.ts` attach / switchConversation / switchSession |
-| 3 | attach / 切会话内部 await 并行化、按 cwd 去重 | 同上 |
-| 4 | 高亮语言集收敛 + 高亮/解析结果缓存（保留自动嗅探观感） | `web/src/components/Markdown.tsx` |
-| 5 | 工具输出默认折叠 + 消除 memo 失效的新对象 | `web/src/components/ToolCallBlock.tsx`、`Message.tsx`、服务端默认设置 |
-| 6 | 去掉切会话的整树重挂载，保住行高测量缓存 | `web/src/app/chat-view.tsx`、`message-list/useRowWindow.ts` |
-| 7 | 滚动/流式热点：无依赖 layout effect、每帧逐行测量、滚动期子树查询 | `message-list/useBottomScroll.ts`、`useRowWindow.ts` |
-| 8 | 切换「先给帧」：立即进入目标会话并显示骨架/本地缓存 | `web/src/use-chat.ts`、`chat-view.tsx` |
+| 1 | 首份 snapshot 不再等插件激活，兜底超时 5 s → 已删除（hello 同步开闸） | `server/index.ts` hello 链、`server/initial-snapshot-gate.ts` |
+| 2 | 项目密钥/模型恢复的**网络刷新**移出关键路径（显式切换密钥仍是同步的） | `server/agent-service.ts`、`server/model-admin.ts` |
+| 3 | 高亮语言集收敛 + 高亮/解析结果缓存（保留自动嗅探观感） | `web/src/components/Markdown.tsx` |
+| 4 | 工具输出默认折叠 + 消除 memo 失效的新对象 | `web/src/components/ToolCallBlock.tsx`、`Message.tsx`、服务端默认设置 |
+| 5 | 去掉切会话的整树重挂载，保住行高测量缓存 | `web/src/app/chat-view.tsx`、`message-list/useRowWindow.ts` |
+| 6 | 滚动/流式热点：无依赖 layout effect、每帧逐行测量、滚动期子树查询 | `message-list/useBottomScroll.ts`、`useRowWindow.ts` |
+| 7 | 切换「先给帧」：立即进入目标会话并显示骨架/本地缓存 | `web/src/use-chat.ts`、`chat-view.tsx` |
 
 ### P1（协议与数据面）
 
 | # | 目标 | 落点 |
 | --- | --- | --- |
-| 9 | 尾部优先 + 向上分页加载（大历史不再一次全量） | `server/protocol.ts`、`agent-service.ts`、客户端 reducer |
-| 10 | 本地会话缓存（stale-while-revalidate），切回近 0 延迟 | 新增客户端缓存模块 |
-| 11 | hover/列表打开时预取 | `web/src/components/LeftPanel.tsx` |
-| 12 | runtime LRU 复用，避免切历史会话重付扩展转译 | `server/agent-service.ts` |
-| 13 | 会话/项目列表扫描加缓存与精确失效 | `server/session-history-cache.ts`、`agent-service.ts` |
-| 14 | 首屏 bundle：markdown chunk 真正懒加载 + 关键 chunk 预加载 + i18n 分语言 | `web/vite.config.ts`、`index.html`、`web/src/i18n.tsx` |
+| 8 | 尾部优先 + 向上分页加载（大历史不再一次全量） | `server/protocol.ts`、`agent-service.ts`、客户端 reducer |
+| 9 | 本地会话缓存（stale-while-revalidate），切回近 0 延迟 | 新增客户端缓存模块 |
+| 10 | hover/列表打开时预取 | `web/src/components/LeftPanel.tsx` |
+| 11 | runtime LRU 复用，避免切历史会话重付扩展转译 | `server/agent-service.ts` |
+| 12 | 会话/项目列表扫描加缓存与精确失效 | `server/session-history-cache.ts`、`agent-service.ts` |
+| 13 | 首屏 bundle：markdown chunk 真正懒加载 + 关键 chunk 预加载 + i18n 分语言 | `web/vite.config.ts`、`index.html`、`web/src/i18n.tsx` |
+| 14 | attach 时 `syncActiveFromDiskIfStale` 的整份 runtime 重建与首快照抢跑（常见于「关页面→再打开」且期间另一端写过） | `server/agent-service.ts` |
 
 ## 5. 验收口径
 
@@ -83,6 +83,23 @@ vendor/pi-web-ui/web/src/perf-trace.ts, tests/performance/README.md -->
 
 ## 6. 进度
 
-- [x] P0-0 度量基线：服务端分段打点（`server/timing.ts`）+ 浏览器时间线（`web/src/perf-trace.ts`）。
-- [ ] P0-1 … P0-8。
-- [ ] P1-9 … P1-14。
+- [x] P0-0 度量基线：服务端分段打点（`server/timing.ts`）+ 浏览器时间线（`web/src/perf-trace.ts`）+ 隔离复现探针。
+- [x] P0-1 首份快照与插件门控解耦（`InitialSnapshotGate` 去掉 5 秒兜底与等待插件）。
+- [x] P0-2 项目密钥/模型恢复的网络刷新移出关键路径（显式切换密钥仍同步）。
+- [ ] P0-3 客户端高亮语言集收敛 + 解析/高亮缓存。
+- [ ] P0-4 工具输出默认折叠 + memo 修复。
+- [ ] P0-5 去掉切会话整树重挂载。
+- [ ] P0-6 滚动/流式热点。
+- [ ] P0-7 切换先给帧（乐观切换）。
+- [ ] P1-8 … P1-14。
+
+### 已实测结论（隔离实例，合成会话）
+
+| 场景 | 基线 | 当前 |
+| --- | --- | --- |
+| 冷 attach → 首份 snapshot（200 条会话） | 151 ms（含 plugins=4 在关键路径上） | 149 ms，且 `snapshot-sent` 排在插件之前 |
+| switch_session → snapshot（1460 条） | 85 ms | 84 ms |
+| switch_session 重复目标（no-op） | 仍答一份快照（探针守住此契约） | 5 ms |
+
+隔离实例没有线上的扩展与插件，绝对值远低于线上；这里用于确认改动没有把服务端改慢。
+线上的绝对数字靠 `PI_WEB_TIMING=1` 在真实实例上读。
