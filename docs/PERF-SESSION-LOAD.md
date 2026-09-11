@@ -38,7 +38,7 @@ vendor/pi-web-ui/web/src/perf-trace.ts, tests/performance/README.md -->
 两端使用同一套阶段名，便于对齐：
 
 - **服务端**：`PI_WEB_TIMING=1` 时，`server/timing.ts` 在 attach / 建会话 / 切会话 / snapshot 各阶段输出一行 `[timing] …`，包含每段毫秒数、`total`、snapshot 构建耗时与 wire 字节数。关闭时零成本（调用点全为可选链）。
-- **浏览器**：`web/src/perf-trace.ts` 记录 `boot → ws:open → ws:ready → ws:snapshot → paint`，切换额外记录 `switch:click → paint` 差值。控制台执行 `__piPerf()` 打印瀑布；`localStorage.setItem("pi-perf","1")` 可在控制台实时打印单点。
+- **浏览器**：`web/src/perf-trace.ts` 记录 `boot → ws:open → ws:ready → ws:snapshot → paint`，切换额外记录 `switch:switch_conversation|switch_session → paint` 差值（配对窗口 15 s）。控制台执行 `__piPerf()` 打印瀑布；`localStorage.setItem("pi-perf","1")` 则每次打点都同时 `console.debug`（刷新后生效）。
 - **客户端渲染回归**：`npm run test:performance`（`tests/performance/browser.mjs`，模拟 WS + 长任务/DOM 预算）。口径见 [tests/performance/README.md](../tests/performance/README.md)。
 - 打点只留在内存（上限 200 条环形缓冲），不发送、不落盘、不含消息正文。
 
@@ -56,7 +56,7 @@ vendor/pi-web-ui/web/src/perf-trace.ts, tests/performance/README.md -->
 | 4 | 工具输出默认折叠 + 消除 memo 失效的新对象 | `web/src/components/ToolCallBlock.tsx`、`Message.tsx`、`server/client-state.ts` | ✅ |
 | 5 | 去掉切会话的整树重挂载 | `web/src/app/chat-view.tsx`、`message-list/useRowWindow.ts` | ⏸ 暂缓（见下） |
 | 6 | 滚动/流式热点：贴底重复写、滚动期子树查询 | `message-list/useBottomScroll.ts`、`useRowWindow.ts` | ✅ |
-| 7 | 切换「先给帧」：乐观切换占位 | `web/src/use-chat.ts`、`chat-view.tsx` | ✅ |
+| 7 | 切换「先给帧」：乐观切换占位 | `web/src/use-chat.ts`、`chat-view.tsx` | ✅（点击→卸载旧内容→新快照到→挂载；与 P0-5 的 key 重挂载次数相同，没有额外代价） |
 
 **P0-5 为何暂缓**：拆开看，`key={conversationId}` 丢掉的三样东西里，`expanded`（展开的折叠行）
 和 `position`（滚动位置）本就应该在新会话里重置，只有行高测量缓存是净损失——而它按消息 id 索引，
@@ -113,7 +113,7 @@ markdown 解析、测量重排、布局各占多少，再决定是否动它。
 
 | 场景 | 基线 | 当前 |
 | --- | --- | --- |
-| 冷 attach → 首份 snapshot（200 条会话） | 151 ms，且插件激活在其之前 | 172 ms，`snapshot-sent` 排在 `plugins` 之前（白屏上限从 5 s 降为一次 snapshot） |
+| 冷 attach → 首份 snapshot（200 条会话） | 149–151 ms，但插件激活排在快照之前（插件慢时靠 5 s 兜底） | 166–172 ms（同机抖动 ±20 ms，差异不可比）；关键是顺序：`snapshot-sent` 稳定排在 `plugins` 之前，白屏上限从「5 s 兜底」变为「一次 snapshot」 |
 | switch_session → 1460 条会话 | 85–96 ms | 96 ms（含 `open=29 runtime=32 snap-full=11`） |
 | switch_session 重复目标（no-op） | 仍答一份快照（探针守住此契约） | 4 ms |
 | list_projects | 每次 26 ms（小 fixture；线上 14 MiB 数据约 250 ms） | 首次同前，同交互内二次 2 ms |

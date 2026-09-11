@@ -25,7 +25,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import { setTimeout as sleep } from "node:timers/promises";
-import { portUp } from "../../vendor/pi-web-ui/tests/lib/port-utils.mjs";
+import { portUp, freePort } from "../../vendor/pi-web-ui/tests/lib/port-utils.mjs";
 import { writeSyntheticSession } from "./session-fixture.mjs";
 
 const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
@@ -34,7 +34,9 @@ const require = createRequire(join(APP_ROOT, "package.json"));
 
 const SMALL_MESSAGES = Number(process.env.SMALL ?? 200);
 const BIG_MESSAGES = Number(process.env.BIG ?? 1460);
-const PORT = Number(process.env.PORT ?? 8899);
+// Dynamic port from the repo's test range (>=8900, never the live 8788/8890):
+// a fixed port is what made concurrent smoke runs collide (see f4fc131).
+const PORT = Number(process.env.PORT ?? 8900 + Math.floor(Math.random() * 90));
 const HARD_TIMEOUT_MS = Number(process.env.TIMEOUT_MS ?? 120_000);
 
 const guard = setTimeout(() => {

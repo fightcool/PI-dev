@@ -1,5 +1,12 @@
 # Isolated browser performance and regression harness
 
+<!-- 🍞 AI Breadcrumb Navigation — @COUPLED=implementation entry points.
+@COUPLED tests/performance/browser.mjs, tests/performance/config.mjs,
+tests/performance/isolation.mjs, tests/performance/fixtures.mjs,
+tests/performance/metrics.mjs, tests/performance/scenarios.mjs,
+tests/performance/diagnostics.mjs
+-->
+
 ## Server-side probe / 服务端探针
 
 ```sh
@@ -27,12 +34,6 @@ instead of a fixed fixture.
 Both files only ever write to a fresh temp directory: they never read or write a
 real agent directory, and never touch a live instance.
 
-<!-- 🍞 AI Breadcrumb Navigation — @COUPLED=implementation entry points.
-@COUPLED tests/performance/browser.mjs, tests/performance/config.mjs,
-tests/performance/isolation.mjs, tests/performance/fixtures.mjs,
-tests/performance/metrics.mjs, tests/performance/scenarios.mjs,
-tests/performance/diagnostics.mjs
--->
 
 Run from the repository root after the main build finishes:
 

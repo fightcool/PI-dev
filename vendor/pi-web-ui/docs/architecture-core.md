@@ -12,7 +12,7 @@
 - 全文搜索从消息数据建索引，命中高亮只处理已挂载行。打开搜索不会全量展开历史。`QuestionNavigation` 对刻度采样、列表虚拟化，全部问题仍可通过键盘和滚动到达。
 - 消息高度按对象身份、折叠态和布局条件缓存，编辑/搜索布局变化会使旧测量失效；滚动期间最多额外保留一个正在编辑的行。
 - 流式Markdown每100ms采样最新文本，采样发生在分段与解析之前；冻结段memo、未闭合代码块纯文本显示、结束后完整Markdown渲染保持一致。
-- pi引擎首次连接在 `hello`/`ready` 后**立即**发首个全量快照：`InitialSnapshotGate` 只负责「基线之前不发快照」（attach 注册 sink 之后、hello 处理之前，其他标签页的活动可能已推增量），不再等待插件激活（原5秒兜底已移除，插件挂起不再造成白屏）。插件目录随后到达——围栏渲染器命中即可，未命中的围栏在清单一到时重试（见 `web/src/plugin-fence.ts`）。初始get_state合并进该基线；初始化之后的rev/seq缺口get_state继续强制全量。该门只影响新socket，既有标签页继续收到更新。性能分段口径见 `docs/PERF-SESSION-LOAD.md`。
+- pi引擎首次连接在 `hello`/`ready` 后**立即**发首个全量快照：`InitialSnapshotGate` 只负责「基线之前不发快照」（attach 注册 sink 之后、hello 处理之前，其他标签页的活动可能已推增量），不再等待插件激活（原5秒兜底已移除，插件挂起不再造成白屏）。插件目录随后到达——围栏渲染器命中即可，未命中的围栏在清单一到时重试（见 `web/src/plugin-fence.ts`）。初始get_state合并进该基线；初始化之后的rev/seq缺口get_state继续强制全量。该门只影响新socket，既有标签页继续收到更新。性能分段口径见 `../../docs/PERF-SESSION-LOAD.md`。
 - 历史缓存捕获请求cwd，合并进行中的扫描；失效或切项目后不向当前面板发布旧结果。全文搜索锚点通过异步流读取、最多4份文件并发，保留原排序与结果上限。
 - 回归入口：根 `npm run test:performance`；应用 `tests/message-list-window-test.mjs` 检查滚动、编辑、搜索和流式交互；`tests/unit/initial-snapshot.test.ts`、`session-history-cache.test.ts`、`session-search.test.ts` 检查后端路径。
 

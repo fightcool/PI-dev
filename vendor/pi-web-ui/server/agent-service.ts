@@ -4607,7 +4607,7 @@ export class ClientSession {
 		}
 	}
 
-	/** Throws away the previous conversation; returns after the switch is applied. */
+	/** Applies the switch in place; the caller owns the snapshot + trace lifecycle. */
 	private async switchConversationInner(id: string, trace?: TimingTrace): Promise<void> {
 		if (!this.convs.has(id)) await traceStep(trace, "restore", () => this.maintenance.restore(id));
 		if (!this.convs.has(id) || id === this.activeId) return;

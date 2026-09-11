@@ -40,7 +40,7 @@ export const remarkPluginsHardBreaks = [remarkGfm, remarkBreaks];
  * @PERF `detect: true` 会把 subset 里每个语法都跑一遍再取最相关的一个，成本≈
  * 语言数之和。实测（40 行无标注块，本机）：37 种 53.0ms → 本列表 16.7ms；
  * 更短的消息块 6.2ms → 1.6ms。丢掉的语言（arduino/less/objectivec/php-template/
- * plaintext/python-repl/vbnet/wasm/swift/kotlin/lua/perl/r/csharp/graphql/scss）
+ * plaintext/python-repl/vbnet/wasm/swift/kotlin/lua/perl/r/csharp/graphql/scss/php）
  * 要么是其他语法的超集（只为制造平局）、要么在 agent 输出里罕见；猜不中会回落
  * 到不高亮（`highlightAuto` 把 plaintext 当保底选项，relevance=0），不会乱高亮。
  * 改这里请重跑一次 `/tmp` 级别的 `lowlight.highlightAuto` 基准，并同步本注释里的数字。

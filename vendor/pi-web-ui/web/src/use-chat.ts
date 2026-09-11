@@ -194,11 +194,11 @@ export interface ChatState {
 	conversations: ConversationSummary[];
 	/** Id of the conversation the current snapshot belongs to. */
 	activeConversationId: string;
-	/** 乐观切换：用户已点开的会话，其首份快照还没到。非 null 时对话面板显示
-	 *  加载占位而不是上一个会话的内容（否则用户看到的是「点了没反应」）。
-	 *  `conversationId` 在 switch_conversation 时已知，switch_session（按磁盘
-	 *  文件打开）时未知 —— 两种情况都靠「快照里的 conversationId 变了」收尾。 */
-	switching: { conversationId?: string } | null;
+	/** 乐观切换：用户已点开的会话，其首份快照还没到。true 时对话面板显示加载
+	 *  占位而不是上一个会话的内容（否则用户看到的是「点了没反应，然后跳一下」）。
+	 *  结束条件就是「快照里的 conversationId 变了」——switch_conversation 与
+	 *  switch_session（按磁盘文件打开）都适用，无需记住目标 id。 */
+	switching: boolean;
 	/** Recent workspaces this client opened (left panel project picker). */
 	projects: ProjectSummary[];
 	/** Workspace file listing for the right panel. */
@@ -348,7 +348,7 @@ export interface ChatState {
 
 type Action =
 	| { type: "status"; status: ConnStatus }
-	| { type: "switching"; target: { conversationId?: string } | null }
+	| { type: "switching"; on: boolean }
 	| { type: "snapshot"; state: UiState }
 	| { type: "snapshot_delta"; msg: Extract<ServerMessage, { type: "snapshot_delta" }> }
 	| { type: "protocol_mismatch" }
@@ -618,7 +618,7 @@ function pruneToolStatuses(statuses: Map<string, ToolStatus>, state: UiState): M
 function reducer(state: ChatState, action: Action): ChatState {
 	switch (action.type) {
 		case "switching":
-			return { ...state, switching: action.target };
+			return { ...state, switching: action.on };
 		case "status":
 			return {
 				...state,
@@ -650,7 +650,7 @@ function reducer(state: ChatState, action: Action): ChatState {
 				activeConversationId: action.state.conversationId,
 				// 乐观切换的收尾：只有「活动会话真的换了」才算切换完成——这样切换期间
 				// 旧会话的定时快照/后台统计更新不会提前把占位揭掉。
-				switching: action.state.conversationId === state.state?.conversationId ? state.switching : null,
+				switching: action.state.conversationId === state.state?.conversationId && state.switching,
 				liveOutputs: pruneLiveOutputs(state.liveOutputs, action.state),
 				toolStatuses: pruneToolStatuses(state.toolStatuses, action.state),
 			};
@@ -711,6 +711,10 @@ function reducer(state: ChatState, action: Action): ChatState {
 				toolStatuses: new Map(state.toolStatuses).set(action.status.toolCallId, action.status),
 			};
 		case "notice":
+			// 切换失败只发 notice（会话不存在/切换抛错），不会再有快照到来：
+			// 立刻揭掉占位，不必等 8s 安全网。
+			if (state.switching && action.notice.level === "error")
+				return { ...state, switching: false, notices: [...state.notices, action.notice] };
 			return { ...state, notices: [...state.notices, action.notice].slice(-6) };
 		case "dismiss_notice":
 			return {
@@ -929,7 +933,7 @@ export function useChat() {
 		sessions: [],
 		conversations: [],
 		activeConversationId: "",
-		switching: null,
+		switching: false,
 		projects: [],
 		files: null,
 
@@ -1043,11 +1047,10 @@ export function useChat() {
 			// 切到当前已打开/已显示的会话是 no-op，不进占位态。
 			if (msg.type === "switch_conversation") {
 				perfMarkSwitch(msg.type);
-				if (msg.id !== chatApi.current.chat.activeConversationId)
-					dispatch({ type: "switching", target: { conversationId: msg.id } });
+				if (msg.id !== chatApi.current.chat.activeConversationId) dispatch({ type: "switching", on: true });
 			} else if (msg.type === "switch_session") {
 				perfMarkSwitch(msg.type);
-				if (msg.path !== chatApi.current.chat.state?.sessionFile) dispatch({ type: "switching", target: {} });
+				if (msg.path !== chatApi.current.chat.state?.sessionFile) dispatch({ type: "switching", on: true });
 			}
 			// Forced re-check: drop stale rows immediately so the "checking"
 			// state renders instead of the cached list.
@@ -1071,7 +1074,7 @@ export function useChat() {
 	 *  @MAGIC 8s —— 比实测最慢的切历史会话（含扩展重建，数秒级）再宽一些。 */
 	useEffect(() => {
 		if (!chat.switching) return;
-		const timer = setTimeout(() => dispatch({ type: "switching", target: null }), 8000);
+		const timer = setTimeout(() => dispatch({ type: "switching", on: false }), 8000);
 		return () => clearTimeout(timer);
 	}, [chat.switching]);
 
