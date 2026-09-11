@@ -7,8 +7,9 @@
  *      服务端还是渲染。纯观测，不改任何行为。
  * @GOTCHA 打点必须在 await/渲染之前同步执行；marks 只留在内存（上限 200 条），
  *      不发送、不落盘、不含消息正文——验收时由人显式读走。
- * @MAGIC MAX_MARKS=200 环形上限；SWITCH_WINDOW_MS=15000 只用来把「点击→首帧」
- *      配成一段。
+ * @MAGIC MAX_MARKS=200 环形上限；SWITCH_WINDOW_MS=15000 是「点击→首帧」的配对
+ *      窗口：超过它才到的 paint 不再当成本次切换的结果（否则一次切换会错配到很久
+ *      之后的某次渲染）。
  * 📖 docs/PERF-SESSION-LOAD.md
  */
 
@@ -34,6 +35,10 @@ const PERF_LOG = (() => {
 })();
 
 /** Timestamp of the last switch click, so click → first paint can be paired. */
+/** Clicks older than this are not paired: a switch that never painted must not
+ *  absorb an unrelated later paint. */
+const SWITCH_WINDOW_MS = 15_000;
+
 let lastSwitchAt: number | null = null;
 
 /** Record one timeline point. Safe to call before/without any UI. */
@@ -61,7 +66,12 @@ export function perfMarkPaint(conversationId: string): void {
 		return;
 	}
 	const at = typeof performance === "undefined" ? Date.now() : performance.now();
-	perfMark("paint", `${Math.round(at - from)}ms after switch (${conversationId.slice(0, 8)})`);
+	const delta = at - from;
+	if (delta > SWITCH_WINDOW_MS) {
+		perfMark("paint", `${conversationId.slice(0, 8)}（无配对切换）`);
+		return;
+	}
+	perfMark("paint", `${Math.round(delta)}ms after switch (${conversationId.slice(0, 8)})`);
 }
 
 /** Readable waterfall — call `__piPerf()` in the browser console. */

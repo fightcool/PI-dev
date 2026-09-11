@@ -28,6 +28,8 @@ export class TimingTrace {
 	private readonly marks: TimingMark[] = [];
 	private at = now();
 	private readonly startedAt = this.at;
+	/** Set by end(); a closed trace ignores further marks and never logs twice. */
+	private closed = false;
 
 	constructor(
 		private readonly label: string,
@@ -37,13 +39,19 @@ export class TimingTrace {
 
 	/** Record the time since the previous mark (or since the trace started). */
 	mark(name: string): void {
+		if (this.closed) return;
 		const current = now();
 		this.marks.push({ name, ms: Math.round(current - this.at) });
 		this.at = current;
 	}
 
-	/** One structured line; harmless in production logs but only emitted when enabled. */
+	/** One structured line; harmless in production logs but only emitted when enabled.
+	 *  Closing a trace also detaches it: the owning ClientSession keeps the reference
+	 *  for its snapshot marks, and without this a closed trace would keep appending
+	 *  to `marks` on every later snapshot (unbounded growth when PI_WEB_TIMING=1). */
 	end(extra: Record<string, string | number | boolean> = {}): void {
+		if (this.closed) return;
+		this.closed = true;
 		const total = Math.round(now() - this.startedAt);
 		const phases = this.marks.map((m) => `${m.name}=${m.ms}${m.ms >= SLOW_PHASE_MS ? "!" : ""}`).join(" ");
 		const facts = Object.entries({ ...this.facts, ...extra, total })
@@ -78,18 +86,9 @@ export async function traceStep<T>(trace: TimingTrace | undefined, name: string,
  *
  * @MAGIC slowMs=50: below this the line is noise, so it is skipped.
  */
-export function logPhase(
-	label: string,
-	name: string,
-	ms: number,
-	slowMs = 50,
-	extra: Record<string, string | number | boolean> = {},
-): void {
+export function logPhase(label: string, name: string, ms: number, slowMs = 50): void {
 	if (!timingEnabled || ms < slowMs) return;
-	const facts = Object.entries(extra)
-		.map(([k, v]) => `${k}=${v}`)
-		.join(" ");
-	console.log(`[timing-bg] ${label} ${name}=${Math.round(ms)}ms${facts ? ` | ${facts}` : ""}`);
+	console.log(`[timing-bg] ${label} ${name}=${Math.round(ms)}ms`);
 }
 
 /** Monotonic-enough wall clock; `performance` is available on Node >= 16. */

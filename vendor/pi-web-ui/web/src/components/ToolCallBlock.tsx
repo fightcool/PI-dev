@@ -49,7 +49,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 	block,
 	view,
 	onKillBash,
-	wrap = true,
+	wrap = false,
 	forceOpen = false,
 }: {
 	block: UiToolCallBlock;
@@ -57,7 +57,8 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 	/** Kill the running bash command (bash cards only, while running). */
 	onKillBash?: KillBashHandler;
 	/** 设置面板「完整显示工具」开关：true（开）→ 工具始终完整展开；
-	 *  false（关）→ 默认折叠，点击展开。 */
+	 *  false（关，默认）→ 默认折叠，点击展开。未传时按关闭处理，与
+	 *  server/client-state.ts 的 toolsWrap 默认值一致（@PERF 默认折叠见那里）。 */
 	wrap?: boolean;
 	/** 会话内搜索打开时强制展开（折叠内容不在 DOM，搜索索引搜到的词会
 	 *  “展开后看不到”——见 ThinkingBlock.forceOpen）。 */

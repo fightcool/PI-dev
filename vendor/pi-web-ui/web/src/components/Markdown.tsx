@@ -31,7 +31,45 @@ export const remarkPlugins = [remarkGfm];
 /** Same pipeline + hard line breaks — used for USER bubbles so typed/pasted
  *  multi-line text keeps every line break (see MarkdownProps.hardBreaks). */
 export const remarkPluginsHardBreaks = [remarkGfm, remarkBreaks];
-export const rehypePlugins: PluggableList = [[rehypeHighlight, { detect: true, ignoreMissing: true }]];
+
+/**
+ * Languages considered when guessing an UNLABELED fence.
+ *
+ * 🍞 @MAGIC 本列表只影响 `detect`（无语言标注的围栏），显式 `` ```lang `` 仍走
+ * `common` 全部 37 种语法。
+ * @PERF `detect: true` 会把 subset 里每个语法都跑一遍再取最相关的一个，成本≈
+ * 语言数之和。实测（40 行无标注块，本机）：37 种 53.0ms → 本列表 16.7ms；
+ * 更短的消息块 6.2ms → 1.6ms。丢掉的语言（arduino/less/objectivec/php-template/
+ * plaintext/python-repl/vbnet/wasm/swift/kotlin/lua/perl/r/csharp/graphql/scss/php）
+ * 要么是其他语法的超集（只为制造平局）、要么在 agent 输出里罕见；猜不中会回落
+ * 到不高亮（`highlightAuto` 把 plaintext 当保底选项，relevance=0），不会乱高亮。
+ * 改这里请重跑一次 `/tmp` 级别的 `lowlight.highlightAuto` 基准，并同步本注释里的数字。
+ */
+export const detectSubset = [
+	"bash",
+	"shell",
+	"python",
+	"javascript",
+	"typescript",
+	"json",
+	"yaml",
+	"xml",
+	"css",
+	"sql",
+	"go",
+	"rust",
+	"diff",
+	"ini",
+	"markdown",
+	"makefile",
+	"java",
+	"c",
+	"cpp",
+	"ruby",
+];
+export const rehypePlugins: PluggableList = [
+	[rehypeHighlight, { detect: true, subset: detectSubset, ignoreMissing: true }],
+];
 
 export function MarkdownBody({
 	text,

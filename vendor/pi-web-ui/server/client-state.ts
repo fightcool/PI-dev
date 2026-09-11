@@ -72,7 +72,11 @@ export interface ClientSettings {
 	/** 思考块默认折叠与否（默认关 = 折叠；开 = 始终完整展开并自动换行，流式推理
 	 *  也实时可见）。纯 UI 偏好，与视觉桥 / disabledPlugins 一样不进预设。 */
 	thinkingWrap: boolean;
-	/** 工具调用是否默认展开（默认开 = 展开；关 = 折叠）。纯 UI 偏好，不进预设。 */
+	/** 工具调用是否默认展开（默认关 = 折叠，点击展开；开 = 始终完整展开）。
+	 *  纯 UI 偏好，不进预设。
+	 *  @PERF 默认折叠是性能决定而非审美：展开会把每个工具输出（单条可达数百 KB）
+	 *  写进 DOM，切会话/滚动时布局与主线程成本随输出体积线性上涨。
+	 *  旧的默认值是 true（始终展开）。 */
 	toolsWrap: boolean;
 	/** 子代理默认模型 ("provider/id")；null/未设 = 跟随主对话当前模型。不改会话右侧栏的模型。 */
 	subagentDefaultModel?: string | null;
@@ -398,7 +402,7 @@ export class ClientStateStore {
 			questionnaireEnabled: stored?.questionnaireEnabled ?? true,
 			goalModeEnabled: stored?.goalModeEnabled ?? true,
 			thinkingWrap: stored?.thinkingWrap ?? false,
-			toolsWrap: stored?.toolsWrap ?? true,
+			toolsWrap: stored?.toolsWrap ?? false,
 			visionBridgeEnabled: stored?.visionBridgeEnabled ?? true,
 			visionBridgeModel: stored?.visionBridgeModel ?? null,
 			visionBridgePromptMode: stored?.visionBridgePromptMode === "replace" ? "replace" : "append",
@@ -432,7 +436,7 @@ export class ClientStateStore {
 			questionnaireEnabled: settings.questionnaireEnabled ?? cur.questionnaireEnabled ?? true,
 			goalModeEnabled: settings.goalModeEnabled ?? cur.goalModeEnabled ?? true,
 			thinkingWrap: settings.thinkingWrap ?? cur.thinkingWrap ?? false,
-			toolsWrap: settings.toolsWrap ?? cur.toolsWrap ?? true,
+			toolsWrap: settings.toolsWrap ?? cur.toolsWrap ?? false,
 			visionBridgeEnabled: settings.visionBridgeEnabled ?? cur.visionBridgeEnabled ?? true,
 			visionBridgeModel: settings.visionBridgeModel ?? cur.visionBridgeModel ?? null,
 			subagentDefaultModel: settings.subagentDefaultModel ?? cur.subagentDefaultModel ?? null,

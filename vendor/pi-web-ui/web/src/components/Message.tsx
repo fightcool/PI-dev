@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import {
 	FiArchive,
 	FiBookOpen,
@@ -827,6 +827,19 @@ function Block({
 }) {
 	const t = useT();
 	const [copied, setCopied] = useState(false);
+	// 🍞 @PERF view 必须在任何早返回之前无条件计算：同一个 Block 实例（行 key 为
+	// `${message.id}-${i}`）会在不同类型间复用它，把 hook 放在 `if (toolCall)` 里
+	// 会触发 React 「渲染的 hook 数量与上次数不同」。取值都是 Map.get，开销可忽。
+	const toolCall = asToolCall(block);
+	const toolResult = toolCall ? toolResults.get(toolCall.id) : undefined;
+	const toolLiveText = toolCall ? liveOutputs.get(toolCall.id)?.text : undefined;
+	const toolStatus = toolCall ? toolStatuses.get(toolCall.id) : undefined;
+	// ToolCallBlock 是 memo 组件；传新对象字面量会让它永远 miss（工具卡是消息里
+	// 最重的子树，而父级随每个流式 token 重渲染）。用原始值做依赖，内容不变就复用。
+	const view = useMemo<ToolView>(
+		() => ({ result: toolResult, liveOutput: toolLiveText, streaming, status: toolStatus }),
+		[toolResult, toolLiveText, streaming, toolStatus],
+	);
 	const text = asText(block);
 	if (text) {
 		const live = streaming && isLast;
@@ -885,16 +898,7 @@ function Block({
 		);
 	}
 
-	const toolCall = asToolCall(block);
 	if (toolCall) {
-		const result = toolResults.get(toolCall.id);
-		const live = liveOutputs.get(toolCall.id);
-		const view: ToolView = {
-			result,
-			liveOutput: live?.text,
-			streaming,
-			status: toolStatuses.get(toolCall.id),
-		};
 		return (
 			<ToolCallBlock block={toolCall} view={view} onKillBash={onKillBash} wrap={toolsWrap} forceOpen={searchActive} />
 		);
