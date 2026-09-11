@@ -58,9 +58,14 @@ const mock = createServer(async (req, res) => {
 	const prompt = typeof last?.content === "string" ? last.content : "";
 	const reply = `reply:${prompt}`;
 	res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
-	res.write(
-		`data: ${JSON.stringify({ id: "chan", object: "chat.completion.chunk", created: Date.now(), model: payload.model, choices: [{ index: 0, delta: { content: reply }, finish_reason: null }] })}\n\n`,
-	);
+	// 分片慢发：制造一个稳定的流式窗口，用于验证「生成中切换 → 待生效 → 本轮结束落定」。
+	const pieces = [reply.slice(0, 2) || "r", reply.slice(2) || "eply"];
+	for (const piece of pieces) {
+		res.write(
+			`data: ${JSON.stringify({ id: "chan", object: "chat.completion.chunk", created: Date.now(), model: payload.model, choices: [{ index: 0, delta: { content: piece }, finish_reason: null }] })}\n\n`,
+		);
+		await sleep(700);
+	}
 	res.write(
 		`data: ${JSON.stringify({ id: "chan", object: "chat.completion.chunk", created: Date.now(), model: payload.model, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`,
 	);
@@ -306,6 +311,29 @@ try {
 		diagText.slice(0, 160),
 	);
 	check("diagnostics reports the alert switch and thresholds", typeof diag.alertsEnabled === "boolean" && diag.thresholds?.criticalPercent === 90);
+
+	// 7d) 真实服务端上的「生成中切换 → 待生效 → 本轮结束后落定」（对齐真实验收发现的问题：
+	// agent_end 时 isStreaming 仍为 true，待生效若只在 agent_end 尝试会被永久丢弃）。
+	// 用「当前活跃对话」而不是最初的 convA：new_chat 之后旧对话可能已被回收（对话 id 按客户端本地管理）。
+	const switchTarget = client.state.conversationId;
+	const switchSent = Date.now();
+	client.send({ type: "prompt", text: "slow-ping" });
+	await client.waitForState((s) => s.isStreaming === true, 20000);
+	const pendingSwitch = await runCommand(client, "channel_select", { conversationId: switchTarget, channelId: "ch-b", modelId: "mock/chan-mock" });
+	check("生成中切换返回待生效", pendingSwitch.ok === true && pendingSwitch.phase === "pending", JSON.stringify({ phase: pendingSwitch.phase, error: pendingSwitch.error }));
+	await client.waitForState((s) => s.conversationId === switchTarget && s.isStreaming === false, 30000).catch(() => undefined);
+	const settled = Date.now();
+	let appliedBinding = null;
+	for (let i = 0; i < 40; i++) {
+		await sleep(150);
+		appliedBinding = (client.channelState?.bindings ?? []).find((b) => b.conversationId === switchTarget);
+		if (appliedBinding?.channelId === "ch-b") break;
+	}
+	check(
+		"本轮结束后待生效选择落定（不再被 agent_end 的时序丢弃）",
+		appliedBinding?.channelId === "ch-b" && appliedBinding?.modelId === "mock/chan-mock",
+		`${JSON.stringify(appliedBinding ?? null)} settled_in=${settled - switchSent}ms`,
+	);
 
 	// 8) 组合命令的失败路径：模型不属于该渠道服务商 → 明确拒绝，绑定保持。
 	const bad = await runCommand(client, "channel_select", { conversationId: convB, channelId: "ch-b", modelId: "mock/missing-model" });

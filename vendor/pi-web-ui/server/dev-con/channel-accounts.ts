@@ -67,7 +67,16 @@ interface AccountConfig {
 	unit?: string;
 	/** 网关配额的换算比例（1 个单位 = scale 个最小单位）。 */
 	scale?: number;
+	/**
+	 * 账户查询专用的命名凭据（provider-keys.json 里的密钥名）。
+	 * 说明：one-api/new-api 类网关的 /api/user/self 需要**控制台访问令牌**，通常不是模型 key；
+	 * 不填则回落到渠道的模型凭据（DeepSeek 官方这类用同一把 key 的供应商适用）。
+	 */
+	credentialKeyName?: string;
 }
+
+/** 账户配置（渠道 extra.account）；供注册表选择「账户专用凭据」。 */
+export function accountQueryConfig(channel: ChannelRecord): AccountConfig | null { return accountConfig(channel); }
 
 function accountConfig(channel: ChannelRecord): AccountConfig | null {
 	const raw = channel.extra?.account;
@@ -135,16 +144,28 @@ export const openAiGatewayAdapter: AccountAdapter = {
 	match: (channel) => accountConfig(channel)?.kind === "openai-gateway",
 	async query({ channel, apiKey, signal }) {
 		const cfg = accountConfig(channel);
-		const base = (cfg?.url ?? "").replace(/\/+$/, "");
-		if (!base) return { status: "failed", error: "未配置账户接口地址" };
-		const url = /\/api\/user\/self$/.test(base) ? base : `${base}/api/user/self`;
+		const configured = (cfg?.url ?? "").replace(/\/+$/, "");
+		if (!configured) return { status: "failed", error: "未配置账户接口地址" };
+		// @BUGFIX 2026-09-11（真实网关验收发现）：one-api/new-api 的账户接口在**站点根**
+		// /api/user/self，而渠道里通常填的是 OpenAI 兼容基址（末尾带 /v1）。直接拼接会得到
+		// /v1/api/user/self → HTTP 404。这里先剥掉 /v1（或 /v1/... 子路径）再拼；若用户已直接
+		// 给出完整 /api/user/self 地址，则原样使用。
+		const url = /\/api\/user\/self$/.test(configured)
+			? configured
+			: `${configured.replace(/\/v1$/i, "").replace(/\/v1\/.*$/i, "")}/api/user/self`;
 		const res = await fetchJson(
 			fetch,
 			url,
 			{ method: "GET", headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" } },
 			signal,
 		);
-		if (!res.ok) return { status: "failed", error: res.error };
+		if (!res.ok) {
+			const hint =
+				res.status === 401 || res.status === 403
+					? "（网关账户接口通常需要控制台访问令牌，而不是模型 key：请在账户配置里指定「账户凭据」）"
+					: "";
+			return { status: "failed", error: `${res.error}${hint}` };
+		}
 		const body = (res.body ?? {}) as Record<string, unknown>;
 		const data = (body.data ?? body) as Record<string, unknown>;
 		const scale = typeof cfg?.scale === "number" && cfg.scale > 0 ? cfg.scale : 1;
@@ -299,7 +320,8 @@ export class AccountRegistry {
 	/** 查询某渠道的账户状态；resolveKey 由服务层提供（密钥不出服务端）。 */
 	async query(channel: ChannelRecord, resolveKey: (keyName: string) => string | null): Promise<AccountQueryResult> {
 		const accountRef = channel.accountRef || channel.id;
-		const keyName = channel.credentialRef?.keyName ?? null;
+		// 「账户查询只用用户为该用途明确配置的授权」：账户配置可指定自己的凭据名。
+		const keyName = accountConfig(channel)?.credentialKeyName ?? channel.credentialRef?.keyName ?? null;
 		const adapter = this.adapters.find((a) => a.match(channel));
 		if (!adapter) {
 			return this.remember({

@@ -101,6 +101,20 @@ test("attributes usage per source, channel and model and never merges channels",
   assert.equal(child.modelId, "m1");
 });
 
+test("records mark usage as unreported instead of claiming zero tokens (real-provider finding)", () => {
+  const t = new TokenUsageTracker();
+  t.startRun(1_000);
+  // 供应商返回成功但整条 usage 全 0 / 未带 usage（真实链路上某网关如此）。
+  const bare = normalizeUsageEvent({ type: "message_end", message: { role: "assistant", model: "m", provider: "p", timestamp: 1, usage: { input: 0, output: 0, totalTokens: 0 } } });
+  t.record(bare, 1_000, { source: "user", channelId: "ch-x", conversationId: "c1" });
+  const [record] = t.snapshot().records;
+  assert.equal(record.usageKnown, false, "全 0 且无费用 → 未上报");
+  assert.equal(record.total, 0);
+  // 正常上报的请求标记为已知。
+  t.record(normalizeUsageEvent({ type: "message_end", message: { role: "assistant", model: "m", provider: "p", timestamp: 2, usage: sdkUsage() } }), 2_000, { source: "user", conversationId: "c1" });
+  assert.equal(t.snapshot().records[0].usageKnown, true, "有 token/费用 → 已知");
+});
+
 test("per-request records carry a stable id, run/conversation refs, time and a pricing basis (§7)", () => {
   const t = new TokenUsageTracker({ maxRecords: 2 });
   t.startRun(1_000);

@@ -3556,7 +3556,7 @@ export class DshClientSession {
 			from: null,
 			to: null,
 			rows: [],
-			totals: { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, unpricedRequests: 0 },
+			totals: { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, unpricedRequests: 0, unreportedRequests: 0 },
 			scanned: 0,
 			skipped: 0,
 			truncated: false,

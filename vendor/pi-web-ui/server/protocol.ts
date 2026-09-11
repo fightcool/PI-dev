@@ -111,6 +111,8 @@ export interface UiChannelInfo {
 	endpointId: string;
 	credentialRef: UiCredentialRef | null;
 	accountRef: string | null;
+	/** 账户查询配置（只读回显；URL/单位/换算/账户凭据名——不含任何密钥值）。 */
+	account?: { kind: string; url?: string; unit?: string; scale?: number; credentialKeyName?: string } | null;
 	enabled: boolean;
 	/** 该服务商的命名密钥（仅名称 + 是否 active）。 */
 	keys: { keyName: string; active: boolean }[];
@@ -193,6 +195,11 @@ export interface UiUsageRecord {
 	/** "sdk-model-pricing" = SDK 按请求时的模型价目表算出；"unknown" = 未知价格（不得当作 0）。 */
 	costBasis: "sdk-model-pricing" | "unknown";
 	currency: string | null;
+	/**
+	 * 供应商是否报告了用量。真实链路上存在「响应成功但整条 usage 全 0 / 未带 usage」的情况
+	 * （实测：某网关返回空内容且无 usage）。此时**不能显示成 0 消耗**，应显示「未报告」。
+	 */
+	usageKnown: boolean;
 }
 
 export interface UiUsageAttribution {
@@ -1731,6 +1738,8 @@ export type ServerMessage =
 				total: number;
 				cost: number;
 				unpricedRequests: number;
+				/** 该组里供应商未上报用量的请求数（0 token 不等于没消耗）。 */
+				unreportedRequests: number;
 				firstAt: number | null;
 				lastAt: number | null;
 			}[];
@@ -1743,6 +1752,7 @@ export type ServerMessage =
 				total: number;
 				cost: number;
 				unpricedRequests: number;
+				unreportedRequests: number;
 			};
 			scanned: number;
 			skipped: number;
