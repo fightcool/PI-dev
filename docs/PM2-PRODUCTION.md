@@ -93,7 +93,11 @@ unit 使用 `Type=simple`、`Restart=on-failure`、`KillMode=control-group`、`T
    - **PM2 → PM2 升级必须先停止当前 PM2 单元再换链接**：单元已 `active` 时 manager `start` 是空操作，旧进程会继续用旧代码服务（链接换了但进程没换）。判断依据是「新 PID 是否出现」，不要只看命令返回码。
    - **维护任务必须跑在服务进程之外的独立 cgroup**（例如 `systemd-run --user --unit=pi-dev-switch --collect ...`）。两个 unit 都是 `KillMode=control-group`：从被托管进程里派生的维护脚本会在 `systemctl stop` 时被一并杀死，切换卡在「已停服务、未换链接」的中间态。
    - **首次切换必须 `stop` + `disable` 旧 UI unit 与 watchdog**（`pi-web-ui-dev.service`、`pi-web-ui-dev-watchdog.{service,timer}`）。旧 unit 若仍是 `enabled` 且 `WantedBy=default.target`，**任何** `daemon-reload` 都会把它拉起来并抢占 8788（本文件所在的服务器在 2026-09-10 实际发生过），站点会在未受管状态下运行可编辑 checkout。
-4. 核实新 PID、服务健康、build-info 提交、公网前端资源与 WebSocket 鉴权，再恢复接收工作。manager status 只提供观测信息；manager start/restart 本身不做 quiesce、健康验收或回滚。
+4. 核实新 PID、服务健康、build-info 提交、公网前端资源与 WebSocket 鉴权，再恢复接收工作。
+   - **同一时间只允许一个部署者**：`current` 是单一符号链接，两个维护任务并发切换会互相覆盖
+     （2026-09-11 实际发生：一次切换把另一个更新版本的 release 覆盖回更旧的提交，新功能“消失”）。
+     切换前先 `git fetch` 并确认目标版本是默认分支 HEAD **或其后代**；发现 `current` 指向的
+     build-info 提交比目标更新时，停下并核对，不要盲目切换。manager status 只提供观测信息；manager start/restart 本身不做 quiesce、健康验收或回滚。
 5. 若新版本未通过验收，停止 PM2 unit，原子恢复旧 current，重新启动并验证旧版本。保留失败版本及脱敏诊断供调查；不要在恢复过程中删除共享数据、配置或稳定工具。
 
 只需重启当前版本时，也应先完成工作排空，再执行 `npm run pm2 -- restart`。初次迁移脚本包含旧 systemd 服务的特定回退逻辑，不能直接当成后续 PM2 到 PM2 的通用升级器。
