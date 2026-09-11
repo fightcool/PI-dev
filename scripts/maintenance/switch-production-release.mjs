@@ -10,6 +10,7 @@
  * @GOTCHA 旧 unit 是 enabled + WantedBy=default.target：只要它还是 enabled，任何
  *         daemon-reload 都会把它拉起来抢 8788（本次事故的直接原因），必须 disable。
  * @SECURITY 只读 runtime.json 的路径/端口；不读取、不复制任何凭据。
+ * @CONTRACT 路径来自 PI_DEV_DEPLOY_ROOT / PI_DEV_CONFIG_DIR / PI_DEV_DEV_ROOT，缺省值与历史行为一致。
  * 用法：node scripts/maintenance/switch-production-release.mjs <newReleaseId(12hex)>
  */
 import { execFileSync } from "node:child_process";
@@ -17,11 +18,16 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, symlinkSync
 import { randomBytes } from "node:crypto";
 import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { pruneObsoleteStores } from "../lifecycle/release-deps.mjs";
+import { pruneReleases } from "../lifecycle/release-prune.mjs";
 
 const HOME = process.env.HOME;
-const DEV_ROOT = "/home/dev/PI-dev";
-const BASE = join(HOME, ".local/share/pi-dev/deploy");
-const CONFIG_FILE = join(HOME, ".config/pi-dev/runtime.json");
+const DEV_ROOT = process.env.PI_DEV_DEV_ROOT ?? "/home/dev/PI-dev";
+// deploy 根目录可迁移；写死会让切换静默作用在旧路径上（current 更新了但服务仍跑旧目录）。
+const BASE = process.env.PI_DEV_DEPLOY_ROOT ?? join(HOME, ".local/share/pi-dev/deploy");
+const CONFIG_FILE = process.env.PI_DEV_CONFIG_DIR
+	? join(process.env.PI_DEV_CONFIG_DIR, "runtime.json")
+	: join(HOME, ".config/pi-dev/runtime.json");
 const STATUS_FILE = join(BASE, "shared/maintenance/switch-status.json");
 const ORIGIN = "https://dev.ftai.cc";
 const LEGACY = "pi-web-ui-dev.service";
@@ -31,6 +37,27 @@ const PM2_UNIT = "pi-dev-pm2.service";
 const NEW_ID = process.argv[2];
 if (!NEW_ID || !/^[a-f0-9]{12}$/.test(NEW_ID)) throw new Error("Usage: switch-production-release.mjs <releaseId(12hex)>");
 const WAIT_MIN = Number(process.env.SWITCH_WAIT_MINUTES ?? 45);
+/** @MAGIC 切换成功后默认额外保留 2 个已构建版本（除 current 与显式保护的 OLD_ID 之外）。
+ *  之前没有任何回收环节，12 次上线就堆了 19 GiB；保留 2 个既够应急回退，也有界。 */
+const KEEP_RELEASES = Number(process.env.PI_DEV_SWITCH_KEEP ?? 2);
+
+/**
+ * 切换成功后的磁盘回收：删掉既不是 current、也不是刚被替换下来的回滚点、也不在 keep 内的历史版本。
+ * @CONTRACT 这是「尽力而为」的后置步骤：任何失败都只记日志，绝不改变部署结果、不能让进程退出码变 1。
+ * @GOTCHA 必须把 OLD_ID 显式传进 protect —— 生产流程不写 shared/previous.json，不传就等于把回滚点交给 mtime 猜。
+ * @GOTCHA 若部署锁被占用（有别的运维动作在跑），pruneReleases 会拒绝执行，此处只记日志。
+ */
+function pruneAfterSwitch(oldId) {
+	try {
+		const options = { base: BASE, shared: join(BASE, "shared"), releases: join(BASE, "releases"), current: join(BASE, "current") };
+		const result = pruneReleases(options, { keep: KEEP_RELEASES, apply: true, protect: [oldId] });
+		log(`prune: 删除 ${result.removed.length} 个历史版本（保留 current + 回滚点 ${oldId} + keep=${KEEP_RELEASES}）${result.removed.length ? `：${result.removed.join(", ")}` : ""}`);
+		const stores = pruneObsoleteStores(join(BASE, "shared"), result.retained, join(BASE, "releases"), { apply: true });
+		if (stores.length) log(`prune: 回收无人引用的依赖仓 ${stores.join(", ")}`);
+	} catch (error) {
+		log(`prune skipped: ${error.message}`);
+	}
+}
 
 const log = (...a) => console.log(new Date().toISOString(), "switch:", ...a);
 const phase = (name, extra = {}) => {
@@ -192,6 +219,8 @@ try {
 	quiesced = false;
 	log(`DEPLOYED ${OLD_ID} → ${NEW_ID} pid=${s2.pid} commit=${info.commit.slice(0, 12)} protocol=${info.protocolVersion} entry=${entry}`);
 	phase("deployed", { pid: s2.pid, commit: info.commit, protocolVersion: info.protocolVersion, from: OLD_ID });
+	// 站点已经验收通过才回收磁盘：失败/回滚路径绝不碰历史版本（回滚还要用它们）。
+	if (process.env.PI_DEV_SWITCH_PRUNE !== "0") pruneAfterSwitch(OLD_ID);
 } catch (error) {
 	log(`FAILED: ${error.message}`);
 	phase("failed", { error: String(error.message).slice(0, 300) });

@@ -2,7 +2,8 @@
 
 <!-- 🍞 AI Breadcrumb: @COUPLED scripts/pm2.mjs, scripts/lifecycle/pm2-manager.mjs, deploy/pi-dev-pm2.service.in, deploy/ecosystem.config.cjs
      @COUPLED scripts/cutover.mjs, scripts/lifecycle/cutover.mjs, tests/pm2-manager.test.mjs
-     @CONTRACT 本文描述生产 manager 与人工编排流程；既有 release CLI 仍用于 shadow。 -->
+     @COUPLED scripts/release.mjs, scripts/lifecycle/release-prune.mjs, PM2-SHADOW.md
+     @CONTRACT 本文描述生产 manager 与人工编排流程；既有 release CLI 也用于生产版本的磁盘回收（prune）。 -->
 
 生产入口采用用户级 `pi-dev-pm2.service` 启动前台 `pm2-runtime`，PM2 管理唯一的 `pi-dev-web` 应用，使用单实例 fork。systemd 负责 PM2 supervisor 的启动与故障恢复，PM2 负责应用重启。会话、PTY 和 WebSocket 状态尚不支持多实例共享，不启用 cluster。
 
@@ -24,6 +25,20 @@
 | `shared/migrations/status.json` | 初次迁移编排写入的状态摘要 |
 
 `PI_DEV_CONFIG_DIR` 默认 `$HOME/.config/pi-dev`，必须是已存在的绝对目录。配置、访问令牌、会话、workspace、Agent 数据继续使用既有位置；manager 仅检查配置目录，不读取或复制其中的凭据文件。应用启动时沿用已有 runtime 配置。部署根目录及受管理的 shared 目录不能经过符号链接。
+
+`releases/<id>/` 是自包含目录，每个版本各带一份应用依赖与构建产物，此前**只有创建逻辑没有回收逻辑**，实测单个版本约 1.6 GiB，两天 12 次上线就把根分区堆到 19 GiB（94%）。现在两层防护：
+
+1. **切换成功后自动回收**：`switch-production-release.mjs` 在站点验收通过后调用 prune，保留 `current` + 刚被替换下来的回滚点（显式 `protect: [OLD_ID]`，不靠 mtime 猜）+ `PI_DEV_SWITCH_KEEP`（默认 2）个备用版本。该步骤是尽力而为的后置动作：任何失败只记日志，绝不改变部署结果。设 `PI_DEV_SWITCH_PRUNE=0` 可关闭。
+2. **操作者显式回收**（默认 dry-run，脚本不会自动删除）:
+
+```bash
+PI_DEV_DEPLOY_ROOT=$HOME/.local/share/pi-dev/deploy node scripts/release.mjs prune
+PI_DEV_DEPLOY_ROOT=$HOME/.local/share/pi-dev/deploy node scripts/release.mjs prune --apply
+```
+
+默认dry-run；`current` 与 `shared/previous.json` 指向的版本始终保留。生产版的标记文件是 `release-source.json`，prune 同时接受它和 shadow 的 `.release.json`。完整规则见 [PM2-SHADOW.md](PM2-SHADOW.md)「磁盘回收」。
+
+**依赖复用默认仍是物理拷贝**。`prepare-release.mjs` 支持 `PI_DEV_RELEASE_LINK_DEPS=1` 改用「只读依赖仓 + 硬链接」(`shared/deps/<lockhash>/`)，单版依赖开销可从 GiB 级降到几十 MiB；但该模式的前提是**依赖树在构建与运行期只被读**，而实测 node-pty 的 `prepare`/`tsc` 会在构建后原地重写 `lib/*.js`，因此默认关闭。开启后依赖文件被冻结为只读（原地改写会 EACCES 失败，这是保护而非缺陷），且构建后会复核「既有依赖文件未被改写」，一旦发现就拒绝产出候选。详见 `scripts/lifecycle/release-deps.mjs` 的文件头说明。
 
 PM2 固定为 **6.0.8**，依赖与锁文件位于 `deploy/pm2/package.json` 和 `deploy/pm2/package-lock.json`。准备工具时，将这两个清单复制到 deployment root 的 `tools/pm2/`，在该目录使用稳定 Node 对应的 npm 执行 `npm ci --omit=dev --no-audit --no-fund`。这一步由部署编排执行，`pm2 install` 不安装 npm 依赖。不要全局安装 PM2，也不要将工具依赖安装到开发 checkout 的根 `node_modules`。
 
@@ -104,7 +119,7 @@ unit 使用 `Type=simple`、`Restart=on-failure`、`KillMode=control-group`、`T
 
 ## 生产升级记录与脚本
 
-候选准备同样已脚本化：`node scripts/maintenance/prepare-release.mjs <commit>` 完成 archive → 依赖（**锁文件未变时复用当前 release 的 node_modules/.venv**，省约 3 分钟）→ 构建 → 写 `release-source.json`，并校验 build-info 提交一致。
+候选准备同样已脚本化：`node scripts/maintenance/prepare-release.mjs <commit>` 完成 archive → 依赖（**锁文件未变时复用当前 release 的 node_modules/.venv**，默认物理拷贝，省约 3 分钟；`PI_DEV_RELEASE_LINK_DEPS=1` 时改走只读依赖仓硬链接）→ 构建 → 写 `release-source.json`，并校验 build-info 提交一致。切换成功后自动回收历史版本（见上文「磁盘回收」）。
 
 **候选阶段的验证只跑产物级检查**（`SMOKE_JOBS=3 npm run test:smoke` + 与改动相关的 e2e）：源码级检查（typecheck/单测）由同一提交上的 CI 覆盖，不重复跑。分层规则见 [AGENTS.md](../AGENTS.md)「测试分层与验证节奏」。
 
