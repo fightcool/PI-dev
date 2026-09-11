@@ -31,6 +31,7 @@ const channel = (id: string, extra: Partial<ChannelRecord> = {}): ChannelRecord 
 	endpointId: "default",
 	credentialRef: null,
 	accountRef: null,
+	models: [],
 	enabled: true,
 	extra: {},
 	...extra,
@@ -122,6 +123,16 @@ describe("channel records", () => {
 		expect(errors).toContain("所选模型不属于该渠道的服务商");
 		expect(validateSelection(selection("ch-1"), channel("ch-1"))).toEqual([]);
 	});
+	it("enforces the channel model whitelist only when it is non-empty", () => {
+		const limited = channel("ch-1", { models: ["m1"] });
+		expect(validateSelection(selection("ch-1", "main/m1"), limited)).toEqual([]);
+		expect(validateSelection(selection("ch-1", "main/m2"), limited)).toContain("模型不在该渠道的可用列表内：main/m2");
+		// 空白名单 = 不限制（向后兼容：老渠道没有这个字段也不能被锁死）。
+		expect(validateSelection(selection("ch-1", "main/m2"), channel("ch-1"))).toEqual([]);
+		expect(normalizeChannelRecord({ id: "ch-2", providerId: "main", models: ["a", "", 3, "b"] })?.models).toEqual(["a", "b"]);
+		expect(normalizeChannelRecord({ id: "ch-3", providerId: "main" })?.models).toEqual([]);
+	});
+
 	it("normalizes unknown fields into extra instead of dropping them", () => {
 		const normalized = normalizeChannelRecord({
 			id: "ch-9",

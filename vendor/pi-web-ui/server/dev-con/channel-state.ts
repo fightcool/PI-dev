@@ -263,17 +263,31 @@ export class ChannelState {
 				endpointId: c.endpointId,
 				credentialRef: c.credentialRef,
 				accountRef: c.accountRef,
+				// 该渠道限定的模型（provider 内 id）；空 = 不限制。
+				models: c.models ?? [],
 				// 只回显账户查询配置的非敏感字段（URL/单位/换算/账户凭据名），绝不含密钥值。
+				// 回显账户查询配置（模板字段一并回显，否则"已存模板无法编辑"）：
+				// 只允许白名单键，且**只允许字符串/数字/布尔/纯对象**——任何密钥值都不可能带出去
+				// （渠道配置本身也不允许出现 apiKey/key 字段，见 channel-store 的写入校验）。
 				account: (() => {
 					const raw = (c.extra as { account?: Record<string, unknown> } | undefined)?.account;
 					if (!raw || typeof raw !== "object" || typeof raw.kind !== "string") return null;
-					return {
-						kind: raw.kind,
-						...(typeof raw.url === "string" && raw.url ? { url: raw.url } : {}),
-						...(typeof raw.unit === "string" && raw.unit ? { unit: raw.unit } : {}),
-						...(typeof raw.scale === "number" ? { scale: raw.scale } : {}),
-						...(typeof raw.credentialKeyName === "string" && raw.credentialKeyName ? { credentialKeyName: raw.credentialKeyName } : {}),
-					};
+					const allowed = ["kind", "url", "method", "apiKeyHeader", "apiKeyPrefix", "body", "unit", "scale", "credentialKeyName"] as const;
+					const out: Record<string, unknown> = {};
+					for (const key of allowed) {
+						const value = raw[key];
+						if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") out[key] = value;
+					}
+					for (const key of ["mapping", "items"] as const) {
+						const value = raw[key];
+						if (value && typeof value === "object" && !Array.isArray(value)) {
+							const entries = Object.entries(value as Record<string, unknown>)
+								.filter(([, v]) => typeof v === "string")
+								.slice(0, 20);
+							if (entries.length > 0) out[key] = Object.fromEntries(entries);
+						}
+					}
+					return Object.keys(out).length > 0 ? out : null;
 				})(),
 				enabled: c.enabled,
 				keys,
@@ -284,7 +298,7 @@ export class ChannelState {
 	}
 
 	/** 唯一的状态构造出口（账号快照由命令层传入，状态层不认识 AccountRegistry）。 */
-	stateMessage(accounts: UiAccountStatus[]): ChannelStateMessage {
+	stateMessage(accounts: UiAccountStatus[], accountPresets: ChannelStateMessage["accountPresets"] = []): ChannelStateMessage {
 		return {
 			type: "channel_state",
 			configRevision: this.current.configRevision,
@@ -303,6 +317,7 @@ export class ChannelState {
 				commandId: p.commandId,
 			})),
 			accounts,
+			accountPresets,
 		};
 	}
 

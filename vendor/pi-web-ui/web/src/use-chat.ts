@@ -5,6 +5,10 @@
 // components/FooterBar.tsx + components/UsageDetail.tsx (用量归属), components/ChannelSettings.tsx.
 // @CONTRACT channelResults 按 commandId 存回执；channelApi 方法返回 commandId（socket 未开 = null），
 //   并随命令提交当前 configRevision/bindingRevision，服务端冲突时回 phase=conflict。
+// @GOTCHA 协议里的 channel_save 尚未声明 `models`（模型白名单）——服务端 channel-config.ts 已经
+//   读取 input.channel.models，且 channel_state 已下发 UiChannelInfo.models。这里在**前端局部**
+//   补上可选的 models，否则提交白名单会被 TS 的 excess property 检查拒掉。
+//   一旦 server/protocol.ts 的 channel_save 补上该字段，下面的交叉类型即为恒等，可删。
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { randomUuid } from "./uuid";
 import { withToken } from "./auth-token";
@@ -92,6 +96,7 @@ const startOfUtcDay = (ms: number) => Date.UTC(new Date(ms).getUTCFullYear(), ne
 
 
 /** channel_save 的渠道档案 payload（直接从协议派生，避免手工镜像漂移）。 */
+/** 渠道保存载荷：协议 `channel_save.channel` 已包含 models 白名单（协议 v25 起）。 */
 export type ChannelSaveInput = Extract<ClientMessage, { type: "channel_save" }>["channel"];
 
 /**

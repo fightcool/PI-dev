@@ -13,13 +13,18 @@
  *             模型下拉保持原有行为（零回归）。点击模型 → channel_select(渠道+key+模型) 一次提交。
  *   @WHY 模型列表按渠道分组、命名凭据作为「子组」用 chips 呈现，而不是每个 key 复制一份模型：
  *        渠道+key+模型是一组合命令（§4），复制模型行会让「点一次到底用哪把 key」变得不可解释。
+ *   @CONTRACT 渠道的模型白名单（channel.models，provider 内部 id；空 = 不限）在这里生效：
+ *             非空时只渲染白名单内的模型，并在渠道头上标注「限定 N 个模型」（避免「模型凭空少了」）。
+ *             匹配口径见 channel-models.ts（只剥第一个 provider 前缀）。
  *   @GOTCHA 渠道/凭据都由服务端按名称回传；本组件永不接收也不渲染密钥正文或掩码。
+ *   @GOTCHA 老快照/夹具可能没有 models 字段：一律按「不限」处理，绝不因缺字段把模型全藏起来。
  * ──────────────────────────────────────────────────
  */
 import { useState } from "react";
 import { FiRefreshCw, FiAlertTriangle, FiClock } from "react-icons/fi";
 import type { ModelInfo, UiChannelBinding, UiChannelBindingView, UiChannelInfo } from "../types";
 import { useI18n, useT } from "../i18n";
+import { channelModels, hasModelWhitelist } from "../channel-models";
 import { DropdownItem } from "./Dropdown";
 import type { ChannelCommandResult } from "../use-chat";
 
@@ -52,15 +57,8 @@ function ChannelGroup({
 			: !channel.enabled
 				? t("channelDisabled")
 				: null;
-	const q = filter.trim().toLowerCase();
-	const rows = models.filter(
-		(m) =>
-			m.provider === channel.providerId &&
-			(!q ||
-				m.name.toLowerCase().includes(q) ||
-				m.provider.toLowerCase().includes(q) ||
-				m.id.toLowerCase().includes(q)),
-	);
+	// 白名单过滤在这里发生（空白名单 = 该服务商全部模型，行为与加白名单之前一致）。
+	const rows = channelModels(models, channel, filter);
 	// 命名凭据子组：每个 key 一个 chip + 「跟随服务商当前密钥」(= credentialKeyName null)。
 	const keyOptions: { value: string | null; label: string; active?: boolean }[] = [
 		...channel.keys.map((k) => ({ value: k.keyName as string | null, label: k.keyName, active: k.active })),
@@ -71,6 +69,10 @@ function ChannelGroup({
 			<div className={`chan-head${reason ? " disabled" : ""}`}>
 				<span className="chan-name">{channel.displayName}</span>
 				<span className="chan-provider">{channel.providerId}</span>
+				{/* 白名单生效时给出提示：否则用户会把「模型变少」当成加载失败（见 @CONTRACT）。 */}
+				{!reason && hasModelWhitelist(channel) && (
+					<span className="chan-whitelist">{t("channelModelsLimited", { n: (channel.models ?? []).length })}</span>
+				)}
 				{reason && <span className="chan-reason">{reason}</span>}
 			</div>
 			{!reason && (

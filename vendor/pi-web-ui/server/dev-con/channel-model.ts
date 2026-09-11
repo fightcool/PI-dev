@@ -44,6 +44,12 @@ export interface ChannelRecord {
 	credentialRef: CredentialRef | null;
 	/** P3 账户引用（供应商账户接口的键），null = 不查询。 */
 	accountRef: string | null;
+	/**
+	 * 该渠道允许使用的模型白名单（provider 内的模型 id，如 "deepseek-flash"）。
+	 * 空数组/undefined = 不限制（列出该服务商的全部模型，保持向后兼容）。
+	 * @WHY 服务商（尤其聚合网关）往往有几十个用不到的模型；渠道应只暴露你要用的那几个。
+	 */
+	models: string[];
 	enabled: boolean;
 	/** 保留写回：未来字段/外部工具写入的未知键不丢失。 */
 	extra: Record<string, unknown>;
@@ -172,6 +178,10 @@ export function validateSelection(sel: ChannelSelection, channel: ChannelRecord 
 	const errors: string[] = [];
 	if (!channel) return ["渠道不存在"];
 	if (!channel.enabled) errors.push("渠道已禁用");
+	// 白名单非空时，只能选其中的模型（空 = 不限制）。
+	if (channel.models.length > 0 && !channel.models.includes(sel.modelId.split("/").slice(1).join("/"))) {
+		errors.push(`模型不在该渠道的可用列表内：${sel.modelId}`);
+	}
 	if (sel.channelId !== channel.id) errors.push("选择与渠道档案不匹配");
 	if (sel.endpointId !== channel.endpointId) errors.push("协议端点与渠道档案不一致");
 	const want = channel.credentialRef;
@@ -323,7 +333,7 @@ export function normalizeChannelRecord(raw: unknown): ChannelRecord | null {
 					keyName: String((credRaw as CredentialRef).keyName),
 				}
 			: null;
-	const known = new Set(["id", "displayName", "providerId", "endpointId", "credentialRef", "accountRef", "enabled", "extra"]);
+	const known = new Set(["id", "displayName", "providerId", "endpointId", "credentialRef", "accountRef", "models", "enabled", "extra"]);
 	const extra: Record<string, unknown> = { ...((r.extra as Record<string, unknown>) ?? {}) };
 	for (const [k, v] of Object.entries(r)) if (!known.has(k)) extra[k] = v;
 	return {
@@ -333,6 +343,7 @@ export function normalizeChannelRecord(raw: unknown): ChannelRecord | null {
 		endpointId: typeof r.endpointId === "string" && r.endpointId.trim() ? r.endpointId.trim() : DEFAULT_ENDPOINT_ID,
 		credentialRef,
 		accountRef: typeof r.accountRef === "string" && r.accountRef.trim() ? r.accountRef.trim() : null,
+		models: Array.isArray(r.models) ? (r.models as unknown[]).filter((m): m is string => typeof m === "string" && m.trim().length > 0) : [],
 		enabled: r.enabled !== false,
 		extra,
 	};

@@ -21,6 +21,8 @@
  */
 import type { UiAccountStatus } from "../protocol.js";
 import type { ChannelRecord } from "./channel-model.js";
+import { accountTemplateOf, applyAccountTemplate, renderTemplateText, ACCOUNT_TEMPLATE_PRESETS, type AccountTemplate } from "./account-template.js";
+export { ACCOUNT_TEMPLATE_PRESETS } from "./account-template.js";
 
 /** @MAGIC 见头部说明。 */
 export const DEFAULT_TIMEOUT_MS = 5_000;
@@ -241,6 +243,64 @@ export const deepSeekAdapter: AccountAdapter = {
 	},
 };
 
+/**
+ * 模板适配器：用户在渠道里自配 URL/方法/鉴权/字段映射（内置三家只是预设）。
+ * 请求与解析都走同一套有界基建（超时/体积/禁重定向/限频/缓存）。
+ */
+export const templateAdapter: AccountAdapter = {
+	kind: "template",
+	match: (channel) => accountTemplateOf(channel) !== null,
+	async query({ channel, apiKey, signal }) {
+		const template = accountTemplateOf(channel);
+		if (!template) return { status: "failed", error: "未配置账户查询模板" };
+		const baseUrl = providerBaseUrlOf(channel);
+		const url = renderTemplateText(template.url, { baseUrl, apiKey });
+		if (!/^https?:\/\//i.test(url)) return { status: "failed", error: `账户接口地址必须是 http(s)：${url}` };
+		const headerName = (template.apiKeyHeader ?? "authorization").trim() || "authorization";
+		const prefix = template.apiKeyPrefix ?? "Bearer ";
+		const method = template.method ?? "GET";
+		const res = await fetchJson(
+			fetch,
+			url,
+			{
+				method,
+				headers: { [headerName]: `${prefix}${apiKey}`, accept: "application/json", ...(method === "POST" ? { "content-type": "application/json" } : {}) },
+				...(method === "POST" && template.body ? { body: renderTemplateText(template.body, { baseUrl, apiKey }) } : {}),
+			},
+			signal,
+		);
+		if (!res.ok) return { status: "failed", error: res.error };
+		const mapped = applyAccountTemplate(template, res.body);
+		if (mapped.status === "failed") return { status: "failed", error: mapped.error };
+		return {
+			status: "ok",
+			unit: mapped.unit,
+			balance: mapped.balance,
+			quota: mapped.quota,
+			scope: mapped.scope,
+			breakdown: mapped.breakdown,
+			note: mapped.note,
+			checkedAt: Date.now(),
+		};
+	},
+};
+
+/**
+ * 渠道所属服务商的 baseUrl（来自运行时模型目录；取不到给空串，模板里的 {baseUrl} 会渲染成空）。
+ * @WHY 用户写的模板需要 {baseUrl} 才能复用同一个网关的不同部署；服务商 baseUrl 由 models.json 拥有。
+ */
+let providerBaseUrlLookup: ((providerId: string) => string | undefined) | null = null;
+export function setProviderBaseUrlLookup(lookup: (providerId: string) => string | undefined): void {
+	providerBaseUrlLookup = lookup;
+}
+function providerBaseUrlOf(channel: ChannelRecord): string {
+	try {
+		return (providerBaseUrlLookup?.(channel.providerId) ?? "").replace(/\/+$/, "");
+	} catch {
+		return "";
+	}
+}
+
 /** OpenRouter：/api/v1/key 给出该 key 的限额与用量，/api/v1/credits 给出账户余额。 */
 export const openRouterAdapter: AccountAdapter = {
 	kind: "openrouter",
@@ -290,7 +350,8 @@ export class AccountRegistry {
 	private readonly inFlight = new Set<string>();
 
 	constructor(opts: AccountRegistryOptions = {}) {
-		this.adapters = opts.adapters ?? [deepSeekAdapter, openAiGatewayAdapter, openRouterAdapter];
+		// 顺序：模板（用户自配）优先 → 内置三家（预设实现，行为已验证）兜底。
+		this.adapters = opts.adapters ?? [templateAdapter, deepSeekAdapter, openAiGatewayAdapter, openRouterAdapter];
 		this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 		this.cacheTtlMs = opts.cacheTtlMs ?? CACHE_TTL_MS;
 		this.minIntervalMs = opts.minIntervalMs ?? MIN_INTERVAL_MS;
@@ -380,6 +441,11 @@ export class AccountRegistry {
 	private remember(result: AccountQueryResult): AccountQueryResult {
 		this.cache.set(result.accountRef, result);
 		return result;
+	}
+
+	/** 账户查询模板预设（UI 一键填充；不含任何密钥）。 */
+	presets(): { id: string; label: string; description: string; template: Record<string, unknown> }[] {
+		return ACCOUNT_TEMPLATE_PRESETS.map((p) => ({ id: p.id, label: p.label, description: p.description, template: { ...p.template } }));
 	}
 
 	/** 测试/维护用：清空缓存。 */

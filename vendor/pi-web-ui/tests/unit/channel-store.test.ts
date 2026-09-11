@@ -15,6 +15,7 @@ const channel = (id: string): ChannelRecord => ({
 	endpointId: "default",
 	credentialRef: null,
 	accountRef: null,
+	models: [],
 	enabled: true,
 	extra: {},
 });

@@ -111,9 +111,15 @@ export interface UiChannelInfo {
 	endpointId: string;
 	credentialRef: UiCredentialRef | null;
 	accountRef: string | null;
-	/** 账户查询配置（只读回显；URL/单位/换算/账户凭据名——不含任何密钥值）。 */
-	account?: { kind: string; url?: string; unit?: string; scale?: number; credentialKeyName?: string } | null;
+	/**
+	 * 账户查询配置回显（**不含任何密钥值**）：kind/url/method/apiKeyHeader/apiKeyPrefix/body/
+	 * mapping/items/unit/scale/credentialKeyName。必须完整回显，否则「已存模板无法编辑」。
+	 * body/mapping 里只有 {apiKey} 之类的占位符与字段路径，不含密钥正文。
+	 */
+	account?: Record<string, unknown> | null;
 	enabled: boolean;
+	/** 该渠道限定的模型（provider 内 id）；空数组 = 不限制（列出全部）。 */
+	models: string[];
 	/** 该服务商的命名密钥（仅名称 + 是否 active）。 */
 	keys: { keyName: string; active: boolean }[];
 	/** 引用的命名凭据已不存在（UI 需提示重新选择）。 */
@@ -742,6 +748,8 @@ export type ClientMessage =
 				endpointId?: string;
 				credentialRef?: UiCredentialRef | null;
 				accountRef?: string | null;
+				/** 该渠道允许的模型（provider 内 id）；空数组 = 不限制。 */
+				models?: string[];
 				enabled?: boolean;
 				extra?: Record<string, unknown>;
 			};
@@ -1711,6 +1719,8 @@ export type ServerMessage =
 			bindings: UiChannelBinding[];
 			pending: UiChannelPending[];
 			accounts: UiAccountStatus[];
+			/** 账户查询模板预设（一键填充到模板编辑器；用户可继续修改）。 */
+			accountPresets?: { id: string; label: string; description: string; template: Record<string, unknown> }[];
 	  }
 	/** P4 运维：诊断包（只含元数据）+ 当前告警开关与阈值。 */
 	| { type: "diagnostics"; reqId: number; ok: boolean; error?: string; bundle?: UiDiagnostics; alertsEnabled?: boolean; thresholds?: UiOpsThresholds }

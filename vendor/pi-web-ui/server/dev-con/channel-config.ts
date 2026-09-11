@@ -108,6 +108,8 @@ export function saveChannelCommand(port: ChannelConfigPort, input: SaveChannelIn
 		endpointId: input.channel.endpointId?.trim() || DEFAULT_ENDPOINT_ID,
 		credentialRef: input.channel.credentialRef ?? null,
 		accountRef: input.channel.accountRef ?? null,
+		// 模型白名单：去重去空；空数组 = 不限制（列出该服务商全部模型）。
+		models: [...new Set((input.channel.models ?? []).map((m) => String(m).trim()).filter(Boolean))],
 		enabled: input.channel.enabled !== false,
 		extra: { ...(existing?.extra ?? {}), ...(input.channel.extra ?? {}) },
 	};

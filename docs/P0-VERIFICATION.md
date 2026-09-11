@@ -106,6 +106,23 @@ Authorization: Bearer <api key>
 
 真实验收：2026-09-11 用线上已配置的 deepseek 密钥（服务端读取、不打印）实调官方接口 → `status=ok`、`CNY 81.41`（充值 81.41 / 赠送 0）、`checkedAt` 有值。
 
+**用户可配置的查询模板（`server/dev-con/account-template.ts`）**——把「只能选三个写死适配器」变成可配置：
+
+```jsonc
+{ "kind": "template", "url": "{baseUrl}/api/user/self", "method": "GET",
+  "apiKeyHeader": "authorization", "apiKeyPrefix": "Bearer ",
+  "mapping": { "limit": "data.quota", "used": "data.used_quota", "remaining": "data.quota", "scope": "data.display_name", "available": "is_available" },
+  "items": { "path": "balance_infos", "currency": "currency", "total": "total_balance", "granted": "granted_balance", "toppedUp": "topped_up_balance" },
+  "unit": "USD", "scale": 500000 }
+```
+
+- JSON 路径支持数组下标（`balance_infos[0].total_balance`）；金额接受字符串/数字；数组形态逐项映射为多币种 `breakdown`，不做无依据相加；`available=false` 以 note 标注；**映射取不到字段一律失败**（缺失 ≠ 0）。
+- `url`/`body` 支持 `{baseUrl}`（取该服务商在模型目录里的 baseUrl）与 `{apiKey}` 占位。
+- 三个内置实现降级为**预设**（随 `channel_state.accountPresets` 下发，界面一键填充后可继续改）——不再是写死的死功能。
+- 验证：`tests/unit/account-template.test.ts` 8 例（路径/数组下标、字符串金额、多币种与单位优先、网关 scale、缺字段诚实失败、预设可用）；端到端在真实服务端上用替身端点走完「保存模板 → 查询账户 → 解析出余额/单位/scope」。
+
+**渠道模型白名单**：渠道档案新增 `models: string[]`（provider 内模型 id）；空 = 不限制（向后兼容）。白名单非空时，选择校验拒绝名单外模型（`模型不在该渠道的可用列表内`），选择器只列白名单内的模型——解决「渠道里列出一堆用不到的境外模型」。验证：单测（白名单校验/归一化/空白名单不锁死）+ 端到端（名单外被拒、名单内可绑定）。
+
 其余适配器：渠道必须在 `extra.account` 显式配置 `{ kind, url, unit, scale }` 才启用，否则状态为 `unsupported`（绝不从 Token 反推余额）。所有查询：5s 超时、64KiB 响应上限、`redirect:"manual"` 且 3xx 视为失败、每账户 10s 限频、5min 缓存；失败时保留上次成功结果与时间并标 `stale`（不显示为 0）。
 
 ## 7. 入口安全

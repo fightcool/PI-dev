@@ -5,119 +5,36 @@
  *              @PERF=performance @CONTRACT=interface contract 📖=dev doc reference
  *
  * Breadcrumbs (changing this affects):
- *   @COUPLED components/ChannelForm.tsx (新建/编辑表单), components/SettingsModal.tsx (挂载为「渠道」分区),
+ *   @COUPLED components/ChannelRow.tsx (列表行 + 账户状态), components/ChannelForm.tsx (新建/编辑表单),
+ *            components/ChannelUsage.tsx (按渠道用量),
+ *            components/SettingsModal.tsx (挂载为「渠道」分区 + 传 usageHistory),
  *            app/app-dialogs.tsx (channelApi),
  *            use-chat.ts (channelApi.saveChannel/deleteChannel/setChannelDefault/queryChannelAccount),
- *            server/dev-con/channel-service.ts + channel-accounts.ts (校验、revision、账户状态语义)
+ *            channel-models.ts (白名单口径), server/dev-con/channel-service.ts + channel-accounts.ts
  *   📖 docs/DEV-CON-PROPOSAL.md §4（渠道档案/默认值/revision 冲突）, §6（设置页）, §7（余额/配额状态）
  *   @CONTRACT 只提交 channel_save / channel_delete / channel_set_default / channel_query_account；
  *             凭据只按 provider-keys.json 的名称引用，密钥正文永不进入本组件。
- *   @GOTCHA failed/stale 必须显式展示且绝不显示为 0：stale 保留上次成功值与时间；
- *           unsupported 就是「没有可用查询方式」，不猜测余额。
- *   @ASSUME channel_state 的渠道视图不下发 extra（服务端 channelViews 只给引用字段），
- *           因此编辑时账户接口字段留空并「不提交 extra」＝保持服务端已有配置，而不是清空它。
- *   @WHY 账户接口用独立字段（kind/url/unit/scale）而不是原始 JSON 文本框：提交前能逐项校验，
- *        也不会把人工粘贴的 JSON 里的密钥字段悄悄写进渠道元数据（服务端同样拒绝）。
+ *   @GOTCHA 启用切换 / 任何行内保存都必须带上 models（白名单）：channel_save 是整体替换，
+ *           少带字段就等于把白名单清空（这是之前「渠道改不动」的一部分）。
+ *   @GOTCHA 每条命令都要有回执展示（成功/失败/冲突），否则删除/切换看起来像「点了没反应」。
+ *   @ASSUME channel_state 的渠道视图不下发 extra，也不下发 mapping/items：编辑时只有在用户
+ *           动过账户配置（ChannelForm 的 touched）时才提交 extra，避免静默覆盖。
  * ──────────────────────────────────────────────────
  */
 import { useEffect, useState } from "react";
-import { FiAlertTriangle, FiEdit3, FiPlus, FiRefreshCw, FiTrash2 } from "react-icons/fi";
-import type { ChannelApi, ChannelCommandResult, ChannelStateMsg } from "../use-chat";
-import type { ModelInfo, ProviderKeyInfo, UiAccountStatus, UiChannelInfo } from "../types";
+import { FiAlertTriangle, FiCheck, FiPlus, FiRefreshCw } from "react-icons/fi";
+import type { ChannelApi, ChannelCommandResult, ChannelStateMsg, UsageHistoryMsg } from "../use-chat";
+import type { ModelInfo, ProviderKeyInfo, UiChannelInfo } from "../types";
 import { useI18n, useT } from "../i18n";
+import { channelAllowsModel } from "../channel-models";
+import { ChannelRow } from "./ChannelRow";
 import { ChannelForm, channelDraftOf, type ChannelDraft } from "./ChannelForm";
+import { ChannelUsage } from "./ChannelUsage";
 
-/** 账户状态行：failed/stale 明确标注，绝不把缺失值当成 0。 */
-function AccountStatusLine({ status }: { status: UiAccountStatus | undefined }) {
-	const t = useT();
-	if (!status) return null;
-	const label =
-		status.status === "ok"
-			? t("channelAccountOk")
-			: status.status === "stale"
-				? t("channelAccountStale")
-				: status.status === "failed"
-					? t("channelAccountFailed")
-					: t("channelAccountUnsupported");
-	const bits: string[] = [];
-	if (status.balance !== undefined)
-		bits.push(`${t("channelAccountBalance")} ${status.balance}${status.unit ? ` ${status.unit}` : ""}`);
-	const q = status.quota;
-	if (q)
-		bits.push(`${t("channelAccountKeyQuota")} ${q.remaining ?? q.limit ?? q.used ?? "—"}${q.unit ? ` ${q.unit}` : ""}`);
-	if (status.checkedAt !== undefined)
-		bits.push(`${t("channelAccountCheckedAt")} ${new Date(status.checkedAt).toLocaleString()}`);
-	if (status.status === "stale") bits.push(t("channelAccountStaleTip"));
-	// 多币种明细（如 DeepSeek 官方可能同时给 CNY/USD）：逐条展示，不做无依据相加。
-	const breakdown = status.breakdown ?? [];
-	return (
-		<span className={`chan-acct ${status.status}`} title={status.error}>
-			{label}
-			{bits.length > 0 && ` · ${bits.join(" · ")}`}
-			{breakdown.length > 1 &&
-				breakdown.map((entry) => (
-					<span key={entry.currency} className="chan-acct-detail">
-						{" · "}
-						{entry.currency} {entry.total}
-						{(entry.granted > 0 || entry.toppedUp > 0) && `（${t("channelAccountGranted")} ${entry.granted} / ${t("channelAccountToppedUp")} ${entry.toppedUp}）`}
-					</span>
-				))}
-			{status.note && <span className="chan-acct-note"> · {status.note}</span>}
-		</span>
-	);
-}
+/** 回执对应的用户动作（回执协议本身不带 op 字段，由提交方记住）。 */
+type OpKey = "channelOpSave" | "channelOpDelete" | "channelOpToggle" | "channelOpDefault";
 
-function ChannelRow({
-	channel,
-	account,
-	querying,
-	onToggle,
-	onQuery,
-	onEdit,
-	onDelete,
-}: {
-	channel: UiChannelInfo;
-	account: UiAccountStatus | undefined;
-	querying: boolean;
-	onToggle: () => void;
-	onQuery: () => void;
-	onEdit: () => void;
-	onDelete: () => void;
-}) {
-	const t = useT();
-	return (
-		<div className={`chan-row${channel.enabled ? "" : " off"}`}>
-			<div className="chan-row-main">
-				<span className="chan-name">{channel.displayName}</span>
-				<span className="chan-meta">
-					{channel.providerId} · {channel.endpointId}
-					{channel.credentialRef && ` · ${channel.credentialRef.keyName}`}
-					{channel.accountRef && ` · ${channel.accountRef}`}
-				</span>
-				{channel.providerMissing && <span className="chan-warn">{t("channelProviderMissing")}</span>}
-				{channel.keyMissing && <span className="chan-warn">{t("channelKeyMissing")}</span>}
-			</div>
-			<div className="chan-row-actions">
-				<label className="chan-enable">
-					<input type="checkbox" checked={channel.enabled} onChange={onToggle} />
-					{t("channelEnabledLabel")}
-				</label>
-				<button type="button" className="chan-btn" disabled={querying} onClick={onQuery}>
-					{querying ? t("channelQuerying") : t("channelQueryAccount")}
-				</button>
-				<button type="button" className="chan-btn" title={t("channelEdit")} onClick={onEdit}>
-					<FiEdit3 />
-				</button>
-				<button type="button" className="chan-btn danger" title={t("delete")} onClick={onDelete}>
-					<FiTrash2 />
-				</button>
-			</div>
-			<AccountStatusLine status={account} />
-		</div>
-	);
-}
-
-/** 项目/实例默认：选渠道 + 该渠道服务商的模型，再设为/清除默认。 */
+/** 项目/实例默认：选渠道 + 该渠道服务商的模型（白名单生效），再设为/清除默认。 */
 function DefaultRow({
 	scope,
 	label,
@@ -133,7 +50,7 @@ function DefaultRow({
 	channels: UiChannelInfo[];
 	models: ModelInfo[];
 	api: ChannelApi;
-	issue: (commandId: string | null) => void;
+	issue: (commandId: string | null, op: OpKey) => void;
 }) {
 	const t = useT();
 	const [channelId, setChannelId] = useState(current?.channelId ?? "");
@@ -144,7 +61,9 @@ function DefaultRow({
 	}, [current?.channelId, current?.modelId]);
 	// 只有可用渠道能被设为默认（禁用/服务商缺失/凭据丢失的渠道服务端也会拒绝）。
 	const usable = channels.filter((c) => c.enabled && !c.providerMissing && !c.keyMissing);
-	const providerId = usable.find((c) => c.id === channelId)?.providerId;
+	const selected = usable.find((c) => c.id === channelId);
+	// 渠道白名单非空时，默认模型也只能从白名单里选（服务端 channel_select 同样会拒绝越界模型）。
+	const rows = models.filter((m) => (!selected || m.provider === selected.providerId) && channelAllowsModel(selected, m.id));
 	return (
 		<div className="chan-default-row">
 			<span className="chan-default-label">{label}</span>
@@ -165,20 +84,21 @@ function DefaultRow({
 				<option value="" disabled>
 					{t("channelDefaultModel")}
 				</option>
-				{models
-					.filter((m) => !providerId || m.provider === providerId)
-					.map((m) => (
-						<option key={m.id} value={m.id}>
-							{m.name}
-						</option>
-					))}
+				{rows.map((m) => (
+					<option key={m.id} value={m.id}>
+						{m.name}
+					</option>
+				))}
 			</select>
+			{selected && (selected.models ?? []).length > 0 && (
+				<span className="chan-meta">{t("channelModelsLimited", { n: (selected.models ?? []).length })}</span>
+			)}
 			{/* 不传 credentialKeyName：服务端按渠道档案的默认凭据解析（避免 UI 二次猜测）。 */}
 			<button
 				type="button"
 				className="chan-btn"
 				disabled={!channelId || !modelId}
-				onClick={() => issue(api.setChannelDefault(scope, { channelId, modelId }))}
+				onClick={() => issue(api.setChannelDefault(scope, { channelId, modelId }), "channelOpDefault")}
 			>
 				{t("channelSetDefault")}
 			</button>
@@ -186,7 +106,7 @@ function DefaultRow({
 				type="button"
 				className="chan-btn"
 				disabled={!current}
-				onClick={() => issue(api.setChannelDefault(scope, null))}
+				onClick={() => issue(api.setChannelDefault(scope, null), "channelOpDefault")}
 			>
 				{t("channelClearDefault")}
 			</button>
@@ -195,8 +115,9 @@ function DefaultRow({
 }
 
 /**
- * DEV-CON 渠道设置面板：渠道列表（含账户状态与查询）、新建/编辑表单、项目/实例默认。
- * 自包含：所有数据经 props 传入，变更只走 channelApi（服务端 revision 复核 + 回执）。
+ * DEV-CON 渠道设置面板：渠道列表（白名单摘要 + 账户状态与查询）、新建/编辑表单、
+ * 项目/实例默认、按渠道用量（只读聚合）。自包含：所有数据经 props 传入，
+ * 变更只走 channelApi（服务端 revision 复核 + 回执）。
  */
 export function ChannelSettings({
 	channelState,
@@ -205,6 +126,7 @@ export function ChannelSettings({
 	providerIds,
 	providerKeys,
 	models,
+	usageHistory,
 }: {
 	channelState: ChannelStateMsg | null;
 	channelResults: Record<string, ChannelCommandResult>;
@@ -213,6 +135,8 @@ export function ChannelSettings({
 	providerIds: string[];
 	providerKeys: Record<string, ProviderKeyInfo[]>;
 	models: ModelInfo[];
+	/** P4 用量历史（与用量详情面板共享同一份状态；本面板只用按渠道分组）。 */
+	usageHistory: UsageHistoryMsg | null;
 }) {
 	const t = useT();
 	const { locale } = useI18n();
@@ -222,11 +146,11 @@ export function ChannelSettings({
 	const [draft, setDraft] = useState<ChannelDraft | null>(null);
 	const [querying, setQuerying] = useState<{ commandId: string; channelId: string } | null>(null);
 	/** 本面板发起的最近一条命令：只展示它的回执（冲突时给刷新入口）。 */
-	const [lastCommand, setLastCommand] = useState<string | null>(null);
-	const issue = (commandId: string | null) => {
-		if (commandId) setLastCommand(commandId);
+	const [lastCommand, setLastCommand] = useState<{ id: string; op: OpKey | null } | null>(null);
+	const issue = (commandId: string | null, op: OpKey | null = null) => {
+		if (commandId) setLastCommand({ id: commandId, op });
 	};
-	const receipt = lastCommand ? channelResults[lastCommand] : undefined;
+	const receipt = lastCommand ? channelResults[lastCommand.id] : undefined;
 	// 查询回执一到就结束「查询中…」（失败同样结束，状态由 accounts 显式呈现）。
 	useEffect(() => {
 		if (querying && channelResults[querying.commandId]) setQuerying(null);
@@ -239,6 +163,20 @@ export function ChannelSettings({
 			? receipt.errorEn
 			: (receipt.error ?? receipt.errorEn ?? "")
 		: "";
+	/**
+	 * 行内保存（切换启用等）必须带上全部字段：channel_save 是整体替换，
+	 * 少带 models 会把白名单清空（见 @GOTCHA）。
+	 */
+	const saveInputOf = (c: UiChannelInfo, patch: { enabled: boolean }) => ({
+		id: c.id,
+		displayName: c.displayName,
+		providerId: c.providerId,
+		endpointId: c.endpointId,
+		credentialRef: c.credentialRef,
+		accountRef: c.accountRef,
+		models: c.models ?? [],
+		enabled: patch.enabled,
+	});
 
 	return (
 		<div className="chan-settings">
@@ -265,6 +203,15 @@ export function ChannelSettings({
 					)}
 				</div>
 			)}
+			{/* 成功回执也要显示：否则删除/切换看起来像「点了没反应」（见 @GOTCHA）。 */}
+			{receipt?.ok && lastCommand?.op && (
+				<div className="chan-receipt ok">
+					<FiCheck />
+					<span>
+						{t(lastCommand.op)} · {receipt.phase === "pending" ? t("channelPendingBadge") : t("channelCommandOk")}
+					</span>
+				</div>
+			)}
 			{channels.length === 0 && <p className="set-hint">{t("channelListEmpty")}</p>}
 			{channels.map((c) => (
 				<ChannelRow
@@ -272,28 +219,17 @@ export function ChannelSettings({
 					channel={c}
 					account={accountFor(c)}
 					querying={querying?.channelId === c.id}
-					onToggle={() =>
-						issue(
-							channelApi.saveChannel({
-								id: c.id,
-								displayName: c.displayName,
-								providerId: c.providerId,
-								endpointId: c.endpointId,
-								credentialRef: c.credentialRef,
-								accountRef: c.accountRef,
-								enabled: !c.enabled,
-							}),
-						)
-					}
+					onToggle={() => issue(channelApi.saveChannel(saveInputOf(c, { enabled: !c.enabled })), "channelOpToggle")}
 					onQuery={() => {
 						const commandId = channelApi.queryChannelAccount(c.id);
 						if (commandId) setQuerying({ commandId, channelId: c.id });
+						// 账户结果由 AccountStatusLine 呈现，这里不覆盖成功回执（只展示失败原因）。
 						issue(commandId);
 					}}
 					onEdit={() => setDraft(channelDraftOf(c, c.providerId))}
 					onDelete={() => {
 						if (!window.confirm(t("channelDeleteConfirm", { name: c.displayName }))) return;
-						issue(channelApi.deleteChannel(c.id));
+						issue(channelApi.deleteChannel(c.id), "channelOpDelete");
 					}}
 				/>
 			))}
@@ -303,8 +239,10 @@ export function ChannelSettings({
 					draft={draft}
 					providerIds={providerIds}
 					providerKeys={providerKeys}
+					models={models}
+					accountPresets={channelState?.accountPresets}
 					onSave={(payload) => {
-						issue(channelApi.saveChannel(payload));
+						issue(channelApi.saveChannel(payload), "channelOpSave");
 						setDraft(null);
 					}}
 					onCancel={() => setDraft(null)}
@@ -331,6 +269,7 @@ export function ChannelSettings({
 				/>
 				<p className="set-hint">{t("channelDefaultsHint")}</p>
 			</div>
+			<ChannelUsage channels={channels} history={usageHistory} onQuery={channelApi.queryUsageHistory} />
 		</div>
 	);
 }
