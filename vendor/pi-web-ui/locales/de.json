@@ -1042,6 +1042,8 @@
     "channelAccountFailed": "Abfrage fehlgeschlagen",
     "channelAccountStale": "Veraltet",
     "channelAccountStaleTip": "Die letzte Abfrage ist fehlgeschlagen; unten steht das letzte erfolgreiche Ergebnis (Zeit = letzter Erfolg)",
+    "channelAccountGranted": "gewährt",
+    "channelAccountToppedUp": "aufgeladen",
     "channelAccountCheckedAt": "Abgefragt am",
     "channelAccountBalance": "Guthaben",
     "channelAccountQuota": "Kontingent",

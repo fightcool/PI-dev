@@ -152,6 +152,10 @@ export interface UiAccountStatus {
 	checkedAt?: number;
 	staleSince?: number;
 	error?: string;
+	/** 多币种明细（如 DeepSeek 官方可能同时返回 CNY/USD）：逐条展示，不做无依据相加。 */
+	breakdown?: { currency: string; total: number; granted: number; toppedUp: number }[];
+	/** 供应商标注的状态说明（例如 DeepSeek 的 is_available=false = 余额不足以调用）。 */
+	note?: string;
 }
 
 /** 当前对话的绑定视图（有效 + 待生效 + 来源）。 */

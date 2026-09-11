@@ -1042,6 +1042,8 @@
     "channelAccountFailed": "Consulta fallida",
     "channelAccountStale": "Obsoleta",
     "channelAccountStaleTip": "La última consulta falló; abajo se muestra el último resultado correcto (la hora es la del último éxito)",
+    "channelAccountGranted": "otorgado",
+    "channelAccountToppedUp": "recargado",
     "channelAccountCheckedAt": "Consultado el",
     "channelAccountBalance": "Saldo",
     "channelAccountQuota": "Cuota",

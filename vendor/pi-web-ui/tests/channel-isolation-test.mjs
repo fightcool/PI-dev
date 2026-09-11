@@ -293,7 +293,7 @@ try {
 	check("diagnostics bundle is returned with metadata", diag.ok === true && Boolean(diag.bundle), diag.error ?? "");
 	check(
 		"diagnostics carries version/paths/unit and channel counts",
-		diag.bundle.app.protocolVersion === 20 && (diag.bundle.release.protocolVersion === null || typeof diag.bundle.release.protocolVersion === "number") &&
+		diag.bundle.app.protocolVersion === 21 && (diag.bundle.release.protocolVersion === null || typeof diag.bundle.release.protocolVersion === "number") &&
 			typeof diag.bundle.instance.agentDir === "string" && Array.isArray(diag.bundle.units) &&
 			diag.bundle.channels.count === 2 && diag.bundle.usage.requests >= 2,
 		JSON.stringify({ appProtocol: diag.bundle.app.protocolVersion, releaseProtocol: diag.bundle.release.protocolVersion, channels: diag.bundle.channels, usage: diag.bundle.usage.requests }),
