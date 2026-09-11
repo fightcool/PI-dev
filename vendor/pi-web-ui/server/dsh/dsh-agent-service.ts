@@ -3499,6 +3499,15 @@ export class DshClientSession {
 		}
 	}
 
+	/** P4 运维：DSH 引擎没有逐请求历史，因此不提供存储明细与保留设置。 */
+	async listStorage(reqId: number): Promise<void> {
+		this.emit({ type: "storage", reqId, ok: false, error: "DSH 引擎不提供用量历史存储明细" });
+	}
+
+	setUsageRetention(_maxAgeDays: number): void {
+		this.emit({ type: "notice", level: "warning", text: "DSH 引擎不提供用量历史保留设置", textEn: "The DSH engine has no usage-history retention setting" });
+	}
+
 	/** P4 用量历史：DSH 引擎不记录逐请求归属，明确回空结果而不是伪造数据。 */
 	async queryUsageHistory(reqId: number, query: { groupBy: "channel" | "project" | "model" | "source" | "day" }): Promise<void> {
 		this.emit({

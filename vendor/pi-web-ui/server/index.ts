@@ -790,6 +790,10 @@ export interface DispatchSession {
 	queryChannelAccount(commandId: string, channelId: string): Promise<void>;
 	/** P4 候选：系统资源只读快照。 */
 	listResources(reqId: number): Promise<void>;
+	/** P4 运维：存储占用明细（只读、有界遍历）。 */
+	listStorage(reqId: number): Promise<void>;
+	/** P4 运维：设置用量历史保留天数。 */
+	setUsageRetention(maxAgeDays: number): void;
 	/** P4 首个切片：跨渠道/项目/时间的用量历史（只读聚合）。 */
 	queryUsageHistory(
 		reqId: number,
@@ -1486,6 +1490,12 @@ wss.on("connection", (ws) => {
 				break;
 			case "list_resources":
 				void cs.listResources(msg.reqId);
+				break;
+			case "list_storage":
+				void cs.listStorage(msg.reqId);
+				break;
+			case "set_usage_retention":
+				cs.setUsageRetention(msg.maxAgeDays);
 				break;
 			default:
 				break;

@@ -20,7 +20,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 
-const PORT = Number(process.argv[2] || 8995);
+// 默认端口按 PID 派生：冒烟与手工 e2e 并行时不会互撞（同一脚本两份的 PID 必不相同）。
+const PORT = Number(process.argv[2] || 9300 + (process.pid % 100) * 2);
 const base = mkdtempSync(join(tmpdir(), "pi-dev-channel-multiclient-"));
 const workdir = join(base, "work");
 const dataDir = join(base, "data");

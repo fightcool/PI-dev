@@ -351,6 +351,23 @@ try {
 				text.split("\n").slice(0, 6).join(" / "),
 			);
 			check("resources panel labels disk usage as an estimate", text.includes("an estimate"), text.slice(-160));
+			// P4 运维：存储占用明细 + 保留策略（只读；标注可清理候选，删除仍由人工在服务器上执行）。
+			const storageText = await resources.first().innerText();
+			check(
+				"storage section lists areas with sizes and cleanup hints",
+				storageText.includes("Storage") && storageText.includes("sessions") && storageText.includes("13 MiB") &&
+					storageText.includes("Upload cache — a cleanup candidate") && storageText.includes("User data — not recommended to clean") &&
+					storageText.includes("Usage-history retention"),
+				storageText.split("\n").slice(-8).join(" / "),
+			);
+			const retentionVisible = storageText.includes("keep 30 days") || storageText.includes("size-based rotation only");
+			check("retention selector shows the current policy", retentionVisible, storageText.slice(-120));
+			sent = [];
+			await resources.locator("button.chan-btn", { hasText: "keep 90 days" }).first().click();
+			check("changing retention sends set_usage_retention", sent.some((m) => m.type === "set_usage_retention" && m.maxAgeDays === 90), JSON.stringify(sent.at(-1) ?? null));
+			sent = [];
+			await resources.locator("button.chan-btn", { hasText: "Recompute storage" }).first().click();
+			check("storage refresh asks for a new walk", sent.some((m) => m.type === "list_storage"), JSON.stringify(sent.at(-1) ?? null));
 			sent = [];
 			await resources.locator("button.chan-btn").first().click();
 			check("manual refresh asks for a new snapshot", sent.some((m) => m.type === "list_resources"), JSON.stringify(sent.at(-1) ?? null));

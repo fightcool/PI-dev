@@ -28,6 +28,7 @@ import type { ChannelRecord, ChannelSelection, RequestBindingSnapshot } from "./
 import type { ChannelServiceHost } from "./dev-con/channel-service.js";
 import { UsageHistoryStore, type UsageHistoryRecord } from "./dev-con/usage-history.js";
 import { collectResources } from "./dev-con/system-resources.js";
+import { measureAreas } from "./dev-con/storage-usage.js";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
@@ -2183,6 +2184,51 @@ export class ClientSession {
 		} catch (err) {
 			this.emit({ type: "resources", reqId, ok: false, error: (err as Error).message });
 		}
+	}
+
+	/**
+	 * P4 运维：存储占用明细 + 用量历史保留策略（只读遍历，有界；不删除任何数据）。
+	 * 区域按「用户数据 / 可清理候选」分组标注，界面据此提示，删除动作仍由操作人在服务器上做。
+	 */
+	async listStorage(reqId: number): Promise<void> {
+		try {
+			const retentionPath = join(this.agentDir, "dev-con", "usage-history.jsonl");
+			const areas = measureAreas([
+				{ path: join(this.stateStore.dataDir, "uploads"), label: "uploads", note: "uploads-cleanable" },
+				{ path: join(this.agentDir, "sessions"), label: "sessions", note: "sessions-user-data" },
+				{ path: join(this.stateStore.dataDir, "subagent-archive"), label: "subagent-archive", note: "sessions-user-data" },
+				{ path: retentionPath, label: "usage-history", note: "usage-history-cleanable" },
+				{ path: join(this.agentDir, "dev-con"), label: "channel-metadata", note: "channel-metadata-user-data" },
+				{ path: join(this.stateStore.dataDir, "plugins"), label: "plugin-data", note: "plugin-data-user-data" },
+			]);
+			const settings = this.usageHistory.readSettings();
+			this.emit({
+				type: "storage",
+				reqId,
+				ok: true,
+				storage: {
+					at: Date.now(),
+					areas,
+					totalBytes: areas.reduce((sum, area) => sum + area.bytes, 0),
+					retention: { maxAgeDays: settings.maxAgeDays, maxBytes: settings.maxBytes, fileBytes: this.usageHistory.fileBytes(), choices: [0, 7, 30, 90, 365] },
+				},
+			});
+		} catch (err) {
+			this.emit({ type: "storage", reqId, ok: false, error: (err as Error).message });
+		}
+	}
+
+	/** P4 运维：设置用量历史保留天数（仅允许 0/7/30/90/365；立即生效）。 */
+	setUsageRetention(maxAgeDays: number): void {
+		const settings = this.usageHistory.writeSettings(maxAgeDays);
+		const pruned = this.usageHistory.pruneByAge();
+		this.emit({
+			type: "notice",
+			level: "info",
+			text: settings.maxAgeDays === 0 ? "用量历史保留：只按大小轮转（不做时间清理）" : `用量历史保留：仅保留最近 ${settings.maxAgeDays} 天（本次清理 ${pruned.removed} 条）`,
+			textEn: settings.maxAgeDays === 0 ? "Usage history retention: size-based rotation only" : `Usage history retention: last ${settings.maxAgeDays} days (removed ${pruned.removed} records)`,
+		});
+		this.flushSnapshot();
 	}
 
 	/** P4：只读用量历史聚合（按渠道/项目/模型/来源/天）。 */

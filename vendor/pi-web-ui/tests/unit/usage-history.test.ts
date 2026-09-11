@@ -121,6 +121,34 @@ describe("usage history store", () => {
 		expect(result.totals.requests).toBe(2);
 	});
 
+	it("prunes records older than the configured retention and keeps newer ones", () => {
+		const store = new UsageHistoryStore(join(dir, "usage-history.jsonl"));
+		expect(store.readSettings().maxAgeDays).toBe(0);
+		store.append(record({ id: "old", at: T0 - 40 * DAY }));
+		store.append(record({ id: "fresh", at: T0 }));
+		// 写入非法值被归一化为 0（只按大小轮转）。
+		expect(store.writeSettings(3).maxAgeDays).toBe(0);
+		expect(store.writeSettings(30).maxAgeDays).toBe(30);
+		const pruned = store.pruneByAge(T0);
+		expect(pruned).toMatchObject({ removed: 1, kept: 1, maxAgeDays: 30 });
+		const after = store.query({ groupBy: "channel" });
+		expect(after.scanned).toBe(1);
+		expect(after.rows[0].requests).toBe(1);
+		// 保留 0 天（关闭）时不做时间清理。
+		store.writeSettings(0);
+		expect(store.pruneByAge(T0)).toMatchObject({ removed: 0, maxAgeDays: 0 });
+	});
+
+	it("keeps damaged lines when pruning (evidence is never dropped silently)", () => {
+		const store = new UsageHistoryStore(join(dir, "usage-history.jsonl"));
+		store.writeSettings(7);
+		store.append(record({ id: "kept", at: T0 }));
+		writeFileSync(store.filePath(), `{ damaged\n${readFileSync(store.filePath(), "utf8")}`, { mode: 0o600 });
+		const pruned = store.pruneByAge(T0 + 30 * DAY);
+		expect(pruned.removed).toBe(1);
+		expect(readFileSync(store.filePath(), "utf8")).toContain("{ damaged");
+	});
+
 	it("writes owner-only permissions", () => {
 		const store = new UsageHistoryStore(join(dir, "usage-history.jsonl"));
 		store.append(record());

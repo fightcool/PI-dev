@@ -7,6 +7,7 @@
 import { memo, useEffect, useState } from "react";
 import { useT } from "../i18n";
 import type { UiResourceSnapshot } from "../types";
+import type { StorageMsg } from "../use-chat";
 
 const DISK_WARN_PERCENT = 85;
 
@@ -28,12 +29,23 @@ const duration = (sec: number): string => {
 export const SystemResources = memo(function SystemResources({
 	snapshot,
 	onRefresh,
+	storage,
+	onLoadStorage,
+	onSetRetention,
 }: {
 	snapshot: UiResourceSnapshot | null;
 	onRefresh: () => void;
+	/** P4 运维：存储占用明细（只在打开/手动刷新时查询，不进 5 秒轮询）。 */
+	storage?: StorageMsg | null;
+	onLoadStorage?: () => void;
+	onSetRetention?: (days: number) => void;
 }) {
 	const t = useT();
 	const [tick, setTick] = useState(0);
+	// 存储遍历较贵：只在挂载时查一次，之后由按钮触发。
+	useEffect(() => {
+		onLoadStorage?.();
+	}, [onLoadStorage]);
 	// 面板打开期间每 5 秒刷新一次（服务端无后台采样，刷新即一次只读采集）。
 	useEffect(() => {
 		const timer = setInterval(() => setTick((v) => v + 1), 5000);
@@ -128,10 +140,74 @@ export const SystemResources = memo(function SystemResources({
 					))}
 				</div>
 			)}
+			{storage && (
+				<div className="resources-storage">
+					<div className="resource-title">
+						{t("storageTitle")} · {bytes(storage.ok ? (storage.storage?.totalBytes ?? 0) : 0)}
+					</div>
+					{!storage.ok ? (
+						<div className="set-hint">{storage.error ?? t("storageUnavailable")}</div>
+					) : (
+						<>
+							<table className="usage-attr storage-table">
+								<thead>
+									<tr>
+										<th>{t("storageArea")}</th>
+										<th>{t("storageSize")}</th>
+										<th>{t("storageFiles")}</th>
+										<th>{t("storageNote")}</th>
+									</tr>
+								</thead>
+								<tbody>
+									{(storage.storage?.areas ?? []).map((area) => (
+										<tr key={`${area.label}:${area.path}`}>
+											<td title={area.path}>{area.label}</td>
+											<td>
+												{area.missing ? "—" : bytes(area.bytes)}
+												{area.truncated && <span className="usage-unknown-price"> {t("storageTruncated")}</span>}
+											</td>
+											<td>{area.missing ? "—" : area.files}</td>
+											<td>
+												{/* 只标注「可清理候选 / 用户数据」，删除动作仍由操作人在服务器上执行。 */}
+												{area.note === "uploads-cleanable" && t("storageNoteUploads")}
+												{area.note === "usage-history-cleanable" && t("storageNoteHistory")}
+												{area.note === "sessions-user-data" && t("storageNoteUserData")}
+												{area.note === "channel-metadata-user-data" && t("storageNoteUserData")}
+												{area.note === "plugin-data-user-data" && t("storageNoteUserData")}
+											</td>
+										</tr>
+									))}
+								</tbody>
+							</table>
+							{storage.storage && (
+								<div className="resources-retention">
+									<span className="resource-meta">{t("storageRetention")}</span>
+									{storage.storage.retention.choices.map((days) => (
+										<button
+											key={days}
+											type="button"
+											className={`chan-btn${days === storage.storage?.retention.maxAgeDays ? " primary" : ""}`}
+											onClick={() => onSetRetention?.(days)}
+										>
+											{days === 0 ? t("storageRetentionOff") : t("storageRetentionDays", { n: days })}
+										</button>
+									))}
+									<span className="resource-source">{t("storageRetentionNote", { size: bytes(storage.storage.retention.fileBytes) })}</span>
+								</div>
+							)}
+						</>
+					)}
+				</div>
+			)}
 			<div className="resources-actions">
 				<button type="button" className="chan-btn" onClick={onRefresh}>
 					{t("channelRefresh")}
 				</button>
+				{onLoadStorage && (
+					<button type="button" className="chan-btn" onClick={onLoadStorage}>
+						{t("storageRefresh")}
+					</button>
+				)}
 			</div>
 		</div>
 	);
