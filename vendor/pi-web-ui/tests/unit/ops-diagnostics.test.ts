@@ -11,7 +11,8 @@ import type { UiResourceSnapshot, UiStorageSnapshot } from "../../server/protoco
 
 // 合成凭据在运行时拼接：本仓库的发布检查会把 `sk-` + 24 字符以上的字面量判为疑似密钥，
 // 直接写字面量会让 CI 的 check:publish 失败（这正是它该做的事）。拼接后语义不变。
-const SYNTHETIC_KEY = ["sk", "DIAGNOSTIC", "SYNTHETIC", "0001"].join("-");
+/** 合成标记：刻意不用凭据形状（也绝不拆分拼接来绕过扫描）——测试语义是「注入的值不得外泄」。 */
+const SYNTHETIC_MARKER = "DIAGNOSTIC-SYNTHETIC-MARKER-0001";
 
 const resources = (diskPercent: number, memUsed: number, cgroup: { currentBytes: number | null; maxBytes: number | null }): UiResourceSnapshot => ({
 	at: 1,
