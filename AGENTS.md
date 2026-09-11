@@ -59,6 +59,49 @@ git push -u origin HEAD
 
 除非用户明确要求，不要改写已推送提交历史，不要强制推送。
 
+## 测试分层与验证节奏（重要：不要每次改动都跑全量）
+
+全量门禁（应用冒烟 41 项 + 三套渠道 e2e + 应用单测 + root 测试 + 类型检查）**只在里程碑执行**，
+不在每次编辑后执行。历史教训：把全量当成「每次改动」的默认动作，单轮反馈要 30 分钟，严重拖慢开发。
+
+### 三层
+
+| 层 | 何时跑 | 命令 | 实测耗时（2026-09-11，4 vCPU） |
+| --- | --- | --- | --- |
+| **T0 快检** | 每次改动后（含中间小步） | `npm run typecheck`；受影响的定向单测 `npm --prefix vendor/pi-web-ui exec vitest run tests/unit/<area>-` | typecheck ~25s；定向单测秒级 |
+| **T1 目标验证** | 提交前一次（按改动范围选） | `npm test`（~9s）、`npm run check:publish`（秒级）、相关 e2e：`test:channels`(~60s) / `test:channels:multi`(~20s) / `test:channels:browser`(~30s) | ~1–2 分钟 |
+| **T2 里程碑全量** | **准备合并 PR** 或 **构建候选/上线** 时 | `npm run test:smoke`（并行，~190s）+ 相关 e2e + `npm run test:performance` | ~5 分钟 |
+
+### 规则
+
+1. **里程碑定义**：一个功能/修复准备合并 PR，或要构建候选并上线。只有这时必须 T2。
+2. **同一提交不重复跑 T2**：PR 上 CI 已经跑过的，本机不再跑一遍；候选阶段只跑**产物级**检查
+   （`test:smoke` + 与本次改动相关的 e2e），源码级检查（typecheck/单测）由 CI 覆盖。
+3. **部署一轮的两条命令**（不要手工重来一遍）：
+   - 候选准备：`node scripts/maintenance/prepare-release.mjs <commit>`（锁文件未变时复用现值依赖，省 ~3 分钟）；
+   - 产物级验证 → 切换：`SMOKE_JOBS=3 npm run test:smoke` + 相关 e2e → `switch-production-release.mjs <releaseId>`。
+4. **冒烟默认并行 3**（`SMOKE_JOBS=N` 或 `--jobs=N`；调试单个失败用例用 `--jobs=1`）。
+5. **不要并行跑同一套 e2e**（端口/资源互踩会产生假失败）；e2e 已尽量按 PID/动态端口隔离，但仍以串行为准。
+6. **长命令必须 detached 启动**（`setsid nohup ... > /tmp/x.log 2>&1 &`）：工具看门狗约 900 秒会中止前台长命令，
+   被中止不等于失败。
+7. 报告结果时写清**实际跑了哪一层、命令与耗时**；没跑的不要声称通过。
+
+### 常用命令对照
+
+```bash
+# T0（每次改动）
+npm run typecheck
+npm --prefix vendor/pi-web-ui exec vitest run tests/unit/channel-      # 例：渠道相关
+
+# T1（提交前）
+npm test && npm run check:publish
+npm run test:channels && npm run test:channels:browser
+
+# T2（里程碑：合并前 / 候选验证）
+SMOKE_JOBS=3 npm run test:smoke
+npm run test:performance
+```
+
 ## 测试与质量检查
 
 根据变更范围运行必要检查。常用检查包括：
