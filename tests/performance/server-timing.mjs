@@ -269,6 +269,24 @@ try {
     await nextTiming(),
   );
 
+  // ---- 2b) 分页游标：不带 all 时一次只补一页（默认 200），要更早得继续请求 ----
+  const omittedAfterSwitch = switched.state?.messagesOmitted ?? 0;
+  if (omittedAfterSwitch > 200) {
+    const tPage = performance.now();
+    send({ type: "load_history", before: switched.state.messages[0].id });
+    const page1 = await waitFor("message_page");
+    record(
+      `load_history 一页 → ${page1.messages.length} 条（默认页大小）`,
+      performance.now() - tPage,
+      `omittedBefore=${page1.omittedBefore} complete=${page1.complete}`,
+    );
+    check("一次只补一页，且仍有更早的消息", page1.messages.length === 200 && page1.complete === false && page1.omittedBefore > 0, {
+      messages: page1.messages.length,
+      omittedBefore: page1.omittedBefore,
+      complete: page1.complete,
+    });
+  }
+
   // ---- 3) switch back to the small session (runtime reuse path) ----
   const smallTarget = sessions.sessions.find((s) => s.path === small);
   if (smallTarget) {
