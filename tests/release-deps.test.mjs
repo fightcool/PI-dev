@@ -7,6 +7,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";import { tmpdir } from "node:os";
 import {
@@ -68,13 +69,19 @@ test("linkTree 默认硬链接（同 inode、内容共享），link:false 退化
 	assert.notEqual(statSync(join(src, "pkg/index.js")).ino, statSync(join(copied, "pkg/index.js")).ino);
 });
 
-test("freezeTree 把文件冻结为只读，但目录仍可写（能新建文件、能回收）", (t) => {
+test("freezeTree 把文件冻结为只读且保留可执行位，目录仍可写（能新建文件、能回收）", (t) => {
 	const root = tempDir(t);
 	const tree = join(root, "node_modules");
 	mkdirSync(join(tree, "pkg"), { recursive: true });
+	mkdirSync(join(tree, ".bin"), { recursive: true });
 	writeFileSync(join(tree, "pkg/index.js"), "x");
-	assert.equal(freezeTree(tree), 1);
+	// 回归：node_modules/.bin/* 必须仍可执行，否则 `npm run build` 会 vite: Permission denied
+	writeFileSync(join(tree, ".bin/vite"), "#!/bin/sh\n", { mode: 0o755 });
+	assert.equal(freezeTree(tree), 2);
 	assert.equal(statSync(join(tree, "pkg/index.js")).mode & 0o777, 0o444);
+	assert.equal(statSync(join(tree, ".bin/vite")).mode & 0o777, 0o555);
+	// 可执行位真的还在：能跑起来（冻结但可执行）。
+	assert.doesNotThrow(() => execFileSync(join(tree, ".bin/vite"), { stdio: "ignore" }));
 	// 目录保持可写：构建仍能在依赖树里新建缓存文件，之后也能 rm -rf。
 	assert.doesNotThrow(() => writeFileSync(join(tree, "pkg/.cache-new"), "y"));
 	assert.doesNotThrow(() => rmSync(join(tree, "pkg/index.js")));

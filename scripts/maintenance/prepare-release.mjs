@@ -76,6 +76,9 @@ try {
 			populateFromStore(store.path, staging, { echo: (...a) => log(...a) });
 		} else {
 			log("锁文件未变 → 拷贝复用当前 release 的 node_modules 与 .venv");
+			for (const rel of HARD_LINKED_TREES) {
+				if (existsSync(join(CURRENT, rel))) cpSync(join(CURRENT, rel), join(staging, rel), { recursive: true, dereference: false });
+			}
 		}
 		for (const rel of COPIED_TREES) {
 			if (existsSync(join(CURRENT, rel))) cpSync(join(CURRENT, rel), join(staging, rel), { recursive: true, dereference: false });

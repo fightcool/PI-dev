@@ -37,6 +37,10 @@ export const DEPS_DIRNAME = "deps";
 export const LOCK_FILES = ["package-lock.json", "vendor/pi-web-ui/package-lock.json"];
 /** @MAGIC 只读文件权限：阻止就地改写，同时不妨碍硬链接目标被 unlink。 */
 const READONLY_FILE_MODE = 0o444;
+/** @GOTCHA 可执行位必须保留：node_modules/.bin/* 与各种二进制靠 exec 位工作，
+ *  统一改成 0444 会让构建直接 `vite: Permission denied`（实测踩过）。 */
+const READONLY_EXEC_MODE = 0o555;
+const readonlyModeFor = (mode) => ((mode & 0o111) === 0 ? READONLY_FILE_MODE : READONLY_EXEC_MODE);
 
 /**
  * 依赖仓 id：只由**锁文件内容**决定（按固定相对路径顺序），绝不含绝对路径——
@@ -101,7 +105,8 @@ export function freezeTree(root) {
 	let frozen = 0;
 	for (const rel of listFiles(root)) {
 		const path = join(root, rel);
-		if ((statSync(path).mode & 0o777) !== READONLY_FILE_MODE) chmodSync(path, READONLY_FILE_MODE);
+		const target = readonlyModeFor(statSync(path).mode);
+		if ((statSync(path).mode & 0o777) !== target) chmodSync(path, target);
 		frozen += 1;
 	}
 	return frozen;
