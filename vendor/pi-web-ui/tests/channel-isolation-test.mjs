@@ -38,10 +38,17 @@ const check = (name, ok, extra = "") => {
 };
 
 /** 记录每次模型请求携带的凭据；回显式 SSE 让一轮真实跑完。 */
+const mockBase = `http://127.0.0.1:${MOCK_PORT}`;
 const seenAuth = [];
 const mock = createServer(async (req, res) => {
 	let body = "";
 	for await (const chunk of req) body += chunk;
+	if (req.method === "GET" && new URL(req.url ?? "/", "http://x").pathname.endsWith("/api/user/self")) {
+		// 账户查询替身：OpenAI 兼容网关形态（模板映射到 data.quota / data.used_quota）。
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(JSON.stringify({ data: { quota: 500, used_quota: 100, display_name: "template-acc" } }));
+		return;
+	}
 	if (req.method === "GET" && new URL(req.url ?? "/", "http://x").pathname.endsWith("/models")) {
 		res.writeHead(200, { "content-type": "application/json" });
 		res.end(JSON.stringify({ object: "list", data: [{ id: "chan-mock", object: "model" }] }));
@@ -334,6 +341,47 @@ try {
 		appliedBinding?.channelId === "ch-b" && appliedBinding?.modelId === "mock/chan-mock",
 		`${JSON.stringify(appliedBinding ?? null)} settled_in=${settled - switchSent}ms`,
 	);
+
+	// 7e) 渠道模型白名单：非白名单模型必须被拒；白名单内可正常绑定。
+	const limited = await runCommand(client, "channel_save", {
+		channel: { id: "ch-limited", displayName: "限模型渠道", providerId: "mock", credentialRef: { providerId: "mock", keyName: "密钥 1" }, models: ["chan-mock"] },
+	});
+	check("可保存带模型白名单的渠道", limited.ok === true, limited.error ?? "");
+	const notAllowed = await runCommand(client, "channel_select", { conversationId: convB, channelId: "ch-limited", modelId: "mock/other-model" });
+	check("白名单外的模型被明确拒绝", notAllowed.ok === false && notAllowed.phase === "rejected" && String(notAllowed.error).includes("不在该渠道的可用列表内"), notAllowed.error ?? "");
+	const allowed = await runCommand(client, "channel_select", { conversationId: convB, channelId: "ch-limited", modelId: "mock/chan-mock" });
+	check("白名单内的模型可正常绑定", allowed.ok === true, allowed.error ?? "");
+
+	// 7f) 账户查询模板：用户自配 URL/字段映射（走本地替身），预设随 channel_state 下发。
+	client.send({ type: "list_channels" });
+	const withPresets = await client.waitForType("channel_state", (m) => Array.isArray(m.accountPresets), 10000);
+	check("channel_state 下发账户查询预设（可一键填充）", ["deepseek", "openai-gateway", "openrouter"].every((id) => withPresets.accountPresets.some((p) => p.id === id)), JSON.stringify(withPresets.accountPresets.map((p) => p.id)));
+	const templated = await runCommand(client, "channel_save", {
+		channel: {
+			id: "ch-template", displayName: "模板渠道", providerId: "mock",
+			credentialRef: { providerId: "mock", keyName: "密钥 1" },
+			extra: { account: { kind: "template", url: `${mockBase}/api/user/self`, method: "GET", mapping: { limit: "data.quota", used: "data.used_quota", remaining: "data.quota", scope: "data.display_name" }, scale: 2, unit: "USD" } },
+		},
+	});
+	check("可保存自定义查询模板渠道", templated.ok === true, templated.error ?? "");
+	await runCommand(client, "channel_query_account", { channelId: "ch-template" });
+	await sleep(1200);
+	const acct = (client.channelState?.accounts ?? []).find((a) => a.accountRef === "ch-template" || a.accountRef === "模板渠道");
+	check("模板渠道查询成功并解析出余额/单位/范围", acct?.status === "ok" && acct?.unit === "USD" && typeof acct?.balance === "number" && Boolean(acct?.scope), JSON.stringify(acct ?? null));
+
+	// 7g) 已存模板必须能完整回填（否则「编辑已存渠道」等于重配）：channel_state 的 account
+	// 回显要包含 url/method/mapping/items/scale/unit，且不含任何密钥值。
+	client.send({ type: "list_channels" });
+	const echoed = await client.waitForType("channel_state", (m) => m.channels.some((c) => c.id === "ch-template" && c.account), 10000);
+	const view = echoed.channels.find((c) => c.id === "ch-template");
+	check(
+		"已存账户模板在界面可完整回填（url/method/mapping/items/unit/scale）",
+		view.account.url === `${mockBase}/api/user/self` && view.account.method === "GET" && typeof view.account.mapping === "object" &&
+			view.account.mapping.limit === "data.quota" && view.account.unit === "USD" && view.account.scale === 2,
+		JSON.stringify(view.account),
+	);
+	check("模板回显不含任何密钥值", !JSON.stringify(view.account).match(/sk-[A-Za-z0-9]|apiKey\s*:/), JSON.stringify(view.account).slice(0, 120));
+	check("渠道视图带模型白名单字段（空 = 不限）", Array.isArray(view.models) && view.models.length === 0 && Array.isArray(echoed.channels.find((c) => c.id === "ch-limited").models) && echoed.channels.find((c) => c.id === "ch-limited").models.length === 1);
 
 	// 8) 组合命令的失败路径：模型不属于该渠道服务商 → 明确拒绝，绑定保持。
 	const bad = await runCommand(client, "channel_select", { conversationId: convB, channelId: "ch-b", modelId: "mock/missing-model" });

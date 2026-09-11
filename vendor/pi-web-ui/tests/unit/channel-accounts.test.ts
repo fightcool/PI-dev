@@ -29,6 +29,7 @@ const channel = (url: string, extra: Record<string, unknown> = { scale: 2, kind:
 	endpointId: "default",
 	credentialRef: { providerId: "main", keyName: "密钥 1" },
 	accountRef: "acct-1",
+	models: [],
 	enabled: true,
 	extra: { account: { url, ...extra } },
 });

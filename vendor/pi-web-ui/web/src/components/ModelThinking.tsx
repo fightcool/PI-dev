@@ -1,4 +1,8 @@
-/* 🍞 @COUPLED web/src/components/ModelChannelPicker.tsx, web/src/use-chat.ts — 📖 docs/DEV-CON-PROPOSAL.md §6 */
+/* 🍞 @COUPLED web/src/components/ModelChannelPicker.tsx, web/src/channel-models.ts, web/src/use-chat.ts — 📖 docs/DEV-CON-PROPOSAL.md §6
+ * @CONTRACT 有渠道时模型行交给 ChannelModelList（按渠道分组），那里按 channel.models 白名单过滤；
+ *           无渠道时保持原有「服务商 + 命名密钥」分组行为，零回归。
+ * @GOTCHA 渠道分组下也要有「没有匹配的模型」提示：搜索词与白名单叠加时，
+ *         没有这行用户只会看到一个空列表。 */
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { FiCpu, FiSearch, FiZap } from "react-icons/fi";
 import type { ModelInfo, ProviderKeyInfo, UiChannelBindingView, UiState } from "../types";
@@ -278,6 +282,10 @@ export const ModelThinking = memo(function ModelThinking({
 						{(reqLoading || modelsLoading) && <div className="dd-loading">{t("loading")}</div>}
 						{models.length === 0 && !reqLoading && !modelsLoading && <div className="dd-loading">{t("noModels")}</div>}
 						{!hasChannels && filteredModels.length === 0 && models.length > 0 && (
+							<div className="dd-loading">{t("noModelMatches")}</div>
+						)}
+						{/* 渠道分组下的空结果提示（白名单/搜索词叠加时，见 @GOTCHA）。 */}
+						{hasChannels && filteredModels.length === 0 && models.length > 0 && (
 							<div className="dd-loading">{t("noModelMatches")}</div>
 						)}
 						{hasChannels && (

@@ -29,6 +29,7 @@ import type { ChannelRecord, ChannelSelection, RequestBindingSnapshot } from "./
 import type { ChannelServiceHost } from "./dev-con/channel-service.js";
 import { UsageHistoryStore, type UsageHistoryRecord } from "./dev-con/usage-history.js";
 import { collectResources } from "./dev-con/system-resources.js";
+import { setProviderBaseUrlLookup } from "./dev-con/channel-accounts.js";
 import { measureAreas } from "./dev-con/storage-usage.js";
 import { buildDiagnostics, usageSummaryOf } from "./dev-con/ops-diagnostics.js";
 import { evaluateAlerts, markFired, ALERT_COOLDOWN_MS, ALERT_CRITICAL_PERCENT, ALERT_WARN_PERCENT, type OpsAlert } from "./dev-con/ops-alerts.js";
@@ -1566,6 +1567,14 @@ export class ClientSession {
 		this.accounts = new AccountRegistry();
 		this.channels = new ChannelService(this.makeChannelHost(agentDir), this.accounts);
 		this.usageHistory = new UsageHistoryStore(join(agentDir, "dev-con", "usage-history.jsonl"));
+		// 模板里的 {baseUrl} 取自运行时模型目录（服务商 baseUrl 由 models.json 拥有）。
+		setProviderBaseUrlLookup((providerId) => {
+			try {
+				return this.runtime.services.modelRuntime.getProviders().find((p) => p.id === providerId)?.baseUrl;
+			} catch {
+				return undefined;
+			}
+		});
 	}
 
 	static async create(

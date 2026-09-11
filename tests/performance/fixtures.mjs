@@ -1,6 +1,10 @@
 /* 🍞 AI Breadcrumb Navigation — @COUPLED=callers; @CONTRACT=fixture schema.
- * @COUPLED tests/performance/isolation.mjs, tests/performance/scenarios.mjs
+ * @COUPLED tests/performance/isolation.mjs, tests/performance/scenarios.mjs,
+ *   tests/channels/browser-ui.mjs（渠道/用量/账户预设夹具：channel_state.models 白名单、
+ *   accountPresets 预设、usage_history 的 unpricedRequests + unreportedRequests 诚实口径）
  * @CONTRACT Only deterministic synthetic text; never load sessions or credentials.
+ * @GOTCHA usage_history 行必须同时带 unpricedRequests 与 unreportedRequests：
+ *   缺字段会让「未知价格/未上报」的诚实展示在测试中失去覆盖（客户端用 ?? 0 容错）。
  * 📖 tests/performance/README.md
  */
 export const pluginId = 'performance-fixture';
@@ -146,10 +150,10 @@ export function socketReply(message, state) {
         type: 'usage_history', reqId: message.reqId, ok: true, groupBy: message.groupBy,
         from: message.from ?? null, to: message.to ?? null,
         rows: [
-          { key: 'ch-a', requests: 2, input: 90, output: 38, cacheRead: 20, cacheWrite: 5, total: 153, cost: 0.03, unpricedRequests: 0, firstAt: 1700000000000, lastAt: 1700000005000 },
-          { key: 'unattributed', requests: 1, input: 10, output: 2, cacheRead: 0, cacheWrite: 0, total: 12, cost: 0, unpricedRequests: 1, firstAt: 1700000006000, lastAt: 1700000006000 },
+          { key: 'ch-a', requests: 2, input: 90, output: 38, cacheRead: 20, cacheWrite: 5, total: 153, cost: 0.03, unpricedRequests: 0, unreportedRequests: 0, firstAt: 1700000000000, lastAt: 1700000005000 },
+          { key: 'unattributed', requests: 1, input: 10, output: 2, cacheRead: 0, cacheWrite: 0, total: 12, cost: 0, unpricedRequests: 1, unreportedRequests: 1, firstAt: 1700000006000, lastAt: 1700000006000 },
         ],
-        totals: { requests: 3, input: 100, output: 40, cacheRead: 20, cacheWrite: 5, total: 165, cost: 0.03, unpricedRequests: 1 },
+        totals: { requests: 3, input: 100, output: 40, cacheRead: 20, cacheWrite: 5, total: 165, cost: 0.03, unpricedRequests: 1, unreportedRequests: 1 },
         scanned: 3, skipped: 0, truncated: false,
       }];
     case 'list_provider_keys': return channels ? [{ type: 'provider_keys', keys: state.providerKeys ?? {} }] : [];

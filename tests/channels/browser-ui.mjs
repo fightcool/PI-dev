@@ -7,6 +7,13 @@
  * @CONTRACT 真实 Chromium + 合成数据 + 模拟 WS，不接触真实服务、模型或凭据。
  *   DEV-CON A11 证据：渠道选择器分组/禁用原因、待生效提示、底部状态栏、用量归属展示，
  *   以及点击模型时确实发出**带版本**的 channel_select 组合命令。
+ * @COUPLED tests/performance/fixtures.mjs（socketReply 的渠道/用量夹具；channel_state 里带
+ *   models 白名单与 accountPresets 预设）、vendor/pi-web-ui/web/src/components/{ChannelForm,
+ *   ChannelRow,ChannelModelWhitelist,ChannelAccountQuery,ChannelUsage,ModelChannelPicker}.tsx
+ * @GOTCHA 新增检查的语义（全在合成数据上验证，不允许因为“界面上看不到”就放宽）：
+ *   模型白名单只在非空时生效（空 = 不限）、行内启用切换必须带上 models、
+ *   编辑时渠道 id 只读、账户模板的 JSON 校验必须拦下坏配置（不得发出 channel_save）、
+ *   删除要确认并有回执、按渠道用量把未归属/未上报/未知价格如实展示。
  *
  * 用法：node tests/channels/browser-ui.mjs
  */
@@ -29,15 +36,18 @@ const MODELS = [
 const CHANNELS = [
 	{ id: "ch-a", displayName: "渠道 A", providerId: "main", endpointId: "default",
 		credentialRef: { providerId: "main", keyName: "密钥 1" }, accountRef: null, enabled: true,
+		models: ["m1"],
 		keys: [{ keyName: "密钥 1", active: true }, { keyName: "密钥 2", active: false }], keyMissing: false, providerMissing: false },
 	{ id: "ch-b", displayName: "渠道 B", providerId: "main", endpointId: "default",
 		credentialRef: { providerId: "main", keyName: "密钥 2" }, accountRef: null, enabled: true,
+		models: [],
 		keys: [{ keyName: "密钥 1", active: true }, { keyName: "密钥 2", active: false }], keyMissing: false, providerMissing: false },
 	{ id: "ch-off", displayName: "渠道 停用", providerId: "main", endpointId: "default",
-		credentialRef: null, accountRef: null, enabled: false,
+		credentialRef: null, accountRef: null, enabled: false, models: [],
 		keys: [{ keyName: "密钥 1", active: true }], keyMissing: false, providerMissing: false },
 	{ id: "ch-gone", displayName: "渠道 失效", providerId: "ghost", endpointId: "default",
-		credentialRef: null, accountRef: null, enabled: true, keys: [], keyMissing: false, providerMissing: true },
+		credentialRef: null, accountRef: null, enabled: true, models: [],
+		keys: [], keyMissing: false, providerMissing: true },
 ];
 
 const state = {
@@ -95,6 +105,17 @@ const state = {
 			{ accountRef: "ch-b", kind: "unsupported", status: "unsupported", error: "no account endpoint" },
 			{ accountRef: "ch-off", kind: "openrouter", status: "stale", unit: "USD", balance: 3.25,
 				checkedAt: 1700000000000, staleSince: 1700000000000, error: "HTTP 503" },
+		],
+		// 账户查询模板预设（服务端 ACCOUNT_TEMPLATE_PRESETS 形状；一键填充到编辑器）。
+		accountPresets: [
+			{ id: "deepseek", label: "DeepSeek 官方", description: "GET /user/balance → balance_infos[]",
+				template: { kind: "template", url: "https://api.deepseek.com/user/balance", method: "GET",
+					items: { path: "balance_infos", currency: "currency", total: "total_balance" },
+					mapping: { available: "is_available" } } },
+			{ id: "openrouter", label: "OpenRouter", description: "GET /credits → data.total_credits",
+				template: { kind: "template", url: "https://openrouter.ai/api/v1/credits", method: "GET",
+					mapping: { limit: "data.total_credits", used: "data.total_usage", remaining: "data.total_credits" },
+					unit: "USD" } },
 		],
 	},
 };
@@ -158,6 +179,20 @@ try {
 	check("disabled channels are marked with a reason", disabledCount === 2, `${disabledCount}: ${reasons}`);
 	const clickable = await page.locator(".chan-group .chan-head.disabled .dd-model-cell, .chan-group .chan-head.disabled .chan-key").count();
 	check("disabled channels expose no clickable model/key", clickable === 0, `clickable=${clickable}`);
+
+	// 3b) 模型白名单（channel.models）：非空时只显示白名单内的模型，并在渠道头上写明。
+	const wlHint = await page.locator(".chan-group .chan-whitelist").allInnerTexts();
+	check("picker marks the channels that limit their model list", wlHint.length === 1 && wlHint[0].includes("1"), wlHint.join(" | "));
+	const wlGroupA = page
+		.locator(".chan-group", { has: page.locator(".chan-name", { hasText: "渠道 A" }) })
+		.locator(".dd-model-cell");
+	const wlRowsA = await wlGroupA.allInnerTexts();
+	check("a channel whitelist hides the provider's other models", wlRowsA.length === 1 && wlRowsA[0].includes("Mock One"), wlRowsA.join(" | "));
+	const wlRowsB = await page
+		.locator(".chan-group", { has: page.locator(".chan-name", { hasText: "渠道 B" }) })
+		.locator(".dd-model-cell")
+		.allInnerTexts();
+	check("an empty whitelist still lists every model of the provider", wlRowsB.length === 2, wlRowsB.join(" | "));
 
 	// 4) 点击渠道 A 下的「密钥 2」+ 模型 → 一条带版本的组合命令（A03/A04）。
 	sent = [];
@@ -247,14 +282,102 @@ try {
 	// 查询账户 = 一条 channel_query_account（不改配置）。
 	await page.locator(".chan-settings .chan-row").first().locator("button.chan-btn", { hasText: "Query account" }).click();
 	check("account query sends channel_query_account", sent.some((m) => m.type === "channel_query_account" && m.channelId === "ch-a"), JSON.stringify(sent.at(-1) ?? null));
-	// 新增渠道 = 一条带 configRevision 的 channel_save。
+
+	// 6b) 模型白名单摘要：限定 N 个 / 不限 必须逐行写明。
+	const summary = (await page.locator(".chan-settings .chan-models-summary").allInnerTexts()).join(" | ");
+	check(
+		"settings rows summarise the model whitelist (limited vs unrestricted)",
+		summary.includes("Limited to 1 models") && summary.includes("Unrestricted"),
+		summary,
+	);
+
+	// 6c) 按渠道用量：每行一个渠道（Token/费用/最近使用），未归属与未上报如实标注。
+	const usageBlock = page.locator(".chan-settings .chan-usage");
+	await usageBlock.locator("table").waitFor({ state: "visible", timeout: options.stepTimeout });
+	const usageText = (await usageBlock.first().innerText()).replace(/\n/g, " / ");
+	check(
+		"per-channel usage block lists requests/tokens/cost and the last use",
+		usageText.includes("渠道 A") && usageText.includes("153") && usageText.includes("0.03"),
+		usageText.slice(0, 220),
+	);
+	check(
+		"per-channel usage keeps unattributed rows and unreported/pricing caveats honest",
+		usageText.includes("Unattributed") && usageText.includes("unpriced") && usageText.includes("unreported"),
+		usageText.slice(0, 260),
+	);
+	check("channels without records say so instead of showing 0", usageText.includes("No records in this window"));
+	sent = [];
+	await usageBlock.locator(".chan-btn", { hasText: "30 days" }).first().click();
+	const usageQuery = sent.find((m) => m.type === "usage_history_query");
+	check("the usage block asks for channel grouping with a window", usageQuery?.groupBy === "channel" && typeof usageQuery?.from === "number", JSON.stringify(usageQuery ?? null));
+
+	// 6d) 启用切换必须带上白名单（channel_save 是整体替换）。
+	sent = [];
+	await page.locator(".chan-settings .chan-row").first().locator(".chan-enable input").click();
+	const toggle = sent.find((m) => m.type === "channel_save");
+	check(
+		"toggling enabled keeps the channel's model whitelist",
+		toggle?.channel?.models?.join(",") === "m1" && toggle?.channel?.enabled === false && toggle?.channel?.id === "ch-a",
+		JSON.stringify(toggle?.channel ?? null),
+	);
+	check("a successful command is reported instead of silently doing nothing", (await page.locator(".chan-settings .chan-receipt.ok").first().innerText()).includes("Toggle enabled"));
+
+	// 6e) 编辑：id 只读（绑定键）+ 白名单已勾选；删除要确认并给回执。
+	sent = [];
+	await page.locator(".chan-settings .chan-row").first().locator('button.chan-btn[title="Edit"]').click();
+	const editForm = page.locator(".chan-form").first();
+	await editForm.waitFor({ state: "visible", timeout: options.stepTimeout });
+	const editText = await editForm.innerText();
+	check("editing keeps the channel id read-only and explains why", (await editForm.locator("input").nth(1).getAttribute("readonly")) !== null && editText.includes("binding key"), editText.slice(0, 120));
+	check("editing pre-checks the channel's whitelist", (await editForm.locator(".chan-model-row input:checked").count()) === 1);
+	await editForm.locator(".chan-btn", { hasText: "Cancel" }).click();
+	await editForm.waitFor({ state: "hidden", timeout: options.stepTimeout }).catch(() => undefined);
+	page.once("dialog", (dialog) => void dialog.accept());
+	await page.locator(".chan-settings .chan-row").first().locator("button.chan-btn.danger").click();
+	check("delete asks for confirmation and then sends channel_delete", sent.some((m) => m.type === "channel_delete" && m.channelId === "ch-a"), JSON.stringify(sent.at(-1) ?? null));
+	check("the delete result is reported", (await page.locator(".chan-settings .chan-receipt.ok").first().innerText()).includes("Delete channel"));
+
+	// 6f) 新增渠道 = 一条带 configRevision 的 channel_save（含白名单与账户查询模板）。
 	await page.locator(".chan-settings .chan-btn", { hasText: "Add channel" }).first().click();
 	const form = page.locator(".chan-settings form, .chan-form").first();
 	await form.waitFor({ state: "visible", timeout: options.stepTimeout });
 	await form.locator("input").first().fill("渠道 新");
+	// 模型白名单：一键全选该服务商的模型（空选 = 不限）。
+	await form.locator(".chan-models-head .chan-btn", { hasText: "Select all" }).click();
+	check("selecting all models fills the whitelist counter", (await form.locator(".chan-models-count").innerText()).includes("2"), await form.locator(".chan-models-count").innerText());
+	// 账户查询模板：预设一键填充 → 故意写坏 JSON → 保存必须被拦下。
+	const accountEditor = form.locator(".chan-account");
+	await accountEditor.locator("select").first().selectOption("deepseek");
+	check(
+		"picking a preset fills the query template",
+		(await accountEditor.locator("input").first().inputValue()) === "https://api.deepseek.com/user/balance",
+		await accountEditor.locator("input").first().inputValue(),
+	);
+	const mappingBox = accountEditor.locator("textarea").last();
+	await mappingBox.fill("{not json");
+	sent = [];
+	await page.locator(".chan-settings .chan-btn", { hasText: "Save" }).last().click();
+	const warnText = (await page.locator(".chan-settings .chan-warn").allInnerTexts()).join(" | ");
+	check(
+		"invalid JSON is reported instead of being sent as config",
+		!sent.some((m) => m.type === "channel_save") && /not valid JSON/.test(warnText),
+		warnText.slice(0, 200),
+	);
+	// 换一个预设（会重新填充合法 JSON）后再保存。
+	await accountEditor.locator("select").first().selectOption("openrouter");
+	sent = [];
 	await page.locator(".chan-settings .chan-btn", { hasText: "Save" }).last().click();
 	const save = sent.find((m) => m.type === "channel_save");
 	check("saving a channel sends channel_save with the expected config revision", save?.expectedConfigRevision === 7, JSON.stringify(save ?? null));
+	check("the save carries the model whitelist", save?.channel?.models?.length === 2, JSON.stringify(save?.channel?.models ?? null));
+	check(
+		"the save carries the account query template (kind/url/mapping)",
+		save?.channel?.extra?.account?.kind === "template" &&
+			save.channel.extra.account.url === "https://openrouter.ai/api/v1/credits" &&
+			save.channel.extra.account.mapping?.limit === "data.total_credits",
+		JSON.stringify(save?.channel?.extra ?? null),
+	);
+	check("a successful save is reported to the user", (await page.locator(".chan-settings .chan-receipt.ok").first().innerText()).includes("Save channel"));
 	await context.close();
 
 	// 7) 移动端视口（A11 要求桌面与移动端均可用）：同一套渠道状态在手机宽度下仍可读可操作。

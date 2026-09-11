@@ -1,4 +1,6 @@
-/* 🍞 @COUPLED web/src/components/ChannelSettings.tsx — 📖 docs/DEV-CON-PROPOSAL.md §6 */
+/* 🍞 @COUPLED web/src/components/ChannelSettings.tsx（渠道分区：建/改/删/查 + 白名单 + 按渠道用量）
+ *   web/src/components/ChannelUsage.tsx（复用 chat.usageHistory 的按渠道聚合）
+ *   📖 docs/DEV-CON-PROPOSAL.md §6 */
 import { useEffect, useRef, useState } from "react";
 import {
 	FiArchive,
@@ -42,7 +44,7 @@ import type {
 	UiSkillInfo,
 	UiSubagentTemplate,
 } from "../types";
-import type { ChannelApi, ChannelCommandResult, ChannelStateMsg, DiagnosticsMsg, ResourcesMsg, StorageMsg } from "../use-chat";
+import type { ChannelApi, ChannelCommandResult, ChannelStateMsg, DiagnosticsMsg, ResourcesMsg, StorageMsg, UsageHistoryMsg } from "../use-chat";
 import { ChannelSettings } from "./ChannelSettings";
 import { SystemResources } from "./SystemResources";
 import {
@@ -112,6 +114,8 @@ interface SettingsModalProps {
 		/** 有效模型（选默认模型用）与已注册服务商（派生可选 providerId）。 */
 		models: ModelInfo[];
 		providers: ProviderStatus[];
+		/** P4 用量历史（渠道分区的「按渠道用量」只读复用；与用量面板共享）。 */
+		usageHistory: UsageHistoryMsg | null;
 	};
 	send: (msg: ClientMessage) => boolean;
 	/** DEV-CON 渠道命令 API（channel_save / channel_delete / 默认值 / 账户查询）。 */
@@ -2367,6 +2371,7 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 									providerIds={channelProviderIds}
 									providerKeys={chat.providerKeys}
 									models={chat.models}
+									usageHistory={chat.usageHistory}
 								/>
 							</div>
 						)}

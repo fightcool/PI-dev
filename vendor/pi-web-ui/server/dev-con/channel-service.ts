@@ -397,7 +397,7 @@ export class ChannelService {
 
 	/** 唯一的状态消息构造（账号快照由本层注入，状态层不认识 AccountRegistry）。 */
 	stateMessage(): ChannelStateMessage {
-		return this.state.stateMessage(this.accounts?.snapshot() ?? []);
+		return this.state.stateMessage(this.accounts?.snapshot() ?? [], this.accounts?.presets() ?? []);
 	}
 
 	pushState(): void {
