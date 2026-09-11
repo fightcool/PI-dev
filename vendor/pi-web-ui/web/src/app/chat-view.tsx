@@ -143,7 +143,7 @@ export function ChatView({
 			</div>
 			{!isMobile && <ResizeHandle side="left" width={leftWidth} onResize={resizeLeft} />}
 			<main className={wide ? "main wide-chat" : "main"}>
-				{chat.state ? (
+				{chat.state && !chat.switching ? (
 					<MessageList
 						key={chat.state.conversationId ?? "boot"}
 						state={chat.state}
@@ -159,7 +159,12 @@ export function ChatView({
 						onJumpDone={onJumpDone}
 					/>
 				) : (
-					<div className="boot-wait">{chat.ready ? t("loadingSession") : t("connectingServer")}</div>
+					// 首帧加载与乐观切换共用同一个占位：切换时先揭掉上一个会话的内容，
+					// 目标快照一到（reducer 清掉 switching）立刻换成真实内容——不再出现
+					// 「点了没反应，几秒后整页跳一下」的观感。
+					<div className="boot-wait" role="status" aria-live="polite">
+						{chat.ready ? t("loadingSession") : t("connectingServer")}
+					</div>
 				)}
 				{chat.settings?.goalModeEnabled !== false && (
 					<GoalBar

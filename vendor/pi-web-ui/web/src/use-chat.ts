@@ -194,6 +194,11 @@ export interface ChatState {
 	conversations: ConversationSummary[];
 	/** Id of the conversation the current snapshot belongs to. */
 	activeConversationId: string;
+	/** 乐观切换：用户已点开的会话，其首份快照还没到。非 null 时对话面板显示
+	 *  加载占位而不是上一个会话的内容（否则用户看到的是「点了没反应」）。
+	 *  `conversationId` 在 switch_conversation 时已知，switch_session（按磁盘
+	 *  文件打开）时未知 —— 两种情况都靠「快照里的 conversationId 变了」收尾。 */
+	switching: { conversationId?: string } | null;
 	/** Recent workspaces this client opened (left panel project picker). */
 	projects: ProjectSummary[];
 	/** Workspace file listing for the right panel. */
@@ -343,6 +348,7 @@ export interface ChatState {
 
 type Action =
 	| { type: "status"; status: ConnStatus }
+	| { type: "switching"; target: { conversationId?: string } | null }
 	| { type: "snapshot"; state: UiState }
 	| { type: "snapshot_delta"; msg: Extract<ServerMessage, { type: "snapshot_delta" }> }
 	| { type: "protocol_mismatch" }
@@ -611,6 +617,8 @@ function pruneToolStatuses(statuses: Map<string, ToolStatus>, state: UiState): M
 
 function reducer(state: ChatState, action: Action): ChatState {
 	switch (action.type) {
+		case "switching":
+			return { ...state, switching: action.target };
 		case "status":
 			return {
 				...state,
@@ -640,6 +648,9 @@ function reducer(state: ChatState, action: Action): ChatState {
 				ready: true,
 				state: action.state,
 				activeConversationId: action.state.conversationId,
+				// 乐观切换的收尾：只有「活动会话真的换了」才算切换完成——这样切换期间
+				// 旧会话的定时快照/后台统计更新不会提前把占位揭掉。
+				switching: action.state.conversationId === state.state?.conversationId ? state.switching : null,
 				liveOutputs: pruneLiveOutputs(state.liveOutputs, action.state),
 				toolStatuses: pruneToolStatuses(state.toolStatuses, action.state),
 			};
@@ -918,6 +929,7 @@ export function useChat() {
 		sessions: [],
 		conversations: [],
 		activeConversationId: "",
+		switching: null,
 		projects: [],
 		files: null,
 
@@ -1026,7 +1038,17 @@ export function useChat() {
 		const ws = wsRef.current;
 		if (ws && ws.readyState === WebSocket.OPEN) {
 			// 会话切换的「点击时刻」——paint 打点会把它配对成端到端延迟。
-			if (msg.type === "switch_conversation" || msg.type === "switch_session") perfMarkSwitch(msg.type);
+			// 同时进入乐观切换态：目标快照未到前，对话面板显示加载占位而不是
+			// 上一个会话（否则用户看到的是「点了没反应，然后整页跳一下」）。
+			// 切到当前已打开/已显示的会话是 no-op，不进占位态。
+			if (msg.type === "switch_conversation") {
+				perfMarkSwitch(msg.type);
+				if (msg.id !== chatApi.current.chat.activeConversationId)
+					dispatch({ type: "switching", target: { conversationId: msg.id } });
+			} else if (msg.type === "switch_session") {
+				perfMarkSwitch(msg.type);
+				if (msg.path !== chatApi.current.chat.state?.sessionFile) dispatch({ type: "switching", target: {} });
+			}
 			// Forced re-check: drop stale rows immediately so the "checking"
 			// state renders instead of the cached list.
 			if (msg.type === "check_updates_all" && msg.force === true) {
@@ -1043,6 +1065,15 @@ export function useChat() {
 		}
 		return false;
 	}, []);
+
+	/** 乐观切换的安全网：服务端总会对切换请求回一份快照，但会话不存在/切换失败的
+	 *  分支只会发 notice。超时后揭掉占位，避免占位永远留在屏幕上。
+	 *  @MAGIC 8s —— 比实测最慢的切历史会话（含扩展重建，数秒级）再宽一些。 */
+	useEffect(() => {
+		if (!chat.switching) return;
+		const timer = setTimeout(() => dispatch({ type: "switching", target: null }), 8000);
+		return () => clearTimeout(timer);
+	}, [chat.switching]);
 
 	/** Stable across renders — the reconnect loop lives entirely inside this closure. */
 	const connect = useCallback(() => {
