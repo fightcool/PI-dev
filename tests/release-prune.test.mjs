@@ -181,6 +181,18 @@ test("prune 经 runRelease 执行，并拒绝版本 id 与 --commit", async t =>
   await assert.rejects(runRelease({ action: "prune", warnAt: -1, env: d.env }), /warnAt/);
 });
 
+test("生产编排的 8 位暂存名按暂存处理，不得被当成完整版本", async t => {
+  const inFlight = deployment(t, { ...lineage, staging: [[".build-47e59670", 1], [".build-47e59670.tar", 1]] });
+  const plan = planPrune(inFlight.options, { keep: 0 });
+  assert.deepEqual(plan.stale, [], "在飞的构建不得被回收");
+  assert.ok(!plan.remove.includes(".build-47e59670"));
+  assert.ok(!plan.retained.includes(".build-47e59670"));
+  assert.deepEqual(releaseInventory(inFlight.options), ["d", "c", "b", "a"]);
+
+  const abandoned = deployment(t, { ...lineage, staging: [[".build-47e59670", 7]] });
+  assert.deepEqual(planPrune(abandoned.options, { keep: 0 }).stale, [".build-47e59670"]);
+});
+
 test("堆积告警是阈值驱动的非破坏提示", async t => {
   const d = deployment(t, lineage);
   assert.match(retentionWarning(d.options, 3), /4 releases are retained \(threshold 3\)/);
