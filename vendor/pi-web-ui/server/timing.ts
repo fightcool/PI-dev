@@ -71,6 +71,27 @@ export async function traceStep<T>(trace: TimingTrace | undefined, name: string,
 	}
 }
 
+/**
+ * One-shot line for work that finishes AFTER its request's main trace ended —
+ * e.g. plugin activation, which is deliberately no longer on the first-snapshot
+ * path and therefore must not inflate that trace's `total`.
+ *
+ * @MAGIC slowMs=50: below this the line is noise, so it is skipped.
+ */
+export function logPhase(
+	label: string,
+	name: string,
+	ms: number,
+	slowMs = 50,
+	extra: Record<string, string | number | boolean> = {},
+): void {
+	if (!timingEnabled || ms < slowMs) return;
+	const facts = Object.entries(extra)
+		.map(([k, v]) => `${k}=${v}`)
+		.join(" ");
+	console.log(`[timing-bg] ${label} ${name}=${Math.round(ms)}ms${facts ? ` | ${facts}` : ""}`);
+}
+
 /** Monotonic-enough wall clock; `performance` is available on Node >= 16. */
 function now(): number {
 	return performance.now();

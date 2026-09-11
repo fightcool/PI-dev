@@ -31,7 +31,7 @@ import compression from "compression";
 import { WebSocket, WebSocketServer } from "ws";
 import { VERSION, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { InitialSnapshotGate } from "./initial-snapshot-gate.js";
-import { startTrace, type TimingTrace } from "./timing.js";
+import { logPhase, startTrace, type TimingTrace } from "./timing.js";
 import { PROTOCOL_VERSION } from "./protocol-version.js";
 import { AgentService, workspacePath, QuiesceRejectedError } from "./agent-service.js";
 import { isAbsoluteWirePath, wireToAbs } from "./files-service.js";
@@ -1560,7 +1560,6 @@ wss.on("connection", (ws) => {
 						trace?.end({ engine: ENGINE, ...extra });
 					};
 					trace?.mark("hello");
-					if (ENGINE === "pi") initialSnapshot.start(() => cs.flushSnapshot(true));
 					send({
 						type: "ready",
 						clientId: cid,
@@ -1574,6 +1573,16 @@ wss.on("connection", (ws) => {
 						managed: MANAGED,
 						tabs: TABS ? [...TABS] : undefined,
 					});
+					// Open the gate and push the authoritative baseline NOW. Plugin activation
+					// used to gate this (with a 5s fallback), so a slow/hung plugin showed the
+					// user an empty chat pane for seconds; renderer fences arrive later and
+					// plugin-fence.ts re-renders the misses when the catalog lands.
+					if (ENGINE === "pi") initialSnapshot.complete(() => cs.flushSnapshot(true));
+					trace?.mark("snapshot-sent");
+					// The user-visible number is now known: end the main trace here. Plugin
+					// activation continues behind it and is logged separately (logPhase).
+					finishHelloTrace?.({ snapWireB: lastSnapshotBytes, activeConvs: service.activeConversations() });
+					const pluginsStartedAt = performance.now();
 					// Plugin catalog: re-scan + activate new dirs on every attach so
 					// freshly dropped plugins show up without a server restart.
 					pluginMgr
@@ -1599,11 +1608,8 @@ wss.on("connection", (ws) => {
 						})
 						.then(() => {
 							if (closed) return;
-							// Time spent waiting on plugin activation — the phase that used to
-							// gate the first snapshot behind a 5s fallback timer.
-							trace?.mark("plugins");
-							initialSnapshot.complete(() => cs.flushSnapshot(true));
-							finishHelloTrace?.({ snapWireB: lastSnapshotBytes, activeConvs: service.activeConversations() });
+							// Plugin activation cost, recorded but no longer on the critical path.
+							logPhase(`attach ${cid}`, "plugins", performance.now() - pluginsStartedAt);
 						});
 					// hello may carry the UI locale — persist it before replaying
 					// anything queued during startup (issue #91).
@@ -1643,7 +1649,6 @@ wss.on("connection", (ws) => {
 	ws.on("close", () => {
 		service.noteSocketClose();
 		closed = true;
-		initialSnapshot.dispose();
 		finishHelloTrace?.();
 		pending = [];
 		removePluginSender();

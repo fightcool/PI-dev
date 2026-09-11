@@ -3675,7 +3675,10 @@ export class ClientSession {
 	 *  provider that has a saved key for `cwd`, activate it if it differs from
 	 *  the current global active. Silent + self-healing: a saved key deleted
 	 *  elsewhere is dropped without notifying (a noisy error here is what
-	 *  haunted project switches after a key deletion). */
+	 *  haunted project switches after a key deletion).
+	 *
+	 *  @PERF network:false —— 这是 attach / 切项目 / 切会话的同步路径，远端目录刷新
+	 *  放到后台（否则单跳可达数秒，直接变成白屏时间）。 */
 	private async restoreProjectProviderKeysForCwd(cwd: string): Promise<void> {
 		const saved = this.stateStore.getProjectProviderKeys(this.clientId, cwd);
 		if (!saved) return;
@@ -3686,7 +3689,7 @@ export class ClientSession {
 				this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
 				continue;
 			}
-			const ok = await this.modelAdmin.activateProviderKey(provider, keyName, { silent: true });
+			const ok = await this.modelAdmin.activateProviderKey(provider, keyName, { silent: true, network: false });
 			if (!ok) this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
 		}
 	}
@@ -3705,7 +3708,7 @@ export class ClientSession {
 			this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
 			return;
 		}
-		const ok = await this.modelAdmin.activateProviderKey(provider, saved, { silent: true });
+		const ok = await this.modelAdmin.activateProviderKey(provider, saved, { silent: true, network: false });
 		if (!ok) this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
 	}
 
