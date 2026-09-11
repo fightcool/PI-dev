@@ -131,6 +131,13 @@ runtime.session.agent.getApiKey = (provider) => this.channels.credentialFor(id, 
 - **协议/界面**：`list_resources` → `resources`（协议 18，双端同步）；设置面板新增「系统」分组，展示 CPU / 内存 / 本应用 / 主机四张卡与磁盘列表，每 5 秒自动刷新并有手动刷新按钮；DSH 引擎共用同一采集（与引擎无关）。
 - **验证**：单测 5 例（`/proc/stat` 聚合与使用率算式、meminfo 字节与 MemFree 回落、cgroup `max` = 无上限、注入 io 的完整快照、`/proc` 不可读时的诚实降级）；Chromium 断言 4 项（面板渲染 CPU/内存/应用/磁盘与来源标签、磁盘标注为估算、手动刷新发出 `list_resources`）；真机实测：4 核 / load 1.28、内存 7.8 GiB 中用 0.9 GiB、应用 RSS 90 MiB、unit 上限 4.0 GiB 当前 339 MiB、磁盘 79.6%。
 
+## 11. P4 运维：存储占用明细与用量历史保留
+
+- **存储明细（只读）**：`server/dev-con/storage-usage.ts` 递归统计实例私有区域（uploads / sessions / subagent-archive / usage-history / 渠道元数据 / plugin 数据）。遍历**有界**（`MAX_FILES=50_000`、`MAX_MS=2_000`，超限即停并标 `truncated`），**不跟随符号链接**（避免 release/依赖链接重复计数），路径缺失标 `missing` 而不是报错。区域按占用降序，并标注「可清理候选 / 用户数据」——**删除动作仍由操作人在服务器上执行**，界面不提供删除按钮。
+- **保留策略**：`usage-history.jsonl` 除按大小轮转外，新增按天保留（0/7/30/90/365，写入 `<agentDir>/dev-con/usage-settings.json`）。超期记录在下次写入时按 `PRUNE_INTERVAL_MS=5min` 节流清理：临时文件 + rename 原子替换，**只删确实过期的行，损坏行一律保留**（不因清理丢证据）。0 = 只按大小轮转。
+- **协议/界面**：`list_storage` → `storage`（含 areas/totalBytes/retention）与 `set_usage_retention`（协议 19）。设置 →「系统」分组新增存储表与保留选择器；存储遍历**不进 5 秒轮询**（只在打开/手动刷新时执行）。删除类操作不提供。
+- **验证**：单测 4 例（目录求和与符号链接、单文件区域、缺失路径、遍历上限与排序）+ 保留 2 例（按天清理与非法值归一化、损坏行保留）；Chromium 断言 4 项（存储表与清理提示、保留策略显示、切换保留发出 `set_usage_retention`、重算发出 `list_storage`）；真机实测：sessions 13.3 MiB / 8 文件、usage-history 0.1 MiB、遍历 18 ms。
+
 ## 复现方式与本次实测结果
 
 ```bash
@@ -139,7 +146,7 @@ npm test                          # 174 passed / 0 failed
 
 # 应用单测：渠道模型/存储/服务/账户 + 既有回归
 npm run test:channels:unit        # 46 passed（channel-* 四个文件 + usage-attribution）
-env -u NODE_ENV npm --prefix vendor/pi-web-ui exec vitest run   # 635 passed / 77 files
+env -u NODE_ENV npm --prefix vendor/pi-web-ui exec vitest run   # 642 passed / 80 files
 timeout 1200 npm run test:smoke   # 41/41 通过（含新增 channel-isolation / channel-multiclient）
 
 # 浏览器回归（Chromium，合成数据，无真实模型）
@@ -148,7 +155,7 @@ npm run test:performance          # login / synthetic-20/200/1000 全部 passed
 # 端到端：真实 dist server + 两个对话 + 两把 key + 本地替身模型端点
 npm run build && npm run test:channels
 npm run test:channels:multi       # 两个客户端：广播一致/外部冲突可见且可恢复/绑定互不覆盖
-npm run test:channels:browser     # Chromium（桌面 + 移动视口）：选择器/设置页/账户状态/用量归属/逐请求记录/用量历史/系统资源 29 项断言
+npm run test:channels:browser     # Chromium（桌面 + 移动视口）：选择器/设置页/账户/用量归属/逐请求记录/用量历史/系统资源/存储与保留 33 项断言
 ```
 
 > 注：`vitest` 必须在 `NODE_ENV` 未设为 `production` 的环境下运行，否则 React 会解析到生产构建，既有的 DOM 用例会以 `act(...) is not supported in production builds` 失败（与本次改动无关）。
@@ -164,6 +171,6 @@ npm run test:channels:browser     # Chromium（桌面 + 移动视口）：选择
 3. **run 内 turn 边界切换**：SDK 支持但本期不启用（见 §2 取舍）。
 4. **旁路调用的用量归属**：视觉桥、压缩摘要、目标复核与目标向导均已接入（见 §4 与 `goal-service.ts#reportIsolatedUsage`）；仍未接入的是模型目录探测（只 GET /models，不产生 token）。压缩用会话统计差值，若压缩期间发生其他模型调用会被一并算入（当前 SDK 行为不会）。
 5. **多客户端并发编辑渠道配置**：已实现「每条命令先从磁盘对齐 + 哈希冲突检测 + 合并写入」，并有双客户端端到端用例（`tests/channel-multiclient-test.mjs`）；仍未经两个真实浏览器的人工并发验证。
-6. **渠道界面的验收范围**：`npm run test:channels:browser` 用真实 Chromium 覆盖 29 项断言——渠道分组、禁用/服务商缺失原因、有效/待生效提示、底部渠道、组合命令携带的 revision、用量归属与「未归属」标记、渠道设置页列表与账户状态（ok/unsupported/stale 与真实数值）、`channel_query_account`、带 `expectedConfigRevision` 的 `channel_save`，逐请求记录表（时间/来源/渠道/模型/费用、未知价格标注、计价依据说明），以及**移动端视口**（390×844，触屏）下同样的选择流程。**未**做真实设备/真机人工验收与真实供应商账号下的界面验收。
+6. **渠道界面的验收范围**：`npm run test:channels:browser` 用真实 Chromium 覆盖 33 项断言——渠道分组、禁用/服务商缺失原因、有效/待生效提示、底部渠道、组合命令携带的 revision、用量归属与「未归属」标记、渠道设置页列表与账户状态（ok/unsupported/stale 与真实数值）、`channel_query_account`、带 `expectedConfigRevision` 的 `channel_save`，逐请求记录表（时间/来源/渠道/模型/费用、未知价格标注、计价依据说明），以及**移动端视口**（390×844，触屏）下同样的选择流程。**未**做真实设备/真机人工验收与真实供应商账号下的界面验收。
 7. **非中英文语言包的渠道文案**：新增 88 个 key 已按中文顺序填入 8 个语言包以保证一一对应，但暂时使用英文原文作为占位译文（运行时行为与缺 key 回落英文一致）；正式译文待补。
 8. **既有认证面加固**（recovery 限频、CSRF、query token、health 信息）：见 §7，需独立排期。

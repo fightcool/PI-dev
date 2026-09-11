@@ -20,7 +20,7 @@ PI-dev 是以 Pi 为核心的个人远程开发环境，保留定制 pi-web-ui �
 | `tests/` | 根工程链、生命周期、隔离浏览器性能回归 | 真实会话和凭据 |
 | `docs/` | 当前开发运维规范、提案、验收记录 | 零散根目录完成说明 |
 | `upstream/` | 上游来源和兼容性记录 | 第三份业务实现 |
-| `vendor/pi-web-ui/server/dev-con/` | 渠道元数据、对话绑定、组合切换命令、账户查询适配器、**用量历史（逐请求记录 + 只读聚合）**与**系统资源只读采集** | 第二套模型/密钥事实源、外部原生 Agent 集成、长期计费平台 |
+| `vendor/pi-web-ui/server/dev-con/` | 渠道元数据、对话绑定、组合切换命令、账户查询适配器、**用量历史（逐请求记录 + 只读聚合 + 保留策略）**、**系统资源与存储占用只读采集** | 第二套模型/密钥事实源、外部原生 Agent 集成、长期计费平台 |
 
 根 `package.json` 锁定环境扩展；vendor 的 `package.json` 锁定应用依赖。两者各自保留锁文件，避免把独立上游项目变成无法单独构建的目录。根目录不再额外安装 npm 版 pi-web-ui，也不再人工修改 node_modules 内的 SDK 链接。
 
@@ -58,7 +58,7 @@ Node `#usage` / `#governance` package imports 让源码与编译产物引用同�
 
 ## 渠道模块的落位
 
-当前功能（含 P0 结论）的唯一依据为 [DEV-CON-PROPOSAL.md](DEV-CON-PROPOSAL.md) 与 [P0-VERIFICATION.md](P0-VERIFICATION.md)。渠道元数据落在实例私有目录 `<agentDir>/dev-con/channels.json`（0600，只存 providerId/keyName/modelId 引用）；用量历史落在同目录的 `usage-history.jsonl`（append-only、0600、超过 8 MiB 轮转保留一代）；密钥仍由 `provider-keys.json`/`auth.json` 拥有，模型目录仍由 `models.json` 拥有，不新增第二份可写事实源。历史 `dev-con/` 只读原型及其专用测试已移除，记录留在 [历史归档](history/dev-con/readonly-prototype.md)。
+当前功能（含 P0 结论）的唯一依据为 [DEV-CON-PROPOSAL.md](DEV-CON-PROPOSAL.md) 与 [P0-VERIFICATION.md](P0-VERIFICATION.md)。渠道元数据落在实例私有目录 `<agentDir>/dev-con/channels.json`（0600，只存 providerId/keyName/modelId 引用）；用量历史落在同目录的 `usage-history.jsonl`（append-only、0600、超过 8 MiB 轮转保留一代，保留天数在 `usage-settings.json`）；密钥仍由 `provider-keys.json`/`auth.json` 拥有，模型目录仍由 `models.json` 拥有，不新增第二份可写事实源。历史 `dev-con/` 只读原型及其专用测试已移除，记录留在 [历史归档](history/dev-con/readonly-prototype.md)。
 
 端口约定：8788在线UI、8790发布候选、8791后续运维预留、8890开发后端；协议/浏览器测试使用独立空闲端口或完全模拟网络。
 

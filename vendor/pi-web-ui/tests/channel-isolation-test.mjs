@@ -18,7 +18,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 
-const PORT = Number(process.argv[2] || 8993);
+// 默认端口按 PID 派生：冒烟与手工 e2e 并行时不会互撞（同一脚本两份的 PID 必不相同）。
+const PORT = Number(process.argv[2] || 9100 + (process.pid % 100) * 2);
 const MOCK_PORT = PORT + 1;
 const base = mkdtempSync(join(tmpdir(), "pi-dev-channel-isolation-"));
 const workdir = join(base, "work");

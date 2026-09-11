@@ -70,6 +70,21 @@ export function socketReply(message, state) {
       ...channelStateMsg,
     ];
     case 'list_channels': return channelStateMsg;
+    case 'list_storage':
+      return [{
+        type: 'storage', reqId: message.reqId, ok: true,
+        storage: {
+          at: 1700000000000,
+          areas: [
+            { path: '/synthetic/agent/sessions', label: 'sessions', note: 'sessions-user-data', bytes: 13 * 1024 ** 2, files: 8, truncated: false, missing: false },
+            { path: '/synthetic/agent/dev-con/usage-history.jsonl', label: 'usage-history', note: 'usage-history-cleanable', bytes: 900 * 1024, files: 1, truncated: false, missing: false },
+            { path: '/synthetic/web/uploads', label: 'uploads', note: 'uploads-cleanable', bytes: 200 * 1024, files: 3, truncated: false, missing: false },
+            { path: '/synthetic/web/plugins', label: 'plugin-data', note: 'plugin-data-user-data', bytes: 0, files: 0, truncated: false, missing: true },
+          ],
+          totalBytes: 14 * 1024 ** 2,
+          retention: { maxAgeDays: 30, maxBytes: 8 * 1024 ** 2, fileBytes: 900 * 1024, choices: [0, 7, 30, 90, 365] },
+        },
+      }];
     case 'list_resources':
       return [{
         type: 'resources', reqId: message.reqId, ok: true,

@@ -371,6 +371,33 @@ export interface UiResourceSnapshot {
 	warnings: string[];
 }
 
+/** P4 运维：一个存储区域的占用（有界遍历；truncated=数字不完整，missing=路径不存在）。 */
+export interface UiStorageArea {
+	path: string;
+	label: string;
+	note?: string;
+	bytes: number;
+	files: number;
+	truncated: boolean;
+	missing: boolean;
+}
+
+/** P4 运维：存储明细 + 用量历史保留策略。 */
+export interface UiStorageSnapshot {
+	at: number;
+	areas: UiStorageArea[];
+	totalBytes: number;
+	retention: {
+		/** 0 = 不按时间清理（只按大小轮转）。 */
+		maxAgeDays: number;
+		maxBytes: number;
+		/** 当前历史文件实际大小。 */
+		fileBytes: number;
+		/** 可选保留天数（界面用）。 */
+		choices: number[];
+	};
+}
+
 // ---------------------------------------------------------------------------
 // Client -> Server
 // ---------------------------------------------------------------------------
@@ -687,6 +714,10 @@ export type ClientMessage =
 	| { type: "channel_query_account"; commandId: string; channelId: string }
 	/** P4 候选：请求一次系统资源快照（只读；reqId 回显在 resources 里）。 */
 	| { type: "list_resources"; reqId: number }
+	/** P4 运维：请求一次存储占用明细（只读；有界遍历，reqId 回显在 storage 里）。 */
+	| { type: "list_storage"; reqId: number }
+	/** P4 运维：设置用量历史保留天数（仅允许 0/7/30/90/365；0 = 只按大小轮转）。 */
+	| { type: "set_usage_retention"; maxAgeDays: number }
 	// -- P4 用量历史（跨渠道/项目/时间；只读聚合，不参与计费） ---------------
 	/** 查询实例私有用量历史（逐请求记录的只读聚合）。reqId 回显在 usage_history 里。 */
 	| {
@@ -1620,6 +1651,8 @@ export type ServerMessage =
 			pending: UiChannelPending[];
 			accounts: UiAccountStatus[];
 	  }
+	/** P4 运维：存储占用明细 + 保留策略（ok=false 时 storage 为空并带 error）。 */
+	| { type: "storage"; reqId: number; ok: boolean; error?: string; storage?: UiStorageSnapshot }
 	/** P4 候选：系统资源快照（ok=false 时 snapshot 为空并带 error）。 */
 	| { type: "resources"; reqId: number; ok: boolean; error?: string; snapshot?: UiResourceSnapshot }
 	/** P4 用量历史聚合结果（rows 已按 total 降序；unpricedRequests>0 表示该组含未知价格）。 */

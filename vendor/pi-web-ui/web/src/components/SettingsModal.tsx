@@ -42,7 +42,7 @@ import type {
 	UiSkillInfo,
 	UiSubagentTemplate,
 } from "../types";
-import type { ChannelApi, ChannelCommandResult, ChannelStateMsg, ResourcesMsg } from "../use-chat";
+import type { ChannelApi, ChannelCommandResult, ChannelStateMsg, ResourcesMsg, StorageMsg } from "../use-chat";
 import { ChannelSettings } from "./ChannelSettings";
 import { SystemResources } from "./SystemResources";
 import {
@@ -102,6 +102,8 @@ interface SettingsModalProps {
 		channelState: ChannelStateMsg | null;
 		/** P4 候选：最近一次系统资源快照（只读）。 */
 		resources?: ResourcesMsg | null;
+		/** P4 运维：最近一次存储占用明细（只读）。 */
+		storage?: StorageMsg | null;
 		channelResults: Record<string, ChannelCommandResult>;
 		/** 命名密钥（仅名称 + 是否 active），渠道表单按名称引用。 */
 		providerKeys: Record<string, ProviderKeyInfo[]>;
@@ -2374,7 +2376,13 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 									<FiHardDrive className="set-section-icon" />
 									{t("resourcesTitle")}
 								</div>
-								<SystemResources snapshot={chat.resources?.snapshot ?? null} onRefresh={channelApi.listResources} />
+								<SystemResources
+										snapshot={chat.resources?.snapshot ?? null}
+										onRefresh={channelApi.listResources}
+										storage={chat.storage}
+										onLoadStorage={channelApi.listStorage}
+										onSetRetention={channelApi.setUsageRetention}
+									/>
 							</div>
 						)}
 					</div>

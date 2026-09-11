@@ -18,12 +18,16 @@
  *   @ASSUME "day" 分组按 UTC 切分（可复现、不受服务器时区影响），界面需标注 UTC。
  * ──────────────────────────────────────────────────
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
-import { dirname } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 /** @MAGIC 见头部说明。 */
 export const USAGE_HISTORY_MAX_BYTES = 8 * 1024 * 1024;
 export const USAGE_HISTORY_MAX_RECORDS = 200_000;
+/** 保留天数默认 0 = 只按大小轮转、不按时间清理（用户可在界面改成 7/30/90/365）。 */
+export const USAGE_HISTORY_DEFAULT_MAX_AGE_DAYS = 0;
+/** 距上次按时间清理的最小间隔（避免每次 append 都重写文件）。 */
+const PRUNE_INTERVAL_MS = 5 * 60_000;
 
 /** 一条持久化的逐请求记录（字段来自 lib/usage/token-usage.mjs 的 records()）。 */
 export interface UsageHistoryRecord {
@@ -164,6 +168,8 @@ export class UsageHistoryStore {
 	private readonly previous: string;
 	private readonly maxBytes: number;
 	private readonly maxRecords: number;
+	/** 上次按时间清理的时间（节流用）。 */
+	private lastPruneAt = 0;
 
 	constructor(path: string, opts: { maxBytes?: number; maxRecords?: number } = {}) {
 		this.path = path;
@@ -178,6 +184,9 @@ export class UsageHistoryStore {
 			mkdirSync(dirname(this.path), { recursive: true });
 			this.rotateIfNeeded();
 			appendFileSync(this.path, JSON.stringify(record) + "\n", { mode: 0o600 });
+			// 按保留天数清理（节流：最多每 PRUNE_INTERVAL_MS 一次）。
+			if (this.lastPruneAt === 0) this.lastPruneAt = Date.now();
+			if (Date.now() - this.lastPruneAt >= PRUNE_INTERVAL_MS) this.pruneByAge();
 		} catch {
 			/* 历史写入尽力而为 */
 		}
@@ -241,5 +250,92 @@ export class UsageHistoryStore {
 	/** 存储文件路径（诊断/测试用；不含内容）。 */
 	filePath(): string {
 		return this.path;
+	}
+
+	/** 当前文件大小（界面用于展示保留策略的实际占用）。 */
+	fileBytes(): number {
+		try {
+			return statSync(this.path).size;
+		} catch {
+			return 0;
+		}
+	}
+
+	/** 读取保留设置（缺失/损坏 → 默认值；与历史同目录，0600）。 */
+	readSettings(): { maxAgeDays: number; maxBytes: number } {
+		try {
+			const parsed = JSON.parse(readFileSync(this.settingsPath(), "utf8")) as { maxAgeDays?: number; maxBytes?: number };
+			const days = Number(parsed?.maxAgeDays);
+			const bytes = Number(parsed?.maxBytes);
+			return {
+				maxAgeDays: Number.isFinite(days) && days >= 0 ? Math.floor(days) : USAGE_HISTORY_DEFAULT_MAX_AGE_DAYS,
+				maxBytes: Number.isFinite(bytes) && bytes > 0 ? Math.floor(bytes) : this.maxBytes,
+			};
+		} catch {
+			return { maxAgeDays: USAGE_HISTORY_DEFAULT_MAX_AGE_DAYS, maxBytes: this.maxBytes };
+		}
+	}
+
+	private settingsPath(): string {
+		return join(dirname(this.path), "usage-settings.json");
+	}
+
+	/** 写入保留设置（只允许 0/7/30/90/365 天，避免界面塞进任意值）。 */
+	writeSettings(maxAgeDays: number): { maxAgeDays: number; maxBytes: number } {
+		const allowed = [0, 7, 30, 90, 365];
+		const days = allowed.includes(Math.floor(maxAgeDays)) ? Math.floor(maxAgeDays) : USAGE_HISTORY_DEFAULT_MAX_AGE_DAYS;
+		try {
+			mkdirSync(dirname(this.path), { recursive: true });
+			writeFileSync(this.settingsPath(), JSON.stringify({ maxAgeDays: days }, null, 2) + "\n", { mode: 0o600 });
+		} catch {
+			/* 设置写失败不影响采集 */
+		}
+		return { maxAgeDays: days, maxBytes: this.maxBytes };
+	}
+
+	/**
+	 * 按保留天数清理（0 = 不按时间清理）。重写为临时文件后原子替换，
+	 * 只删除确实过期的行；损坏行按「保留」处理（不因清理丢证据）。
+	 * 由 append() 按 PRUNE_INTERVAL_MS 节流调用（也可手动调用，用于测试）。
+	 */
+	pruneByAge(now = Date.now()): { removed: number; kept: number; maxAgeDays: number } {
+		const { maxAgeDays } = this.readSettings();
+		if (maxAgeDays <= 0) return { removed: 0, kept: 0, maxAgeDays };
+		const cutoff = now - maxAgeDays * 86_400_000;
+		let kept = 0;
+		let removed = 0;
+		for (const file of [this.previous, this.path]) {
+			if (!existsSync(file)) continue;
+			let text: string;
+			try {
+				text = readFileSync(file, "utf8");
+			} catch {
+				continue;
+			}
+			const out: string[] = [];
+			for (const line of text.split("\n")) {
+				if (!line.trim()) continue;
+				try {
+					const record = JSON.parse(line) as UsageHistoryRecord;
+					if (Number.isFinite(record?.at) && record.at < cutoff) {
+						removed += 1;
+						continue;
+					}
+				} catch {
+					/* 损坏行保留 */
+				}
+				out.push(line);
+				kept += 1;
+			}
+			try {
+				const tmp = `${file}.${process.pid}.prune`;
+				writeFileSync(tmp, out.length ? out.join("\n") + "\n" : "", { mode: 0o600 });
+				renameSync(tmp, file);
+			} catch {
+				/* 重写失败就保持原文件（下次再试） */
+			}
+		}
+		this.lastPruneAt = now;
+		return { removed, kept, maxAgeDays };
 	}
 }
