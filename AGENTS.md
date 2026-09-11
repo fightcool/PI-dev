@@ -39,6 +39,16 @@ git fetch origin
 
 如果工作树存在不属于当前任务的修改，不要覆盖、重置或删除；先报告并确认。不要使用 `git reset --hard`、`git clean -fd` 或批量删除来“解决”状态问题。
 
+并发会话隔离：同一个 checkout 同一时间只由一个对话使用。需要并行工作时开独立 worktree：
+
+```bash
+cd /home/dev/PI-dev
+git worktree add /home/dev/PI-dev-worktrees/<name> -b <branch> <start-point>
+git worktree list
+```
+
+在共享 checkout 里 `git switch` 会让另一对话的提交落到错误分支上；并发执行 `npm run build`、依赖安装或浏览器测试会互相覆盖产物、抢占端口与内存。只依赖 Node 内置模块的测试（如 release/lifecycle 链路）在没有 `node_modules` 的 worktree 里也能直接跑。完成并用 `git worktree remove <path>` 释放，分支保留。
+
 ## 分支、提交与推送
 
 - 不直接在默认分支上开发。
