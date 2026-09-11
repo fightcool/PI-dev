@@ -89,6 +89,15 @@ function assertNoBuildInFlight(oldRoot) {
   if (fresh.length) throw new Error(`Release build in flight (${fresh.join(", ")}); wait for it to finish.`);
 }
 
+/** 生产切换会停/启同一个 unit 并重写 current；与迁移并行会让两边都改坏。 */
+function assertNoSwitchInFlight() {
+  let out = "";
+  try { out = sh("pgrep", ["-af", "switch-production-release\\.mjs"]); }
+  catch { return; }  // pgrep 无匹配时以非 0 退出
+  if (out.includes("switch-production-release.mjs"))
+    throw new Error("Production release switch in progress; wait for it to finish.");
+}
+
 /** 把指回旧根的绝对符号链接重写到新根；current 也由这一遍顺带修正。 */
 function rewriteAbsoluteLinks(root, oldRoot, newRoot, collect = []) {
   for (const entry of readdirSync(root, { withFileTypes: true })) {
@@ -147,6 +156,7 @@ log(`new=${newRoot}`);
 log(`config=${configDir} host=${config.host} port=${config.port} workspace=${config.workspaceDir}`);
 
 assertNoBuildInFlight(oldRoot);
+assertNoSwitchInFlight();
 if (existsSync(newRoot) && readdirSync(newRoot).length)
   throw new Error(`New deploy root is not empty: ${newRoot}`);
 if (!lstatSync(join(oldRoot, "current"), { throwIfNoEntry: false })?.isSymbolicLink())
