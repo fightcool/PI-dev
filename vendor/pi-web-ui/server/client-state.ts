@@ -25,6 +25,17 @@ export function normalizeRetryMaxAttempts(v: unknown): number {
 }
 
 /** Settings-panel state (system prompt + disabled skills/extensions). */
+/**
+ * UI 偏好默认值的版本标记。设置是**全局共享**并整对象落盘的（见 saveSettings），
+ * 所以「等于旧默认值的存量值」与「用户真的点过开关」无法区分：不改默认就会对
+ * 所有人失效、改默认又会覆盖用户的显式选择。用这个标记把两者分开——
+ * 写入时打上新版本号，读取时低于当前版本的记录按「没被用户碰过」处理。
+ *
+ * v2：`toolsWrap` 默认由「展开」改为「折叠」（工具/ bash 输出默认收起，点击展开；
+ *     展开会占掉大量阅读空间，且把单条可达数百 KB 的输出写进 DOM）。
+ */
+export const UI_DEFAULTS_VERSION = 2;
+
 export interface ClientSettings {
 	promptMode: PromptMode;
 	customSystemPrompt: string;
@@ -185,6 +196,8 @@ export interface ClientState {
 	lastCwd?: string;
 	/** Workspaces this client opened before, most recent first (capped at 30). */
 	projects: { path: string; lastUsed: number }[];
+	/** UI 偏好默认值版本（见 UI_DEFAULTS_VERSION）：只在共享设置记录上写入。 */
+	uiDefaultsVersion?: number;
 	/** Last-used goal / review preferences (model choice, max rounds, locked) so
 	 *  they survive a reload — "全局记忆". maxRounds: 0 means unlimited. The model
 	 *  choice is shared by both the goal-reviewer and the goal-wizard. */
@@ -402,7 +415,9 @@ export class ClientStateStore {
 			questionnaireEnabled: stored?.questionnaireEnabled ?? true,
 			goalModeEnabled: stored?.goalModeEnabled ?? true,
 			thinkingWrap: stored?.thinkingWrap ?? false,
-			toolsWrap: stored?.toolsWrap ?? false,
+			// @MIGRATION v2：存量 toolsWrap 若是旧默认（true）盖进去的，按「未设置」
+			// 处理 → 落到新默认 false。用户之后显式开关会被记进新版本号，不再被覆盖。
+			toolsWrap: (s?.uiDefaultsVersion ?? 1) >= 2 ? (stored?.toolsWrap ?? false) : false,
 			visionBridgeEnabled: stored?.visionBridgeEnabled ?? true,
 			visionBridgeModel: stored?.visionBridgeModel ?? null,
 			visionBridgePromptMode: stored?.visionBridgePromptMode === "replace" ? "replace" : "append",
@@ -421,6 +436,7 @@ export class ClientStateStore {
 	saveSettings(_clientId: string, settings: Partial<ClientSettings>): void {
 		const all = this.load();
 		const state = (all[ClientStateStore.GLOBAL_SETTINGS_KEY] ??= { projects: [] });
+		state.uiDefaultsVersion = UI_DEFAULTS_VERSION;
 		const cur = state.settings ?? ({} as ClientSettings);
 		state.settings = {
 			promptMode: settings.promptMode ?? cur.promptMode ?? "append",
