@@ -82,6 +82,7 @@ export type ChannelStateMsg = Extract<ServerMessage, { type: "channel_state" }>;
 /** 渠道命令回执（`channel_command_result`）—— 按 commandId 与提交匹配。 */
 export type ChannelCommandResult = Extract<ServerMessage, { type: "channel_command_result" }>;
 export type UsageHistoryMsg = Extract<ServerMessage, { type: "usage_history" }>;
+export type ResourcesMsg = Extract<ServerMessage, { type: "resources" }>;
 /** 用量历史的时间窗（今天按 UTC 切分，与聚合口径一致）。 */
 export type UsageHistoryWindow = "all" | "today" | "7d" | "30d";
 const startOfUtcDay = (ms: number) => Date.UTC(new Date(ms).getUTCFullYear(), new Date(ms).getUTCMonth(), new Date(ms).getUTCDate());
@@ -119,6 +120,8 @@ export interface ChannelApi {
 	queryChannelAccount: (channelId: string) => string | null;
 	/** P4 首个切片：用量历史查询（只读聚合）。返回 reqId，结果在 state.usageHistory。 */
 	queryUsageHistory: (groupBy: UsageHistoryMsg["groupBy"], window: UsageHistoryWindow) => number;
+	/** P4 候选：请求一次系统资源快照（只读）。返回 reqId，结果在 state.resources。 */
+	listResources: () => number;
 }
 
 /** 回执只用于「最近一次命令结果」展示：保留上限，超出丢最旧的（对象键序 = 插入序）。 */
@@ -203,6 +206,8 @@ export interface ChatState {
 	channelState: ChannelStateMsg | null;
 	/** P4 首个切片：最近一次用量历史查询结果（只读聚合）。 */
 	usageHistory: UsageHistoryMsg | null;
+	/** P4 候选：最近一次系统资源快照（只读）。 */
+	resources: ResourcesMsg | null;
 	/** 渠道命令回执，按 commandId 保留最近一条，供 UI 显示最新一次结果。 */
 	channelResults: Record<string, ChannelCommandResult>;
 	/** Result of the last install_pi_agent run (null while not started/running). */
@@ -356,6 +361,7 @@ type Action =
 	| { type: "provider_keys"; keys: Record<string, ProviderKeyInfo[]> }
 	| { type: "channel_state"; channelState: ChannelStateMsg }
 	| { type: "usage_history"; history: UsageHistoryMsg }
+	| { type: "resources"; resources: ResourcesMsg }
 	| { type: "channel_command_result"; result: ChannelCommandResult }
 	| {
 			type: "fetch_models_result";
@@ -711,6 +717,8 @@ function reducer(state: ChatState, action: Action): ChatState {
 			return { ...state, channelState: action.channelState };
 		case "usage_history":
 			return { ...state, usageHistory: action.history };
+		case "resources":
+			return { ...state, resources: action.resources };
 		case "channel_command_result":
 			return { ...state, channelResults: rememberChannelResult(state.channelResults, action.result) };
 		case "fetch_models_result":
@@ -901,6 +909,7 @@ export function useChat() {
 		providerKeys: {},
 		channelState: null,
 		usageHistory: null,
+		resources: null,
 		channelResults: {},
 		installResult: null,
 		pathCompletions: [],
@@ -1150,6 +1159,9 @@ export function useChat() {
 					break;
 				case "usage_history":
 					dispatch({ type: "usage_history", history: msg });
+					break;
+				case "resources":
+					dispatch({ type: "resources", resources: msg });
 					break;
 				case "channel_command_result":
 					dispatch({ type: "channel_command_result", result: msg });
@@ -1429,6 +1441,7 @@ export function useChat() {
 	channelSendRef.current = send;
 	const channelApiRef = useRef<ChannelApi | null>(null);
 	const usageReqIdRef = useRef(0);
+	const resourcesReqIdRef = useRef(0);
 	if (!channelApiRef.current) {
 		const command = (build: (commandId: string) => ClientMessage): string | null => {
 			const commandId = randomUuid();
@@ -1490,6 +1503,12 @@ export function useChat() {
 				})),
 			queryChannelAccount: (channelId) =>
 				command((commandId) => ({ type: "channel_query_account", commandId, channelId })),
+			// P4 候选：系统资源快照（只读）。reqId 自增，结果按 reqId 匹配。
+			listResources: () => {
+				resourcesReqIdRef.current += 1;
+				channelSendRef.current({ type: "list_resources", reqId: resourcesReqIdRef.current });
+				return resourcesReqIdRef.current;
+			},
 			// P4 首个切片：用量历史查询（只读）。reqId 自增，结果按 reqId 匹配。
 			queryUsageHistory: (groupBy, window) => {
 				usageReqIdRef.current += 1;

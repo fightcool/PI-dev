@@ -25,6 +25,7 @@
  * BgServerTracker（后台任务）、TerminalManager（PTY）、uploads.ts。
  */
 
+import { collectResources } from "../dev-con/system-resources.js";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -3486,6 +3487,16 @@ export class DshClientSession {
 
 	async queryChannelAccount(commandId: string): Promise<void> {
 		this.channelUnsupported(commandId);
+	}
+
+	/** P4 候选：系统资源与引擎无关（只读采集宿主信息）。 */
+	async listResources(reqId: number): Promise<void> {
+		try {
+			const snapshot = collectResources({ disks: [{ path: this.cwd, label: "workspace" }] });
+			this.emit({ type: "resources", reqId, ok: true, snapshot });
+		} catch (err) {
+			this.emit({ type: "resources", reqId, ok: false, error: (err as Error).message });
+		}
 	}
 
 	/** P4 用量历史：DSH 引擎不记录逐请求归属，明确回空结果而不是伪造数据。 */

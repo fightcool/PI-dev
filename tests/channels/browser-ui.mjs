@@ -12,7 +12,7 @@
  */
 import { config, chromePath, origin, vendorRequire } from "../performance/config.mjs";
 import { isolatedContext } from "../performance/isolation.mjs";
-import { snapshot } from "../performance/fixtures.mjs";
+import { snapshot, settingsFixture, socketReply } from "../performance/fixtures.mjs";
 import { errorSummary } from "../performance/diagnostics.mjs";
 
 let failures = 0;
@@ -108,13 +108,16 @@ const mobileReplies = (msg) => {
 				{ type: "ready", serverVersion: "synthetic", managed: true, engine: "pi" },
 				{ type: "plugins", plugins: [], epoch: 1 },
 				{ type: "snapshot", state },
+				{ type: "settings_state", settings: settingsFixture() },
 				{ type: "channel_state", ...state.channelState },
 			];
 		case "list_channels": return [{ type: "channel_state", ...state.channelState }];
 		case "list_models": return [{ type: "models", models: MODELS }];
 		case "channel_select": return [{ type: "channel_command_result", commandId: msg.commandId, ok: true, phase: "applied",
 			channelId: msg.channelId, configRevision: 7, bindingRevision: 5 }];
-		default: return [];
+		// 其余（模型列表、用量历史、系统资源…）复用性能夹具的替身回复，
+		// 避免每加一条协议就在这里漏一个 case（之前正是这样丢了 settings_state）。
+		default: return socketReply(msg, state);
 	}
 };
 
@@ -218,7 +221,13 @@ try {
 
 	// 6) 渠道设置页（A11 的「配置」入口）：列表、禁用/缺失标记、账户状态、增改命令。
 	// 用量面板自带拦截式 backdrop（点击任意处才收起），先把它关掉再进设置页。
-	await page.locator(".status-cwd-backdrop").first().click({ force: true });
+	// 用程序化 click 触发 React 的 onClick：force click 仍可能被同一 class 的另一个
+	// backdrop（底栏同时存在「用量面板」与「cwd 编辑」两个同 class 遮罩）挡住命中测试。
+	await page.locator(".status-cwd-backdrop").first().evaluate((el) => el.click());
+	await page.waitForTimeout(200);
+	if (await page.locator(".status-cwd-backdrop").count()) {
+		await page.locator(".status-cwd-backdrop").first().evaluate((el) => el.click());
+	}
 	await page.locator(".usage-panel").waitFor({ state: "hidden", timeout: options.stepTimeout }).catch(() => undefined);
 	sent = [];
 	await page.locator('button.chip[title="Settings"]').first().click();
@@ -296,6 +305,67 @@ try {
 	} finally {
 		await mobile.close();
 	}
+
+	// 8) P4 候选：系统资源面板（设置 → 系统分组），桌面上下文再开一次。
+	sent = [];
+	const desktop = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US", serviceWorkers: "block" });
+	try {
+		await desktop.route("**/*", async (route) => {
+			const url = new URL(route.request().url());
+			if (url.origin !== origin) return route.abort("blockedbyclient");
+			const { readFile } = await import("node:fs/promises");
+			const { extname, resolve } = await import("node:path");
+			const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
+			const mime = { ".html": "text/html", ".js": "application/javascript", ".css": "text/css",
+				".svg": "image/svg+xml", ".json": "application/json", ".woff2": "font/woff2", ".png": "image/png", ".ico": "image/x-icon" };
+			if (!mime[extname(rel)]) {
+				if (url.pathname === "/api/locales") return route.fulfill({ json: { packs: [] } });
+				if (url.pathname === "/api/themes") return route.fulfill({ json: { themes: [] } });
+				return route.abort("blockedbyclient");
+			}
+			return route.fulfill({ contentType: mime[extname(rel)], body: await readFile(resolve(options.webRoot, rel)) });
+		});
+		await desktop.routeWebSocket("**/*", (socket) => {
+			socket.onMessage((raw) => {
+				const msg = JSON.parse(String(raw));
+				sent.push(msg);
+				for (const reply of mobileReplies(msg)) socket.send(JSON.stringify(reply));
+			});
+		});
+		await desktop.addInitScript(() => {
+			localStorage.setItem("pi-web-ui:token", "synthetic-fixture-only");
+			localStorage.setItem("pi-web-ui:lang", "en");
+		});
+		const page2 = await desktop.newPage();
+		await page2.goto(origin, { waitUntil: "domcontentloaded" });
+		await page2.locator('button.chip[title="Settings"]').first().click();
+		await page2.locator(".settings-modal").waitFor({ state: "visible", timeout: options.stepTimeout });
+		await page2.locator('.settings-rail .settings-tab[data-tab="system"]').click();
+		const resources = page2.locator(".resources");
+		await resources.waitFor({ state: "visible", timeout: options.stepTimeout }).catch(() => undefined);
+		if (await resources.count()) {
+			const text = await resources.first().innerText();
+			check(
+				"resources panel shows CPU / memory / app / disk with sources",
+				text.includes("12.5%") && text.includes("GiB") && text.includes("This app") && text.includes("80.0%") && text.includes("source: proc-stat") && text.includes("unit memory"),
+				text.split("\n").slice(0, 6).join(" / "),
+			);
+			check("resources panel labels disk usage as an estimate", text.includes("an estimate"), text.slice(-160));
+			sent = [];
+			await resources.locator("button.chan-btn").first().click();
+			check("manual refresh asks for a new snapshot", sent.some((m) => m.type === "list_resources"), JSON.stringify(sent.at(-1) ?? null));
+		} else {
+			// 诊断信息：把设置面板里实际渲染出来的分组与文本带出来（避免只报「找不到」）。
+			const tabs = await page2.locator(".settings-rail .settings-tab").allInnerTexts();
+			const railHtml = (await page2.locator(".settings-rail").innerHTML().catch(() => "")).replace(/\s+/g, " ").slice(0, 260);
+			const modalText = (await page2.locator(".settings-modal").innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 220);
+			check("resources panel renders", false, `tabs=[${tabs.join("|")}] rail="${railHtml}" modal="${modalText}"`);
+		}
+	} finally {
+		await desktop.close();
+	}
+
+} catch (err) {
 	check("browser run completed without exceptions", false, err?.message ?? String(err));
 } finally {
 	await browser.close();

@@ -70,6 +70,20 @@ export function socketReply(message, state) {
       ...channelStateMsg,
     ];
     case 'list_channels': return channelStateMsg;
+    case 'list_resources':
+      return [{
+        type: 'resources', reqId: message.reqId, ok: true,
+        snapshot: {
+          at: 1700000000000,
+          host: { hostname: 'synthetic-host', platform: 'linux', uptimeSec: 90061, cpuCount: 4, loadAvg: [0.5, 0.4, 0.3], cpuPercent: 12.5,
+            mem: { totalBytes: 8 * 1024 ** 3, usedBytes: 3 * 1024 ** 3, availableBytes: 5 * 1024 ** 3, swapTotalBytes: 2 * 1024 ** 3, swapUsedBytes: 1024 ** 3 } },
+          app: { pid: 4242, node: 'v22.19.0', uptimeSec: 3600, rssBytes: 120 * 1024 ** 2, heapUsedBytes: 60 * 1024 ** 2, heapTotalBytes: 80 * 1024 ** 2, externalBytes: 4 * 1024 ** 2,
+            cgroup: { currentBytes: 400 * 1024 ** 2, maxBytes: 4 * 1024 ** 3, highBytes: 3 * 1024 ** 3 } },
+          disks: [{ path: '/synthetic', label: 'workspace', totalBytes: 40 * 1024 ** 3, freeBytes: 8 * 1024 ** 3, usedBytes: 32 * 1024 ** 3, usedPercent: 80 }],
+          sources: { cpu: 'proc-stat', mem: 'proc-meminfo', disk: 'statfs', cgroup: 'cgroup-v2' },
+          warnings: [],
+        },
+      }];
     case 'usage_history_query':
       return [{
         type: 'usage_history', reqId: message.reqId, ok: true, groupBy: message.groupBy,

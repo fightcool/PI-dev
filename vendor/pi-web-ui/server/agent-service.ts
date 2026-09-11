@@ -27,6 +27,7 @@ import { AccountRegistry } from "./dev-con/channel-accounts.js";
 import type { ChannelRecord, ChannelSelection, RequestBindingSnapshot } from "./dev-con/channel-model.js";
 import type { ChannelServiceHost } from "./dev-con/channel-service.js";
 import { UsageHistoryStore, type UsageHistoryRecord } from "./dev-con/usage-history.js";
+import { collectResources } from "./dev-con/system-resources.js";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
@@ -2157,6 +2158,31 @@ export class ClientSession {
 		if (!newest || newest.id === conv.lastPersistedUsageId) return;
 		conv.lastPersistedUsageId = newest.id;
 		this.usageHistory.append(newest);
+	}
+
+	/**
+	 * P4 候选：系统资源快照（只读）。工作区与 Agent 数据目录若在同一文件系统，
+	 * 只保留一行（避免界面出现重复的同一块盘）。
+	 */
+	async listResources(reqId: number): Promise<void> {
+		try {
+			const snapshot = collectResources({
+				disks: [
+					{ path: this.cwd, label: "workspace" },
+					{ path: this.agentDir, label: "agent" },
+				],
+			});
+			const seen = new Set<string>();
+			snapshot.disks = snapshot.disks.filter((disk) => {
+				const key = `${disk.totalBytes}:${disk.freeBytes}`;
+				if (seen.has(key)) return false;
+				seen.add(key);
+				return true;
+			});
+			this.emit({ type: "resources", reqId, ok: true, snapshot });
+		} catch (err) {
+			this.emit({ type: "resources", reqId, ok: false, error: (err as Error).message });
+		}
 	}
 
 	/** P4：只读用量历史聚合（按渠道/项目/模型/来源/天）。 */

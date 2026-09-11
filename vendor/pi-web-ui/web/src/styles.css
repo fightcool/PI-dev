@@ -10480,3 +10480,78 @@ button.source-default-toggle {
 		font-size: 11px;
 	}
 }
+
+/* P4 候选：系统资源面板（只读快照；来源与告警随载荷显示）。 */
+.resources-cards {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+	gap: 10px;
+	margin-bottom: 12px;
+}
+.resource-card {
+	border: 1px solid color-mix(in srgb, var(--border, #2a2d34) 60%, transparent);
+	border-radius: 8px;
+	padding: 10px;
+	background: color-mix(in srgb, var(--panel, #17191d) 60%, transparent);
+}
+.resource-title {
+	font-size: 12px;
+	color: var(--muted, #8a8f98);
+	margin-bottom: 4px;
+}
+.resource-value {
+	font-size: 20px;
+	font-weight: 600;
+	margin-bottom: 6px;
+}
+.resource-meta {
+	font-size: 11px;
+	color: var(--muted, #8a8f98);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.resource-source {
+	font-size: 10px;
+	color: color-mix(in srgb, var(--muted, #8a8f98) 75%, transparent);
+	margin-top: 4px;
+}
+.resource-bar {
+	height: 6px;
+	border-radius: 3px;
+	background: color-mix(in srgb, var(--border, #2a2d34) 70%, transparent);
+	overflow: hidden;
+	margin: 4px 0 6px;
+}
+.resource-bar > span {
+	display: block;
+	height: 100%;
+	background: var(--accent, #4c8dff);
+}
+.resource-bar > span.warn,
+.resource-disk-percent.warn {
+	background: var(--warn, #d0a215);
+	color: var(--warn, #d0a215);
+}
+.resources-disks {
+	display: grid;
+	gap: 10px;
+	margin-bottom: 10px;
+}
+.resource-disk-head {
+	display: flex;
+	justify-content: space-between;
+	font-size: 12px;
+}
+.resource-disk-label {
+	font-weight: 600;
+}
+.resources-warnings {
+	display: grid;
+	gap: 4px;
+	margin-bottom: 8px;
+}
+.resources-actions {
+	display: flex;
+	gap: 6px;
+}
