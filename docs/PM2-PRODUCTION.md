@@ -118,6 +118,17 @@ journalctl --user -u pi-dev-switch.service --no-pager
 
 阶段：quiesce → 排空（active/pending 均归零，超时即中止并恢复接收）→ 停用并 disable 旧 unit/watchdog → 原子替换 current → `manager start` → 验收（新 PID、健康、build-info 与 release-source 一致、公网入口发的是该版本前端、匿名 WebSocket 仍被 401 拒绝）→ `unquiesce`。失败时原子回退旧 release 并重启 PM2；PM2 起不来则用旧 unit 兜底保证站点可用（并在状态文件中标注）。`--collect` 的 transient unit 在退出时可能打印一条 "Failed to open …/transient/…: No such file or directory"，属清理噪声。
 
+### 2026-09-11 第二次生产升级（`79525237ee6c` → `91c6e5809f06`）
+
+| 项 | 结果 |
+| --- | --- |
+| 版本 | `current` → `releases/91c6e5809f06`，提交 `91c6e5809f0612457b2be77960a90323741cd355`（PR #23 首屏 bundle + P1-14 / PR #24 尾部优先历史（协议 22）/ PR #25 工具卡默认折叠的默认值迁移） |
+| 候选构建 | 同前一次流程（`buildRelease` + `uv sync` 复用 `deploy/tools/python`）；候选目录顶层与线上版本逐项一致 |
+| 候选验证 | 候选内实跑：root `npm test` 174/174、vendor vitest 668/668、app smoke 41/41、`check:publish` PASS、`typecheck` PASS；`build-info` 与 `release-source` 一致、`protocolVersion` 22 |
+| 切换验收 | `phase=deployed`；新 PID 989935、`/api/health` 正常、公网入口发新前端、PM2 unit active；中断约 6 秒（11:26:47 排空完成 → 11:26:53 DEPLOYED） |
+| 附加验证 | 迁移生效性直接用线上存档 + 新版本 dist 复核：有效 `toolsWrap=false`（存量 `true` 被版本标记忽略） |
+| 回滚 | 目标 `releases/79525237ee6c` 完整保留 |
+
 ### 2026-09-11 生产升级（`969ef2a76d18` → `79525237ee6c`）
 
 | 项 | 结果 |
