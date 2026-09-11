@@ -92,7 +92,7 @@ vendor/pi-web-ui/web/src/perf-trace.ts, tests/performance/README.md -->
 | 11 | runtime LRU 复用 | `server/agent-service.ts` | ❌ 复核后不做（见下：1.5s 是 jiti 磁盘缓存的**首次**成本，不是每次切换的成本） |
 | 12 | 会话/项目列表扫描加缓存与精确失效 | `server/session-history-cache.ts`、`agent-service.ts` | ✅ |
 | 13 | 首屏 bundle：对话区（含 markdown 渲染器）改为并行预取的动态 chunk | `web/src/app/chat-view.tsx` | ✅（i18n 分语言仍待做） |
-| 14 | attach 时 `syncActiveFromDiskIfStale` 的整份 runtime 重建与首快照抢跑 | `server/agent-service.ts` | 待做（仅在“离开期间另一端写过”时触发） |
+| 14 | 磁盘接力重载与首快照抢跑（双份全量 + 旧→新跳变） | `server/agent-service.ts`、`server/index.ts` | ✅（仅在「离开期间另一端写过」时触发） |
 
 ## 5. 验收口径
 
@@ -118,6 +118,21 @@ vendor/pi-web-ui/web/src/perf-trace.ts, tests/performance/README.md -->
 | --- | --- | --- |
 | 2026-09-11 09:09 | `969ef2a76d18` → **`79525237ee6c`**（PR #21 合并提交） | 成功。排空 → 停 PM2 → 原子换 current → 启动 → 验收（新 PID / 健康 / build-info 与 release-source 一致 / 公网入口发新前端 / 匿名 WS 仍 401）→ unquiesce；中断约 4 秒；失败回滚目标 `969ef2a76d18` 保留 |
 
+### P1-8 的必要性（实测）
+
+真实形态的高熵会话快照（1460 条、含代码块与工具调用）压缩后仍然很大：
+
+| 样本 | raw | deflate level 1 | level 6 |
+| --- | --- | --- | --- |
+| 合成高熵会话 1460 条 | 1.60 MB | **385 KB**（4.3x） | 298 KB（5.5x） |
+| 线上最大会话的 snapshot | 2.76 MB | 估 ~460–640 KB | — |
+
+也就是说大历史每次切换都要在 wire 上传数百 KB；尾部优先（先发最近 ~30 条）能把它降到几十 KB。
+代价是要配套解决「客户端 search / 问题导航依赖完整 messages」——两种做法：
+①打开搜索或跳到最早已读位置时先补全历史（实现简单，但那一刻要等一次全量传输）；
+②服务端提供会话内搜索接口（体验最好，但要新增协议端点与实现）。
+这是 P1-8 落地前需要定的产品选择。
+
 ## 6. 进度与实测
 
 | 项 | 状态 |
@@ -132,7 +147,8 @@ vendor/pi-web-ui/web/src/perf-trace.ts, tests/performance/README.md -->
 | P0-7 乐观切换占位 | ✅ |
 | P1-12 列表扫描缓存 | ✅ |
 | P1-13 首屏 bundle（对话区动态 chunk + 并行预取） | ✅ |
-| P1-8 尾部优先分页 / P1-9 本地缓存 / P1-10 预取 / P1-14 接力重载抢跑 | 待做 |
+| P1-14 接力重载与首快照抢跑 | ✅ |
+| P1-8 尾部优先分页 / P1-9 本地缓存 / P1-10 预取 / P1-13 的 i18n 分语言 | 待做 |
 | P1-11 runtime LRU | ❌ 复核后不做（理由见上） |
 
 ### 服务端（隔离实例探针，`node tests/performance/server-timing.mjs`）
