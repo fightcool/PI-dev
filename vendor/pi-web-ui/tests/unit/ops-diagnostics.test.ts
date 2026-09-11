@@ -10,8 +10,8 @@ import { findSecretMaterial } from "../../server/dev-con/channel-model.js";
 import type { UiResourceSnapshot, UiStorageSnapshot } from "../../server/protocol.js";
 
 // 合成凭据在运行时拼接：本仓库的发布检查会把 `sk-` + 24 字符以上的字面量判为疑似密钥，
-// 直接写字面量会让 CI 的 check:publish 失败（这正是它该做的事）。拼接后语义不变。
-const SYNTHETIC_KEY = ["sk", "DIAGNOSTIC", "SYNTHETIC", "0001"].join("-");
+/** 合成标记：刻意不用凭据形状（也绝不拆分拼接来绕过扫描）——测试语义是「注入的值不得外泄」。 */
+const SYNTHETIC_MARKER = "DIAGNOSTIC-SYNTHETIC-MARKER-0001";
 
 const resources = (diskPercent: number, memUsed: number, cgroup: { currentBytes: number | null; maxBytes: number | null }): UiResourceSnapshot => ({
 	at: 1,
@@ -38,7 +38,7 @@ describe("ops diagnostics bundle", () => {
 			now: 42,
 			app: { node: "v22", pid: 7, uptimeSec: 3, engine: "pi", protocolVersion: 20 },
 			release: { commit: "a".repeat(40), appVersion: "0.72.0", protocolVersion: 20, builtAt: "2026-09-11T00:00:00Z", source: "a".repeat(40) },
-			// 故意把合成密钥塞进「不该出现的地方」（凭据名/环境）以验证组装不会把它带出去。
+			// 故意把合成标记塞进「不该出现的地方」（凭据名/环境）以验证组装不会把它带出去。
 			instance: { configDir: "/cfg", dataDir: "/data", agentDir: "/agent", workspaceDir: "/ws", host: "127.0.0.1", port: 8788, profile: "lean" },
 			units: [{ unit: "pi-dev-pm2.service", active: "active", enabled: "enabled" }],
 			resources: resources(50, 100, { currentBytes: 10, maxBytes: 100 }),
@@ -51,7 +51,7 @@ describe("ops diagnostics bundle", () => {
 		expect(bundle).toMatchObject({ generatedAt: 42, channels: { brokenRefs: 1 }, usage: { requests: 5 } });
 		// 诊断包不得出现任何「密钥形状」的字段名，也不得包含合成密钥正文。
 		expect(findSecretMaterial(bundle)).toEqual([]);
-		expect(JSON.stringify(bundle)).not.toContain(SYNTHETIC_KEY);
+		expect(JSON.stringify(bundle)).not.toContain(SYNTHETIC_MARKER);
 		expect(JSON.stringify(bundle)).not.toContain("apiKey");
 	});
 
