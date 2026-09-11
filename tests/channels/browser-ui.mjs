@@ -369,7 +369,7 @@ try {
 			await resources.locator("button.chan-btn", { hasText: "Recompute storage" }).first().click();
 			check("storage refresh asks for a new walk", sent.some((m) => m.type === "list_storage"), JSON.stringify(sent.at(-1) ?? null));
 			sent = [];
-			await resources.locator("button.chan-btn").first().click();
+			await resources.locator("button.chan-btn", { hasText: "Refresh channel state" }).first().click();
 			check("manual refresh asks for a new snapshot", sent.some((m) => m.type === "list_resources"), JSON.stringify(sent.at(-1) ?? null));
 		} else {
 			// 诊断信息：把设置面板里实际渲染出来的分组与文本带出来（避免只报「找不到」）。
