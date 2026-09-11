@@ -118,6 +118,7 @@ vendor/pi-web-ui/web/src/perf-trace.ts, tests/performance/README.md -->
 | --- | --- | --- |
 | 2026-09-11 09:09 | `969ef2a76d18` → **`79525237ee6c`**（PR #21 合并提交） | 成功。排空 → 停 PM2 → 原子换 current → 启动 → 验收（新 PID / 健康 / build-info 与 release-source 一致 / 公网入口发新前端 / 匿名 WS 仍 401）→ unquiesce；中断约 4 秒；失败回滚目标 `969ef2a76d18` 保留 |
 | 2026-09-11 11:26 | `79525237ee6c` → **`91c6e5809f06`**（PR #23/#24/#25 合并提交，protocol 22） | 成功，同样走 `switch-production-release.mjs`；中断约 6 秒；候选内实跑 root 174/174、vitest 668/668、smoke 41/41、check:publish PASS、typecheck ✓；回滚目标 `79525237ee6c` 保留 |
+| 2026-09-11 12:21 | `91c6e5809f06` → **`d803f7e8d45c`**（PR #26/#27，protocol 22） | 成功；候选内实跑 root 174/174、vitest 673/673、smoke 41/41、provenance 与线上版本结构逐项一致；中断约 6 秒；回滚目标 `91c6e5809f06` 保留 |
 | 2026-09-11 11:33 | 工具卡默认折叠的线上生效验证 | 读线上存档确认：存量 `__settings__.settings.toolsWrap=true`（旧默认被整对象落盘盖进去的）在 `UI_DEFAULTS_VERSION` 迁移下被忽略，**有效值 = false**；`uiDefaultsVersion` 缺失即为待迁移记录 |
 
 ### P1-8 落地后的实测（隔离探针，含契约断言）
@@ -147,6 +148,37 @@ vendor/pi-web-ui/web/src/perf-trace.ts, tests/performance/README.md -->
 ①打开搜索或跳到最早已读位置时先补全历史（实现简单，但那一刻要等一次全量传输）；
 ②服务端提供会话内搜索接口（体验最好，但要新增协议端点与实现）。
 这是 P1-8 落地前需要定的产品选择。
+
+## 5.9 结项
+
+**结论：本目标的开发已完成**（P0 全部 + P1 全部有明确去向），并已上线 `d803f7e8d45c`。
+
+| 项 | 状态 |
+| --- | --- |
+| P0-0…P0-7 | ✅（P0-5 论证后关闭：前提被 P0-7 取代） |
+| P1-8 尾部优先 + 向上分页 | ✅（协议 v22；分页游标默认一页 200，探针有断言） |
+| P1-12 列表扫描缓存 | ✅ |
+| P1-13 首屏 bundle（并行 chunk + 28 门语法 + en 按语言加载） | ✅ |
+| P1-14 接力重载不再抢跑 | ✅ |
+| P1-9 本地会话缓存 / P1-10 hover 预取 | ❌ 复核后不做（依据见上；判据：`__piPerf()` 量到 `switch → paint > 500ms` 再评估） |
+| P1-11 runtime LRU | ❌ 复核后不做（1.5s 是 jiti 缓存冷启动的一次性成本） |
+| P1-13b i18n 分语言 | ✅（中英两种足够；其他语言包运行时拉取、不进包） |
+
+**效果汇总（首屏与切换，均本机实测）**
+
+| 指标 | 起点 | 现在 |
+| --- | --- | --- |
+| 「能开 WebSocket」前的 JS 水位 | 312 KB gz（且在等插件激活，最坏 +5s） | **~177 KB gz**（index 31.7 + react 45.6 + App 47.2 + MessageList 等），插件不再挡首帧 |
+| 切到 1460 条历史会话的 wire | 844 KB（全量快照） | **25 KB**（尾部 40 条）+ 按需补页 |
+| 无标注代码块嗅探（40 行） | 53.0 ms | 16.7 ms |
+| 工具卡 | 默认全展开（可占数百 KB DOM） | 默认一行，点击展开 |
+| 切换会话反馈 | 停在旧会话 1–2s 后整树跳变 | 立即进入占位态，快照一到就渲染 |
+| 项目列表扫描 | 每次 attach 全量解析 | 30s 缓存 + 事件失效（二次 ~2ms） |
+| 入口 chunk | 138,569 raw / 52,806 gz | 79,237 raw / 31,736 gz（en 词典改为按语言加载） |
+| 首屏 JS 总量（含 markdown） | 1010 KB raw / 313 KB gz | 对话区与 markdown 改为**并行**下载（不再串在握手前） |
+
+**怎么看效果**：服务端 `PI_WEB_TIMING=1` 输出一行分段日志（attach/切换各阶段 + snapshot 构建与 wire 字节）；
+浏览器控制台 `__piPerf()` 输出端到端时间线（`boot → ws:open → ws:ready → ws:snapshot → paint`，切换另有 `switch:… → paint`）。
 
 ## 6. 进度与实测
 
