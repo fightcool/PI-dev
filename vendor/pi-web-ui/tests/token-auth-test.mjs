@@ -126,7 +126,9 @@ async function hardeningChecks(token) {
 
 /** `?token=` 回落可用开关关闭（§4 S6 的文档化缓解手段，这里做回归保护）。 */
 async function queryTokenDisabledCheck() {
-	const port = PORT + 3;
+	// 端口必须动态取空闲的：固定端口会与其它 e2e 的替身端口撞车（曾用 PORT+3=8978，
+	// 与 project-model-key-test 的替身端口重叠，导致两个测试互相踩）。
+	const port = await freePort();
 	const base = mkdtempSync(join(tmpdir(), "pi-web-querytoken-"));
 	const server = await startServer(TOKEN, { port, data: join(base, "data"), agent: join(base, "agent"), allowQueryToken: false });
 	try {
@@ -141,6 +143,17 @@ async function queryTokenDisabledCheck() {
 	} finally {
 		await stopServer(server);
 	}
+}
+
+/** 取一个当前空闲的本机端口（listen 0 → 读端口 → 关闭；随后立即使用，窗口极小）。 */
+async function freePort() {
+	const { createServer } = await import("node:net");
+	const probe = createServer();
+	await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
+	const address = probe.address();
+	const port = typeof address === "object" && address ? address.port : 0;
+	await new Promise((resolve) => probe.close(resolve));
+	return port;
 }
 
 async function stopServer(server) {

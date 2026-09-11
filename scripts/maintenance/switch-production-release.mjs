@@ -57,7 +57,15 @@ const config = validateConfig(JSON.parse(readFileSync(CONFIG_FILE, "utf8")));
 const { sendControlCommand } = await import(join(DEV_ROOT, "vendor/pi-web-ui/dist/server/control-socket.js"));
 const control = (cmd) => sendControlCommand(config.dataDir, config.port, cmd);
 /** 控制套接字属于「当前正在服务的进程」，切换前后都是同一个路径。 */
-const status = () => control("status").catch(() => null);
+/** 控制套接字查询（带重试）：刚启动/刚重启的进程可能还没监听，不能一次失败就判定「无人在服务」。 */
+const status = async (attempts = 10) => {
+	for (let i = 0; i < attempts; i += 1) {
+		const s = await control("status").catch(() => null);
+		if (s?.ok) return s;
+		await delay(500);
+	}
+	return null;
+};
 
 const currentLink = join(BASE, "current");
 const OLD_ID = basename(execFileSync("readlink", ["-f", currentLink], { encoding: "utf8" }).trim());
@@ -109,17 +117,44 @@ let quiesced = false;
 let touchedManagers = false;
 try {
 	const initial = await status();
-	if (!initial?.ok) throw new Error("no control socket: nothing is serving the instance");
+	// 控制套接字不可用时的显式逃生阀：只有在操作人明确接受「不排空、直接重启」时才继续。
+	// 典型场景：旧进程持有的套接字文件被别的实例覆盖（ECONNREFUSED），需要一次重启来自愈。
+	const allowNoSocket = process.env.SWITCH_ALLOW_NO_SOCKET === "1";
+	if (!initial?.ok) {
+		if (!allowNoSocket) {
+			throw new Error(
+				"no control socket: nothing is serving the instance. " +
+					"若确认这是「套接字陈旧（文件在但连接被拒），服务本身健康」，可用 SWITCH_ALLOW_NO_SOCKET=1 重跑：跳过排空、直接重启（会中断运行中的对话）。",
+			);
+		}
+		log("WARNING: control socket unavailable and SWITCH_ALLOW_NO_SOCKET=1 → skipping the drain step (running conversations will be interrupted)");
+		phase("drain_skipped", { reason: "control socket unavailable" });
+	}
+	// 幂等：如果 current 已经指向目标版本、进程健康且 build-info 与 release-source 一致，
+	// 说明这次升级已经完成过（例如维护任务被重复提交），直接成功返回 —— 不要再去停服务，
+	// 更不要把已经成功的状态覆盖成 failed（2026-09-11 实际踩到过）。
+	if (OLD_ID === NEW_ID) {
+		const info = JSON.parse(readFileSync(join(newPath, "vendor/pi-web-ui/dist/build-info.json"), "utf8"));
+		const source = JSON.parse(readFileSync(join(newPath, "release-source.json"), "utf8"));
+		if (info.commit === source.commit) {
+			log(`already deployed: current=${NEW_ID} pid=${initial.pid} commit=${info.commit.slice(0, 12)} (no action taken)`);
+			phase("already_deployed", { pid: initial.pid, commit: info.commit });
+			process.exitCode = 0;
+		} else {
+			log(`current already points at ${NEW_ID} but provenance differs; continuing with a normal switch`);
+		}
+	}
 	log(`serving pid=${initial.pid} quiesced=${initial.quiesced} active=${initial.activeConversations} pending=${initial.pendingMessages}`);
 	log(`current=${OLD_ID} → target=${NEW_ID}`);
 	phase("quiesce");
-	if (!(await control("quiesce"))?.ok) throw new Error("quiesce failed");
-	quiesced = true;
+	if (initial?.ok && !(await control("quiesce"))?.ok) throw new Error("quiesce failed");
+	quiesced = Boolean(initial?.ok);
 	const deadline = Date.now() + WAIT_MIN * 60_000;
-	for (;;) {
+	for (; quiesced; ) {
 		const s = await status();
 		if (!s?.ok) throw new Error("instance became unavailable while draining");
 		if (s.activeConversations === 0 && s.pendingMessages === 0) break;
+		// （循环条件见上：quiesced=false 时直接跳过排空）
 		if (Date.now() > deadline) throw new Error(`active work did not drain within ${WAIT_MIN} minutes`);
 		await delay(2_000);
 	}
@@ -148,7 +183,7 @@ try {
 	manager("start");
 	if (!isActive(PM2_UNIT)) throw new Error("PM2 unit did not become active");
 
-	const s2 = await waitForNewProcess(initial.pid, 60_000);
+	const s2 = await waitForNewProcess(initial?.pid ?? 0, 60_000);
 	await waitForHealth({ ...config, workspaceDir: config.workspaceDir ?? config.root }, { pid: s2.pid, timeout: 30_000 });
 	const info = JSON.parse(readFileSync(join(newPath, "vendor/pi-web-ui/dist/build-info.json"), "utf8"));
 	if (info.commit !== JSON.parse(readFileSync(join(newPath, "release-source.json"), "utf8")).commit) throw new Error("release provenance mismatch");
