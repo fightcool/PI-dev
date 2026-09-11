@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import {
 	FiArchive,
 	FiBookOpen,
@@ -889,12 +889,15 @@ function Block({
 	if (toolCall) {
 		const result = toolResults.get(toolCall.id);
 		const live = liveOutputs.get(toolCall.id);
-		const view: ToolView = {
-			result,
-			liveOutput: live?.text,
-			streaming,
-			status: toolStatuses.get(toolCall.id),
-		};
+		// 🍞 @PERF view 必须保持引用稳定：ToolCallBlock 是 memo 组件，而它收到的
+		// 每次都是新对象字面量时 memo 永远 miss（工具卡是消息里最重的子树，且父级
+		// 会随每个流式 token 重渲染）。用原始值做依赖，内容不变就复用同一个 view。
+		const liveText = live?.text;
+		const status = toolStatuses.get(toolCall.id);
+		const view = useMemo<ToolView>(
+			() => ({ result, liveOutput: liveText, streaming, status }),
+			[result, liveText, streaming, status],
+		);
 		return (
 			<ToolCallBlock block={toolCall} view={view} onKillBash={onKillBash} wrap={toolsWrap} forceOpen={searchActive} />
 		);

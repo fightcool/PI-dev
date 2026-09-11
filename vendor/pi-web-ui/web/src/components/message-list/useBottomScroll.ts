@@ -17,6 +17,10 @@ export function useBottomScroll(rootRef: RefObject<HTMLDivElement | null>) {
 	const snap = useCallback(() => {
 		const root = rootRef.current;
 		if (!root || !stickRef.current || escaped.current) return;
+		// 🍞 @PERF 已经贴底时不要重复写 scrollTop：读 scrollHeight 本身就会强制布局，
+		// 而写入会再让浏览器重算一遍——流式期间每 ~60ms 就有一次渲染。内容没长高
+		// 时这里什么都不做；内容长了才真正贴底。
+		if (root.scrollTop >= root.scrollHeight - root.clientHeight) return;
 		root.scrollTop = root.scrollHeight;
 	}, [rootRef]);
 	const leaveBottom = useCallback(() => {

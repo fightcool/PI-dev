@@ -38,6 +38,9 @@ export function useRowWindow(
 	const [revision, setRevision] = useState(0);
 	const [position, setPosition] = useState<{ top: number; height: number } | null>(null);
 	const [retained, setRetained] = useState<string | null>(null);
+	/** Mirrors `retained` for the scroll path, which must not re-render to read it. */
+	const retainedRef = useRef<string | null>(null);
+	retainedRef.current = retained;
 	const target = useRef<string | null>(null);
 	const correction = useRef(0);
 	const raf = useRef(0);
@@ -181,13 +184,18 @@ export function useRowWindow(
 	);
 	// An open edit composer stays mounted even after it scrolls away. Only one
 	// user message can be actively edited via the focused composer at a time.
+	//
+	// 🍞 @PERF 滚动路径上每次事件都会调它，而 `root.querySelector(".msg textarea")`
+	// 是子树查询；绝大多数滚动发生时根本没有编辑框，却每次都要扫一遍。
+	// 现在：焦点就在编辑框里 → 直接拿活元素（零查询）；之前没保留过任何行且
+	// 焦点不在编辑框 → 确定没有编辑框，直接退出；只有「刚保留过编辑行」时才
+	// 需要重新查询确认它是否还在（失焦后仍要保持挂载）。
 	const retainEditor = useCallback(() => {
 		const root = rootRef.current;
 		const active = document.activeElement;
-		const editor =
-			root?.contains(active) && active?.matches(".msg textarea")
-				? active
-				: root?.querySelector<HTMLTextAreaElement>(".msg textarea");
+		const focused = root?.contains(active) && active?.matches(".msg textarea") ? active : null;
+		if (!focused && !retainedRef.current) return;
+		const editor = focused ?? root?.querySelector<HTMLTextAreaElement>(".msg textarea") ?? null;
 		setRetained(editor?.closest<HTMLElement>("[data-msg-id]")?.dataset.msgId ?? null);
 	}, [rootRef]);
 	const indexedIds = useMemo(() => {

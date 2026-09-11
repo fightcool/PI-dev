@@ -154,7 +154,7 @@ export function ChatView({
 						onRetry={onRetry}
 						onRemoveQueued={onRemoveQueued}
 						thinkingWrap={chat.settings?.thinkingWrap ?? true}
-						toolsWrap={chat.settings?.toolsWrap ?? true}
+						toolsWrap={chat.settings?.toolsWrap ?? false}
 						jumpTarget={searchJump}
 						onJumpDone={onJumpDone}
 					/>
