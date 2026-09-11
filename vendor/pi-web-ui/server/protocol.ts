@@ -322,6 +322,56 @@ export interface UiState {
 }
 
 // ---------------------------------------------------------------------------
+// P4 候选：系统资源（只读快照；来源标签随载荷下发，界面不得把估算值当精确值）
+// ---------------------------------------------------------------------------
+
+/** 一块磁盘的用量（statfs；used = 总量 − 非特权可用，界面上标注为估算）。 */
+export interface UiResourceDisk {
+	path: string;
+	label: string;
+	totalBytes: number;
+	freeBytes: number;
+	usedBytes: number;
+	usedPercent: number;
+}
+
+/** 一次系统资源快照。读不到的字段为 null（不是 0），来源见 sources，异常见 warnings。 */
+export interface UiResourceSnapshot {
+	at: number;
+	host: {
+		hostname: string;
+		platform: string;
+		uptimeSec: number;
+		cpuCount: number;
+		loadAvg: [number, number, number];
+		/** 两次采样之间的整机 CPU 使用率（0–100）；首次采样为 null。 */
+		cpuPercent: number | null;
+		mem: {
+			totalBytes: number;
+			usedBytes: number;
+			availableBytes: number;
+			swapTotalBytes: number;
+			swapUsedBytes: number;
+		};
+	};
+	app: {
+		pid: number;
+		node: string;
+		uptimeSec: number;
+		/** 本进程 RSS（不含 PM2 supervisor）。 */
+		rssBytes: number;
+		heapUsedBytes: number;
+		heapTotalBytes: number;
+		externalBytes: number;
+		/** systemd unit 的 cgroup 内存（含 supervisor 与子进程）；读不到为 null。 */
+		cgroup: { currentBytes: number | null; maxBytes: number | null; highBytes: number | null };
+	};
+	disks: UiResourceDisk[];
+	sources: { cpu: string; mem: string; disk: string; cgroup: string };
+	warnings: string[];
+}
+
+// ---------------------------------------------------------------------------
 // Client -> Server
 // ---------------------------------------------------------------------------
 
@@ -635,6 +685,8 @@ export type ClientMessage =
 	  }
 	/** 查询渠道账户余额/配额（有界超时、限频、缓存；不支持时明确报 unsupported）。 */
 	| { type: "channel_query_account"; commandId: string; channelId: string }
+	/** P4 候选：请求一次系统资源快照（只读；reqId 回显在 resources 里）。 */
+	| { type: "list_resources"; reqId: number }
 	// -- P4 用量历史（跨渠道/项目/时间；只读聚合，不参与计费） ---------------
 	/** 查询实例私有用量历史（逐请求记录的只读聚合）。reqId 回显在 usage_history 里。 */
 	| {
@@ -1568,6 +1620,8 @@ export type ServerMessage =
 			pending: UiChannelPending[];
 			accounts: UiAccountStatus[];
 	  }
+	/** P4 候选：系统资源快照（ok=false 时 snapshot 为空并带 error）。 */
+	| { type: "resources"; reqId: number; ok: boolean; error?: string; snapshot?: UiResourceSnapshot }
 	/** P4 用量历史聚合结果（rows 已按 total 降序；unpricedRequests>0 表示该组含未知价格）。 */
 	| {
 			type: "usage_history";

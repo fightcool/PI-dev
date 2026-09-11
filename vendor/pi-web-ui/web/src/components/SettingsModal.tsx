@@ -11,6 +11,7 @@ import {
 	FiFileText,
 	FiHelpCircle,
 	FiMessageSquare,
+	FiHardDrive,
 	FiPackage,
 	FiPlus,
 	FiRadio,
@@ -41,8 +42,9 @@ import type {
 	UiSkillInfo,
 	UiSubagentTemplate,
 } from "../types";
-import type { ChannelApi, ChannelCommandResult, ChannelStateMsg } from "../use-chat";
+import type { ChannelApi, ChannelCommandResult, ChannelStateMsg, ResourcesMsg } from "../use-chat";
 import { ChannelSettings } from "./ChannelSettings";
+import { SystemResources } from "./SystemResources";
 import {
 	clearPromptHistory,
 	loadPromptHistory,
@@ -98,6 +100,8 @@ interface SettingsModalProps {
 		activeConversationId?: string | null;
 		/** DEV-CON 渠道快照（channel_state）+ 回执（按 commandId）。 */
 		channelState: ChannelStateMsg | null;
+		/** P4 候选：最近一次系统资源快照（只读）。 */
+		resources?: ResourcesMsg | null;
 		channelResults: Record<string, ChannelCommandResult>;
 		/** 命名密钥（仅名称 + 是否 active），渠道表单按名称引用。 */
 		providerKeys: Record<string, ProviderKeyInfo[]>;
@@ -211,7 +215,8 @@ type SettingsTab =
 	| "vision"
 	| "presets"
 	| "subagent-templates"
-	| "channels";
+	| "channels"
+	| "system";
 
 export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerminal, onClose }: SettingsModalProps) {
 	const t = useT();
@@ -402,6 +407,7 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 		{ id: "presets", icon: <FiSliders />, label: t("settingsPresets"), count: settings.presets.length },
 		// DEV-CON 渠道：没有渠道配置的实例也显示（这是唯一的渠道配置入口）。
 		{ id: "channels", icon: <FiRadio />, label: t("settingsChannels"), count: chat.channelState?.channels.length ?? 0 },
+		{ id: "system", icon: <FiHardDrive />, label: t("settingsSystem") },
 		// DSH：无子代理概念，隐藏该分区。
 		...(isDsh
 			? []
@@ -661,6 +667,7 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 							<button
 								key={tb.id}
 								type="button"
+								data-tab={tb.id}
 								className={`settings-tab${tab === tb.id ? " active" : ""}`}
 								aria-current={tab === tb.id ? "true" : undefined}
 								title={tb.label}
@@ -2357,6 +2364,17 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 									providerKeys={chat.providerKeys}
 									models={chat.models}
 								/>
+							</div>
+						)}
+
+						{/* ---- P4 候选：系统资源（只读快照） ----------------------------- */}
+						{tab === "system" && (
+							<div className="set-section">
+								<div className="set-section-title">
+									<FiHardDrive className="set-section-icon" />
+									{t("resourcesTitle")}
+								</div>
+								<SystemResources snapshot={chat.resources?.snapshot ?? null} onRefresh={channelApi.listResources} />
 							</div>
 						)}
 					</div>
