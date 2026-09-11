@@ -14,6 +14,9 @@ function session() {
 		emittedRev: 0,
 		emittedConvId: "",
 		activeId: "dummy-conversation",
+		// 每对话的历史窗口状态：尾部优先（P1-8）经 `this.conv` 读这两个字段决定是否截断
+		//（conv 是只读 getter，所以这里给的是它背后的 convs 映射）。
+		convs: new Map([["dummy-conversation", { historyExpanded: false, historyOmitted: 0 }]]),
 		sinks: new Set<(msg: ServerMessage) => void>(),
 		currentMessages: () => messages.slice(),
 		buildLightState: (rev: number) => ({ rev, conversationId: "dummy-conversation" }),

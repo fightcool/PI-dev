@@ -25,7 +25,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import { setTimeout as sleep } from "node:timers/promises";
-import { portUp, freePort } from "../../vendor/pi-web-ui/tests/lib/port-utils.mjs";
+import {
+  portUp,
+  freePort,
+} from "../../vendor/pi-web-ui/tests/lib/port-utils.mjs";
 import { writeSyntheticSession } from "./session-fixture.mjs";
 
 const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
@@ -53,8 +56,18 @@ mkdirSync(workspace, { recursive: true });
 // Write the BIG fixture first: attach() resumes the most recently modified
 // session, so the small one stays in memory and switching to big is a real
 // disk switch (the path this probe exists to measure).
-const big = writeSyntheticSession({ agentDir, cwd: workspace, messages: BIG_MESSAGES, id: "big" });
-const small = writeSyntheticSession({ agentDir, cwd: workspace, messages: SMALL_MESSAGES, id: "small" });
+const big = writeSyntheticSession({
+  agentDir,
+  cwd: workspace,
+  messages: BIG_MESSAGES,
+  id: "big",
+});
+const small = writeSyntheticSession({
+  agentDir,
+  cwd: workspace,
+  messages: SMALL_MESSAGES,
+  id: "small",
+});
 
 /** A full snapshot carries the whole array; a delta carries only the appended tail. */
 function messageCountOf(msg) {
@@ -64,27 +77,32 @@ function messageCountOf(msg) {
 }
 
 const timingLines = [];
-const server = spawn(process.execPath, ["--import", require.resolve("tsx"), "server/index.ts"], {
-  cwd: APP_ROOT,
-  env: {
-    ...process.env,
-    NODE_ENV: "development",
-    PI_WEB_TIMING: "1",
-    PI_WEB_PORT: String(PORT),
-    PI_WEB_CWD: workspace,
-    PI_WEB_DATA_DIR: dataDir,
-    PI_CODING_AGENT_DIR: agentDir,
-    // No token: the probe is loopback-only and refuses nothing.
-    PI_WEB_TOKEN: "",
+const server = spawn(
+  process.execPath,
+  ["--import", require.resolve("tsx"), "server/index.ts"],
+  {
+    cwd: APP_ROOT,
+    env: {
+      ...process.env,
+      NODE_ENV: "development",
+      PI_WEB_TIMING: "1",
+      PI_WEB_PORT: String(PORT),
+      PI_WEB_CWD: workspace,
+      PI_WEB_DATA_DIR: dataDir,
+      PI_CODING_AGENT_DIR: agentDir,
+      // No token: the probe is loopback-only and refuses nothing.
+      PI_WEB_TOKEN: "",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
   },
-  stdio: ["ignore", "pipe", "pipe"],
-});
+);
 let serverOutput = "";
 for (const stream of [server.stdout, server.stderr]) {
   stream.setEncoding("utf8");
   stream.on("data", (chunk) => {
     serverOutput += chunk;
-    for (const line of chunk.split("\n")) if (line.includes("[timing]")) timingLines.push(line.trim());
+    for (const line of chunk.split("\n"))
+      if (line.includes("[timing]")) timingLines.push(line.trim());
   });
 }
 
@@ -144,6 +162,14 @@ function nextTiming() {
   })();
 }
 
+/** Assertion bookkeeping: the probe must fail loudly, not just print numbers. */
+let failures = 0;
+function check(name, ok, detail = {}) {
+  if (ok) return;
+  failures += 1;
+  console.error(`  ✗ ${name} ${JSON.stringify(detail)}`);
+}
+
 const rows = [];
 function record(name, ms, serverLine) {
   rows.push({ name, ms, serverLine });
@@ -163,7 +189,8 @@ const cleanup = () => {
 
 try {
   for (let i = 0; i < 80 && !(await portUp(PORT)); i++) await sleep(250);
-  if (!(await portUp(PORT))) throw new Error(`服务未在 ${PORT} 起监听\n${serverOutput.slice(-2000)}`);
+  if (!(await portUp(PORT)))
+    throw new Error(`服务未在 ${PORT} 起监听\n${serverOutput.slice(-2000)}`);
 
   // ---- 1) cold attach: hello → first snapshot ----
   ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
@@ -175,7 +202,8 @@ try {
       return;
     }
     // Startup notices/errors explain an attach that never reaches a snapshot.
-    if (msg.type === "notice" || msg.type === "error") console.log(`  [server ${msg.type}] ${msg.text ?? ""}`);
+    if (msg.type === "notice" || msg.type === "error")
+      console.log(`  [server ${msg.type}] ${msg.text ?? ""}`);
     for (const fn of waiters.get(msg.type) ?? []) fn(msg);
   });
   await new Promise((resolve, reject) => {
@@ -185,20 +213,58 @@ try {
 
   const tAttach = performance.now();
   send({ type: "hello", clientId });
-  await waitFor("snapshot");
-  record("cold attach → 首份 snapshot", performance.now() - tAttach, await nextTiming());
+  const attached = await waitFor("snapshot");
+  record(
+    "cold attach → 首份 snapshot",
+    performance.now() - tAttach,
+    await nextTiming(),
+  );
+
+  // ---- 1b) P1-8 契约：首份快照只带尾部 + 更早条数，而不是整份 transcript ----
+  const resumedBig = attached.state.sessionFile === big;
+  const resumedTotal = resumedBig ? BIG_MESSAGES : SMALL_MESSAGES;
+  const tailCount = attached.state.messages.length;
+  const omittedCount = attached.state.messagesOmitted;
+  check("首份快照只带尾部且给出更早条数", tailCount + omittedCount === resumedTotal && omittedCount > 0, {
+    tailCount,
+    omittedCount,
+    resumedTotal,
+  });
+  check("尾部不超过快照窗口(40)", tailCount <= 40, { tailCount });
+  check("首份快照带有 messagesOmitted 字段", typeof omittedCount === "number", { omittedCount });
+
+  // ---- 1c) 向上补历史：load_history all 应把剩下的全部补回来 ----
+  const tHistory = performance.now();
+  // 真实客户端会带上「自己最老的一条」：服务端只回缺的那一段（见 MessageList.requestOlder）。
+  send({ type: "load_history", before: attached.state.messages[0].id, all: true });
+  const page = await waitFor("message_page");
+  record(
+    `load_history all → ${page.messages.length} 条更早消息`,
+    performance.now() - tHistory,
+    `omittedBefore=${page.omittedBefore} complete=${page.complete}`,
+  );
+  check("补全只返回缺失的一段", page.messages.length === omittedCount, {
+    got: page.messages.length,
+    expected: omittedCount,
+  });
+  check("补全后不再有更早的消息", page.complete === true && page.omittedBefore === 0, {
+    messages: page.messages.length,
+    omittedBefore: page.omittedBefore,
+    complete: page.complete,
+  });
 
   // ---- 2) switch to the large persisted session ----
   send({ type: "list_sessions" });
   const sessions = await waitFor("sessions");
-  const target = sessions.sessions.find((s) => s.path === big) ?? sessions.sessions[0];
+  const target =
+    sessions.sessions.find((s) => s.path === big) ?? sessions.sessions[0];
   if (!target) throw new Error("会话列表为空，fixture 未被识别");
 
   const tSwitch = performance.now();
   send({ type: "switch_session", path: target.path });
   const switched = await waitForSnapshot();
   record(
-    `switch_session → snapshot（${switched.state.messages.length} 条消息）`,
+    `switch_session → snapshot（${messageCountOf(switched)} 条消息）`,
     performance.now() - tSwitch,
     await nextTiming(),
   );
@@ -209,14 +275,22 @@ try {
     const tBack = performance.now();
     send({ type: "switch_session", path: smallTarget.path });
     await waitForSnapshot();
-    record("switch_session 回小会话", performance.now() - tBack, await nextTiming());
+    record(
+      "switch_session 回小会话",
+      performance.now() - tBack,
+      await nextTiming(),
+    );
   }
 
   // ---- 4) no-op switch (already active) must still answer with a snapshot ----
   const tNoop = performance.now();
   send({ type: "switch_session", path: smallTarget?.path ?? big });
   await waitForSnapshot();
-  record("switch_session 重复目标（no-op）", performance.now() - tNoop, await nextTiming());
+  record(
+    "switch_session 重复目标（no-op）",
+    performance.now() - tNoop,
+    await nextTiming(),
+  );
 
   // ---- 5) project list scan is cached (the first call is what EVERY call used to cost) ----
   const firstProjects = performance.now();
@@ -232,8 +306,16 @@ try {
     `同一会话内二次 = ${Math.round(performance.now() - secondProjects)}ms`,
   );
 
+  if (failures > 0) {
+    console.error(`\nFAIL: ${failures} 项契约检查未通过`);
+    cleanup();
+    process.exit(1);
+  }
+
   console.log("\n── 汇总 ──");
-  for (const row of rows) console.log(`${String(Math.round(row.ms)).padStart(7)}ms  ${row.name}`);
+  for (const row of rows)
+    console.log(`${String(Math.round(row.ms)).padStart(7)}ms  ${row.name}`);
+  console.log("契约检查通过（含 P1-8 尾部优先与补全）");
 } catch (error) {
   console.error(`FAIL: ${error.message}`);
   console.error(serverOutput.slice(-2000));

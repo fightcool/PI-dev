@@ -870,6 +870,7 @@
     "noExtensions": "プラグインはまだありません",
     "noPresets": "プリセットはまだありません（先に上記の設定を調整してから、プリセットの組み合わせとして保存してください）",
     "loadingSession": "セッションを読み込んでいます…",
+    "loadEarlierMessages": "以前のメッセージを読み込む（残り {n} 件）",
     "connectingServer": "pi-web-ui サーバーに接続しています…",
     "localePacks": "言語パック",
     "localeGetMore": "他の言語を入手",

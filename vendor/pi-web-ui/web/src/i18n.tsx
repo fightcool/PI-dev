@@ -989,6 +989,7 @@ export const zh = {
 
 	/* app */
 	loadingSession: "正在加载会话…",
+	loadEarlierMessages: "载入更早的消息（还有 {n} 条）",
 	connectingServer: "正在连接 pi-web-ui 服务器…",
 
 	/* 语言包（下载） */
@@ -2198,6 +2199,7 @@ const en: Record<keyof typeof zh, string> = {
 
 	/* app */
 	loadingSession: "Loading session…",
+	loadEarlierMessages: "Load earlier messages ({n} more)",
 	connectingServer: "Connecting to pi-web-ui server…",
 
 	/* language packs (downloadable) */

@@ -17,6 +17,8 @@ import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
+// 协议版本从构建产物读，避免 bump 时这个断言腐化（每个 bump 都要改一次硬编码是坑）。
+const { PROTOCOL_VERSION } = await import("../dist/server/protocol-version.js");
 
 // 默认端口按 PID 派生：冒烟与手工 e2e 并行时不会互撞（同一脚本两份的 PID 必不相同）。
 const PORT = Number(process.argv[2] || 9100 + (process.pid % 100) * 2);
@@ -293,7 +295,7 @@ try {
 	check("diagnostics bundle is returned with metadata", diag.ok === true && Boolean(diag.bundle), diag.error ?? "");
 	check(
 		"diagnostics carries version/paths/unit and channel counts",
-		diag.bundle.app.protocolVersion === 21 && (diag.bundle.release.protocolVersion === null || typeof diag.bundle.release.protocolVersion === "number") &&
+		diag.bundle.app.protocolVersion === PROTOCOL_VERSION && (diag.bundle.release.protocolVersion === null || typeof diag.bundle.release.protocolVersion === "number") &&
 			typeof diag.bundle.instance.agentDir === "string" && Array.isArray(diag.bundle.units) &&
 			diag.bundle.channels.count === 2 && diag.bundle.usage.requests >= 2,
 		JSON.stringify({ appProtocol: diag.bundle.app.protocolVersion, releaseProtocol: diag.bundle.release.protocolVersion, channels: diag.bundle.channels, usage: diag.bundle.usage.requests }),

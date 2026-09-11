@@ -870,6 +870,7 @@
     "noExtensions": "Keine Erweiterungen",
     "noPresets": "Noch keine Voreinstellungen (passen Sie oben die Einstellungen an und speichern Sie sie dann als Voreinstellungskombination)",
     "loadingSession": "Sitzung wird geladen …",
+    "loadEarlierMessages": "Ältere Nachrichten laden ({n} weitere)",
     "connectingServer": "Verbindung zum pi-web-ui-Server wird hergestellt …",
     "localePacks": "Sprachpakete",
     "localeGetMore": "Weitere Sprachen laden",

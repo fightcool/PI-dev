@@ -6,7 +6,7 @@
  * @BUGFIX 2026-09-10: bound collapsed history and initial mount with aggregate spacers.
  * 📖 docs/architecture-core.md
  */
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { FiArrowDown } from "react-icons/fi";
 import type { PromptAttachment, ToolStatus, UiMessage, UiState } from "../types";
 import { Message, asText } from "./Message";
@@ -32,6 +32,8 @@ interface MessageListProps {
 	onKillBash?: () => void;
 	onRetry?: () => void;
 	onRemoveQueued?: (kind: "steer" | "followUp", text: string) => void;
+	/** 尾部优先历史：请求更早的一页（`all` = 搜索/问题导航前一次补全）。 */
+	onLoadHistory?: (opts: { before?: string; all?: boolean }) => void;
 	thinkingWrap?: boolean;
 	toolsWrap?: boolean;
 	jumpTarget?: { path: string; role: string; timestamp: number } | null;
@@ -63,6 +65,7 @@ export function MessageList({
 	onKillBash,
 	onRetry,
 	onRemoveQueued,
+	onLoadHistory,
 	thinkingWrap,
 	toolsWrap,
 	jumpTarget,
@@ -140,17 +143,71 @@ export function MessageList({
 		[bottom.leaveBottom, expand, windowed.reveal, windowed.elements, qnIndex],
 	);
 	useEffect(() => () => cancelAnimationFrame(jumpFrame.current), []);
+
+	// ---------------------------------------------------------------------
+	// 尾部优先历史（P1-8）：大历史首屏只带最近若干条，更早的按需补。
+	// @PERF 目标是把「切换会话」的 wire 从数百 KB 降到几十 KB（实测见
+	// docs/PERF-SESSION-LOAD.md）；代价是向上翻/搜索时要补一次。
+	// ---------------------------------------------------------------------
+	const omitted = state.messagesOmitted ?? 0;
+	const loadingOlder = useRef(false);
+	/** 用户按了搜索但历史还没补全：补全到位后自动打开。 */
+	const pendingSearch = useRef(false);
+	/** 前置历史时保住视口：记录滚动前的 scrollHeight，DOM 更新后补回差值。 */
+	const prependAnchor = useRef<{ height: number; top: number } | null>(null);
+	const requestOlder = useCallback(
+		(all: boolean) => {
+			if (!onLoadHistory || loadingOlder.current) return;
+			const root = scrollRef.current;
+			loadingOlder.current = true;
+			if (root) prependAnchor.current = { height: root.scrollHeight, top: root.scrollTop };
+			// 总是带 before：服务端只回「缺的那一段」，不会把已持有的尾部再发一遍。
+			onLoadHistory({ before: state.messages[0]?.id, ...(all ? { all: true } : {}) });
+		},
+		[onLoadHistory, state.messages],
+	);
+	useLayoutEffect(() => {
+		// 新的一页到位：把视口按高度差补回去（否则视口会被顶到很下面）。
+		const anchor = prependAnchor.current;
+		loadingOlder.current = false;
+		if (!anchor) return;
+		prependAnchor.current = null;
+		const root = scrollRef.current;
+		if (!root) return;
+		root.scrollTop = anchor.top + (root.scrollHeight - anchor.height);
+	}, [state.messages]);
+
+	/**
+	 * 打开会话内搜索。历史被截断时先补全（客户端搜索是对已加载 messages 建索引，
+	 * 只搜尾部会给出「搜不到」的假象）；补全后再开，用户看到的是完整命中集。
+	 * 这是与需求方确认过的方案 A：补全发生在一次显式动作之前，代价是一次全量传输。
+	 */
+	const openSearch = useCallback(() => {
+		if ((state.messagesOmitted ?? 0) > 0 && onLoadHistory) {
+			requestOlder(true);
+			pendingSearch.current = true;
+			return;
+		}
+		setSearchOpen(true);
+	}, [onLoadHistory, requestOlder, state.messagesOmitted]);
+	useEffect(() => {
+		// 补全到位（omitted 归零）→ 兑现用户刚才的搜索意图。
+		if (!pendingSearch.current || (state.messagesOmitted ?? 0) > 0) return;
+		pendingSearch.current = false;
+		setSearchOpen(true);
+	}, [state.messagesOmitted]);
+
 	useEffect(() => {
 		const onKey = (event: KeyboardEvent) => {
 			if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "f") return;
 			const target = event.target as HTMLElement | null;
 			if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
 			event.preventDefault();
-			setSearchOpen(true);
+			openSearch();
 		};
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
-	}, []);
+	}, [openSearch]);
 	// Search only mounts its current target. Ordinary scrolling remains virtual.
 	const revealSearch = useCallback(
 		(id: string) => {
@@ -203,6 +260,9 @@ export function MessageList({
 		bottom.onScroll();
 		windowed.retainEditor();
 		windowed.schedule();
+		// 滚到顶部附近且还有更早的消息 → 自动补一页（节流由 loadingOlder 守住）。
+		const root = scrollRef.current;
+		if (omitted > 0 && root && root.scrollTop <= 48) requestOlder(false);
 	};
 	let previousEnd = 0;
 	return (
@@ -214,6 +274,13 @@ export function MessageList({
 				onFocusCapture={windowed.retainEditor}
 				style={{ overflowAnchor: "none" }}
 			>
+				{omitted > 0 && (
+					<div className="msg-older">
+						<button type="button" className="msg-older-btn" onClick={() => requestOlder(false)}>
+							{t("loadEarlierMessages", { n: omitted })}
+						</button>
+					</div>
+				)}
 				{!messages.length && (
 					<div className="empty-state">
 						<EmptyTemplateCards />

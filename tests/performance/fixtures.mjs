@@ -16,16 +16,28 @@ export const pluginModule = `export default { mount(container) {
   return () => node.remove();
 } };`;
 
-export function snapshot(count) {
+/** How many recent messages a synthetic snapshot carries (mirrors the server's
+ *  SNAPSHOT_TAIL_MESSAGES): the harness must exercise the tail-first path, not a
+ *  full snapshot the real server would never send for a long history. */
+export const SNAPSHOT_TAIL = 40;
+/** The full synthetic transcript for `count` messages — what load_history answers with. */
+export function allMessages(count) {
   const paragraph = 'Synthetic performance paragraph with ordinary text and **bold** emphasis.\n\n'.repeat(12);
+  return Array.from({ length: count }, (_, index) => ({
+    id: messageId(index), role: index % 2 ? 'assistant' : 'user',
+    content: [{ type: 'text', text: `Message ${index}\n\n${paragraph}${index === 0 || index === 2 ? searchTerm : ''}` }],
+    timestamp: 1700000000000 + index,
+  }));
+}
+
+export function snapshot(count) {
+  const all = allMessages(count);
+  const messages = all.slice(Math.max(0, count - SNAPSHOT_TAIL));
   return {
     clientId: 'assessment', cwd: '/synthetic', sessionId: 'assessment',
     conversationId: 'assessment', sessionFile: '/synthetic/session.jsonl', rev: 1,
-    messages: Array.from({ length: count }, (_, index) => ({
-      id: messageId(index), role: index % 2 ? 'assistant' : 'user',
-      content: [{ type: 'text', text: `Message ${index}\n\n${paragraph}${index === 0 || index === 2 ? searchTerm : ''}` }],
-      timestamp: 1700000000000 + index,
-    })),
+    messagesOmitted: Math.max(0, count - SNAPSHOT_TAIL),
+    messages,
     streamingMessage: null, isStreaming: false, model: null, thinkingLevel: 'off',
     availableThinkingLevels: [], queue: { steering: [], followUp: [] }, tools: [],
     version: 1, piConfigured: true, piAgentInstalled: true,
@@ -69,6 +81,18 @@ export function socketReply(message, state) {
       { type: 'settings_state', settings: state?.settingsState ?? settingsFixture() },
       ...channelStateMsg,
     ];
+    case 'load_history': {
+      // 与 server/history-window.ts 同口径：返回 before 之前缺的那一段。
+      const all = allMessages(state?.messages ? state.messages.length + (state.messagesOmitted ?? 0) : 0);
+      const before = message.before;
+      const end = before === undefined ? all.length : all.findIndex((m) => m.id === before);
+      if (end < 0) return [{ type: 'message_page', conversationId: state?.conversationId, messages: [], omittedBefore: 0, complete: true }];
+      const start = 0; // 合成场景只有一页
+      return [{
+        type: 'message_page', conversationId: state?.conversationId,
+        messages: all.slice(start, end), omittedBefore: start, complete: start === 0,
+      }];
+    }
     case 'list_channels': return channelStateMsg;
     case 'list_diagnostics':
       return [{

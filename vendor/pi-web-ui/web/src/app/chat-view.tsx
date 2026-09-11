@@ -165,6 +165,8 @@ export function ChatView({
 							onKillBash={onKillBash}
 							onRetry={onRetry}
 							onRemoveQueued={onRemoveQueued}
+							// 尾部优先历史：向上翻/搜索前补全更早的消息（P1-8）。
+							onLoadHistory={(opts) => send({ type: "load_history", ...opts })}
 							thinkingWrap={chat.settings?.thinkingWrap ?? true}
 							toolsWrap={chat.settings?.toolsWrap ?? false}
 							jumpTarget={searchJump}

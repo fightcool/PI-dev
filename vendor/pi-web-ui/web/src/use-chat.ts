@@ -351,6 +351,7 @@ type Action =
 	| { type: "switching"; on: boolean }
 	| { type: "snapshot"; state: UiState }
 	| { type: "snapshot_delta"; msg: Extract<ServerMessage, { type: "snapshot_delta" }> }
+	| { type: "message_page"; msg: Extract<ServerMessage, { type: "message_page" }> }
 	| { type: "protocol_mismatch" }
 	| { type: "tool_delta"; toolCallId: string; toolName: string; delta: string }
 	| { type: "message_delta"; msg: MessageDeltaMsg }
@@ -676,6 +677,19 @@ function reducer(state: ChatState, action: Action): ChatState {
 				activeConversationId: merged.conversationId,
 				liveOutputs: pruneLiveOutputs(state.liveOutputs, merged),
 				toolStatuses: pruneToolStatuses(state.toolStatuses, merged),
+			};
+		}
+		case "message_page": {
+			// 尾部优先历史的「更早一页」：前置到现有数组之前（按 id 去重——重连或
+			// 补全后服务端可能重复给出已持有的消息）。omittedBefore 成为新的计数。
+			const ui = state.state;
+			const d = action.msg;
+			if (!ui || ui.conversationId !== d.conversationId) return state;
+			const known = new Set(ui.messages.map((m) => m.id));
+			const older = d.messages.filter((m) => !known.has(m.id));
+			return {
+				...state,
+				state: { ...ui, messages: older.length > 0 ? [...older, ...ui.messages] : ui.messages, messagesOmitted: d.omittedBefore },
 			};
 		}
 		case "tool_delta": {
@@ -1147,6 +1161,9 @@ export function useChat() {
 					perfMark("ws:snapshot", `${msg.state.messages.length} msgs rev=${msg.state.rev}`);
 					lastDeltaSeqRef.current = new Map();
 					dispatch({ type: "snapshot", state: msg.state });
+					break;
+				case "message_page":
+					dispatch({ type: "message_page", msg });
 					break;
 				case "snapshot_delta": {
 					// Gap detection BEFORE dispatch: if this incremental checkpoint

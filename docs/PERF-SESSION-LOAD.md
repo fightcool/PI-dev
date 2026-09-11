@@ -86,7 +86,7 @@ vendor/pi-web-ui/web/src/perf-trace.ts, tests/performance/README.md -->
 
 | # | 目标 | 落点 | 状态 |
 | --- | --- | --- | --- |
-| 8 | 尾部优先 + 向上分页加载（大历史不再一次全量） | `server/protocol.ts`、`agent-service.ts`、客户端 reducer | 待做（需协议 bump） |
+| 8 | 尾部优先 + 向上补全（大历史不再一次全量） | `server/history-window.ts`、`protocol.ts`、`agent-service.ts`、`web/src/components/MessageList.tsx`、`use-chat.ts` | ✅（协议 v22；搜索采用「先补全再搜」方案 A） |
 | 9 | 本地会话缓存（stale-while-revalidate），切回近 0 延迟 | 新增客户端缓存模块 | 待做 |
 | 10 | hover/列表打开时预取 | `web/src/components/LeftPanel.tsx` | 待做 |
 | 11 | runtime LRU 复用 | `server/agent-service.ts` | ❌ 复核后不做（见下：1.5s 是 jiti 磁盘缓存的**首次**成本，不是每次切换的成本） |
@@ -118,6 +118,19 @@ vendor/pi-web-ui/web/src/perf-trace.ts, tests/performance/README.md -->
 | --- | --- | --- |
 | 2026-09-11 09:09 | `969ef2a76d18` → **`79525237ee6c`**（PR #21 合并提交） | 成功。排空 → 停 PM2 → 原子换 current → 启动 → 验收（新 PID / 健康 / build-info 与 release-source 一致 / 公网入口发新前端 / 匿名 WS 仍 401）→ unquiesce；中断约 4 秒；失败回滚目标 `969ef2a76d18` 保留 |
 
+### P1-8 落地后的实测（隔离探针，含契约断言）
+
+| 场景 | 改前 | 改后 |
+| --- | --- | --- |
+| 冷 attach（200 条会话）的 snapshot wire | 117 KB | **25 KB** |
+| 切到 1460 条历史会话 | snapshot 带 1460 条 / 844 KB wire | **带 40 条 / 25 KB wire**（-97%） |
+| 向上补全 `load_history all`（带 before，只回缺的 160 条） | — | 8 ms |
+| 大历史客户端首屏 DOM | 420 节点（窗口化） | 420 节点，但 markdown 解析量随之下降 |
+
+契约（探针里已断言，防止回归）：首份快照 = 尾部 40 + `messagesOmitted>0`；补全后 `complete=true` 且 `omittedBefore=0`。
+浏览器 harness 的 1000 条场景也改为按新契约发（尾部 + 计数 + 回答 `load_history`），
+并断言「滚到顶 → 自动补页 → 再滚到顶看到最老一条」、展开旧行、搜索旧消息、跳转最老问题全部可用。
+
 ### P1-8 的必要性（实测）
 
 真实形态的高熵会话快照（1460 条、含代码块与工具调用）压缩后仍然很大：
@@ -148,7 +161,8 @@ vendor/pi-web-ui/web/src/perf-trace.ts, tests/performance/README.md -->
 | P1-12 列表扫描缓存 | ✅ |
 | P1-13 首屏 bundle（对话区动态 chunk + 并行预取） | ✅ |
 | P1-14 接力重载与首快照抢跑 | ✅ |
-| P1-8 尾部优先分页 / P1-9 本地缓存 / P1-10 预取 / P1-13 的 i18n 分语言 | 待做 |
+| P1-8 尾部优先 + 向上补全（协议 v22） | ✅ |
+| P1-9 本地缓存 / P1-10 预取 / P1-13 的 i18n 分语言 | 待做（P1-9 待 P1-8 数据后重评） |
 | P1-11 runtime LRU | ❌ 复核后不做（理由见上） |
 
 ### 服务端（隔离实例探针，`node tests/performance/server-timing.mjs`）

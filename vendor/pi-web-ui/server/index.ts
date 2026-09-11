@@ -746,6 +746,9 @@ export interface DispatchSession {
 	/** In-flight disk catch-up reload for the active conversation, if any.
 	 *  Optional: the DSH engine session has no equivalent. */
 	diskSyncPending?(): Promise<void> | null;
+	/** Page of earlier messages for the ACTIVE conversation (tail-first history).
+	 *  Optional: the DSH engine session has no equivalent. */
+	loadHistory?(opts: { before?: string; limit?: number; all?: boolean }): void;
 	prompt(text: string, attachments?: PromptAttachment[], queue?: boolean): Promise<void>;
 	/** Remove one queued prompt text (steer/followUp) — the ✕ on a pending bubble. */
 	removeQueued(kind: "steer" | "followUp", text: string): void;
@@ -1186,6 +1189,10 @@ wss.on("connection", (ws) => {
 				break;
 			case "get_commands":
 				void cs.pushSlashCommands();
+				break;
+			case "load_history":
+				// 尾部优先历史的「载入更早/搜索前补全」；DSH 引擎没有等价实现。
+				cs.loadHistory?.({ before: msg.before, limit: msg.limit, all: msg.all });
 				break;
 			case "list_sessions":
 				void cs.refreshSessions();
