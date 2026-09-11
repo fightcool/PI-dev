@@ -10,6 +10,7 @@
  * @GOTCHA 旧 unit 是 enabled + WantedBy=default.target：只要它还是 enabled，任何
  *         daemon-reload 都会把它拉起来抢 8788（本次事故的直接原因），必须 disable。
  * @SECURITY 只读 runtime.json 的路径/端口；不读取、不复制任何凭据。
+ * @CONTRACT 路径来自 PI_DEV_DEPLOY_ROOT / PI_DEV_CONFIG_DIR / PI_DEV_DEV_ROOT，缺省值与历史行为一致。
  * 用法：node scripts/maintenance/switch-production-release.mjs <newReleaseId(12hex)>
  */
 import { execFileSync } from "node:child_process";
@@ -19,9 +20,12 @@ import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const HOME = process.env.HOME;
-const DEV_ROOT = "/home/dev/PI-dev";
-const BASE = join(HOME, ".local/share/pi-dev/deploy");
-const CONFIG_FILE = join(HOME, ".config/pi-dev/runtime.json");
+const DEV_ROOT = process.env.PI_DEV_DEV_ROOT ?? "/home/dev/PI-dev";
+// deploy 根目录可迁移；写死会让切换静默作用在旧路径上（current 更新了但服务仍跑旧目录）。
+const BASE = process.env.PI_DEV_DEPLOY_ROOT ?? join(HOME, ".local/share/pi-dev/deploy");
+const CONFIG_FILE = process.env.PI_DEV_CONFIG_DIR
+	? join(process.env.PI_DEV_CONFIG_DIR, "runtime.json")
+	: join(HOME, ".config/pi-dev/runtime.json");
 const STATUS_FILE = join(BASE, "shared/maintenance/switch-status.json");
 const ORIGIN = "https://dev.ftai.cc";
 const LEGACY = "pi-web-ui-dev.service";
