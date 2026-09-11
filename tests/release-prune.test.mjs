@@ -123,6 +123,26 @@ test("previous.json 损坏时拒绝清理，而不是丢掉它的保护", async 
   assert.ok(existsSync(join(d.base, "releases/a")));
 });
 
+test("切换脚本显式传入的回滚点必须存活，即使它是最旧、mtime 最靠前的版本", async t => {
+  const d = deployment(t, lineage);
+  // 生产流程不写 previous.json，回滚点只能由 switch 脚本用 protect 传进来。
+  const plan = planPrune(d.options, { keep: 0, protect: ["a"] });
+  assert.deepEqual(plan.protected, ["a", "c", "d"]);
+  assert.deepEqual(plan.remove, ["b"]);
+  assert.deepEqual(plan.unknownProtected, []);
+  const applied = pruneReleases(d.options, { keep: 0, protect: ["a"], apply: true });
+  assert.ok(existsSync(join(d.base, "releases/a")), "回滚点不得被删除");
+  assert.ok(existsSync(join(d.base, "releases/c")));
+  assert.ok(!existsSync(join(d.base, "releases/b")));
+});
+
+test("protect 里的陌生 id 不报错但会回报，非法类型直接拒绝", async t => {
+  const d = deployment(t, lineage);
+  assert.deepEqual(planPrune(d.options, { keep: 0, protect: ["ghost"] }).unknownProtected, ["ghost"]);
+  assert.throws(() => planPrune(d.options, { keep: 0, protect: [""] }), /non-empty release ids/);
+  assert.throws(() => planPrune(d.options, { keep: 0, protect: "a" }), /must be an array/);
+});
+
 test("符号链接、未知文件与缺少 manifest 的目录一律跳过", async t => {
   const d = deployment(t, { ...lineage, extra: [["notes.txt", "keep me"]] });
   mkdirSync(join(d.base, "releases/mystery"));

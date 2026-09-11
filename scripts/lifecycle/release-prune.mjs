@@ -87,17 +87,32 @@ export function releaseInventory(options) {
   return scanReleases(options).releases.map(entry => entry.id);
 }
 
-/** 纯规划，不写磁盘。返回将保留、将删除、将回收暂存与跳过的条目。 */
-export function planPrune(options, { keep = DEFAULT_KEEP, staleMs = DEFAULT_STALE_MS, now = Date.now() } = {}) {
+/**
+ * 纯规划，不写磁盘。返回将保留、将删除、将回收暂存与跳过的条目。
+ * @GOTCHA 生产切换脚本不走 shadow 流程，不写 shared/previous.json —— 它必须通过 protect 显式传入
+ *          刚被替换下来的 OLD_ID，否则「回滚目标」会退化成靠 mtime 猜（切换失败/回滚后 mtime 顺序
+ *          与上线顺序不一致，可能把唯一的回滚版本删掉）。
+ */
+export function planPrune(options, { keep = DEFAULT_KEEP, staleMs = DEFAULT_STALE_MS, now = Date.now(), protect = [] } = {}) {
   if (!Number.isSafeInteger(keep) || keep < 0) throw new Error("keep must be a non-negative integer.");
   if (!Number.isFinite(staleMs) || staleMs < 0) throw new Error("staleMs must be a non-negative number.");
+  if (!Array.isArray(protect)) throw new Error("protect must be an array of release ids.");
   const { releases, staging, skipped } = scanReleases(options);
   const guarded = protectedIds(options);
+  const known = new Set(releases.map(entry => entry.id));
+  for (const id of protect) {
+    if (typeof id !== "string" || !id) throw new Error("protect entries must be non-empty release ids.");
+    // 只接受确实存在的完整版本：拼错的 id 静默忽略会让人误以为回滚点被保护了。
+    if (known.has(id)) guarded.add(id);
+  }
   const candidates = releases.filter(entry => !guarded.has(entry.id));
+  // 不认识的 id 不报错（OLD_ID 可能已经被清掉），但必须回报，不能让人误以为回滚点已被保护。
+  const unknownProtected = protect.filter(id => !known.has(id)).sort();
   const drop = candidates.slice(keep);
   const dropIds = new Set(drop.map(entry => entry.id));
   return {
     protected: [...guarded].sort(),
+    unknownProtected,
     retained: releases.filter(entry => !dropIds.has(entry.id)).map(entry => entry.id),
     remove: drop.map(entry => entry.id),
     stale: staging.filter(entry => now - entry.mtimeMs > staleMs).map(entry => entry.name),
