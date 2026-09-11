@@ -7,9 +7,17 @@ const result = spawnSync("git", ["ls-files", "-z"], {
   cwd: ROOT,
   encoding: "utf8",
 });
+const untracked = spawnSync("git", ["ls-files", "--others", "--exclude-standard", "-z"], {
+  cwd: ROOT,
+  encoding: "utf8",
+});
 let files;
 if (result.status === 0 && !result.error) {
-  files = result.stdout.split("\0").filter(Boolean).filter(file => existsSync(join(ROOT, file)));
+  // 同时包含「未跟踪但未被忽略」的文件：新增文件在提交前也必须被扫描，
+  // 否则本地会 PASS 而 CI（只看得见已提交内容）FAIL —— 假通过比漏检更危险。
+  const pending = untracked.status === 0 && !untracked.error ? untracked.stdout.split("\0").filter(Boolean) : [];
+  files = [...new Set([...result.stdout.split("\0").filter(Boolean), ...pending])]
+    .filter(file => existsSync(join(ROOT, file)));
 } else {
   const fallback = spawnSync("find", [ROOT, "-type", "f", "-not", "-path", "*/node_modules/*", "-not", "-path", "*/.venv/*", "-not", "-path", "*/.tools/*", "-not", "-path", "*/.git/*", "-not", "-path", "*/.playwright-mcp/*", "-not", "-path", "*/__pycache__/*", "-not", "-path", "*/.ruff_cache/*"], { encoding: "utf8" });
   if (fallback.status !== 0) throw new Error("Cannot enumerate deliverable files.");
