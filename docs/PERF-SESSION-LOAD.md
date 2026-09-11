@@ -91,7 +91,7 @@ vendor/pi-web-ui/web/src/perf-trace.ts, tests/performance/README.md -->
 | 10 | hover/列表打开时预取 | `web/src/components/LeftPanel.tsx` | 待做 |
 | 11 | runtime LRU 复用 | `server/agent-service.ts` | ❌ 复核后不做（见下：1.5s 是 jiti 磁盘缓存的**首次**成本，不是每次切换的成本） |
 | 12 | 会话/项目列表扫描加缓存与精确失效 | `server/session-history-cache.ts`、`agent-service.ts` | ✅ |
-| 13 | 首屏 bundle：对话区（含 markdown 渲染器）改为并行预取的动态 chunk | `web/src/app/chat-view.tsx` | ✅（i18n 分语言仍待做） |
+| 13 | 首屏 bundle：对话区改为并行预取的动态 chunk + 只打包用到的 28 门语法 | `web/src/app/chat-view.tsx`、`web/src/highlight-subset.ts`、`rehype-highlight-subset.ts` | ✅（i18n 分语言见下） |
 | 14 | 磁盘接力重载与首快照抢跑（双份全量 + 旧→新跳变） | `server/agent-service.ts`、`server/index.ts` | ✅（仅在「离开期间另一端写过」时触发） |
 
 ## 5. 验收口径
@@ -117,6 +117,8 @@ vendor/pi-web-ui/web/src/perf-trace.ts, tests/performance/README.md -->
 | 时间 | 版本 | 结果 |
 | --- | --- | --- |
 | 2026-09-11 09:09 | `969ef2a76d18` → **`79525237ee6c`**（PR #21 合并提交） | 成功。排空 → 停 PM2 → 原子换 current → 启动 → 验收（新 PID / 健康 / build-info 与 release-source 一致 / 公网入口发新前端 / 匿名 WS 仍 401）→ unquiesce；中断约 4 秒；失败回滚目标 `969ef2a76d18` 保留 |
+| 2026-09-11 11:26 | `79525237ee6c` → **`91c6e5809f06`**（PR #23/#24/#25 合并提交，protocol 22） | 成功，同样走 `switch-production-release.mjs`；中断约 6 秒；候选内实跑 root 174/174、vitest 668/668、smoke 41/41、check:publish PASS、typecheck ✓；回滚目标 `79525237ee6c` 保留 |
+| 2026-09-11 11:33 | 工具卡默认折叠的线上生效验证 | 读线上存档确认：存量 `__settings__.settings.toolsWrap=true`（旧默认被整对象落盘盖进去的）在 `UI_DEFAULTS_VERSION` 迁移下被忽略，**有效值 = false**；`uiDefaultsVersion` 缺失即为待迁移记录 |
 
 ### P1-8 落地后的实测（隔离探针，含契约断言）
 
@@ -159,7 +161,8 @@ vendor/pi-web-ui/web/src/perf-trace.ts, tests/performance/README.md -->
 | P0-6 滚动路径减负 | ✅ |
 | P0-7 乐观切换占位 | ✅ |
 | P1-12 列表扫描缓存 | ✅ |
-| P1-13 首屏 bundle（对话区动态 chunk + 并行预取） | ✅ |
+| P1-13 首屏 bundle（对话区动态 chunk + 并行预取 + 语法集收敛） | ✅ |
+| P1-13b i18n 分语言（已量化为 ~15KB gz） | 待做（改动面较大，见上） |
 | P1-14 接力重载与首快照抢跑 | ✅ |
 | P1-8 尾部优先 + 向上补全（协议 v22） | ✅ |
 | P1-9 本地缓存 / P1-10 预取 / P1-13 的 i18n 分语言 | 待做（P1-9 待 P1-8 数据后重评） |
@@ -175,6 +178,27 @@ vendor/pi-web-ui/web/src/perf-trace.ts, tests/performance/README.md -->
 | list_projects | 每次 26 ms（小 fixture；线上 14 MiB 数据约 250 ms） | 首次同前，同交互内二次 2 ms |
 
 隔离实例没有线上的扩展与插件，绝对值远低于线上；这里用于确认改动没有把服务端改慢，及缓存/顺序确实生效。
+
+### 首屏权重：实测与结论（P1-13 续）
+
+**语法集收敛**（`highlight-subset.ts` + `rehype-highlight-subset.ts`）：`rehype-highlight`
+静态依赖 lowlight 的 `common` 37 门语法，即使只用到 28 门也整包进包；改为按名单 import
+语法 + 自建 lowlight 实例后：
+
+| 项 | 改前 | 改后 |
+| --- | --- | --- |
+| markdown chunk | 507,531 raw / 153,382 gz | **467,638 raw / 144,386 gz** |
+| 打包语法 | 37 门（含 arduino 20KB / less 21KB / objectivec / vbnet / wasm…） | 28 门（246KB 源大小） |
+
+**结论：这一块已经没有大肉可削**。markdown chunk 剩下的 ~220KB 是 react-markdown +
+remark/rehype 栈本身（不是语法表）；再削要换 markdown 栈，收益不匹配风险。真正的首屏
+收益来自 P1-13 的**并行下载**（不再阻塞 WS 握手），而不是继续抠 chunk。
+
+**i18n 分语言（待做，已量化）**：`web/src/i18n.tsx` 里 zh 字典 38.7KB 源码、en 字典
+62.8KB 源码；入口 chunk（138KB raw / 52.8KB gz）里中文占约 30KB。把 en 拆成按语言加载的
+独立 chunk 大约能省 zh 用户 **~15KB gz（≈ 入口 gz 的 28%）**，但要求
+①把 2600 行的 i18n 模块重排为「基础 + 语言包」②语言切换走异步加载（需处理首帧时序，
+否则会闪一下中文）。属于「收益中等、改动面较大」，排在其他项之后。
 
 ### 客户端（P1-13 后）
 

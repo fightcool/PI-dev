@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { act } from "react-dom/test-utils";
 import { Markdown, detectSubset, rehypePlugins } from "../../web/src/components/Markdown.js";
+import { bundledLanguages } from "../../web/src/highlight-subset.js";
 import { LanguageProvider } from "../../web/src/i18n.js";
 
 // React 在测试环境下需要显式声明才有 act 支持（同其余 jsdom 单测）。
@@ -38,10 +39,20 @@ function render(markdown: string): string {
 }
 
 describe("markdown 高亮语言集", () => {
-	it("rehype-highlight 开启 detect 且限定在 detectSubset 内", () => {
+	it("高亮插件开启 detect 且限定在 detectSubset 内", () => {
 		const [, options] = rehypePlugins[0] as [unknown, { detect?: boolean; subset?: readonly string[] }];
 		expect(options.detect).toBe(true);
 		expect(options.subset).toBe(detectSubset);
+	});
+
+	it("自动嗅探子集必须是已打包语言的子集（否则嗅探出来的语言没注册）", () => {
+		for (const lang of detectSubset) expect(bundledLanguages).toContain(lang);
+	});
+
+	it("只打包名单内的语法（rehype-highlight 的 common 37 门不再进包）", () => {
+		for (const dropped of ["arduino", "less", "objectivec", "vbnet", "wasm"]) {
+			expect(bundledLanguages).not.toContain(dropped);
+		}
 	});
 
 	it("detectSubset 覆盖 agent 输出里的高频语言", () => {

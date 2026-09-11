@@ -4,13 +4,13 @@ import ReactMarkdown from "react-markdown";
 import type { PluggableList } from "unified";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
-import rehypeHighlight from "rehype-highlight";
 import rehypeRaw from "rehype-raw";
 import { CopyButton } from "./copy-button";
 import { splitCodeLines } from "../code-lines";
 import { childrenText, fenceLanguage } from "./mermaid";
 import { getFenceRegistryVersion, hasFenceRenderer, subscribeFenceRegistry } from "../plugin-fence";
 import { PluginFenceBlock } from "./PluginFenceBlock";
+import { rehypeHighlightSubset } from "../rehype-highlight-subset";
 
 interface MarkdownProps {
 	text: string;
@@ -68,7 +68,10 @@ export const detectSubset = [
 	"ruby",
 ];
 export const rehypePlugins: PluggableList = [
-	[rehypeHighlight, { detect: true, subset: detectSubset, ignoreMissing: true }],
+	// 🍞 @PERF 用自建插件替代 rehype-highlight：后者静态依赖 lowlight 的 37 门 `common`
+	// 语法（≈300KB），而我们只需要 highlight-subset.ts 里注册的那批。
+	// 行为对齐：`code` 带 hljs 类、自动嗅探命中追加 language-<name>、未注册语言保持原样。
+	[rehypeHighlightSubset, { detect: true, subset: detectSubset }],
 ];
 
 export function MarkdownBody({
