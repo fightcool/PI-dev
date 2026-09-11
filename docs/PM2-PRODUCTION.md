@@ -118,6 +118,15 @@ journalctl --user -u pi-dev-switch.service --no-pager
 
 阶段：quiesce → 排空（active/pending 均归零，超时即中止并恢复接收）→ 停用并 disable 旧 unit/watchdog → 原子替换 current → `manager start` → 验收（新 PID、健康、build-info 与 release-source 一致、公网入口发的是该版本前端、匿名 WebSocket 仍被 401 拒绝）→ `unquiesce`。失败时原子回退旧 release 并重启 PM2；PM2 起不来则用旧 unit 兜底保证站点可用（并在状态文件中标注）。`--collect` 的 transient unit 在退出时可能打印一条 "Failed to open …/transient/…: No such file or directory"，属清理噪声。
 
+### 2026-09-11 第三次生产升级（`91c6e5809f06` → `d803f7e8d45c`）
+
+| 项 | 结果 |
+| --- | --- |
+| 版本 | `current` → `releases/d803f7e8d45c`，提交 `d803f7e8d45cbe58c0741f1555165a08819a5480`（PR #26 只打包用到的 28 门语法 / PR #27 i18n 分语言） |
+| 候选验证 | 候选内实跑：root `npm test` 174/174、vendor vitest 673/673、app smoke 41/41；`build-info` 与 `release-source` 一致、`protocolVersion` 22；候选目录顶层与线上版本逐项一致 |
+| 切换验收 | `phase=deployed`；新 PID 1003011、`/api/health` 正常、公网入口发新前端（`index-BC0-zdW9.js`）、PM2 unit active；中断约 6 秒 |
+| 回滚 | 目标 `releases/91c6e5809f06` 完整保留 |
+
 ### 2026-09-11 第二次生产升级（`79525237ee6c` → `91c6e5809f06`）
 
 | 项 | 结果 |
