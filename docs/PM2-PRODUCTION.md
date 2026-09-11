@@ -112,6 +112,10 @@ systemd-run --user --unit=pi-dev-switch --collect \
 journalctl --user -u pi-dev-switch.service --no-pager
 ```
 
+**控制套接字不可用时**：脚本默认 fail-closed（拒绝在无法排空的情况下重启）。若确认是「套接字文件陈旧（文件在但连接被拒，ECONNREFUSED），服务本身健康」，可用 `SWITCH_ALLOW_NO_SOCKET=1` 重跑——它跳过排空、直接重启（会中断运行中的对话），其余验收步骤照旧。陈旧套接字的根因是 `server.close()` 会自行 unlink 路径：现在应用在启动侧改为**绝不抢占仍在服务的套接字**，只有确认无人监听才清理并重试（`tests/unit/control-socket-ownership.test.ts`）。
+
+脚本是**幂等**的：若 `current` 已指向目标版本、进程健康且 `build-info` 与 `release-source` 一致，则直接以 `already_deployed` 成功返回（不动服务、不覆盖状态）；控制套接字查询带重试，刚重启的进程不会被误判为「无人在服务」。
+
 阶段：quiesce → 排空（active/pending 均归零，超时即中止并恢复接收）→ 停用并 disable 旧 unit/watchdog → 原子替换 current → `manager start` → 验收（新 PID、健康、build-info 与 release-source 一致、公网入口发的是该版本前端、匿名 WebSocket 仍被 401 拒绝）→ `unquiesce`。失败时原子回退旧 release 并重启 PM2；PM2 起不来则用旧 unit 兜底保证站点可用（并在状态文件中标注）。`--collect` 的 transient unit 在退出时可能打印一条 "Failed to open …/transient/…: No such file or directory"，属清理噪声。
 
 ### 2026-09-10 生产升级（`e92430be376b` → `2420ad6c7fe5`）

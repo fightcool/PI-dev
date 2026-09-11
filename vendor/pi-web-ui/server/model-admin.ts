@@ -297,8 +297,13 @@ export class ModelAdminService {
 		return [...ids];
 	}
 
-	/** Persist the ACTIVE key's apiKey into auth.json + runtime override + refresh. */
-	private async applyActiveKey(pid: string, apiKey: string): Promise<void> {
+	/** Persist the ACTIVE key's apiKey into auth.json + runtime override + refresh.
+	 *
+	 *  `network: false` = 自动恢复路径（attach / 切项目 / 切会话）：本地组合先让
+	 *  该 provider 的模型立刻可解析，远端目录刷新（实测 ~0.7s，超时上限 3×4s）
+	 *  放后台——它曾整段挡在首份快照之前，是「打开页面要等几秒」的主因之一。
+	 *  显式切换密钥（用户点击）保持 `network: true`：那是一次可等待的操作。 */
+	private async applyActiveKey(pid: string, apiKey: string, opts: { network?: boolean } = {}): Promise<void> {
 		const authPath = join(this.host.agentDir, "auth.json");
 		mkdirSync(this.host.agentDir, { recursive: true });
 		let data: Record<string, unknown> = {};
@@ -311,8 +316,20 @@ export class ModelAdminService {
 		writeFileSync(authPath, JSON.stringify(data, null, 2) + "\n");
 		const mr = this.host.modelRuntime();
 		await mr.setRuntimeApiKey(pid, apiKey);
-		await mr.refresh({ allowNetwork: true, providers: [pid] });
+		// Cached/local composition first: cheap, and enough for the caller to resolve
+		// the project's remembered model right away.
+		await mr.refresh({ allowNetwork: false, providers: [pid] });
 		this.host.invalidatePiConfig();
+		if (opts.network === false) {
+			void mr
+				.refresh({ allowNetwork: true, providers: [pid] })
+				.then(() => this.host.pushModels())
+				.catch(() => {
+					/* offline / catalog unavailable — the local snapshot stays usable */
+				});
+			return;
+		}
+		await mr.refresh({ allowNetwork: true, providers: [pid] });
 	}
 
 	/** Persist an api-key credential for a provider (auth.json) and apply it now.
@@ -442,7 +459,11 @@ export class ModelAdminService {
 	 *  key is (now) active, false when it doesn't exist or the switch failed.
 	 *  `silent` suppresses all notices — for automatic project restores, which
 	 *  must self-heal stale references without spamming the user. */
-	async activateProviderKey(provider: string, keyName: string, opts?: { silent?: boolean }): Promise<boolean> {
+	async activateProviderKey(
+		provider: string,
+		keyName: string,
+		opts?: { silent?: boolean; network?: boolean },
+	): Promise<boolean> {
 		const pid = provider.trim();
 		const targetName = keyName.trim();
 		const silent = opts?.silent === true;
@@ -473,7 +494,7 @@ export class ModelAdminService {
 			}
 			entry.activeKeyName = targetName;
 			this.writeProviderKeys(data);
-			await this.applyActiveKey(pid, target.apiKey);
+			await this.applyActiveKey(pid, target.apiKey, { network: opts?.network });
 			notice({
 				type: "notice",
 				level: "info",
