@@ -13,7 +13,9 @@ import { ROOT } from "./lib.mjs";
 const base = mkdtempSync(join(tmpdir(), "pi-protocol-"));
 const agentDir = join(base, "agent");
 mkdirSync(agentDir);
-const allowed = ["PATH", "LANG", "LC_ALL", "TERM", "SYSTEMROOT", "COMSPEC", "TEMP", "TMP"];
+const allowed = ["PATH", "LANG", "LC_ALL", "TERM", "SYSTEMROOT", "COMSPEC", "TEMP", "TMP",
+  // 冒烟并发度与浏览器路径：按需透传（见 run-smoke.mjs 的 --jobs/SMOKE_JOBS）。
+  "SMOKE_JOBS", "CHROME_PATH"];
 const env = Object.fromEntries(allowed.filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
 Object.assign(env, { PI_CODING_AGENT_DIR: agentDir, PI_WEB_DATA_DIR: join(base, "web"),
   PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_TELEMETRY: "0", PI_WEB_TOKEN: "" });

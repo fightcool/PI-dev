@@ -100,6 +100,10 @@ unit 使用 `Type=simple`、`Restart=on-failure`、`KillMode=control-group`、`T
 
 ## 生产升级记录与脚本
 
+候选准备同样已脚本化：`node scripts/maintenance/prepare-release.mjs <commit>` 完成 archive → 依赖（**锁文件未变时复用当前 release 的 node_modules/.venv**，省约 3 分钟）→ 构建 → 写 `release-source.json`，并校验 build-info 提交一致。
+
+**候选阶段的验证只跑产物级检查**（`SMOKE_JOBS=3 npm run test:smoke` + 与改动相关的 e2e）：源码级检查（typecheck/单测）由同一提交上的 CI 覆盖，不重复跑。分层规则见 [AGENTS.md](../AGENTS.md)「测试分层与验证节奏」。
+
 `scripts/maintenance/switch-production-release.mjs` 把上面的人工步骤固化成一个可复用的维护任务（PM2 → PM2，含旧 unit 退役）。它只读 runtime 配置的路径与端口，不读取或复制任何凭据，并在每个阶段写入 `deploy/shared/maintenance/switch-status.json`：
 
 ```bash

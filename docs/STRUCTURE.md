@@ -34,8 +34,10 @@ Node `#usage` / `#governance` package imports 让源码与编译产物引用同�
 - `npm run typecheck`：应用双端类型检查。
 - `npm test`：根工程及生命周期测试。
 - `npm run test:unit`：应用纯逻辑单测。
-- `npm run test:smoke`：应用自包含协议冒烟。
+- `npm run test:smoke`：应用自包含协议冒烟；**默认并行 3**（`SMOKE_JOBS=N` 覆盖），实测 ~190s（串行约 10–11 分钟）。按 [AGENTS.md](../AGENTS.md)「测试分层与验证节奏」只在里程碑跑。
 - `npm run test:performance`：模拟HTTP/WS的浏览器回归；不接触真实服务或模型。
+- `node scripts/maintenance/prepare-release.mjs <commit>`：准备候选 release（锁文件未变时复用依赖，~3 分钟省掉）。
+- `node scripts/maintenance/switch-production-release.mjs <releaseId>`：原子切换上线（含排空/验收/回滚），见 [PM2-PRODUCTION.md](PM2-PRODUCTION.md)。
 - `npm run test:channels:unit`：渠道模型/存储/服务/账户的纯逻辑单测。
 - `npm run test:channels`：端到端双对话双密钥隔离验证（先 `npm run build`，使用本地替身模型端点）。
 - `npm run test:channels:multi`：端到端多客户端验证（广播一致、外部修改冲突可恢复、绑定键按 clientId 隔离）。
