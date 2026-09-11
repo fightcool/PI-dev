@@ -31,6 +31,7 @@ import compression from "compression";
 import { WebSocket, WebSocketServer } from "ws";
 import { VERSION, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { InitialSnapshotGate } from "./initial-snapshot-gate.js";
+import { logPhase, startTrace, type TimingTrace } from "./timing.js";
 import { PROTOCOL_VERSION } from "./protocol-version.js";
 import { AgentService, workspacePath, QuiesceRejectedError } from "./agent-service.js";
 import { isAbsoluteWirePath, wireToAbs } from "./files-service.js";
@@ -883,7 +884,7 @@ export interface DispatchSession {
 
 /** 引擎无关的服务接口（index.ts attach 流程 + 插件扩展点所需）。 */
 export interface EngineService {
-	attach(clientId: string, send: (msg: ServerMessage) => void): Promise<DispatchSession>;
+	attach(clientId: string, send: (msg: ServerMessage) => void, trace?: TimingTrace): Promise<DispatchSession>;
 	detach(clientId: string, send: (msg: ServerMessage) => void): void;
 	get(clientId: string): DispatchSession | undefined;
 	disposeAll(): Promise<void>;
@@ -1045,6 +1046,9 @@ wss.on("connection", (ws) => {
 	let lastSnapshotBytes = 0;
 	/** Commands received while the session is still being created — replayed after attach. */
 	let pending: ClientMessage[] = [];
+	/** Ends the opt-in startup trace (timing.ts) once plugins + first snapshot
+	 *  are settled, or when the socket closes first. Set by the hello handler. */
+	let finishHelloTrace: ((extra?: Record<string, string | number | boolean>) => void) | undefined;
 	/** 背压丢快照后的延迟重发定时器（去重：一次只排一个）。 */
 	let snapshotRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1541,11 +1545,21 @@ wss.on("connection", (ws) => {
 		if (msg.type === "hello") {
 			const cid = msg.clientId || randomUUID();
 			clientId = cid;
+			// Startup phase trace (PI_WEB_TIMING=1): attach() records the session
+			// phases, this handler records hello → plugins → first snapshot, so a
+			// single log line covers the whole cold start.
+			const trace = startTrace(`attach ${cid}`);
 			service
-				.attach(cid, send)
+				.attach(cid, send, trace)
 				.then((cs) => {
 					if (closed) return;
-					if (ENGINE === "pi") initialSnapshot.start(() => cs.flushSnapshot(true));
+					let traced = false;
+					finishHelloTrace = (extra = {}) => {
+						if (traced) return;
+						traced = true;
+						trace?.end({ engine: ENGINE, ...extra });
+					};
+					trace?.mark("hello");
 					send({
 						type: "ready",
 						clientId: cid,
@@ -1559,6 +1573,16 @@ wss.on("connection", (ws) => {
 						managed: MANAGED,
 						tabs: TABS ? [...TABS] : undefined,
 					});
+					// Open the gate and push the authoritative baseline NOW. Plugin activation
+					// used to gate this (with a 5s fallback), so a slow/hung plugin showed the
+					// user an empty chat pane for seconds; renderer fences arrive later and
+					// plugin-fence.ts re-renders the misses when the catalog lands.
+					if (ENGINE === "pi") initialSnapshot.complete(() => cs.flushSnapshot(true));
+					trace?.mark("snapshot-sent");
+					// The user-visible number is now known: end the main trace here. Plugin
+					// activation continues behind it and is logged separately (logPhase).
+					finishHelloTrace?.({ snapWireB: lastSnapshotBytes, activeConvs: service.activeConversations() });
+					const pluginsStartedAt = performance.now();
 					// Plugin catalog: re-scan + activate new dirs on every attach so
 					// freshly dropped plugins show up without a server restart.
 					pluginMgr
@@ -1584,7 +1608,8 @@ wss.on("connection", (ws) => {
 						})
 						.then(() => {
 							if (closed) return;
-							initialSnapshot.complete(() => cs.flushSnapshot(true));
+							// Plugin activation cost, recorded but no longer on the critical path.
+							logPhase(`attach ${cid}`, "plugins", performance.now() - pluginsStartedAt);
 						});
 					// hello may carry the UI locale — persist it before replaying
 					// anything queued during startup (issue #91).
@@ -1624,7 +1649,7 @@ wss.on("connection", (ws) => {
 	ws.on("close", () => {
 		service.noteSocketClose();
 		closed = true;
-		initialSnapshot.dispose();
+		finishHelloTrace?.();
 		pending = [];
 		removePluginSender();
 		if (snapshotRetryTimer) {

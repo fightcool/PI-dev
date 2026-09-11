@@ -22,7 +22,7 @@ function session() {
 }
 
 describe("initial snapshot ordering and resync", () => {
-	it.each(["hello", "reconnect", "plugin load failure"])(
+	it.each(["hello", "reconnect", "plugin activation slower than the snapshot"])(
 		"%s gets one full baseline, then valid deltas and full resync",
 		() => {
 			const { cs, messages, sinks } = session();
@@ -41,6 +41,8 @@ describe("initial snapshot ordering and resync", () => {
 			getState();
 			cs.flushSnapshot(); // SDK event during plugin discovery is gated.
 			expect(received).toEqual([]);
+			// The hello handler completes the gate synchronously, so nothing waits on
+			// plugin activation anymore (the 5s fallback timer is gone).
 			gate.complete(() => cs.flushSnapshot(true));
 			gate.complete(() => cs.flushSnapshot(true));
 			expect(received).toHaveLength(1);
@@ -78,42 +80,6 @@ describe("initial snapshot ordering and resync", () => {
 		expect(oldDevice[2]).toBe(newDevice[0]); // same broadcast object/serialization
 		cs.flushSnapshot();
 		expect(oldDevice[3]).toBe(newDevice[1]);
-	});
-
-	it("a hung plugin load falls back once and cancels its timer on close", () => {
-		vi.useFakeTimers();
-		try {
-			const gate = new InitialSnapshotGate();
-			const flush = vi.fn();
-			gate.start(flush);
-			vi.advanceTimersByTime(4999);
-			expect(flush).not.toHaveBeenCalled();
-			vi.advanceTimersByTime(1);
-			expect(flush).toHaveBeenCalledTimes(1);
-			gate.complete(flush);
-			expect(flush).toHaveBeenCalledTimes(1);
-			const closed = new InitialSnapshotGate();
-			closed.start(flush);
-			closed.dispose();
-			vi.advanceTimersByTime(5000);
-			expect(flush).toHaveBeenCalledTimes(1);
-		} finally {
-			vi.useRealTimers();
-		}
-	});
-
-	it("normal plugin completion cancels the fallback timer", () => {
-		vi.useFakeTimers();
-		try {
-			const gate = new InitialSnapshotGate();
-			const flush = vi.fn();
-			gate.start(flush);
-			gate.complete(flush);
-			vi.advanceTimersByTime(5000);
-			expect(flush).toHaveBeenCalledTimes(1);
-		} finally {
-			vi.useRealTimers();
-		}
 	});
 
 	it("completion opens the gate before flushing, once only", () => {

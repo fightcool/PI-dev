@@ -39,6 +39,7 @@ import type {
 import { applyMessageDelta, type MessageDeltaMsg } from "./message-delta";
 import { emitPluginData } from "./plugin-loader";
 import { PROTOCOL_VERSION } from "./protocol-version";
+import { perfMark, perfMarkSwitch } from "./perf-trace";
 
 export type ConnStatus = "connecting" | "open" | "closed";
 
@@ -1024,6 +1025,8 @@ export function useChat() {
 	const send = useCallback((msg: ClientMessage) => {
 		const ws = wsRef.current;
 		if (ws && ws.readyState === WebSocket.OPEN) {
+			// 会话切换的「点击时刻」——paint 打点会把它配对成端到端延迟。
+			if (msg.type === "switch_conversation" || msg.type === "switch_session") perfMarkSwitch(msg.type);
 			// Forced re-check: drop stale rows immediately so the "checking"
 			// state renders instead of the cached list.
 			if (msg.type === "check_updates_all" && msg.force === true) {
@@ -1050,6 +1053,7 @@ export function useChat() {
 
 		ws.onopen = () => {
 			if (wsRef.current !== ws) return; // stale socket
+			perfMark("ws:open");
 			dispatch({ type: "status", status: "open" });
 			retryRef.current = 0;
 			lastBeatRef.current = Date.now();
@@ -1075,6 +1079,7 @@ export function useChat() {
 			}
 			switch (msg.type) {
 				case "ready":
+					perfMark("ws:ready");
 					dispatch({
 						type: "ready",
 						serverVersion: msg.serverVersion,
@@ -1105,6 +1110,7 @@ export function useChat() {
 					break;
 				case "snapshot":
 					// Snapshot is authoritative — delta sequence tracking restarts.
+					perfMark("ws:snapshot", `${msg.state.messages.length} msgs rev=${msg.state.rev}`);
 					lastDeltaSeqRef.current = new Map();
 					dispatch({ type: "snapshot", state: msg.state });
 					break;

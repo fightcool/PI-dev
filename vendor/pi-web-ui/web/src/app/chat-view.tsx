@@ -1,5 +1,5 @@
 /* 🍞 @COUPLED web/src/components/ChatInput.tsx, web/src/app/app-dialogs.tsx — 📖 docs/DEV-CON-PROPOSAL.md §6 */
-import { lazy, Suspense, useCallback, useMemo } from "react";
+import { lazy, Suspense, useCallback, useLayoutEffect, useMemo, useRef } from "react";
 import { LeftPanel } from "../components/LeftPanel";
 import { RightPanel } from "../components/RightPanel";
 import { MessageList } from "../components/MessageList";
@@ -12,6 +12,7 @@ import type { AppConnection, ViewName } from "./types";
 import type { useAppDialogs } from "./use-app-dialogs";
 import type { useAttachments } from "./use-attachments";
 import { PanelRail, ResizeHandle, type usePanels } from "./panels";
+import { perfMarkPaint } from "../perf-trace";
 const Dialog = lazy(() => import("../components/Dialog").then((m) => ({ default: m.Dialog })));
 const DshQuestionDialog = lazy(() =>
 	import("../components/DshQuestionDialog").then((m) => ({ default: m.DshQuestionDialog })),
@@ -108,6 +109,16 @@ export function ChatView({
 		? JSON.stringify([rawChannelBinding.source, rawChannelBinding.effective, rawChannelBinding.pending])
 		: "";
 	const channelBinding = useMemo(() => rawChannelBinding, [channelBindingKey]);
+
+	// 端到端打点：会话内容「已提交到 DOM」的时刻（配合 switch 点击点算出可感知延迟）。
+	// 依赖只看 conversationId，流式 token 不会反复打点。
+	const activeConvId = chat.state?.conversationId ?? null;
+	const paintedConvRef = useRef<string | null>(null);
+	useLayoutEffect(() => {
+		if (!activeConvId || paintedConvRef.current === activeConvId) return;
+		paintedConvRef.current = activeConvId;
+		perfMarkPaint(activeConvId);
+	}, [activeConvId]);
 
 	return (
 		<div className={`view-pane ${view === "chat" ? "" : "hidden"}`}>

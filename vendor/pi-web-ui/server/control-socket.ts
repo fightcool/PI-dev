@@ -16,8 +16,8 @@
  * Idle connections are closed after a short timeout so a stuck CLI never
  * holds the socket.
  */
-import { createServer, createConnection, type Server, type Socket } from "node:net";
-import { chmodSync, existsSync, rmSync } from "node:fs";
+import { createServer, createConnection, type Server, type Socket, connect } from "node:net";
+import { chmodSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentService } from "./agent-service.js";
 
@@ -62,26 +62,61 @@ export function startControlServer(opts: { service: ControlService; dataDir: str
 	if (process.platform === "win32") {
 		server = createServer(handleConnection);
 	} else {
-		// Remove a stale socket left by a previous crash (only if it's ours —
-		// an existing socket file that refuses connections is stale).
-		if (existsSync(path)) {
+		server = createServer(handleConnection);
+	}
+	// A second instance on the same data dir / port would fail to bind — don't
+	// crash the server over it, just log and run without a control socket.
+	let retried = false;
+	server.on("error", (err: NodeJS.ErrnoException) => {
+		if (err.code !== "EADDRINUSE") {
+			console.warn(`[control] socket error: ${err.message}`);
+			return;
+		}
+		// @BUGFIX 2026-09-11: 旧实现启动时无条件 rmSync(path)，任何第二个实例（哪怕它随后
+		// 因端口冲突退出）都会删掉**正在服务**的实例的套接字文件 —— 进程仍在监听，但本地控制
+		// 通道变成 ECONNREFUSED（部署脚本无法排空/验收）。现在先探测：有人在服务就不抢、不删。
+		probeSocketAlive(path).then((alive) => {
+			if (alive) {
+				console.warn(`[control] socket ${path} is served by another instance — control socket disabled`);
+				return;
+			}
+			if (retried) return;
+			retried = true;
 			try {
 				rmSync(path);
 			} catch {
 				/* best-effort */
 			}
-		}
-		server = createServer(handleConnection);
-	}
-	// A second instance on the same data dir / port would fail to bind — don't
-	// crash the server over it, just log and run without a control socket.
-	server.on("error", (err: NodeJS.ErrnoException) => {
-		if (err.code === "EADDRINUSE") {
-			console.warn(`[control] socket ${path} already in use — control socket disabled`);
-		} else {
-			console.warn(`[control] socket error: ${err.message}`);
-		}
+			console.warn(`[control] removed a stale socket file and will retry: ${path}`);
+			server.listen(path, onListening);
+		});
 	});
+
+	const onListening = (): void => {
+		try {
+			chmodSync(path, 0o600);
+		} catch {
+			/* best-effort */
+		}
+		console.log(`  control    : ${path}`);
+	};
+
+	/**
+	 * 探测套接字后面是否真的有服务在跑：能连上 = 有活实例（绝不删除、绝不抢占）；
+	 * ECONNREFUSED/ENOENT = 陈旧文件（可安全清理后重试）。
+	 */
+	const probeSocketAlive = (target: string, timeoutMs = 300): Promise<boolean> =>
+		new Promise((resolve) => {
+			const socket = connect(target);
+			const done = (alive: boolean): void => {
+				socket.destroy();
+				resolve(alive);
+			};
+			socket.setTimeout(timeoutMs);
+			socket.once("connect", () => done(true));
+			socket.once("timeout", () => done(false));
+			socket.once("error", () => done(false));
+		});
 
 	function handleConnection(sock: Socket): void {
 		let buf = "";
@@ -135,23 +170,13 @@ export function startControlServer(opts: { service: ControlService; dataDir: str
 			console.log(`  control    : ${path}`);
 		});
 	} else {
-		server.listen(path, () => {
-			try {
-				chmodSync(path, 0o600);
-			} catch {
-				/* best-effort */
-			}
-			console.log(`  control    : ${path}`);
-		});
+		server.listen(path, onListening);
 	}
-
 	return () => {
+		// @GOTCHA Node 关闭 Unix socket 服务时**自己**会 unlink 该路径（实测：连别人新建的
+		// 替换文件也会被删）。因此「谁拥有这个文件」无法靠退出时判断来保护 —— 防线必须在
+		// **启动侧**：见上面的 EADDRINUSE 处理，绝不抢占仍在服务的套接字。
 		server.close();
-		try {
-			if (process.platform !== "win32" && existsSync(path)) rmSync(path);
-		} catch {
-			/* best-effort */
-		}
 	};
 }
 

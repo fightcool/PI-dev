@@ -54,6 +54,7 @@ import { SUBAGENT_CONCURRENCY } from "./conversation-retention.js";
 import { SubagentArchive, type ArchivedSubagent } from "./subagent-archive.js";
 import { toSubagentSnapshot, subagentRunOutcome } from "./subagent-state.js";
 import { SessionHistoryCache } from "./session-history-cache.js";
+import { startTrace, traceStep, type TimingTrace } from "./timing.js";
 import { searchSessionInfos } from "./session-search.js";
 import { BgServerTracker } from "./bg-servers.js";
 import {
@@ -1387,6 +1388,9 @@ export class ClientSession {
 	private emittedConvId: string | null = null;
 	/** snapRev value at which emittedMessages was captured. */
 	private emittedRev = 0;
+	/** Opt-in phase trace for the connection/switch currently being served
+	 *  (see timing.ts). Set by attach(); snapshot build costs land on it. */
+	timing?: TimingTrace;
 	/**
 	 * Per-conversation serialization caches (stable message ids, UiMessage
 	 * object cache, message-array signature, queue counts) live inside each
@@ -1555,10 +1559,16 @@ export class ClientSession {
 		this.usageHistory = new UsageHistoryStore(join(agentDir, "dev-con", "usage-history.jsonl"));
 	}
 
-	static async create(clientId: string, cwd: string, stateStore: ClientStateStore): Promise<ClientSession> {
+	static async create(
+		clientId: string,
+		cwd: string,
+		stateStore: ClientStateStore,
+		trace?: TimingTrace,
+	): Promise<ClientSession> {
 		const agentDir = process.env.PI_CODING_AGENT_DIR ?? getAgentDir();
 
 		const cs = new ClientSession(clientId, cwd, agentDir, stateStore);
+		cs.timing = trace;
 		const conversationId = cs.nextConversationId();
 		const terminals = cs.makeTerminalManager(conversationId, cwd);
 		const runtime = await createAgentSessionRuntime(cs.makeRuntimeFactory(terminals, undefined, conversationId), {
@@ -1585,9 +1595,12 @@ export class ClientSession {
 				});
 			}
 		}
-		await cs.bindSession();
-		await cs.restoreProjectProviderKeysForCwd(cwd);
-		await cs.restoreProjectModelForCwd(cwd);
+		// Instrumented phases only (no behaviour change): these four awaits are the
+		// whole cold-start critical path before the first snapshot can be built.
+		trace?.mark("runtime");
+		await traceStep(trace, "bind", () => cs.bindSession());
+		await traceStep(trace, "keys", () => cs.restoreProjectProviderKeysForCwd(cwd));
+		await traceStep(trace, "model", () => cs.restoreProjectModelForCwd(cwd));
 		return cs;
 	}
 
@@ -3186,6 +3199,9 @@ export class ClientSession {
 				state: { ...this.buildLightState(rev), messages: cur },
 			});
 		}
+		// Build + serialize(JSON.stringify, via the sink) cost of this snapshot.
+		// Only recorded while a trace is attached — see timing.ts.
+		this.timing?.mark(`snap-${incremental ? "delta" : "full"}[${cur.length}]`);
 	}
 
 	/** Resolve a browser-bridged dialog (select/confirm/input) for this session. */
@@ -3659,7 +3675,10 @@ export class ClientSession {
 	 *  provider that has a saved key for `cwd`, activate it if it differs from
 	 *  the current global active. Silent + self-healing: a saved key deleted
 	 *  elsewhere is dropped without notifying (a noisy error here is what
-	 *  haunted project switches after a key deletion). */
+	 *  haunted project switches after a key deletion).
+	 *
+	 *  @PERF network:false —— 这是 attach / 切项目 / 切会话的同步路径，远端目录刷新
+	 *  放到后台（否则单跳可达数秒，直接变成白屏时间）。 */
 	private async restoreProjectProviderKeysForCwd(cwd: string): Promise<void> {
 		const saved = this.stateStore.getProjectProviderKeys(this.clientId, cwd);
 		if (!saved) return;
@@ -3670,7 +3689,7 @@ export class ClientSession {
 				this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
 				continue;
 			}
-			const ok = await this.modelAdmin.activateProviderKey(provider, keyName, { silent: true });
+			const ok = await this.modelAdmin.activateProviderKey(provider, keyName, { silent: true, network: false });
 			if (!ok) this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
 		}
 	}
@@ -3689,7 +3708,7 @@ export class ClientSession {
 			this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
 			return;
 		}
-		const ok = await this.modelAdmin.activateProviderKey(provider, saved, { silent: true });
+		const ok = await this.modelAdmin.activateProviderKey(provider, saved, { silent: true, network: false });
 		if (!ok) this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
 	}
 
@@ -4575,7 +4594,22 @@ export class ClientSession {
 
 	/** Switch the ACTIVE conversation without interrupting any other chat. */
 	async switchConversation(id: string): Promise<void> {
-		if (!this.convs.has(id)) await this.maintenance.restore(id);
+		const trace = startTrace(`switch-conv ${this.clientId}`, { conv: "memory" });
+		this.timing = trace;
+		try {
+			await this.switchConversationInner(id, trace);
+		} finally {
+			// Always answer a switch request with a snapshot, even when the id was
+			// unknown or already active: the client has nothing else to synchronise on.
+			this.flushSnapshot();
+			trace?.end();
+			this.timing = undefined;
+		}
+	}
+
+	/** Throws away the previous conversation; returns after the switch is applied. */
+	private async switchConversationInner(id: string, trace?: TimingTrace): Promise<void> {
+		if (!this.convs.has(id)) await traceStep(trace, "restore", () => this.maintenance.restore(id));
 		if (!this.convs.has(id) || id === this.activeId) return;
 		const displaced = this.displaceActive();
 		this.activeId = id;
@@ -4597,8 +4631,8 @@ export class ClientSession {
 		void this.pushSlashCommands();
 		if (cwdChanged) {
 			this.cwd = newCwd;
-			await this.restoreProjectProviderKeysForCwd(newCwd);
-			await this.restoreProjectModelForCwd(newCwd);
+			await traceStep(trace, "keys", () => this.restoreProjectProviderKeysForCwd(newCwd));
+			await traceStep(trace, "model", () => this.restoreProjectModelForCwd(newCwd));
 			// Mirror set_cwd's project-switch side-effects so the whole UI follows
 			// the new workspace, not just the chat pane.
 			try {
@@ -4614,7 +4648,6 @@ export class ClientSession {
 		}
 		// 当前打开对话变了 → 插件重拉（轨迹视图切会话后即刷新，不等轮询）。
 		this.notifyConversationChanged();
-		this.flushSnapshot();
 	}
 
 	/** Push every running conversation across ALL projects to the client. The
@@ -5099,6 +5132,11 @@ export class ClientSession {
 	 */
 	async switchSession(path: string): Promise<void> {
 		if (this.quiesceBlocked()) return;
+		const trace = startTrace(`switch-session ${this.clientId}`, { conv: "disk" });
+		this.timing = trace;
+		/** Set when the target session is already open: that path ends the trace
+		 *  itself (switchConversation owns its own trace + snapshot). */
+		let handedOff = false;
 		let openedRuntime: AgentSessionRuntime | null = null;
 		let openedTerminals: TerminalManager | null = null;
 		try {
@@ -5109,12 +5147,14 @@ export class ClientSession {
 			for (const conv of this.convs.values()) {
 				const sessionFile = conv.session.sessionFile;
 				if (sessionFile && resolve(sessionFile) === targetPath) {
+					handedOff = true;
 					await this.switchConversation(conv.id);
 					return;
 				}
 			}
 
 			const sessionManager = SessionManager.open(targetPath);
+			trace?.mark("open");
 			const targetCwd = sessionManager.getCwd();
 			const conversationId = this.nextConversationId();
 			openedTerminals = this.makeTerminalManager(conversationId, targetCwd);
@@ -5126,6 +5166,7 @@ export class ClientSession {
 					sessionManager,
 				},
 			);
+			trace?.mark("runtime");
 
 			// Only displace the old active conversation after the replacement runtime
 			// is known-good. This keeps a failed history open entirely non-destructive.
@@ -5139,10 +5180,10 @@ export class ClientSession {
 			openedRuntime = null;
 			openedTerminals = null;
 			if (displaced) this.removeConversation(displaced.id);
-			await this.bindSession();
+			await traceStep(trace, "bind", () => this.bindSession());
 			this.cwd = targetCwd;
-			await this.restoreProjectProviderKeysForCwd(targetCwd);
-			await this.restoreProjectModelForCwd(targetCwd);
+			await traceStep(trace, "keys", () => this.restoreProjectProviderKeysForCwd(targetCwd));
+			await traceStep(trace, "model", () => this.restoreProjectModelForCwd(targetCwd));
 			this.conv.lastActiveAt = Date.now();
 			this.webUi.refresh();
 			this.emitConversations();
@@ -5161,8 +5202,16 @@ export class ClientSession {
 				text: `切换会话失败：${(err as Error).message}`,
 				textEn: `Failed to switch session: ${(err as Error).message}`,
 			});
+		} finally {
+			// The trace must be cleared on EVERY exit path: a leaked trace keeps
+			// appending snapshot marks forever.
+			if (!handedOff) {
+				this.timing = trace;
+				this.flushSnapshot();
+			}
+			trace?.end();
+			this.timing = undefined;
 		}
-		this.flushSnapshot();
 	}
 
 	/**
@@ -5956,8 +6005,9 @@ export class AgentService {
 		};
 	}
 
-	/** Get or create the session for a client, racing attach calls safely. */
-	async attach(clientId: string, send: (msg: ServerMessage) => void): Promise<ClientSession> {
+	/** Get or create the session for a client, racing attach calls safely.
+	 *  `trace`（timing.ts，可选）只做观测：记录冷启动各阶段耗时。 */
+	async attach(clientId: string, send: (msg: ServerMessage) => void, trace?: TimingTrace): Promise<ClientSession> {
 		let cs = this.clients.get(clientId);
 		if (!cs) {
 			const inflight = this.pending.get(clientId);
@@ -5983,7 +6033,7 @@ export class AgentService {
 					}
 				}
 				// Sessions use the SDK default per-project dir — no per-client dir.
-				const creating = ClientSession.create(clientId, cwd, this.stateStore).finally(() => {
+				const creating = ClientSession.create(clientId, cwd, this.stateStore, trace).finally(() => {
 					this.pending.delete(clientId);
 				});
 				this.pending.set(clientId, creating);
@@ -6006,8 +6056,13 @@ export class AgentService {
 		// BEFORE attachSink so the notice rides the initial pending-notice flush.
 		cs.notifyInterrupted(this.stateStore.takeInterrupted(clientId));
 		cs.attachSink(send);
+		trace?.mark("attach-sink");
 		// 接入/回到页面时追平：离开期间另一端完成的工作，这里按磁盘新鲜度补上。
 		cs.syncActiveFromDiskIfStale();
+		trace?.mark("sync-disk");
+		// Let emitSnapshotNow record the snapshot's build+serialize cost on the
+		// same trace line (attach/switch wrap their own critical section).
+		cs.timing = trace;
 		// Forward hooks (set once by index.ts) to every session.
 		cs.onQuit = this.onQuit;
 		cs.onToolEvent = this.onToolEvent;
@@ -6033,6 +6088,7 @@ export class AgentService {
 		// notifyCwd 幂等去重；此后 set_cwd 成功时由 cs.onCwdChanged 继续驱动。
 		cs.onCwdChanged = (abs) => this.onClientCwdChanged?.(abs);
 		this.onClientCwdChanged?.(cs.cwd);
+		trace?.mark("hooks");
 		return cs;
 	}
 

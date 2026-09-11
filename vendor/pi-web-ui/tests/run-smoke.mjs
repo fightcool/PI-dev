@@ -28,6 +28,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 //     win\\async.c 断言崩溃（退出码 127），属 libuv 关闭时序问题。
 const WIN32_KNOWN_ENV_FAIL = new Set(["terminal-smoke-test", "restart-handoff-test"]);
 
+/** 子进程环境：清掉会改变隔离实例行为的鉴权/托管变量（不影响其它环境值）。 */
+function smokeEnv() {
+	const env = { ...process.env };
+	for (const key of ["PI_WEB_TOKEN", "PI_WEB_MANAGED"]) delete env[key];
+	return env;
+}
+
 const ALL = [
 	"clear-provider-key-test",
 	"channel-isolation-test",
@@ -100,7 +107,10 @@ for (const name of targets) {
 			// 测试脚本内相对路径（如 dist/server/index.js）以仓库根为基准
 			cwd: dirname(here),
 			stdio: "inherit",
-			env: process.env,
+			// 鉴权环境必须隔离：若在线上实例的进程内跑测试（agent 自身继承了
+			// PI_WEB_TOKEN/PI_WEB_MANAGED），子测试起的隔离服务会要求口令，匿名 WS 直接 401，
+			// 表现为「与产品无关的假失败」。多数测试自己会清理，这里统一兜底。
+			env: smokeEnv(),
 		});
 		child.on("exit", (code) => resolveRun(code === 0));
 		child.on("error", () => resolveRun(false));
