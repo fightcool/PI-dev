@@ -1,5 +1,7 @@
 /* 🍞 AI Breadcrumb: @COUPLED scripts/release.mjs, deploy/ecosystem.config.cjs, tests/release.test.mjs
+ * @COUPLED scripts/lifecycle/release-prune.mjs, tests/release-prune.test.mjs; 📖 docs/PM2-SHADOW.md
  * @CONTRACT current changes via one rename; failed health restores both link and process.
+ * @CONTRACT prune 在同一个部署锁内执行，默认 dry-run；release 成功后只告警、不自动删除历史版本。
  */
 import { existsSync, lstatSync, mkdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -10,7 +12,8 @@ import { runtimeEntry } from "../start.mjs";
 import { atomicJson } from "./files.mjs";
 import { buildRelease, command } from "./release-build.mjs";
 import { assertPortFree, waitForHealth } from "./health.mjs";
-import { assertRealDirectoryPath, releaseId, releaseOptions, validateAction } from "./release-options.mjs";
+import { assertRealDirectoryPath, deployRoots, releaseId, releaseOptions, validateAction } from "./release-options.mjs";
+import { DEFAULT_KEEP, DEFAULT_WARN_COUNT, pruneReleases, retentionWarning } from "./release-prune.mjs";
 
 export function releasePath(options, id) {
   releaseId(id);
@@ -58,10 +61,13 @@ function shadowConfig(options) {
 }
 
 export async function runRelease({ action = "check", id, commit, env = process.env,
-  root = ROOT, run = command, health = waitForHealth, healthTimeout = 30000 } = {}) {
+  root = ROOT, run = command, health = waitForHealth, healthTimeout = 30000, keep, apply = false, warnAt = DEFAULT_WARN_COUNT } = {}) {
   validateAction(action, id, commit);
-  const options = releaseOptions(env);
-  const old = currentRelease(options);
+  if (!Number.isSafeInteger(warnAt) || warnAt < 0) throw new Error("warnAt must be a non-negative integer.");
+  // prune 只依赖部署根目录布局，不引入 shadow 专属的 config/PM2/端口约束。
+  const pruning = action === "prune";
+  const options = pruning ? deployRoots(env) : releaseOptions(env);
+  const old = pruning ? null : currentRelease(options);
   if (["current"].includes(action)) releasePath(options, id);
   if (["start", "reload"].includes(action) && !old) throw new Error("No current release.");
   if (action === "rollback") {
@@ -76,7 +82,9 @@ export async function runRelease({ action = "check", id, commit, env = process.e
   catch { throw new Error("Deployment is locked; inspect the previous operation before retrying."); }
   try {
     // Recheck after locking: another completed deployment may have changed current.
-    if (currentRelease(options) !== old) throw new Error("Current release changed while acquiring lock.");
+    if (!pruning && currentRelease(options) !== old) throw new Error("Current release changed while acquiring lock.");
+    if (pruning)
+      return { action, ...pruneReleases(options, { keep: keep ?? DEFAULT_KEEP, apply, lockHeld: true }) };
     const pm2Env = { ...env, PM2_HOME: options.pm2Home, PI_DEV_PM2_NAME: options.name,
       PI_DEV_RELEASE_ROOT: options.current, PI_DEV_CONFIG_DIR: options.configDir,
       PI_DEV_NODE: process.execPath, PI_DEV_DEPLOY_ROOT: options.base,
@@ -117,6 +125,7 @@ export async function runRelease({ action = "check", id, commit, env = process.e
       }
       throw new Error(`Activation failed; ${old ? `restored ${old}` : "removed initial candidate"}.`, { cause: failure });
     }
-    return { action, active: target, previous: old };
+    const warning = retentionWarning(options, warnAt);
+    return { action, active: target, previous: old, ...(warning ? { warning } : {}) };
   } finally { rmSync(lock, { recursive: true }); }
 }

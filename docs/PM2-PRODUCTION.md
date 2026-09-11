@@ -2,7 +2,8 @@
 
 <!-- 🍞 AI Breadcrumb: @COUPLED scripts/pm2.mjs, scripts/lifecycle/pm2-manager.mjs, deploy/pi-dev-pm2.service.in, deploy/ecosystem.config.cjs
      @COUPLED scripts/cutover.mjs, scripts/lifecycle/cutover.mjs, tests/pm2-manager.test.mjs
-     @CONTRACT 本文描述生产 manager 与人工编排流程；既有 release CLI 仍用于 shadow。 -->
+     @COUPLED scripts/release.mjs, scripts/lifecycle/release-prune.mjs, PM2-SHADOW.md
+     @CONTRACT 本文描述生产 manager 与人工编排流程；既有 release CLI 也用于生产版本的磁盘回收（prune）。 -->
 
 生产入口采用用户级 `pi-dev-pm2.service` 启动前台 `pm2-runtime`，PM2 管理唯一的 `pi-dev-web` 应用，使用单实例 fork。systemd 负责 PM2 supervisor 的启动与故障恢复，PM2 负责应用重启。会话、PTY 和 WebSocket 状态尚不支持多实例共享，不启用 cluster。
 
@@ -24,6 +25,15 @@
 | `shared/migrations/status.json` | 初次迁移编排写入的状态摘要 |
 
 `PI_DEV_CONFIG_DIR` 默认 `$HOME/.config/pi-dev`，必须是已存在的绝对目录。配置、访问令牌、会话、workspace、Agent 数据继续使用既有位置；manager 仅检查配置目录，不读取或复制其中的凭据文件。应用启动时沿用已有 runtime 配置。部署根目录及受管理的 shared 目录不能经过符号链接。
+
+`releases/<id>/` 是自包含目录，每个版本各带一份应用依赖与构建产物，长期积累会持续占用磁盘（实测单个版本约1.6 GiB）。回收由操作者显式执行，脚本不会自动删除：
+
+```bash
+PI_DEV_DEPLOY_ROOT=$HOME/.local/share/pi-dev/deploy node scripts/release.mjs prune
+PI_DEV_DEPLOY_ROOT=$HOME/.local/share/pi-dev/deploy node scripts/release.mjs prune --apply
+```
+
+默认dry-run；`current` 与 `shared/previous.json` 指向的版本始终保留。生产版的标记文件是 `release-source.json`，prune 同时接受它和 shadow 的 `.release.json`。完整规则见 [PM2-SHADOW.md](PM2-SHADOW.md)「磁盘回收」。
 
 PM2 固定为 **6.0.8**，依赖与锁文件位于 `deploy/pm2/package.json` 和 `deploy/pm2/package-lock.json`。准备工具时，将这两个清单复制到 deployment root 的 `tools/pm2/`，在该目录使用稳定 Node 对应的 npm 执行 `npm ci --omit=dev --no-audit --no-fund`。这一步由部署编排执行，`pm2 install` 不安装 npm 依赖。不要全局安装 PM2，也不要将工具依赖安装到开发 checkout 的根 `node_modules`。
 
