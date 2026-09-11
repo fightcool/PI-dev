@@ -173,6 +173,55 @@ describe("account queries", () => {
 		expect(partialResult.status).toBe("failed");
 	});
 
+	it("normalizes a gateway baseUrl that already carries /v1 before /api/user/self", async () => {
+		const seen: string[] = [];
+		const base = await stub((url, res) => {
+			seen.push(url.pathname);
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ success: true, data: { quota: 500, used_quota: 500, display_name: "gw" } }));
+		});
+		// 渠道里填的是 OpenAI 兼容基址（末尾 /v1）——账户接口必须落在站点根 /api/user/self。
+		const withV1 = { ...channel(`${base}/v1`), extra: { account: { kind: "openai-gateway", url: `${base}/v1`, unit: "CNY", scale: 1 } } };
+		const result = await registry().query(withV1, () => "gw-key");
+		expect(seen).toContain("/api/user/self");
+		expect(seen).not.toContain("/v1/api/user/self");
+		expect(result.status).toBe("ok");
+		// 已经给出完整账户路径时原样使用，不做二次拼接。
+		seen.length = 0;
+		const explicit = { ...channel(base), extra: { account: { kind: "openai-gateway", url: `${base}/api/user/self`, scale: 1 } } };
+		await registry().query(explicit, () => "gw-key");
+		expect(seen).toEqual(["/api/user/self"]);
+	});
+
+	it("uses the account-specific credential when the gateway needs a console token", async () => {
+		let seenAuth = "";
+		const base = await stub((_url, res) => {
+			seenAuth = String((res.req?.headers.authorization ?? "").toString());
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ data: { quota: 10, used_quota: 0 } }));
+		});
+		const gateway = { ...channel(`${base}/v1`), extra: { account: { kind: "openai-gateway", url: `${base}/v1`, scale: 1, credentialKeyName: "控制台令牌" } } };
+		const resolve = (name: string) => (name === "控制台令牌" ? "console-token" : "model-key");
+		const result = await registry().query(gateway, resolve);
+		expect(result.status).toBe("ok");
+		expect(seenAuth).toBe("Bearer console-token");
+		// 没配置账户凭据时回落到渠道的模型凭据（DeepSeek 官方这类）。
+		seenAuth = "";
+		await registry().query({ ...gateway, extra: { account: { kind: "openai-gateway", url: `${base}/v1`, scale: 1 } } }, resolve);
+		expect(seenAuth).toBe("Bearer model-key");
+	});
+
+	it("surfaces an actionable hint when a gateway account endpoint rejects the model key", async () => {
+		const base = await stub((_url, res) => {
+			res.writeHead(401, { "content-type": "application/json" });
+			res.end(JSON.stringify({ success: false, message: "unauthorized" }));
+		});
+		const gateway = { ...channel(`${base}/v1`), extra: { account: { kind: "openai-gateway", url: `${base}/v1`, scale: 1 } } };
+		const result = await registry().query(gateway, () => "model-key");
+		expect(result.status).toBe("failed");
+		expect(result.error).toContain("控制台访问令牌");
+	});
+
 	it("exposes the DeepSeek adapter with its documented kind", () => {
 		expect(deepSeekAdapter.kind).toBe("deepseek");
 		expect(deepSeekAdapter.match({ ...channel("https://api.deepseek.com"), extra: { account: { kind: "deepseek" } } })).toBe(true);

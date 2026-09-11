@@ -263,6 +263,18 @@ export class ChannelState {
 				endpointId: c.endpointId,
 				credentialRef: c.credentialRef,
 				accountRef: c.accountRef,
+				// 只回显账户查询配置的非敏感字段（URL/单位/换算/账户凭据名），绝不含密钥值。
+				account: (() => {
+					const raw = (c.extra as { account?: Record<string, unknown> } | undefined)?.account;
+					if (!raw || typeof raw !== "object" || typeof raw.kind !== "string") return null;
+					return {
+						kind: raw.kind,
+						...(typeof raw.url === "string" && raw.url ? { url: raw.url } : {}),
+						...(typeof raw.unit === "string" && raw.unit ? { unit: raw.unit } : {}),
+						...(typeof raw.scale === "number" ? { scale: raw.scale } : {}),
+						...(typeof raw.credentialKeyName === "string" && raw.credentialKeyName ? { credentialKeyName: raw.credentialKeyName } : {}),
+					};
+				})(),
 				enabled: c.enabled,
 				keys,
 				keyMissing: c.credentialRef ? !keys.some((k) => k.keyName === c.credentialRef?.keyName) : false,

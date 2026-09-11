@@ -29,7 +29,8 @@ export const USAGE_HISTORY_DEFAULT_MAX_AGE_DAYS = 0;
 /** 距上次按时间清理的最小间隔（避免每次 append 都重写文件）。 */
 const PRUNE_INTERVAL_MS = 5 * 60_000;
 
-/** 一条持久化的逐请求记录（字段来自 lib/usage/token-usage.mjs 的 records()）。 */
+/** 一条持久化的逐请求记录（字段来自 lib/usage/token-usage.mjs 的 records()）。
+ *  `usageKnown` 为旧记录缺失时按 true 处理（历史数据没有这个字段，不能因此被判成未上报）。 */
 export interface UsageHistoryRecord {
 	id: string;
 	at: number;
@@ -51,6 +52,8 @@ export interface UsageHistoryRecord {
 	cost: number;
 	costBasis: "sdk-model-pricing" | "unknown";
 	currency: string | null;
+	/** 供应商是否上报了用量；旧记录无此字段（按已上报处理）。 */
+	usageKnown?: boolean;
 }
 
 export type UsageHistoryGroup = "channel" | "project" | "model" | "source" | "day";
@@ -74,6 +77,8 @@ export interface UsageHistoryRow {
 	cost: number;
 	/** 该组里没有价目信息的请求数（费用未知，不能当成 0 用）。 */
 	unpricedRequests: number;
+	/** 该组里供应商未上报用量的请求数（0 token 不等于没消耗）。 */
+	unreportedRequests: number;
 	firstAt: number | null;
 	lastAt: number | null;
 }
@@ -94,7 +99,7 @@ export interface UsageHistoryResult {
 const UNATTRIBUTED = "unattributed";
 
 function emptyRow(key: string): UsageHistoryRow {
-	return { key, requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, unpricedRequests: 0, firstAt: null, lastAt: null };
+	return { key, requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, unpricedRequests: 0, unreportedRequests: 0, firstAt: null, lastAt: null };
 }
 
 function addTo(row: UsageHistoryRow, record: UsageHistoryRecord): void {
@@ -106,6 +111,7 @@ function addTo(row: UsageHistoryRow, record: UsageHistoryRecord): void {
 	row.total += record.total;
 	row.cost += record.cost;
 	if (record.costBasis === "unknown") row.unpricedRequests += 1;
+	if (record.usageKnown === false) row.unreportedRequests += 1;
 	row.firstAt = row.firstAt === null ? record.at : Math.min(row.firstAt, record.at);
 	row.lastAt = row.lastAt === null ? record.at : Math.max(row.lastAt, record.at);
 }

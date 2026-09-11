@@ -199,6 +199,9 @@ export class TokenUsageTracker {
        */
       costBasis: normalized.costProvided && tokens.cost > 0 ? "sdk-model-pricing" : "unknown",
       currency: normalized.costProvided && tokens.cost > 0 ? "USD" : null,
+      // 供应商是否上报了用量：全 0 且无费用时**不能声称消耗为 0**（真实链路上网关会返回
+      // 空内容且不带 usage），界面应按「未报告」展示而不是 0。
+      usageKnown: tokens.total > 0 || tokens.cost > 0,
     };
     this.#records.push(record);
     if (this.#records.length > this.#recordLimit) this.#records.splice(0, this.#records.length - this.#recordLimit);

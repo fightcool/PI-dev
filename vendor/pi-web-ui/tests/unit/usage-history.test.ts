@@ -77,6 +77,17 @@ describe("usage history aggregation", () => {
 		expect(rows.requests).toBe(2);
 	});
 
+	it("counts requests whose provider reported no usage (0 tokens != no spend)", () => {
+		const rows = aggregateUsage(
+			[record({ id: "reported", total: 100 }), record({ id: "silent", total: 0, cost: 0, costBasis: "unknown", usageKnown: false })],
+			{ groupBy: "channel" },
+		).rows[0];
+		expect(rows.unreportedRequests).toBe(1);
+		expect(rows.requests).toBe(2);
+		// 旧记录没有 usageKnown 字段：按「已上报」处理，不能误判成未上报。
+		expect(aggregateUsage([record({ id: "legacy" })], { groupBy: "channel" }).rows[0].unreportedRequests).toBe(0);
+	});
+
 	it("keys are derived from the record only", () => {
 		expect(groupKeyOf(record({ channelId: null }), "channel")).toBe("unattributed");
 		expect(groupKeyOf(record({ cwd: null }), "project")).toBe("unattributed");

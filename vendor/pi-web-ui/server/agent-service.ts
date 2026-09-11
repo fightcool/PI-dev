@@ -2232,6 +2232,26 @@ export class ClientSession {
 	}
 
 	/**
+	 * 待生效渠道选择的落定入口（带有限重试）。
+	 * @WHY 落定依赖「会话真的空闲」：`agent_end` 时 isStreaming 仍可能为 true，
+	 *      而 `agent_settled` 之后工具/排队消息也可能紧接着再来一轮；用有限重试覆盖这两种时序，
+	 *      超过上限就停（下一次事件仍会再试），不做无限轮询。
+	 * @MAGIC 5 次 × 700ms ≈ 3.5s 的窗口。
+	 */
+	private settlePendingChannelSwitch(conv: Conversation, attempt = 0): void {
+		const timer = setTimeout(() => {
+			if (this.disposed) return;
+			void this.channels
+				.onConversationSettled(conv.id)
+				.then(() => {
+					if (this.channels.pendingSelectionFor(conv.id) && attempt < 5) this.settlePendingChannelSwitch(conv, attempt + 1);
+				})
+				.catch(() => undefined);
+		}, attempt === 0 ? 50 : 700);
+		timer.unref?.();
+	}
+
+	/**
 	 * P4 运维：资源告警（磁盘/内存/unit 内存越线提示一次，冷却 1 小时）。
 	 * 由 ClientSession 的周期定时器调用；同一实例的多个客户端共享模块级冷却表，
 	 * 因此不会重复刷通知。读不到的指标不告警（没有数据 ≠ 满了）。
@@ -2470,13 +2490,14 @@ export class ClientSession {
 					total: result.totals.total,
 					cost: result.totals.cost,
 					unpricedRequests: result.totals.unpricedRequests,
+					unreportedRequests: result.totals.unreportedRequests,
 				},
 				scanned: result.scanned,
 				skipped: result.skipped,
 				truncated: result.truncated,
 			});
 		} catch (err) {
-			this.emit({ type: "usage_history", reqId, ok: false, error: (err as Error).message, groupBy: query.groupBy, from: null, to: null, rows: [], totals: { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, unpricedRequests: 0 }, scanned: 0, skipped: 0, truncated: false });
+			this.emit({ type: "usage_history", reqId, ok: false, error: (err as Error).message, groupBy: query.groupBy, from: null, to: null, rows: [], totals: { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, unpricedRequests: 0, unreportedRequests: 0 }, scanned: 0, skipped: 0, truncated: false });
 		}
 	}
 
@@ -2600,6 +2621,11 @@ export class ClientSession {
 		switch (event.type) {
 			case "agent_settled":
 				this.maintenance.schedule();
+				// @BUGFIX 2026-09-11（真实验收发现）：agent_end 触发时 `isStreaming` 仍为 true
+				// （SDK 注释：agent 只有在 agent_end 的监听器结束后才真正空闲），于是待生效的渠道
+				// 选择在 onConversationSettled 的 busy 判定里被直接丢弃、永不应用。
+				// agent_settled 是 SDK 真正的空闲边界（`_isAgentRunActive=false` 后才发），在这里落定。
+				void this.settlePendingChannelSwitch(conv);
 				break;
 			case "bash_execution_update": {
 				if (event.id) {
@@ -2810,7 +2836,8 @@ export class ClientSession {
 				}
 				// DEV-CON 切换时点：本轮真正结束（不会自动重试）才应用待生效选择，
 				// 在途请求与工具已按原绑定跑完（docs/DEV-CON-PROPOSAL.md §5）。
-				if (!event.willRetry) void this.channels.onConversationSettled(conv.id);
+				// 此时 isStreaming 可能仍为 true，因此这里只做「带重试的尝试」，真正落定靠 agent_settled。
+				if (!event.willRetry) void this.settlePendingChannelSwitch(conv);
 				// 轨迹事件：本轮结束（放最前——aborted 中断路径也会 break，
 				// 轨迹里必须留下「已停止」而不是凭空消失）。
 				try {

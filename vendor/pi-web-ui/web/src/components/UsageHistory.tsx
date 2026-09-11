@@ -87,6 +87,12 @@ export const UsageHistory = memo(function UsageHistory({
 									<td>{formatTokens(row.total)}</td>
 									<td>
 										{formatCost(row.cost)}
+										{row.unreportedRequests > 0 && (
+											<span className="usage-unknown-price" title={t("usageCostBasisTip")}>
+												{" "}
+												{t("usageHistoryUnreported", { n: row.unreportedRequests })}
+											</span>
+										)}
 										{row.unpricedRequests > 0 && (
 											<span className="usage-unknown-price" title={t("usageCostBasisTip")}>
 												{" "}

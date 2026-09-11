@@ -33,6 +33,8 @@ export interface ChannelDraft {
 	accountUrl: string;
 	accountUnit: string;
 	accountScale: string;
+	/** 账户查询专用凭据名（网关控制台令牌；留空 = 用渠道模型凭据）。 */
+	accountCredentialKeyName: string;
 	enabled: boolean;
 }
 
@@ -44,10 +46,11 @@ export function channelDraftOf(c: UiChannelInfo | null, fallbackProvider: string
 		endpointId: c?.endpointId ?? "",
 		credentialKeyName: c?.credentialRef?.keyName ?? null,
 		accountRef: c?.accountRef ?? "",
-		accountKind: "",
-		accountUrl: "",
-		accountUnit: "",
-		accountScale: "",
+		accountKind: c?.account?.kind ?? "",
+		accountUrl: c?.account?.url ?? "",
+		accountUnit: c?.account?.unit ?? "",
+		accountScale: c?.account?.scale !== undefined ? String(c.account.scale) : "",
+		accountCredentialKeyName: c?.account?.credentialKeyName ?? "",
 		enabled: c?.enabled ?? true,
 	};
 }
@@ -140,6 +143,7 @@ export function ChannelForm({
 								url,
 								...(form.accountUnit.trim() ? { unit: form.accountUnit.trim() } : {}),
 								...(scale ? { scale } : {}),
+								...(form.accountCredentialKeyName.trim() ? { credentialKeyName: form.accountCredentialKeyName.trim() } : {}),
 							},
 						},
 					}
@@ -206,6 +210,12 @@ export function ChannelForm({
 				value={form.accountUrl}
 				ph="https://…"
 				onChange={(v) => set({ accountUrl: v })}
+			/>
+			<TextField
+				label={t("channelAccountCredential")}
+				value={form.accountCredentialKeyName}
+				ph={t("channelAccountCredentialPh")}
+				onChange={(v) => set({ accountCredentialKeyName: v })}
 			/>
 			<TextField label={t("channelAccountUnit")} value={form.accountUnit} onChange={(v) => set({ accountUnit: v })} />
 			<TextField

@@ -1076,6 +1076,8 @@ export const en: EnDictionary = {
 	usageCostBasisNote: "Estimated cost = USD computed by the SDK from the model's price table at request time (not the provider's charge)",
 	usageCostBasisTip: "This request carried no pricing information; an unknown price is shown as empty, not 0",
 	usageUnknownPrice: "Unknown price",
+	usageUnreported: "usage not reported",
+	usageHistoryUnreported: "({n} unreported)",
 	usageHistoryUnattributed: "These session tokens have no channel attribution (recorded before channels existed, or from a run without a channel)",
 	usageHistoryTip: "Attribution is recorded per request; missing attribution is never inferred from today's configuration.",
 	// P4 first slice: usage history across channels / projects / time (read-only aggregation).
@@ -1188,6 +1190,8 @@ export const en: EnDictionary = {
 	channelAccountKindPh: "e.g. openai-gateway / openrouter",
 	channelAccountUrl: "Account endpoint URL",
 	channelAccountUnit: "Unit",
+	channelAccountCredential: "Account credential (optional)",
+	channelAccountCredentialPh: "key name of the gateway console token; empty = channel credential",
 	channelAccountScale: "Quota scale",
 	channelAccountScalePh: "default 1",
 	channelAccountHint:

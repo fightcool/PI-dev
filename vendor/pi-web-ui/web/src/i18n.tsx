@@ -1053,6 +1053,8 @@ export const zh = {
 	usageCostBasisNote: "估算费用 = SDK 按请求当时模型价目表计算的 USD 金额（非供应商扣费）",
 	usageCostBasisTip: "该请求未带价目信息，未知价格按空展示而不是 0",
 	usageUnknownPrice: "未知价格",
+	usageUnreported: "未报告用量",
+	usageHistoryUnreported: "（{n} 条未报告用量）",
 	usageHistoryUnattributed: "这些历史用量没有渠道归属（记录早于渠道功能或来自无渠道的运行）",
 	usageHistoryTip: "归属随请求记录；缺失时不会用今天的配置推断过去。",
 	// P4 首个切片：跨渠道/项目/时间用量历史（只读聚合）。
@@ -1164,6 +1166,8 @@ export const zh = {
 	channelAccountKindPh: "例如 openai-gateway / openrouter",
 	channelAccountUrl: "账户接口地址",
 	channelAccountUnit: "单位",
+	channelAccountCredential: "账户凭据（可选）",
+	channelAccountCredentialPh: "网关控制台令牌的密钥名；留空用渠道模型凭据",
 	channelAccountScale: "额度换算比例",
 	channelAccountScalePh: "默认 1",
 	channelAccountHint: "账户接口仅用于余额/配额查询（有界超时、限频）；留空 = 不查询并明确显示「不支持」。",
