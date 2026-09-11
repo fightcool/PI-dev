@@ -42,7 +42,7 @@ import type {
 	UiSkillInfo,
 	UiSubagentTemplate,
 } from "../types";
-import type { ChannelApi, ChannelCommandResult, ChannelStateMsg, ResourcesMsg, StorageMsg } from "../use-chat";
+import type { ChannelApi, ChannelCommandResult, ChannelStateMsg, DiagnosticsMsg, ResourcesMsg, StorageMsg } from "../use-chat";
 import { ChannelSettings } from "./ChannelSettings";
 import { SystemResources } from "./SystemResources";
 import {
@@ -104,6 +104,8 @@ interface SettingsModalProps {
 		resources?: ResourcesMsg | null;
 		/** P4 运维：最近一次存储占用明细（只读）。 */
 		storage?: StorageMsg | null;
+		/** P4 运维：最近一次诊断包（只读元数据）。 */
+		diagnostics?: DiagnosticsMsg | null;
 		channelResults: Record<string, ChannelCommandResult>;
 		/** 命名密钥（仅名称 + 是否 active），渠道表单按名称引用。 */
 		providerKeys: Record<string, ProviderKeyInfo[]>;
@@ -2382,6 +2384,9 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 										storage={chat.storage}
 										onLoadStorage={channelApi.listStorage}
 										onSetRetention={channelApi.setUsageRetention}
+										diagnostics={chat.diagnostics}
+										onLoadDiagnostics={channelApi.listDiagnostics}
+										onSetOpsAlerts={channelApi.setOpsAlerts}
 									/>
 							</div>
 						)}

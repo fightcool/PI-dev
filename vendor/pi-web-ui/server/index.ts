@@ -794,6 +794,10 @@ export interface DispatchSession {
 	listStorage(reqId: number): Promise<void>;
 	/** P4 运维：设置用量历史保留天数。 */
 	setUsageRetention(maxAgeDays: number): void;
+	/** P4 运维：诊断包（只读元数据）。 */
+	listDiagnostics(reqId: number): Promise<void>;
+	/** P4 运维：开关资源告警。 */
+	setOpsAlerts(enabled: boolean): void;
 	/** P4 首个切片：跨渠道/项目/时间的用量历史（只读聚合）。 */
 	queryUsageHistory(
 		reqId: number,
@@ -1496,6 +1500,12 @@ wss.on("connection", (ws) => {
 				break;
 			case "set_usage_retention":
 				cs.setUsageRetention(msg.maxAgeDays);
+				break;
+			case "list_diagnostics":
+				void cs.listDiagnostics(msg.reqId);
+				break;
+			case "set_ops_alerts":
+				cs.setOpsAlerts(msg.enabled);
 				break;
 			default:
 				break;
