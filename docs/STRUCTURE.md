@@ -44,6 +44,8 @@ Node `#usage` / `#governance` package imports 让源码与编译产物引用同�
 
 开发数据 `.dev/`、依赖、构建输出与Python虚拟环境均不进入Git。测试夹具自行生成配置及测试令牌；测试不能调用 `loadConfig()` 去读取操作人的实际凭据。
 
+测试环境约定：测试起的隔离实例不得继承宿主的鉴权环境（`PI_WEB_TOKEN`/`PI_WEB_MANAGED`）。冒烟跑器 `tests/run-smoke.mjs` 统一清理；单独跑某个 `node tests/*.mjs` 时若宿主带这些变量，请自行 `env -u PI_WEB_TOKEN -u PI_WEB_MANAGED`，否则匿名 WebSocket 会 401 造成与产品无关的假失败。
+
 ## 开发、运行与工作区
 
 这三个位置具有不同生命周期：
