@@ -31,6 +31,7 @@ import compression from "compression";
 import { WebSocket, WebSocketServer } from "ws";
 import { VERSION, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { InitialSnapshotGate } from "./initial-snapshot-gate.js";
+import { startTrace, type TimingTrace } from "./timing.js";
 import { PROTOCOL_VERSION } from "./protocol-version.js";
 import { AgentService, workspacePath, QuiesceRejectedError } from "./agent-service.js";
 import { isAbsoluteWirePath, wireToAbs } from "./files-service.js";
@@ -883,7 +884,7 @@ export interface DispatchSession {
 
 /** 引擎无关的服务接口（index.ts attach 流程 + 插件扩展点所需）。 */
 export interface EngineService {
-	attach(clientId: string, send: (msg: ServerMessage) => void): Promise<DispatchSession>;
+	attach(clientId: string, send: (msg: ServerMessage) => void, trace?: TimingTrace): Promise<DispatchSession>;
 	detach(clientId: string, send: (msg: ServerMessage) => void): void;
 	get(clientId: string): DispatchSession | undefined;
 	disposeAll(): Promise<void>;
@@ -1045,6 +1046,9 @@ wss.on("connection", (ws) => {
 	let lastSnapshotBytes = 0;
 	/** Commands received while the session is still being created — replayed after attach. */
 	let pending: ClientMessage[] = [];
+	/** Ends the opt-in startup trace (timing.ts) once plugins + first snapshot
+	 *  are settled, or when the socket closes first. Set by the hello handler. */
+	let finishHelloTrace: ((extra?: Record<string, string | number | boolean>) => void) | undefined;
 	/** 背压丢快照后的延迟重发定时器（去重：一次只排一个）。 */
 	let snapshotRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1541,10 +1545,21 @@ wss.on("connection", (ws) => {
 		if (msg.type === "hello") {
 			const cid = msg.clientId || randomUUID();
 			clientId = cid;
+			// Startup phase trace (PI_WEB_TIMING=1): attach() records the session
+			// phases, this handler records hello → plugins → first snapshot, so a
+			// single log line covers the whole cold start.
+			const trace = startTrace(`attach ${cid}`);
 			service
-				.attach(cid, send)
+				.attach(cid, send, trace)
 				.then((cs) => {
 					if (closed) return;
+					let traced = false;
+					finishHelloTrace = (extra = {}) => {
+						if (traced) return;
+						traced = true;
+						trace?.end({ engine: ENGINE, ...extra });
+					};
+					trace?.mark("hello");
 					if (ENGINE === "pi") initialSnapshot.start(() => cs.flushSnapshot(true));
 					send({
 						type: "ready",
@@ -1584,7 +1599,11 @@ wss.on("connection", (ws) => {
 						})
 						.then(() => {
 							if (closed) return;
+							// Time spent waiting on plugin activation — the phase that used to
+							// gate the first snapshot behind a 5s fallback timer.
+							trace?.mark("plugins");
 							initialSnapshot.complete(() => cs.flushSnapshot(true));
+							finishHelloTrace?.({ snapWireB: lastSnapshotBytes, activeConvs: service.activeConversations() });
 						});
 					// hello may carry the UI locale — persist it before replaying
 					// anything queued during startup (issue #91).
@@ -1625,6 +1644,7 @@ wss.on("connection", (ws) => {
 		service.noteSocketClose();
 		closed = true;
 		initialSnapshot.dispose();
+		finishHelloTrace?.();
 		pending = [];
 		removePluginSender();
 		if (snapshotRetryTimer) {

@@ -24,6 +24,7 @@
 
 ## 记录与历史材料
 
+- [PERF-SESSION-LOAD.md](PERF-SESSION-LOAD.md)：会话加载/切换性能的实测基线、度量口径与优化分层（含未完成项）。
 - [DEV-CON归档索引](history/dev-con/README.md)：旧评估、v1.2架构讨论和已移除原型的记录。
 - [FOUNDATION-VALIDATION.md](FOUNDATION-VALIDATION.md)：指定基线的结构/性能验收，不是当前规划或在线状态证明。
 - [PM2-CUTOVER.md](PM2-CUTOVER.md)：特定一次迁移记录，不是后续部署计划或授权。

@@ -1,5 +1,32 @@
 # Isolated browser performance and regression harness
 
+## Server-side probe / 服务端探针
+
+```sh
+node tests/performance/server-timing.mjs
+SMALL=200 BIG=1460 node tests/performance/server-timing.mjs
+```
+
+The browser harness below mocks the WebSocket, so it cannot measure the server
+half of "session switching feels slow". This probe starts an **isolated**
+instance from TS source (`--import tsx`, no build) with its own agent dir, data
+dir, workspace and a free port, seeds synthetic sessions with
+`session-fixture.mjs`, and walks the two paths a browser walks:
+
+1. `hello` → first `snapshot` (cold attach)
+2. `list_sessions` → `switch_session` to the large fixture (disk switch)
+3. switch back to the small fixture
+4. a no-op switch (already active) — must still be answered with a snapshot
+
+`PI_WEB_TIMING=1` makes `server/timing.ts` print one `[timing] …` line per path
+(attach/switch phases, snapshot build time, wire bytes); the probe prints those
+lines next to the measured wall-clock deltas. `session-fixture.mjs` generates
+`N` messages in the SDK's on-disk JSONL shape, so history size is a parameter
+instead of a fixed fixture.
+
+Both files only ever write to a fresh temp directory: they never read or write a
+real agent directory, and never touch a live instance.
+
 <!-- 🍞 AI Breadcrumb Navigation — @COUPLED=implementation entry points.
 @COUPLED tests/performance/browser.mjs, tests/performance/config.mjs,
 tests/performance/isolation.mjs, tests/performance/fixtures.mjs,
