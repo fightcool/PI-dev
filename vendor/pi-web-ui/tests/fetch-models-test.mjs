@@ -37,9 +37,15 @@ mkdirSync(agentDir, { recursive: true });
 //   /google/models     → Google-format { models: [...] } (no `data` array)
 //   /empty/models      → { data: [] }
 //   /badjson/models    → not JSON
+//   /html/models       → 200 + text/html (SPA 挂在裸路径：真实网关的常见形态)
+//   /html/v1/models    → the real list (must be reached without a 404 signal)
+//   /noapi/models|/noapi/v1/models → 200 + text/html everywhere (全部候选都失败)
 const authHeaders = [];
+/** 探测实际打过的路径（验证候选顺序 / 不该打的别打）。 */
+const probedPaths = [];
 const mock = createServer((req, res) => {
 	const url = new URL(req.url ?? "/", `http://127.0.0.1:${MOCK_PORT}`);
+	probedPaths.push(url.pathname);
 	if (url.pathname === "/models" || url.pathname === "/v1/models") {
 		authHeaders.push({ path: url.pathname, auth: req.headers.authorization ?? null });
 	}
@@ -47,6 +53,13 @@ const mock = createServer((req, res) => {
 		res.writeHead(code, { "content-type": "application/json" });
 		res.end(typeof body === "string" ? body : JSON.stringify(body));
 	};
+	const sendHtml = (code) => {
+		res.writeHead(code, { "content-type": "text/html; charset=utf-8" });
+		res.end("<!doctype html>\n<html><head><title>app</title></head><body>index</body></html>");
+	};
+	if (url.pathname === "/html/models" || url.pathname === "/noapi/models") return sendHtml(200);
+	if (url.pathname === "/noapi/v1/models") return sendHtml(200);
+	if (url.pathname === "/html/v1/models") return send(200, { data: [{ id: "html-gw-only" }] });
 	if (url.pathname === "/fallback/models") return send(404, { error: "not found" });
 	if (url.pathname === "/fallback/v1/models") return send(200, { data: [{ id: "fb-only" }] });
 	if (url.pathname === "/google/models")
@@ -326,6 +339,33 @@ try {
 			canon(r12.models).includes('"id":"mock-a"') &&
 			canon(r12.models).includes('"contextWindow":32768'),
 	);
+
+	// 7) 真实网关形态：裸路径 200 + text/html（不是 404）→ 必须继续回退到 /v1/models
+	//    （CCQTCC https://www.cctq.ai、api-slb.micuapi.ai 都是这种；旧逻辑只认 404，直接报「不是有效 JSON」）
+	probedPaths.length = 0;
+	c.send({ type: "fetch_models", reqId: 13, baseUrl: `http://127.0.0.1:${MOCK_PORT}/html` });
+	const r13 = await c.waitFor("fetch_models_result", 10000, (m) => m.reqId === 13);
+	check("200 + text/html 也能回退到 /v1/models", r13.ok && canon(r13.models) === canon([{ id: "html-gw-only" }]));
+	check(
+		"候选顺序：先 /models 再 /v1/models",
+		probedPaths.join(",") === "/html/models,/html/v1/models",
+		probedPaths.join(","),
+	);
+
+	// 8) 全部候选都只是网页 → 错误要能自解释（含 baseUrl + 每个候选的原因）
+	c.send({ type: "fetch_models", reqId: 14, baseUrl: `http://127.0.0.1:${MOCK_PORT}/noapi` });
+	const r14 = await c.waitFor("fetch_models_result", 10000, (m) => m.reqId === 14);
+	check(
+		"全失败时汇总每个候选的原因",
+		!r14.ok && r14.error.includes("/noapi") && r14.error.includes("网页") && r14.error.includes("/v1/models"),
+		r14.error,
+	);
+
+	// 9) baseUrl 已带版本段 → 只打一个候选（不要把 /v1/v1/models 再找一个寂寞）
+	probedPaths.length = 0;
+	c.send({ type: "fetch_models", reqId: 15, baseUrl: `http://127.0.0.1:${MOCK_PORT}/v1` });
+	const r15 = await c.waitFor("fetch_models_result", 10000, (m) => m.reqId === 15);
+	check("已带版本段的 baseUrl 只探一个地址", r15.ok && probedPaths.join(",") === "/v1/models", probedPaths.join(","));
 
 	console.log(`\n${passed} checks passed`);
 } catch (err) {

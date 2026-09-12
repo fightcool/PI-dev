@@ -7,6 +7,9 @@ export function useAppDialogs() {
 	const [setupDismissed, setSetupDismissed] = useState(false);
 	// Custom model config panel (model dropdown → 管理模型).
 	const [manageModelsOpen, setManageModelsOpen] = useState(false);
+	// 用量明细面板：底栏令牌项和「渠道余额」chip 都能打开（状态提到 App 层，
+	// 否则输入框工具条里的 chip 无法触发底栏那张面板）。
+	const [usageOpen, setUsageOpen] = useState(false);
 	// Settings panel (system prompt / skills / extensions / presets).
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	// Background-task panel (AI-started servers — stop individually or all).
@@ -40,6 +43,7 @@ export function useAppDialogs() {
 	}, []);
 
 	const openManageModels = useCallback(() => setManageModelsOpen(true), []);
+	const openUsage = useCallback(() => setUsageOpen(true), []);
 	const onJumpDone = useCallback(() => setSearchJump(null), []);
 	const [searchVisited, setSearchVisited] = useState(false);
 	useEffect(() => {
@@ -52,6 +56,9 @@ export function useAppDialogs() {
 		setSetupDismissed,
 		manageModelsOpen,
 		setManageModelsOpen,
+		usageOpen,
+		setUsageOpen,
+		openUsage,
 		settingsOpen,
 		setSettingsOpen,
 		bgTasksOpen,

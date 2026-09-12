@@ -159,6 +159,12 @@ export function socketReply(message, state) {
     case 'list_provider_keys': return channels ? [{ type: 'provider_keys', keys: state.providerKeys ?? {} }] : [];
     case 'channel_select':
     case 'channel_binding_clear':
+    // 新建服务商时的「获取接口清单」（浏览器带上刚填的 baseUrl/密钥）：
+    // 给一份合成清单，让渠道表单的「新建服务商」路径可测。
+    case 'fetch_models': {
+      return [{ type: 'fetch_models_result', reqId: message.reqId, ok: true,
+        models: [{ id: 'claude-opus-5', name: 'opus5' }, { id: 'claude-sonnet-5', name: 'sonnet5' }] }];
+    }
     case 'channel_save':
     case 'channel_delete':
     case 'channel_set_default':

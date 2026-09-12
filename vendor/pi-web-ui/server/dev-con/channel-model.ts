@@ -135,6 +135,42 @@ export function isValidChannelId(id: string): boolean {
 	return typeof id === "string" && /^[a-z0-9][a-z0-9-]{1,47}$/.test(id);
 }
 
+/** 服务商 id 规则（与 model-admin 的 saveModelConfig 同一口径）：字母/数字/._-。 */
+export function isValidProviderId(id: string): boolean {
+	return typeof id === "string" && /^[\w.-]+$/.test(id);
+}
+
+/**
+ * 由渠道显示名生成服务商 id（渠道表单「新建服务商」留空时用）。
+ * @WHY 用户不应被迫先想一个内部 id：名字里的中文/空格/大写统一 slug 化，冲突自动加 -2/-3。
+ *   非 ASCII 名字（如「米醋claude」）slug 后可能只剩一两个字符，此时回落 provider-<n>，
+ *   不能生成空 id（服务端 saveModelConfig 会拒绝）。
+ * @MAGIC MAX_PROVIDER_ID_LEN=48：与渠道 id 同量级，足够可读且不会撑爆配置文件。
+ */
+export function providerIdFromName(name: string, existing: string[] = []): string {
+	const taken = new Set(existing.map((id) => id.trim()).filter(Boolean));
+	const base =
+		typeof name === "string"
+			? name
+					.toLowerCase()
+					.replace(/[^a-z0-9]+/g, "-")
+					.replace(/^-+|-+$/g, "")
+					.slice(0, 48)
+			: "";
+	if (base.length >= 2 && !taken.has(base)) return base;
+	if (base.length >= 2) {
+		for (let n = 2; n < 100; n++) {
+			const candidate = `${base}-${n}`.slice(0, 48);
+			if (!taken.has(candidate)) return candidate;
+		}
+	}
+	for (let n = 1; n < 1000; n++) {
+		const candidate = `provider-${n}`;
+		if (!taken.has(candidate)) return candidate;
+	}
+	return "provider";
+}
+
 /**
  * 禁止把密钥正文写进渠道元数据（本模块的唯一安全不变量）。
  * 返回命中的字段路径列表；非空即拒绝写入。

@@ -101,7 +101,13 @@ export function App() {
 					/>
 				</div>
 			</TemplateProvider>
-			<FooterBar chat={chat} send={send} onQueryUsageHistory={connection.channelApi.queryUsageHistory} />
+			<FooterBar
+				chat={chat}
+				send={send}
+				onQueryUsageHistory={connection.channelApi.queryUsageHistory}
+				usageOpen={dialogs.usageOpen}
+				onUsageOpenChange={dialogs.setUsageOpen}
+			/>
 			<AppDialogs
 				connection={connection}
 				dialogs={dialogs}

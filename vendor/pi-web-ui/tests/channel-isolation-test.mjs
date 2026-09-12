@@ -352,6 +352,46 @@ try {
 	const allowed = await runCommand(client, "channel_select", { conversationId: convB, channelId: "ch-limited", modelId: "mock/chan-mock" });
 	check("白名单内的模型可正常绑定", allowed.ok === true, allowed.error ?? "");
 
+	// 7e2) 方案 A：一条 channel_save 同时写服务商（models.json）与渠道档案。
+	// 渠道面板是唯一入口，不再要求先去「管理模型」建服务商；provider 是 channel 的同级字段。
+	const providerPayload = {
+		name: "新建网关",
+		api: "openai-completions",
+		baseUrl: `http://127.0.0.1:${MOCK_PORT}/v1`,
+		apiKey: "sk-created-inline",
+		models: [{ id: "created-model" }],
+	};
+	const created = await runCommand(client, "channel_save", {
+		channel: { id: "ch-created", displayName: "新建服务商", providerId: "", models: ["created-model"] },
+		provider: providerPayload,
+	});
+	check("一条命令同时新建服务商与渠道", created.ok === true, created.error ?? "");
+	client.send({ type: "list_channels" });
+	const afterCreate = await client.waitForType("channel_state", (m) => m.channels.some((c) => c.id === "ch-created"), 10000);
+	const createdChannel = afterCreate.channels.find((c) => c.id === "ch-created");
+	const savedModels = JSON.parse(readFileSync(join(agentDir, "models.json"), "utf8"));
+	// providerId 留空 → 服务端由渠道显示名 slug 生成（中文名回落 provider-<n>，非空即合规）。
+	const createdId = createdChannel?.providerId ?? "";
+	check(
+		"服务商写入 models.json（id 由显示名生成、密钥落盘、模型清单齐全）",
+		!!createdId &&
+			savedModels.providers[createdId]?.apiKey === "sk-created-inline" &&
+			savedModels.providers[createdId]?.api === "openai-completions" &&
+			savedModels.providers[createdId]?.models?.map((m) => m.id).join(",") === "created-model",
+		JSON.stringify({ providerId: createdId, saved: savedModels.providers[createdId] ?? null }),
+	);
+	check(
+		"渠道引用新生成的服务商 id，且该服务商已注册进运行时",
+		!!createdId && createdChannel?.providerMissing === false,
+		JSON.stringify(createdChannel ?? null),
+	);
+	// 服务商写失败 → 渠道不得落盘（顺序：先 models.json，后 channels.json）。
+	const broken = await runCommand(client, "channel_save", {
+		channel: { id: "ch-broken", displayName: "坏服务商", providerId: "ch-broken" },
+		provider: { name: "坏服务商", api: "openai-completions", baseUrl: "", models: [{ id: "x" }] },
+	});
+	check("服务商缺 baseUrl 时渠道也不落盘", broken.ok === false && String(broken.error).includes("服务商未写入"), JSON.stringify({ error: broken.error, phase: broken.phase }));
+
 	// 7f) 账户查询模板：用户自配 URL/字段映射（走本地替身），预设随 channel_state 下发。
 	client.send({ type: "list_channels" });
 	const withPresets = await client.waitForType("channel_state", (m) => Array.isArray(m.accountPresets), 10000);

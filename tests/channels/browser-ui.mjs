@@ -36,6 +36,8 @@ const MODELS = [
 const CHANNELS = [
 	{ id: "ch-a", displayName: "渠道 A", providerId: "main", endpointId: "default",
 		credentialRef: { providerId: "main", keyName: "密钥 1" }, accountRef: null, enabled: true,
+		// 配了账户查询 → 输入框工具条要出现「余额」chip（PC 与移动端同位置）。
+		account: { kind: "openai-gateway", url: "{baseUrl}/api/user/self", method: "GET", unit: "USD" },
 		models: ["m1"],
 		keys: [{ keyName: "密钥 1", active: true }, { keyName: "密钥 2", active: false }], keyMissing: false, providerMissing: false },
 	{ id: "ch-b", displayName: "渠道 B", providerId: "main", endpointId: "default",
@@ -165,6 +167,10 @@ try {
 	// 2) 底部状态栏显示有效渠道（A11 的「当前渠道」入口）。
 	const footer = (await page.locator(".status-channel").first().innerText()).trim();
 	check("footer shows the effective channel", footer.includes("渠道 A"), footer);
+	// 渠道配了账户查询时，余额 chip 出现在输入框工具条（思考强度右侧），PC 端不必翻设置。
+	const desktopBalance = page.locator(".composer-tools-left .chan-balance");
+	check("toolbar shows the channel balance chip", (await desktopBalance.isVisible()) && (await desktopBalance.innerText()).includes("12.5"),
+		await desktopBalance.innerText().catch(() => "missing"));
 
 	// 3) 选择器按渠道分组，禁用渠道给出明确原因且不可点选。
 	// 触发器是 Dropdown 里的 .chip（内含 .chip-model 名称）。
@@ -337,11 +343,61 @@ try {
 	check("delete asks for confirmation and then sends channel_delete", sent.some((m) => m.type === "channel_delete" && m.channelId === "ch-a"), JSON.stringify(sent.at(-1) ?? null));
 	check("the delete result is reported", (await page.locator(".chan-settings .chan-receipt.ok").first().innerText()).includes("Delete channel"));
 
-	// 6f) 新增渠道 = 一条带 configRevision 的 channel_save（含白名单与账户查询模板）。
+	// 6e2) 新建服务商 + 渠道一次提交（方案 A：渠道面板是唯一入口）。
+	// 默认就是「新建服务商」：填地址/协议/密钥 → 拉接口清单 → 勾模型 → 保存即一条 channel_save
+	// 同时带上 provider（models.json），不再需要先去「管理模型」建一遍。
+	await page.locator(".chan-settings .chan-btn", { hasText: "Add channel" }).first().click();
+	const newForm = page.locator(".chan-settings form, .chan-form").first();
+	await newForm.waitFor({ state: "visible", timeout: options.stepTimeout });
+	await newForm.locator("input").first().fill("CCTQ Claude");
+	check(
+		"new channel defaults to creating the provider in the same form",
+		await newForm.locator(".chan-conn-mode input").first().isChecked(),
+	);
+	await newForm.locator(".chan-conn .field input").nth(1).fill("https://www.cctq.ai");
+	await newForm.locator(".chan-conn .field input").nth(2).fill("sk-synthetic");
+	await newForm.locator(".chan-conn select").first().selectOption("anthropic-messages");
+	check(
+		"the connection form warns about the protocol (Claude vs GPT)",
+		(await newForm.locator(".chan-conn").innerText()).includes("anthropic-messages"),
+	);
+	await newForm.locator(".chan-models-head .chan-btn", { hasText: "Fetch from endpoint" }).click();
+	await newForm.locator(".chan-model-row").first().waitFor({ state: "visible", timeout: options.stepTimeout });
+	await newForm.locator(".chan-models-head .chan-btn", { hasText: "Select all" }).click();
+	sent = [];
+	await page.locator(".chan-settings .chan-btn", { hasText: "Save" }).last().click();
+	const combined = sent.find((m) => m.type === "channel_save");
+	check(
+		"one command carries both the provider (models.json) and the channel",
+		combined?.provider?.api === "anthropic-messages" &&
+			combined?.provider?.baseUrl === "https://www.cctq.ai" &&
+			combined?.provider?.apiKey === "sk-synthetic" &&
+			combined?.provider?.models?.map((m) => m.id).join(",") === "claude-opus-5,claude-sonnet-5",
+		JSON.stringify(combined?.provider ?? null),
+	);
+	check(
+		"the channel leaves the provider id to the server (slug) and keeps the whitelist",
+		combined?.channel?.providerId === "" &&
+			combined?.provider?.providerId === undefined &&
+			combined?.channel?.models?.length === 2,
+		JSON.stringify(combined?.channel ?? null),
+	);
+	await page.locator(".chan-receipt.ok").first().waitFor({ state: "visible", timeout: options.stepTimeout }).catch(() => undefined);
+
+	// 6f) 新增渠道（复用已注册服务商）= 一条带 configRevision 的 channel_save（含白名单与账户查询模板）。
 	await page.locator(".chan-settings .chan-btn", { hasText: "Add channel" }).first().click();
 	const form = page.locator(".chan-settings form, .chan-form").first();
 	await form.waitFor({ state: "visible", timeout: options.stepTimeout });
 	await form.locator("input").first().fill("渠道 新");
+	// 切到「使用已有服务商」：只引用已注册服务商，不写 models.json。
+	await form.locator(".chan-conn-mode input").nth(1).check();
+	// 已有服务商模式：只剩「服务商」下拉，新建连接字段（地址/协议/密钥）全部收起。
+	check(
+		"choosing an existing provider hides the connection fields",
+		(await form.locator(".chan-conn .field").count()) === 1 &&
+			(await form.locator(".chan-conn select").count()) === 1,
+		String(await form.locator(".chan-conn").innerText()),
+	);
 	// 模型白名单：一键全选该服务商的模型（空选 = 不限）。
 	await form.locator(".chan-models-head .chan-btn", { hasText: "Select all" }).click();
 	check("selecting all models fills the whitelist counter", (await form.locator(".chan-models-count").innerText()).includes("2"), await form.locator(".chan-models-count").innerText());
@@ -370,6 +426,7 @@ try {
 	const save = sent.find((m) => m.type === "channel_save");
 	check("saving a channel sends channel_save with the expected config revision", save?.expectedConfigRevision === 7, JSON.stringify(save ?? null));
 	check("the save carries the model whitelist", save?.channel?.models?.length === 2, JSON.stringify(save?.channel?.models ?? null));
+	check("reusing an existing provider sends no provider payload", save?.provider === undefined, JSON.stringify(save?.provider ?? null));
 	check(
 		"the save carries the account query template (kind/url/mapping)",
 		save?.channel?.extra?.account?.kind === "template" &&
@@ -416,6 +473,15 @@ try {
 		await mobilePage.locator(".chan-chip.effective").waitFor({ state: "visible", timeout: options.stepTimeout });
 		const mobileOk = await mobilePage.locator(".chan-chip.pending").isVisible();
 		check("mobile viewport shows effective + pending channel state", mobileOk);
+		// 手机上底栏仍要显示「上下文 + 缓存命中率」（命中率此前被整条规则隐藏）。
+		check("mobile footer keeps the cache hit rate next to context",
+			(await mobilePage.locator(".statusbar .status-ctx").isVisible()) &&
+			(await mobilePage.locator(".statusbar .status-cache").isVisible()));
+		// 余额 chip 在「思考强度」右侧、手机上也在同一行（文案随语言，按数字断言）。
+		const mobileBalance = mobilePage.locator(".composer-tools-left .chan-balance");
+		check("mobile toolbar shows the balance chip",
+			(await mobileBalance.isVisible()) && (await mobileBalance.innerText()).includes("12.5"),
+			await mobileBalance.innerText().catch(() => "missing"));
 		await mobilePage.locator("button.chip", { has: mobilePage.locator(".chip-model") }).first().click();
 		await mobilePage.locator(".chan-group").first().waitFor({ state: "visible", timeout: options.stepTimeout });
 		const mobileGroups = await mobilePage.locator(".chan-group").count();

@@ -13,10 +13,14 @@ npm run format       # prettier 全仓库格式化（.prettierrc.json：tabs + �
 npm run format:check # 只检查不改写（CI 跑这个）
 npm run build        # build:web (vite) + build:server (tsc)
 npm start            # 跑编译产物 dist/server/index.js（生产）
-npm test             # vitest 纯函数单测（tests/unit/，毫秒级零 token）
+npm test             # vitest 纯函数单测（tests/unit/，毫秒级零 token；脚本已钉住 NODE_ENV=test）
 npm run test:smoke   # 零 token 协议冒烟聚合跑器（tests/run-smoke.mjs，17 个自包含测试）
 npm run test:freeze  # 冻结/重连回归测试（Playwright，需要本机 chromium headless）
 ```
+
+> @GOTCHA 单测必须在 `NODE_ENV=test` 下跑。`npm test` / `npm run test:unit` 已用 `cross-env` 钉住；
+> 直接 `npx vitest run` 时若当前 shell 继承了服务进程的 `NODE_ENV=production`（在部署实例的工作区里
+> 开终端、或以 agent 身份执行命令时很常见），React 会加载生产构建，组件类用例会成片假失败。
 
 ## CI
 
@@ -88,7 +92,7 @@ spawn 后记录 `server.pid`，测试收尾（含异常 catch 路径）用 `proc
 | **settings 家族** | `settings-test.mjs`（端口 8931）：设置面板协议冒烟——settings_state 推送 / get_settings / set_settings / save_preset / apply_preset / delete_preset / 重连持久化 |
 | **global-search 家族** | `global-search-test.mjs`（端口 8962）=search_files 协议冒烟；`global-search-ui-test.mjs`（端口 8963）=真 Chrome headless UI 测试 |
 | **scm 家族** | `scm-features-test.mjs`=SCM v2 功能协议测试（懒加载 history / 远程分支 / git-dir watcher）；`scm-test.mjs`=SCM 面板 E2E（真 Chrome headless） |
-| **其他** | `lazy-window-test.mjs`=消息列表惰性窗口化 E2E；`terminal-bash-test.mjs`=终端接管 bash 回归；`quiesce-test.mjs`（端口 8911）=安全加固冒烟；`fetch-models-test.mjs`（端口 8955）=模型列表自动获取；`clone-provider-test.mjs`（端口 8965）=内置供应商复制；`model-config-ui-test.mjs`=模型管理 UI（真 Chrome）；`vision-bridge-test.mjs`（端口 8945）=视觉桥端到端；`vision-bridge-ui-test.mjs`=视觉桥设置面板 UI（真 Chrome） |
+| **其他** | `lazy-window-test.mjs`=消息列表惰性窗口化 E2E；`terminal-bash-test.mjs`=终端接管 bash 回归；`quiesce-test.mjs`（端口 8911）=安全加固冒烟；`fetch-models-test.mjs`（端口 8955）=模型列表自动获取；`clone-provider-test.mjs`（端口 8965）=内置供应商复制；`vision-bridge-test.mjs`（端口 8945）=视觉桥端到端；`vision-bridge-ui-test.mjs`=视觉桥设置面板 UI（真 Chrome） |
 
 **Playwright 脚本**：headless shell 路径写死在本机，CI/换机需要改 `HEADLESS` 常量。
 

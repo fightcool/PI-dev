@@ -19,7 +19,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { ServerMessage, UiModelConfigEntry, UiProviderConfig, ProviderKeyInfo } from "./protocol.js";
+import type { ChannelProviderInput, ServerMessage, UiModelConfigEntry, UiProviderConfig, ProviderKeyInfo } from "./protocol.js";
 import { pick, type ServerLang } from "./i18n.js";
 
 /** ClientSession 提供给本服务的宿主能力（窄接口）。 */
@@ -1157,54 +1157,85 @@ export class ModelAdminService {
 			}
 		};
 
-		let res = await tryFetch(`${base}/models`);
-		// BaseUrls that omit the /v1 prefix (e.g. https://api.openai.com) 404 on
-		// the bare path — retry under /v1.
-		if (res && res.status === 404 && !/\/v\d+[a-z-]*$/.test(base)) {
-			res = await tryFetch(`${base}/v1/models`);
-		}
-		if (!res) throw new Error(pick(l, "请求失败", "Request failed", "models.fetch.request.failed"));
-		if (!res.ok) {
-			let detail = "";
+		/**
+		 * 候选探测地址（按顺序试，第一个「真的是模型清单」的胜出）。
+		 * @GOTCHA 只试 ${base}/models 是不够的：聚合网关/自建前端常把裸路径挂成 SPA，
+		 *   返回 **200 + text/html**（不是 404），旧逻辑因此不会回退 /v1，直接把网页当 JSON 解析，
+		 *   报「响应不是有效的 JSON」——用户看到的就是「自动获取模型列表基本不可用」。
+		 * @WHY baseUrl 已带版本段（…/v1、…/v1beta）时说明用户填的是完整接口前缀，只试一个；
+		 *   否则按 /models → /v1/models（google 再加 /v1beta/models）依次回退。
+		 */
+		const versioned = /\/v\d+[a-z-]*$/i.test(url.pathname.replace(/\/+$/, ""));
+		const candidates = versioned
+			? [`${base}/models`]
+			: api === "google-generative-ai"
+				? [`${base}/models`, `${base}/v1/models`, `${base}/v1beta/models`]
+				: [`${base}/models`, `${base}/v1/models`];
+		/** 逐个候选的失败原因：全部失败时汇总展示，用户才知道到底是哪一步不对。 */
+		const failures: string[] = [];
+		for (const candidate of candidates) {
+			const res = await tryFetch(candidate);
+			if (!res) continue;
+			const contentType = res.headers.get("content-type") ?? "";
+			// 200 也可能是「网页」或空响应：内容类型/正文形态不对就换下一个候选。
+			if (/text\/html/i.test(contentType)) {
+				failures.push(`${candidate} → 返回网页而非模型接口`);
+				continue;
+			}
+			if (!res.ok) {
+				let detail = "";
+				try {
+					detail = (await res.text()).slice(0, 200);
+				} catch {
+					// response body already consumed / not text — ignore
+				}
+				failures.push(`${candidate} → HTTP ${res.status}${detail ? `：${detail}` : ""}`);
+				continue;
+			}
+			let models: UiModelConfigEntry[] = [];
+			let parsed = false;
 			try {
-				detail = (await res.text()).slice(0, 200);
+				const json = (await res.json()) as Record<string, unknown>;
+				const data = Array.isArray(json.data) ? json.data : null;
+				if (data) {
+					// OpenAI-compatible: { data: [{ id, context_window, modalities, … }] }
+					models = data.map((m) => parseOpenAiModel(m)).filter((m) => m.id);
+					parsed = true;
+				} else if (Array.isArray(json.models)) {
+					// Google: { models: [{ name: "models/…", displayName, … }] }
+					models = (json.models as unknown[]).map((m) => parseGoogleModel(m)).filter((m) => m.id);
+					parsed = true;
+				}
 			} catch {
-				// response body already consumed / not text — ignore
+				failures.push(`${candidate} → 响应不是有效的 JSON`);
+				continue;
 			}
-			const detailSuffixZh = detail ? `：${detail}` : "";
-			const detailSuffixEn = detail ? `: ${detail}` : "";
-			throw new Error(
-				pick(
-					l,
-					`接口返回 HTTP ${res.status}${detailSuffixZh}`,
-					`Upstream returned HTTP ${res.status}${detailSuffixEn}`,
-					"models.fetch.upstream.http",
-					{ "res.status": res.status, detailSuffixZh, detailSuffixEn },
-				),
-			);
-		}
-		let models: UiModelConfigEntry[] = [];
-		try {
-			const json = (await res.json()) as Record<string, unknown>;
-			const data = Array.isArray(json.data) ? json.data : null;
-			if (data) {
-				// OpenAI-compatible: { data: [{ id, context_window, modalities, … }] }
-				models = data.map((m) => parseOpenAiModel(m)).filter((m) => m.id);
-			} else if (Array.isArray(json.models)) {
-				// Google: { models: [{ name: "models/…", displayName, … }] }
-				models = (json.models as unknown[]).map((m) => parseGoogleModel(m)).filter((m) => m.id);
+			if (!parsed) {
+				failures.push(`${candidate} → 响应里没有 data/models 字段`);
+				continue;
 			}
-		} catch {
-			throw new Error(pick(l, "响应不是有效的 JSON", "Response is not valid JSON", "models.fetch.invalid.json"));
+			// Dedupe by id (keep the first, most complete entry) and sort by id.
+			const seen = new Set<string>();
+			models = models
+				.filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)))
+				.sort((a, b) => a.id.localeCompare(b.id));
+			if (models.length === 0) {
+				failures.push(`${candidate} → 接口未返回任何模型`);
+				continue;
+			}
+			return models;
 		}
-		// Dedupe by id (keep the first, most complete entry) and sort by id.
-		const seen = new Set<string>();
-		models = models
-			.filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)))
-			.sort((a, b) => a.id.localeCompare(b.id));
-		if (models.length === 0)
-			throw new Error(pick(l, "接口未返回任何模型", "The endpoint returned no models", "models.fetch.no.models"));
-		return models;
+		// 全部候选都失败：汇总每个地址的失败原因（含用户填的 baseUrl，便于自查）。
+		const summary = failures.length > 0 ? failures.join("；") : pick(l, "请求失败", "Request failed");
+		throw new Error(
+			pick(
+				l,
+				`获取模型列表失败（baseUrl=${base}）：${summary}`,
+				`Failed to fetch models (baseUrl=${base}): ${summary}`,
+				"models.fetch.failed",
+				{ base, summary },
+			),
+		);
 	}
 
 	/**
@@ -1303,14 +1334,60 @@ export class ModelAdminService {
 	/** Upsert one provider into models.json and hot-reload the model runtime. */
 	async saveModelConfig(providerId: string, config: UiProviderConfig): Promise<void> {
 		const pid = providerId.trim();
-		if (!pid || !/^[\w.-]+$/.test(pid)) {
-			this.host.emit({
-				type: "notice",
-				level: "error",
-				text: "服务商 ID 无效（仅字母/数字/._-）",
-				textEn: "Invalid provider ID (letters/digits/._- only)",
-			});
+		const result = await this.writeModelConfig(pid, config);
+		if (!result.ok) {
+			this.host.emit({ type: "notice", level: "error", text: result.error, textEn: result.errorEn ?? result.error });
+			this.host.flushSnapshot();
 			return;
+		}
+		this.host.emit({
+			type: "notice",
+			level: "info",
+			text: `✅ 已保存服务商 ${pid}（${result.count} 个模型）并刷新模型列表`,
+			textEn: `✅ Saved provider ${pid} (${result.count} models) and refreshed the model list`,
+		});
+		this.host.flushSnapshot();
+	}
+
+	/**
+	 * 渠道表单的「服务商连接」入口：与 saveModelConfig 同一套落盘/热加载，但**不发通知**——
+	 * 成功/失败都由渠道命令的回执向上报，避免一次操作两条互相矛盾的提示。
+	 */
+	async upsertProviderFromChannel(
+		input: ChannelProviderInput & { providerId: string },
+	): Promise<{ ok: true } | { ok: false; error: string }> {
+		const pid = input.providerId.trim();
+		const result = await this.writeModelConfig(
+			pid,
+			{
+				providerId: pid,
+				name: input.name,
+				api: input.api,
+				baseUrl: input.baseUrl,
+				apiKey: input.apiKey,
+				authHeader: input.authHeader,
+				models: input.models ?? [],
+			},
+			// 渠道表单只表达「连接 + 用哪些模型」，不表达 reasoning/contextWindow/cost 等元数据：
+			// 用 patch 合并，避免每次改渠道就把手工对齐过的模型元数据抹掉（§4 单一事实源）。
+			{ modelMerge: "patch" },
+		);
+		if (!result.ok) return { ok: false, error: result.error };
+		return { ok: true };
+	}
+
+	/**
+	 * 真正写 models.json + 热加载运行时的单一实现（错误以返回值上报，不静默）。
+	 * @CONTRACT 表单只管理「连接 + 模型 id/名字」这些键，其余键（headers / cost / compat /
+	 *   thinkingLevelMap / modelOverrides）原样保留；apiKey 空 = 保留已存值。
+	 */
+	private async writeModelConfig(
+		pid: string,
+		config: UiProviderConfig,
+		opts: { modelMerge?: "replace" | "patch" } = {},
+	): Promise<{ ok: true; count: number } | { ok: false; error: string; errorEn?: string }> {
+		if (!pid || !/^[\w.-]+$/.test(pid)) {
+			return { ok: false, error: "服务商 ID 无效（仅字母/数字/._-）", errorEn: "Invalid provider ID (letters/digits/._- only)" };
 		}
 		const models = (config.models ?? [])
 			.filter((m) => m.id && m.id.trim())
@@ -1323,13 +1400,21 @@ export class ModelAdminService {
 				...(m.maxTokens ? { maxTokens: Number(m.maxTokens) } : {}),
 			}));
 		if (models.length === 0) {
-			this.host.emit({
-				type: "notice",
-				level: "error",
-				text: "至少需要一个模型",
-				textEn: "At least one model is required",
-			});
-			return;
+			return { ok: false, error: "至少需要一个模型", errorEn: "At least one model is required" };
+		}
+		// @BUGFIX 2026-09-12：新建自定义服务商没填 baseUrl 时，models.json 照样会被写进去，
+		// 但运行时注册不了它（pi 的组合器要求自定义模型必须有 baseUrl）——结果是一条“保存成功、
+		// 渠道却报服务商未注册”的假成功。已注册的服务商不受此限：内置服务商只用 modelOverrides
+		// 改模型元数据（deepseek 就是这种），它不需要再填 baseUrl。
+		const registered = (() => {
+			try {
+				return this.host.modelRuntime().getProviders().some((p) => p.id === pid);
+			} catch {
+				return false;
+			}
+		})();
+		if (!config.baseUrl?.trim() && !registered) {
+			return { ok: false, error: "新建服务商必须填请求地址（baseUrl）", errorEn: "A new provider needs a baseUrl" };
 		}
 		try {
 			const { providers } = this.readModelsConfig();
@@ -1355,7 +1440,14 @@ export class ModelAdminService {
 				...(config.baseUrl?.trim() ? { baseUrl: config.baseUrl.trim() } : {}),
 				...(nextApiKey ? { apiKey: nextApiKey } : {}),
 				...(config.authHeader ? { authHeader: true } : {}),
-				models: models.map((m) => ({ ...unmanagedEntries(prevModels.get(m.id), MANAGED_MODEL_KEYS), ...m })),
+				// replace（表单管理全部键，未给 = 清空）vs patch（渠道表单：只覆盖它给到的键，
+				// 其余保留——reasoning/contextWindow/cost 等由模型目录或探测结果拥有）。
+				models: models.map((m) => {
+					const prevEntry = prevModels.get(m.id);
+					return opts.modelMerge === "patch"
+						? { ...prevEntry, ...m }
+						: { ...unmanagedEntries(prevEntry, MANAGED_MODEL_KEYS), ...m };
+				}),
 			};
 			mkdirSync(this.host.agentDir, { recursive: true });
 			writeFileSync(this.modelsConfigPath(), JSON.stringify({ providers }, null, 2) + "\n");
@@ -1384,21 +1476,10 @@ export class ModelAdminService {
 			this.host.invalidatePiConfig();
 			await this.listModelsConfig();
 			await this.host.pushModels();
-			this.host.emit({
-				type: "notice",
-				level: "info",
-				text: `✅ 已保存服务商 ${pid}（${models.length} 个模型）并刷新模型列表`,
-				textEn: `✅ Saved provider ${pid} (${models.length} models) and refreshed the model list`,
-			});
+			return { ok: true, count: models.length };
 		} catch (err) {
-			this.host.emit({
-				type: "notice",
-				level: "error",
-				text: `保存模型配置失败：${(err as Error).message}`,
-				textEn: `Failed to save model config: ${(err as Error).message}`,
-			});
+			return { ok: false, error: (err as Error).message };
 		}
-		this.host.flushSnapshot();
 	}
 
 	/** Remove a provider from models.json and hot-reload. */

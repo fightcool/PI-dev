@@ -23,9 +23,9 @@
  * ──────────────────────────────────────────────────
  */
 import { execFileSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 
 /** 走依赖仓（硬链接 + 冻结）的依赖根；.venv 刻意不在其中（见 @ASSUME）。 */
 export const HARD_LINKED_TREES = ["node_modules", "vendor/pi-web-ui/node_modules"];
@@ -98,6 +98,64 @@ export function linkTree(from, to, { link = true } = {}) {
 	}
 	cpSync(from, to, { recursive: true, dereference: false });
 	return { mode: "copy", files: listFiles(to).length };
+}
+
+/** `.bin` 链接目录（依赖复用的两个根）。 */
+const BIN_DIRS = ["node_modules/.bin", "vendor/pi-web-ui/node_modules/.bin"];
+
+/**
+ * 把 `.bin` 里指向**其它 release 的绝对符号链接**改写成指向本 release 内的相对链接。
+ *
+ * @WHY 实测事故（2026-09-12）：依赖复用走 `cpSync(CURRENT → staging, {dereference:false})`；
+ *   若源 release 的 `.bin` 存的是绝对路径（指向当初装依赖的那个 release 目录），
+ *   `switch-production-release.mjs` 的 prune 删掉那个目录后，**所有存活 release 的 .bin 全悬空**。
+ *   运行时无感（服务端不需要 .bin），但下一次 prepare-release 把悬空链接拷进候选后，
+ *   构建直接 `sh: 1: vite: not found` —— 候选构建失败，且失败原因离根因很远。
+ * @CONTRACT 只改「目标在本 release 内确实存在」的链接（改写为相对路径）；改不了的计入
+ *   unresolved，由调用方决定怎么办（prepare-release 选择立即失败，不留半成品候选）。
+ */
+export function normalizeBinLinks(root) {
+	const fixed = [];
+	const unresolved = [];
+	for (const rel of BIN_DIRS) {
+		const dir = join(root, rel);
+		if (!existsSync(dir)) continue;
+		/** 该 .bin 所属的依赖根：<release>/node_modules 或 <release>/vendor/pi-web-ui/node_modules。 */
+		const installRoot = join(dir, "..");
+		for (const name of readdirSync(dir)) {
+			const link = join(dir, name);
+			let target;
+			try {
+				if (!lstatSync(link).isSymbolicLink()) continue;
+				target = readlinkSync(link);
+			} catch {
+				continue;
+			}
+			if (!isAbsolute(target)) {
+				// 相对链接只关心它有没有断（断了同样是定时炸弹）。
+				if (!existsSync(join(dir, target))) unresolved.push(`${rel}/${name} → ${target}`);
+				continue;
+			}
+			// 绝对目标：从最长的后缀开始试，第一个「在本依赖根里真的存在」的就是它。
+			const segments = target.split("/").filter(Boolean);
+			let resolved = null;
+			for (let i = 0; i < segments.length; i++) {
+				const candidate = join(installRoot, ...segments.slice(i));
+				if (existsSync(candidate)) {
+					resolved = candidate;
+					break;
+				}
+			}
+			if (!resolved) {
+				unresolved.push(`${rel}/${name} → ${target}`);
+				continue;
+			}
+			rmSync(link, { force: true });
+			symlinkSync(relative(dir, resolved), link);
+			fixed.push(`${rel}/${name}`);
+		}
+	}
+	return { fixed, unresolved };
 }
 
 /** 把树内既有文件改成只读（目录保持可写）。 */

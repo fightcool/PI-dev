@@ -25,7 +25,7 @@
 import { useEffect, useState } from "react";
 import { FiAlertTriangle, FiCheck, FiPlus, FiRefreshCw } from "react-icons/fi";
 import type { ChannelApi, ChannelCommandResult, ChannelStateMsg, UsageHistoryMsg } from "../use-chat";
-import type { ModelInfo, ProviderKeyInfo, UiChannelInfo } from "../types";
+import type { ModelInfo, ProviderKeyInfo, UiChannelInfo, UiProviderConfig } from "../types";
 
 /** 渠道表单「获取接口清单」的结果（use-chat 的 channelModelsResult）。 */
 export interface ChannelModelsResult {
@@ -136,10 +136,13 @@ export function ChannelSettings({
 	channelApi,
 	providerIds,
 	providerKeys,
+	providerConfigs,
 	models,
 	usageHistory,
 	onFetchChannelModels,
+	onFetchProviderModels,
 	channelModelsResult,
+	fetchProviderModelsResult,
 }: {
 	channelState: ChannelStateMsg | null;
 	channelResults: Record<string, ChannelCommandResult>;
@@ -147,13 +150,30 @@ export function ChannelSettings({
 	/** 可选服务商 id（由 models + providers 派生，调用方去重排序）。 */
 	providerIds: string[];
 	providerKeys: Record<string, ProviderKeyInfo[]>;
+	/** 自定义服务商配置（models.json）：回填「编辑连接」并判定 hasApiKey。 */
+	providerConfigs?: UiProviderConfig[];
 	models: ModelInfo[];
 	/** P4 用量历史（与用量详情面板共享同一份状态；本面板只用按渠道分组）。 */
 	usageHistory: UsageHistoryMsg | null;
 	/** 渠道表单「获取接口清单」：服务端按 baseUrl 探测 /models（密钥不出服务端）。 */
 	onFetchChannelModels?: (providerId: string, keyName: string | null, reqId: number) => void;
+	/** 新建服务商时的探测（服务商尚未注册，浏览器把刚填的 baseUrl/密钥上行一次）。 */
+	onFetchProviderModels?: (input: {
+		reqId: number;
+		baseUrl: string;
+		apiKey?: string;
+		authHeader?: boolean;
+		api?: string;
+	}) => void;
 	/** 上一次探测结果（透传给表单，见 use-chat 的 channelModelsResult）。 */
 	channelModelsResult?: ChannelModelsResult | null;
+	/** 上一次 fetch_models 结果（新建服务商的候选模型）。 */
+	fetchProviderModelsResult?: {
+		reqId: number;
+		ok: boolean;
+		models?: import("../types").UiModelConfigEntry[];
+		error?: string;
+	} | null;
 }) {
 	const t = useT();
 	const { locale } = useI18n();
@@ -201,7 +221,17 @@ export function ChannelSettings({
 				<button
 					type="button"
 					className="chan-btn primary"
-					onClick={() => setDraft(channelDraftOf(null, providerIds[0] ?? ""))}
+					onClick={() =>
+						setDraft({
+							...channelDraftOf(null, providerIds[0] ?? ""),
+							// 新建默认走「新建服务商」：一个表单填完即用（方案 A 的核心）。
+							providerMode: "new",
+							providerIdInput: "",
+							providerName: "",
+							providerBaseUrl: "",
+							providerApi: "anthropic-messages",
+						})
+					}
 				>
 					<FiPlus /> {t("channelAdd")}
 				</button>
@@ -236,14 +266,14 @@ export function ChannelSettings({
 					channel={c}
 					account={accountFor(c)}
 					querying={querying?.channelId === c.id}
-					onToggle={() => issue(channelApi.saveChannel(saveInputOf(c, { enabled: !c.enabled })), "channelOpToggle")}
+					onToggle={() => issue(channelApi.saveChannel({ channel: saveInputOf(c, { enabled: !c.enabled }) }), "channelOpToggle")}
 					onQuery={() => {
 						const commandId = channelApi.queryChannelAccount(c.id);
 						if (commandId) setQuerying({ commandId, channelId: c.id });
 						// 账户结果由 AccountStatusLine 呈现，这里不覆盖成功回执（只展示失败原因）。
 						issue(commandId);
 					}}
-					onEdit={() => setDraft(channelDraftOf(c, c.providerId))}
+					onEdit={() => setDraft(channelDraftOf(c, c.providerId, providerConfigs?.find((p) => p.providerId === c.providerId) ?? null))}
 					onDelete={() => {
 						if (!window.confirm(t("channelDeleteConfirm", { name: c.displayName }))) return;
 						issue(channelApi.deleteChannel(c.id), "channelOpDelete");
@@ -256,12 +286,15 @@ export function ChannelSettings({
 					draft={draft}
 					providerIds={providerIds}
 					providerKeys={providerKeys}
+					providerConfigs={providerConfigs}
 					models={models}
 					accountPresets={channelState?.accountPresets}
 					onFetchChannelModels={onFetchChannelModels}
+					onFetchProviderModels={onFetchProviderModels}
 					channelModelsResult={channelModelsResult}
-					onSave={(payload) => {
-						issue(channelApi.saveChannel(payload), "channelOpSave");
+					fetchProviderModelsResult={fetchProviderModelsResult}
+					onSave={({ channel, provider }) => {
+						issue(channelApi.saveChannel({ channel, provider }), "channelOpSave");
 						setDraft(null);
 					}}
 					onCancel={() => setDraft(null)}

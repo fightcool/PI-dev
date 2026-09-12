@@ -1132,6 +1132,24 @@
     "channelCommandOk": "appliqué",
     "channelUsageTitle": "Usage par canal",
     "channelUsageLastUsed": "Dernière utilisation",
-    "channelUsageNoRecords": "Aucun enregistrement dans cette fenêtre"
+    "channelUsageNoRecords": "Aucun enregistrement dans cette fenêtre",
+    "channelConnTitle": "Provider connection",
+    "channelConnModeNew": "New provider",
+    "channelConnModeExisting": "Existing provider",
+    "channelConnHint": "Claude models use anthropic-messages (site root, no /v1); GPT/Codex models use openai-completions or openai-responses (usually with /v1).",
+    "channelConnProviderId": "Provider ID (auto when blank)",
+    "channelConnBaseUrl": "Endpoint URL",
+    "channelConnApi": "Protocol",
+    "channelConnApiKey": "API key",
+    "channelConnApiKeyKeep": "Blank = keep the stored key",
+    "channelConnApiKeyNew": "Required",
+    "channelConnAuthHeader": "Also send Authorization: Bearer (gateways that need it)",
+    "channelConnUpdate": "Also update this provider's connection",
+    "channelConnModelsHint": "Checked models are saved to the provider and used as this channel's model allow-list.",
+    "channelConnNeedsModels": "A new provider needs at least one model: fetch the list or add an ID manually.",
+    "channelModelsAdd": "Add",
+    "channelModelsAddPh": "Type a model ID (e.g. claude-opus-5)",
+    "customManagedInChannels": "Managed in Settings → Channels",
+    "customAddInChannels": "To add or edit a provider, use Settings → Channels → Add channel → Provider connection: it writes the endpoint, protocol, key and models together."
   }
 }

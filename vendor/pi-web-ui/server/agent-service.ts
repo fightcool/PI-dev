@@ -119,6 +119,7 @@ import {
 } from "./prompt-composer.js";
 import type {
 	BgServer,
+	ChannelProviderInput,
 	CommandDef,
 	ConversationSummary,
 	GoalStatus,
@@ -5807,6 +5808,16 @@ export class ClientSession {
 					return false;
 				}
 			},
+			providerIds: () => {
+				try {
+					return this.runtime.services.modelRuntime.getProviders().map((p) => p.id);
+				} catch {
+					return [];
+				}
+			},
+			// 渠道表单的「服务商连接」写入：与「管理模型」共用同一套落盘/热加载路径，
+			// 但错误以返回值上报，让渠道回执能说清「服务商未写入，渠道未保存」。
+			upsertProvider: (input) => this.modelAdmin.upsertProviderFromChannel(input),
 			getModel: (providerId, modelId) => {
 				try {
 					const m = this.runtime.services.modelRuntime.getModel(providerId, modelId);
@@ -5817,6 +5828,16 @@ export class ClientSession {
 			},
 			keyNames: (providerId) => this.modelAdmin.keyNameList(providerId),
 			resolveKeyValue: (providerId, keyName) => this.modelAdmin.resolveProviderKeyValue(providerId, keyName),
+			// 渠道没绑定命名凭据时的兜底：用运行时真正解析出来的那把（models.json 内联 key /
+			// $ENV / 命令 / auth.json / OAuth），与模型调用走同一套优先级，不在服务层重实现一遍。
+			resolveProviderKey: async (providerId) => {
+				try {
+					const resolved = await this.runtime.services.modelRuntime.getAuth(providerId);
+					return resolved?.auth.apiKey ?? null;
+				} catch {
+					return null;
+				}
+			},
 			setConversationModel: (conversationId, modelId) => this.setConversationModel(conversationId, modelId),
 			activeConversationId: () => this.activeId,
 			conversationExists: (id) => this.convs.has(id),
@@ -5889,9 +5910,10 @@ export class ClientSession {
 	async saveChannelConfig(
 		commandId: string,
 		channel: Partial<ChannelRecord> & { id?: string },
+		provider?: ChannelProviderInput,
 		expectedConfigRevision?: number,
 	): Promise<void> {
-		await this.channels.saveChannel({ commandId, channel, expectedConfigRevision });
+		await this.channels.saveChannel({ commandId, channel, provider, expectedConfigRevision });
 	}
 
 	async deleteChannelConfig(commandId: string, channelId: string, expectedConfigRevision?: number): Promise<void> {

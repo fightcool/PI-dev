@@ -99,11 +99,16 @@ describe("account queries", () => {
 		});
 		expect((await registry().query(channel(huge), () => "sk")).error).toContain("超出上限");
 
-		expect(await registry().query({ ...channel(bad), credentialRef: null }, () => "sk")).toMatchObject({
-			status: "failed",
-			error: "该渠道未绑定命名凭据，无法查询账户",
-		});
-		expect((await registry().query(channel(bad), () => null)).error).toBe("命名凭据已不存在");
+		// 渠道没有命名凭据 → 问服务层要「服务商自己那把 key」（keyName=null）；拿不到才失败。
+		const asked: (string | null)[] = [];
+		expect(
+			await registry().query({ ...channel(bad), credentialRef: null }, (name) => {
+				asked.push(name);
+				return null;
+			}),
+		).toMatchObject({ status: "failed", error: "该渠道未绑定命名凭据，无法查询账户" });
+		expect(asked).toEqual([null]);
+		expect((await registry().query(channel(bad), () => null)).error).toBe("命名凭据「密钥 1」已不存在");
 	});
 
 	it("gives up after the bounded timeout instead of hanging the request path", async () => {
@@ -194,6 +199,22 @@ describe("account queries", () => {
 		expect(seen).toEqual(["/api/user/self"]);
 	});
 
+	it("falls back to the provider's own key when the channel has no named credential", async () => {
+		// 自定义服务商（CCQTCC / micu 这类）的 key 只存在 models.json，没有 provider-keys.json 的名字：
+		// 旧实现直接报「未绑定命名凭据」，这类渠道的余额永远查不出来。
+		let seenAuth = "";
+		const base = await stub((_url, res) => {
+			seenAuth = String((res.req?.headers.authorization ?? "").toString());
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ data: { quota: 10, used_quota: 4 } }));
+		});
+		const bare = { ...channel(`${base}/v1`), credentialRef: null };
+		const resolve = async (name: string | null) => (name === null ? "provider-own-key" : null);
+		const result = await registry().query(bare, resolve);
+		expect(result.status).toBe("ok");
+		expect(seenAuth).toBe("Bearer provider-own-key");
+	});
+
 	it("uses the account-specific credential when the gateway needs a console token", async () => {
 		let seenAuth = "";
 		const base = await stub((_url, res) => {
@@ -202,7 +223,7 @@ describe("account queries", () => {
 			res.end(JSON.stringify({ data: { quota: 10, used_quota: 0 } }));
 		});
 		const gateway = { ...channel(`${base}/v1`), extra: { account: { kind: "openai-gateway", url: `${base}/v1`, scale: 1, credentialKeyName: "控制台令牌" } } };
-		const resolve = (name: string) => (name === "控制台令牌" ? "console-token" : "model-key");
+		const resolve = (name: string | null) => (name === "控制台令牌" ? "console-token" : "model-key");
 		const result = await registry().query(gateway, resolve);
 		expect(result.status).toBe("ok");
 		expect(seenAuth).toBe("Bearer console-token");

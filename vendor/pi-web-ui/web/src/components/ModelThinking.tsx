@@ -45,6 +45,8 @@ interface Props {
 	channelApi: ChannelApi;
 	/** Compact triggers for narrow toolbars (mobile input row). */
 	compact?: boolean;
+	/** 打开用量明细面板（余额 chip 点击；状态在 App 层，见 use-app-dialogs.ts）。 */
+	onOpenUsage?: () => void;
 }
 
 /** Model picker + thinking-level picker. Rendered in the composer toolbar
@@ -61,6 +63,7 @@ export const ModelThinking = memo(function ModelThinking({
 	channelBinding,
 	channelResults,
 	channelApi,
+	onOpenUsage,
 	compact = false,
 }: Props) {
 	const t = useT();
@@ -72,6 +75,56 @@ export const ModelThinking = memo(function ModelThinking({
 	/** 最近一次 channel_select 的 commandId —— 回执只展示它对应的那一条。 */
 	const [lastChannelCommand, setLastChannelCommand] = useState<string | null>(null);
 	const channelReceipt = lastChannelCommand ? (channelResults[lastChannelCommand] ?? null) : null;
+
+	// -- DEV-CON 余额 chip：直接显示在「思考强度」右侧（PC 与移动端同一处）----------
+	// @WHY 余额原本只在「设置 → 渠道」的行里，用户要一层层翻进去；但它是「这个渠道还能不能跑」
+	//   的第一信号，应该和当前模型/思考强度放在同一行。
+	// @CONTRACT 只在有效渠道确实配了账户查询时出现（channel.account.kind 非空）；值缺失写「—」，
+	//   绝不把缺失当 0（§7）；状态点与设置页账户状态行同义。
+	const effectiveChannelId = channelBinding?.effective?.channelId ?? null;
+	const balanceChannel = effectiveChannelId ? (channels.find((c) => c.id === effectiveChannelId) ?? null) : null;
+	const hasAccountQuery =
+		!!balanceChannel?.account && typeof (balanceChannel.account as { kind?: unknown }).kind === "string" && (balanceChannel.account as { kind: string }).kind !== "";
+	const accountStatus = hasAccountQuery
+		? (channelState?.accounts ?? []).find((a) => a.accountRef === ((balanceChannel?.accountRef || balanceChannel?.id) ?? ""))
+		: undefined;
+	/** 每个渠道每次会话自动查一次（服务端 5 分钟缓存 + 10 秒限频，重复调用无害）。 */
+	const balanceQueried = useRef<Set<string>>(new Set());
+	useEffect(() => {
+		if (!hasAccountQuery || !balanceChannel || !channelApi) return;
+		if (balanceQueried.current.has(balanceChannel.id)) return;
+		balanceQueried.current.add(balanceChannel.id);
+		channelApi.queryChannelAccount(balanceChannel.id);
+	}, [hasAccountQuery, balanceChannel?.id, channelApi]);
+	const balanceValue = (() => {
+		const s = accountStatus;
+		if (!s) return null;
+		const raw = s.balance ?? s.quota?.remaining;
+		if (raw === undefined) return null;
+		const num = Number.isInteger(raw) ? String(raw) : raw.toFixed(2);
+		return s.unit ? `${num} ${s.unit}` : num;
+	})();
+	const balanceStateLabel = !accountStatus
+		? t("channelQuerying")
+		: accountStatus.status === "ok"
+			? t("channelAccountOk")
+			: accountStatus.status === "stale"
+				? t("channelAccountStale")
+				: accountStatus.status === "failed"
+					? t("channelAccountFailed")
+					: t("channelAccountUnsupported");
+	const balanceTitle = [
+		balanceChannel ? `${balanceChannel.displayName} · ${balanceChannel.accountRef || balanceChannel.id}` : "",
+		balanceStateLabel,
+		accountStatus?.checkedAt !== undefined
+			? `${t("channelAccountCheckedAt")} ${new Date(accountStatus.checkedAt).toLocaleString()}`
+			: "",
+		accountStatus?.error ?? "",
+		balanceValue === null && accountStatus && accountStatus.status === "failed" ? t("channelQueryAccount") : "",
+		t("usageDetailTip"),
+	]
+		.filter(Boolean)
+		.join(" · ");
 	// snapshot model.id is the bare id; list ids are "provider/id".
 	const currentModelId = model ? `${model.provider}/${model.id}` : null;
 	const [modelOpen, setModelOpen] = useState(false);
@@ -406,6 +459,20 @@ export const ModelThinking = memo(function ModelThinking({
 					</DropdownItem>
 				))}
 			</Dropdown>
+			{/* 渠道余额 chip：紧贴在「思考强度」右侧（移动端同一位置，见 styles.css 的 .chan-balance）。 */}
+			{hasAccountQuery && balanceChannel && (
+				<button
+					type="button"
+					className={`chip chan-balance ${accountStatus?.status ?? "unknown"}`}
+					title={balanceTitle}
+					onClick={onOpenUsage}
+				>
+					<span className="chan-balance-dot" />
+					<span className="chip-sub">
+						{t("channelAccountBalance")} <span className="chan-balance-value">{balanceValue ?? "—"}</span>
+					</span>
+				</button>
+			)}
 		</>
 	);
 });

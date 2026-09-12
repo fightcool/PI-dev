@@ -35,6 +35,7 @@ export function ChannelModelWhitelist({
 	onFetchModels,
 	fetchModels,
 	fetchState,
+	canFetchWithoutProvider = false,
 }: {
 	models: ModelInfo[];
 	/** 当前选中的服务商（换服务商时白名单必须由调用方清空，见 ChannelForm）。 */
@@ -48,6 +49,8 @@ export function ChannelModelWhitelist({
 	fetchModels?: UiModelConfigEntry[];
 	/** 探测状态（进行中 / 上次结果）。 */
 	fetchState?: { busy: boolean; ok: boolean | null; baseUrl?: string; error?: string };
+	/** 允许在 providerId 为空时也探测：新建服务商还没注册，探测走浏览器的 fetch_models。 */
+	canFetchWithoutProvider?: boolean;
 }) {
 	const t = useT();
 	const [query, setQuery] = useState("");
@@ -118,7 +121,7 @@ export function ChannelModelWhitelist({
 						type="button"
 						className="chan-btn primary"
 						title={t("channelModelsFetchTip")}
-						disabled={!providerId || fetchState?.busy}
+						disabled={(!providerId && !canFetchWithoutProvider) || fetchState?.busy}
 						onClick={onFetchModels}
 					>
 						{fetchState?.busy ? t("channelModelsFetching") : t("channelModelsFetch")}

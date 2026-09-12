@@ -73,6 +73,8 @@ interface ChatInputProps {
 	onSent: () => void;
 	/** Opens the custom-model config modal (mobile input row). */
 	onManageModels: () => void;
+	/** 打开用量明细面板（渠道余额 chip 点击；面板本体在 App 层底栏）。 */
+	onOpenUsage?: () => void;
 	/** Stored API keys per built-in provider (masked) — drives the picker's
 	 *  multi-key grouping (click a model under a key to switch to it). */
 	providerKeys: Record<string, ProviderKeyInfo[]>;
@@ -105,6 +107,7 @@ export const ChatInput = memo(function ChatInput({
 	onNotice,
 	onSent,
 	onManageModels,
+	onOpenUsage,
 	providerKeys,
 	channelState,
 	channelBinding,
@@ -748,6 +751,7 @@ export const ChatInput = memo(function ChatInput({
 							modelsLoading={modelsLoading}
 							send={send}
 							onManageModels={onManageModels}
+							onOpenUsage={onOpenUsage}
 							providerKeys={providerKeys}
 							channelState={channelState}
 							channelBinding={channelBinding}

@@ -99,6 +99,9 @@ const startOfUtcDay = (ms: number) => Date.UTC(new Date(ms).getUTCFullYear(), ne
 /** 渠道保存载荷：协议 `channel_save.channel` 已包含 models 白名单（协议 v25 起）。 */
 export type ChannelSaveInput = Extract<ClientMessage, { type: "channel_save" }>["channel"];
 
+/** channel_save 的服务商子载荷（方案 A：渠道表单同时 upsert models.json）。 */
+export type ChannelProviderSaveInput = NonNullable<Extract<ClientMessage, { type: "channel_save" }>["provider"]>;
+
 /**
  * DEV-CON 渠道命令 API（use-chat 返回值之一）。
  *
@@ -119,7 +122,8 @@ export interface ChannelApi {
 	}) => string | null;
 	/** 清除当前对话的渠道绑定（回到项目/实例默认）。 */
 	clearChannelBinding: (conversationId?: string) => string | null;
-	saveChannel: (channel: ChannelSaveInput) => string | null;
+	/** 保存渠道；provider 省略 = 只引用已注册服务商（不碰 models.json）。 */
+	saveChannel: (input: { channel: ChannelSaveInput; provider?: ChannelProviderSaveInput }) => string | null;
 	deleteChannel: (channelId: string) => string | null;
 	setChannelDefault: (
 		scope: "instance" | "project",
@@ -1609,11 +1613,12 @@ export function useChat() {
 					...(conversationId ? { conversationId } : {}),
 				}));
 			},
-			saveChannel: (channel) =>
+			saveChannel: ({ channel, provider }) =>
 				command((commandId) => ({
 					type: "channel_save",
 					commandId,
 					channel,
+					...(provider ? { provider } : {}),
 					expectedConfigRevision: channelChatRef.current.channelState?.configRevision,
 				})),
 			deleteChannel: (channelId) =>
