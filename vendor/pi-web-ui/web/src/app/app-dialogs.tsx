@@ -1,5 +1,7 @@
 /* 🍞 @COUPLED web/src/components/SettingsModal.tsx, web/src/components/ModelConfigModal.tsx
- *   （内置服务商删除 = settings.hiddenBuiltinProviders 传入） — 📖 docs/DEV-CON-PROPOSAL.md §6 */
+ *   （内置服务商删除 = settings.hiddenBuiltinProviders 传入；
+ *    自定义服务商的连接/密钥不再由这里下发 —— 见 ModelConfigModal 的 @WHY）
+ *   — 📖 docs/DEV-CON-PROPOSAL.md §6/§4 */
 import { lazy, Suspense } from "react";
 import type { AppConnection } from "./types";
 import type { useAppDialogs } from "./use-app-dialogs";
@@ -76,8 +78,6 @@ export function AppDialogs({
 					providerStatus={chat.providers}
 					providerKeys={chat.providerKeys}
 					hiddenProviders={chat.settings?.hiddenBuiltinProviders ?? []}
-					fetchModelsResult={chat.fetchModelsResult}
-					cloneProviderResult={chat.cloneProviderResult}
 					onClose={() => setManageModelsOpen(false)}
 				/>
 			)}
