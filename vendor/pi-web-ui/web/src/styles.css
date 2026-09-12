@@ -10183,11 +10183,15 @@ button.source-default-toggle {
 	.composer-tools-right {
 		flex-shrink: 0;
 	}
-	/* 极窄屏：模型/思考只剩图标，补充按钮的文字也收起。 */
+	/* 极窄屏：模型/思考只剩图标，补充按钮的文字也收起。
+	   余额例外：「余额 ¥12.34」很短且是关键信息，全屏唯一一处余额，不要把文字也藏掉。 */
 	@media (max-width: 420px) {
 		.composer-tools .chip > span.chip-model,
 		.composer-tools .chip > span.chip-sub {
 			display: none;
+		}
+		.composer-tools .chip.chan-balance > span.chip-sub {
+			display: inline;
 		}
 		.composer-tools .dd-caret {
 			display: none;
@@ -10416,7 +10420,9 @@ button.source-default-toggle {
 		max-height: 50vh;
 	}
 
-	/* ---- footer: phones show only context usage + cwd, one line ---- */
+	/* ---- footer: phones show context usage + cache hit + cwd, one line ---- */
+	/* @CONTRACT 手机上保留「缓存命中率」：它是判断上下文是否真复用的关键指标，
+	   藏起来只能让用户去设置里翻。上下文在左、命中率紧贴其右。 */
 	.statusbar {
 		flex-wrap: nowrap;
 		padding: 6px 10px;
@@ -10424,7 +10430,7 @@ button.source-default-toggle {
 	}
 	.status-dot,
 	.status-sep,
-	.status-item:not(.status-ctx):not(.status-cwd) {
+	.status-item:not(.status-ctx):not(.status-cache):not(.status-cwd) {
 		display: none;
 	}
 	.status-ctx {
@@ -10432,6 +10438,10 @@ button.source-default-toggle {
 		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
+	}
+	/* 命中率不可被压缩掉（上下文先让位）。 */
+	.status-cache {
+		flex-shrink: 0;
 	}
 	.status-cwd-input {
 		font-size: 12px; /* avoid iOS auto-zoom on focus */
@@ -10735,6 +10745,34 @@ button.source-default-toggle {
 .status-tokens.active {
 	color: var(--accent);
 	background: var(--bg-elev2);
+}
+
+/* ---- 渠道余额 chip（输入框工具条：思考强度右侧） ----
+   @CONTRACT 余额只在「渠道确实配了账户查询」时出现；值缺失就写 —，绝不把缺失当 0。
+   状态点颜色与设置页账户状态行同义（ok/failed/stale/unsupported）。 */
+.chan-balance {
+	font-size: 11.5px;
+	gap: 5px;
+}
+.chan-balance-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	flex-shrink: 0;
+	background: var(--text-faint);
+}
+.chan-balance.ok .chan-balance-dot {
+	background: var(--green);
+}
+.chan-balance.failed .chan-balance-dot {
+	background: var(--red, #e5484d);
+}
+.chan-balance.stale .chan-balance-dot,
+.chan-balance.unsupported .chan-balance-dot {
+	background: var(--amber);
+}
+.chan-balance .chan-balance-value {
+	font-variant-numeric: tabular-nums;
 }
 
 /* ---- 用量明细面板（底栏令牌项点开） ---- */

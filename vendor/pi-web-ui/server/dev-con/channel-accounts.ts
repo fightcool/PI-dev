@@ -378,8 +378,14 @@ export class AccountRegistry {
 		}));
 	}
 
-	/** 查询某渠道的账户状态；resolveKey 由服务层提供（密钥不出服务端）。 */
-	async query(channel: ChannelRecord, resolveKey: (keyName: string) => string | null): Promise<AccountQueryResult> {
+	/** 查询某渠道的账户状态；resolveKey 由服务层提供（密钥不出服务端）。
+	 *  @CONTRACT resolveKey(null) = 「渠道没绑定命名凭据，用服务商自己那把密钥」——
+	 *  自定义服务商（models.json 内联 key / auth.json）没有 provider-keys.json 名字，
+	 *  旧实现直接报「未绑定命名凭据」，导致这类渠道的余额永远查不出来。 */
+	async query(
+		channel: ChannelRecord,
+		resolveKey: (keyName: string | null) => string | null | Promise<string | null>,
+	): Promise<AccountQueryResult> {
 		const accountRef = channel.accountRef || channel.id;
 		// 「账户查询只用用户为该用途明确配置的授权」：账户配置可指定自己的凭据名。
 		const keyName = accountConfig(channel)?.credentialKeyName ?? channel.credentialRef?.keyName ?? null;
@@ -392,11 +398,14 @@ export class AccountRegistry {
 				error: "该渠道未配置可用的账户查询方式",
 			});
 		}
-		if (!keyName) {
-			return this.remember({ accountRef, kind: adapter.kind, status: "failed", error: "该渠道未绑定命名凭据，无法查询账户" });
-		}
-		const apiKey = resolveKey(keyName);
-		if (!apiKey) return this.remember({ accountRef, kind: adapter.kind, status: "failed", error: "命名凭据已不存在" });
+		const apiKey = await resolveKey(keyName);
+		if (!apiKey)
+			return this.remember({
+				accountRef,
+				kind: adapter.kind,
+				status: "failed",
+				error: keyName ? `命名凭据「${keyName}」已不存在` : "该渠道未绑定命名凭据，无法查询账户",
+			});
 
 		const previous = this.cache.get(accountRef);
 		const last = this.lastAttempt.get(accountRef);

@@ -30,6 +30,7 @@ function makeHost(dir: string, clientId = "test-client") {
 		broadcast: (msg) => emitted.push(msg),
 		flushSnapshot: () => undefined,
 		hasProvider: (id) => id === "main",
+		resolveProviderKey: async (providerId) => (providerId === "main" ? "provider-own-key" : null),
 		getModel: (providerId, modelId) => (models[`${providerId}/${modelId}`] ? { id: modelId, name: models[`${providerId}/${modelId}`] } : null),
 		keyNames: (providerId) =>
 			providerId === "main"

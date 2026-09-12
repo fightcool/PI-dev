@@ -1228,6 +1228,7 @@
     "models.fetch.baseurl.invalid": "無効なbaseUrl: {base}",
     "models.fetch.baseurl.missing": "baseUrlを先に入力する",
     "models.fetch.baseurl.protocol": "baseUrlはhttp/httpsのみ対応する",
+    "models.fetch.failed": "モデル一覧の取得に失敗した（baseUrl={base}）: {summary}",
     "models.fetch.invalid.json": "応答は有効なJSONではない",
     "models.fetch.no.models": "エンドポイントがモデルを返さなかった",
     "models.fetch.request.error": "リクエストが失敗した: {errMessage}",

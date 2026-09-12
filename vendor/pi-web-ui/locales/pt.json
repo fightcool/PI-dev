@@ -1233,6 +1233,7 @@
     "models.fetch.request.error": "Falha na solicitação: {errMessage}",
     "models.fetch.request.failed": "Falha na solicitação",
     "models.fetch.upstream.http": "O upstream retornou HTTP {res.status}{detailSuffixEn}",
+    "models.fetch.failed": "Falha ao obter a lista de modelos (baseUrl={base}): {summary}",
     "models.fetch.invalid.json": "A resposta não é um JSON válido",
     "models.fetch.no.models": "O endpoint não retornou nenhum modelo",
     "plugincatalog.source.invalid": "A origem deve ser owner/repo ou owner/repo/subdir (caminhos locais não são suportados)",

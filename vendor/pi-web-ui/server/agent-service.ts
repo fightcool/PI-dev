@@ -5817,6 +5817,16 @@ export class ClientSession {
 			},
 			keyNames: (providerId) => this.modelAdmin.keyNameList(providerId),
 			resolveKeyValue: (providerId, keyName) => this.modelAdmin.resolveProviderKeyValue(providerId, keyName),
+			// 渠道没绑定命名凭据时的兜底：用运行时真正解析出来的那把（models.json 内联 key /
+			// $ENV / 命令 / auth.json / OAuth），与模型调用走同一套优先级，不在服务层重实现一遍。
+			resolveProviderKey: async (providerId) => {
+				try {
+					const resolved = await this.runtime.services.modelRuntime.getAuth(providerId);
+					return resolved?.auth.apiKey ?? null;
+				} catch {
+					return null;
+				}
+			},
 			setConversationModel: (conversationId, modelId) => this.setConversationModel(conversationId, modelId),
 			activeConversationId: () => this.activeId,
 			conversationExists: (id) => this.convs.has(id),

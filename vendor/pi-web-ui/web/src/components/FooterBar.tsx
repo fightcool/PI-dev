@@ -23,6 +23,9 @@ interface FooterBarProps {
 	chat: ChatState;
 	/** P4：用量历史查询（只读）；未提供时用量详情不显示历史区。 */
 	onQueryUsageHistory?: (groupBy: UsageHistoryMsg["groupBy"], window: UsageHistoryWindow) => number;
+	/** 用量明细面板开合（提到 App 层：输入框工具条的「渠道余额」chip 也会打开它）。 */
+	usageOpen?: boolean;
+	onUsageOpenChange?: (open: boolean) => void;
 	send: (
 		msg:
 			{ type: "complete_path"; path: string } | { type: "set_cwd"; path: string } | { type: "make_dir"; path: string },
@@ -37,7 +40,7 @@ const MACHINE_ROOT = "@root";
  * workspace path — click the path to open a directory picker (browse into
  * folders, go up, create folders, or pick one as the working directory).
  */
-export function FooterBar({ chat, send, onQueryUsageHistory }: FooterBarProps) {
+export function FooterBar({ chat, send, onQueryUsageHistory, usageOpen: usageOpenProp, onUsageOpenChange }: FooterBarProps) {
 	const t = useT();
 	const state = chat.state;
 	const [editing, setEditing] = useState(false);
@@ -50,8 +53,10 @@ export function FooterBar({ chat, send, onQueryUsageHistory }: FooterBarProps) {
 	const [newName, setNewName] = useState("");
 	/** Tab 补全的当前候选下标（-1 = 未选中，Tab 从头开始）。 */
 	const [compIndex, setCompIndex] = useState(-1);
-	/** 用量明细面板（令牌项点开；与 cwd 选择器同为底栏 overlay）。 */
-	const [usageOpen, setUsageOpen] = useState(false);
+	/** 用量明细面板：受控（App 层）——未传时回落为组件内状态，保证旧调用点行为不变。 */
+	const [usageOpenLocal, setUsageOpenLocal] = useState(false);
+	const usageOpen = usageOpenProp ?? usageOpenLocal;
+	const setUsageOpen = onUsageOpenChange ?? setUsageOpenLocal;
 	const inputRef = useRef<HTMLInputElement>(null);
 	const newInputRef = useRef<HTMLInputElement>(null);
 	/** Completion list scoped to the picker: directories only (files are noise
@@ -258,7 +263,7 @@ export function FooterBar({ chat, send, onQueryUsageHistory }: FooterBarProps) {
 				type="button"
 				className={`status-item status-tokens${usageOpen ? " active" : ""}`}
 				title={t("usageDetailTip")}
-				onClick={() => setUsageOpen((v) => !v)}
+				onClick={() => setUsageOpen(!usageOpen)}
 			>
 				{t("tokensShort")} I/O/T {formatTokens(s.tokens.input)} / {formatTokens(s.tokens.output)} /{" "}
 				{formatTokens(s.tokens.total)} · R {formatTokens(request.total)} · Run {formatTokens(run.total)}

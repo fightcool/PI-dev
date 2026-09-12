@@ -1157,54 +1157,85 @@ export class ModelAdminService {
 			}
 		};
 
-		let res = await tryFetch(`${base}/models`);
-		// BaseUrls that omit the /v1 prefix (e.g. https://api.openai.com) 404 on
-		// the bare path — retry under /v1.
-		if (res && res.status === 404 && !/\/v\d+[a-z-]*$/.test(base)) {
-			res = await tryFetch(`${base}/v1/models`);
-		}
-		if (!res) throw new Error(pick(l, "请求失败", "Request failed", "models.fetch.request.failed"));
-		if (!res.ok) {
-			let detail = "";
+		/**
+		 * 候选探测地址（按顺序试，第一个「真的是模型清单」的胜出）。
+		 * @GOTCHA 只试 ${base}/models 是不够的：聚合网关/自建前端常把裸路径挂成 SPA，
+		 *   返回 **200 + text/html**（不是 404），旧逻辑因此不会回退 /v1，直接把网页当 JSON 解析，
+		 *   报「响应不是有效的 JSON」——用户看到的就是「自动获取模型列表基本不可用」。
+		 * @WHY baseUrl 已带版本段（…/v1、…/v1beta）时说明用户填的是完整接口前缀，只试一个；
+		 *   否则按 /models → /v1/models（google 再加 /v1beta/models）依次回退。
+		 */
+		const versioned = /\/v\d+[a-z-]*$/i.test(url.pathname.replace(/\/+$/, ""));
+		const candidates = versioned
+			? [`${base}/models`]
+			: api === "google-generative-ai"
+				? [`${base}/models`, `${base}/v1/models`, `${base}/v1beta/models`]
+				: [`${base}/models`, `${base}/v1/models`];
+		/** 逐个候选的失败原因：全部失败时汇总展示，用户才知道到底是哪一步不对。 */
+		const failures: string[] = [];
+		for (const candidate of candidates) {
+			const res = await tryFetch(candidate);
+			if (!res) continue;
+			const contentType = res.headers.get("content-type") ?? "";
+			// 200 也可能是「网页」或空响应：内容类型/正文形态不对就换下一个候选。
+			if (/text\/html/i.test(contentType)) {
+				failures.push(`${candidate} → 返回网页而非模型接口`);
+				continue;
+			}
+			if (!res.ok) {
+				let detail = "";
+				try {
+					detail = (await res.text()).slice(0, 200);
+				} catch {
+					// response body already consumed / not text — ignore
+				}
+				failures.push(`${candidate} → HTTP ${res.status}${detail ? `：${detail}` : ""}`);
+				continue;
+			}
+			let models: UiModelConfigEntry[] = [];
+			let parsed = false;
 			try {
-				detail = (await res.text()).slice(0, 200);
+				const json = (await res.json()) as Record<string, unknown>;
+				const data = Array.isArray(json.data) ? json.data : null;
+				if (data) {
+					// OpenAI-compatible: { data: [{ id, context_window, modalities, … }] }
+					models = data.map((m) => parseOpenAiModel(m)).filter((m) => m.id);
+					parsed = true;
+				} else if (Array.isArray(json.models)) {
+					// Google: { models: [{ name: "models/…", displayName, … }] }
+					models = (json.models as unknown[]).map((m) => parseGoogleModel(m)).filter((m) => m.id);
+					parsed = true;
+				}
 			} catch {
-				// response body already consumed / not text — ignore
+				failures.push(`${candidate} → 响应不是有效的 JSON`);
+				continue;
 			}
-			const detailSuffixZh = detail ? `：${detail}` : "";
-			const detailSuffixEn = detail ? `: ${detail}` : "";
-			throw new Error(
-				pick(
-					l,
-					`接口返回 HTTP ${res.status}${detailSuffixZh}`,
-					`Upstream returned HTTP ${res.status}${detailSuffixEn}`,
-					"models.fetch.upstream.http",
-					{ "res.status": res.status, detailSuffixZh, detailSuffixEn },
-				),
-			);
-		}
-		let models: UiModelConfigEntry[] = [];
-		try {
-			const json = (await res.json()) as Record<string, unknown>;
-			const data = Array.isArray(json.data) ? json.data : null;
-			if (data) {
-				// OpenAI-compatible: { data: [{ id, context_window, modalities, … }] }
-				models = data.map((m) => parseOpenAiModel(m)).filter((m) => m.id);
-			} else if (Array.isArray(json.models)) {
-				// Google: { models: [{ name: "models/…", displayName, … }] }
-				models = (json.models as unknown[]).map((m) => parseGoogleModel(m)).filter((m) => m.id);
+			if (!parsed) {
+				failures.push(`${candidate} → 响应里没有 data/models 字段`);
+				continue;
 			}
-		} catch {
-			throw new Error(pick(l, "响应不是有效的 JSON", "Response is not valid JSON", "models.fetch.invalid.json"));
+			// Dedupe by id (keep the first, most complete entry) and sort by id.
+			const seen = new Set<string>();
+			models = models
+				.filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)))
+				.sort((a, b) => a.id.localeCompare(b.id));
+			if (models.length === 0) {
+				failures.push(`${candidate} → 接口未返回任何模型`);
+				continue;
+			}
+			return models;
 		}
-		// Dedupe by id (keep the first, most complete entry) and sort by id.
-		const seen = new Set<string>();
-		models = models
-			.filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)))
-			.sort((a, b) => a.id.localeCompare(b.id));
-		if (models.length === 0)
-			throw new Error(pick(l, "接口未返回任何模型", "The endpoint returned no models", "models.fetch.no.models"));
-		return models;
+		// 全部候选都失败：汇总每个地址的失败原因（含用户填的 baseUrl，便于自查）。
+		const summary = failures.length > 0 ? failures.join("；") : pick(l, "请求失败", "Request failed");
+		throw new Error(
+			pick(
+				l,
+				`获取模型列表失败（baseUrl=${base}）：${summary}`,
+				`Failed to fetch models (baseUrl=${base}): ${summary}`,
+				"models.fetch.failed",
+				{ base, summary },
+			),
+		);
 	}
 
 	/**

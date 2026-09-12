@@ -58,6 +58,11 @@ export interface ChannelConfigPort {
 	keyNames: (providerId: string) => { keyName: string; active: boolean }[];
 	/** 服务端解析命名密钥正文（仅账户查询使用）。 */
 	resolveKeyValue: (providerId: string, keyName: string) => string | null;
+	/** 服务商自己配置的密钥（models.json 内联 / $ENV / 命令 / auth.json / OAuth）：
+	 *  渠道没绑定命名凭据，或账户配置未指定「账户凭据」时的兜底。
+	 *  @WHY 自定义服务商（CCQTCC / micu 这类）的 key 只存在 models.json，没有 provider-keys.json
+	 *  里的名字；旧实现直接报「未绑定命名凭据」，这类渠道的余额永远查不出来。 */
+	resolveProviderKey: (providerId: string) => Promise<string | null>;
 	/** 目录状态（读写唯一出口：commitConfig）。 */
 	state: ChannelState;
 	/** 释放某个对话的待生效选择（渠道被删除时）。 */
@@ -218,7 +223,9 @@ export async function queryAccountCommand(port: ChannelConfigPort, input: QueryA
 		});
 		return;
 	}
-	const result = await port.accounts.query(channel, (keyName) => port.resolveKeyValue(channel.providerId, keyName));
+	const result = await port.accounts.query(channel, async (keyName) =>
+		keyName ? port.resolveKeyValue(channel.providerId, keyName) : await port.resolveProviderKey(channel.providerId),
+	);
 	const usable = result.status === "ok" || result.status === "stale";
 	port.receipt({
 		commandId: input.commandId,

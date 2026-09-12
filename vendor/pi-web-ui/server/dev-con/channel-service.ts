@@ -67,6 +67,8 @@ export interface ChannelServiceHost extends ChannelStateHost {
 	flushSnapshot: () => void;
 	/** runtime 中 (provider, model) 是否存在。 */
 	getModel: (providerId: string, modelId: string) => { id: string; name: string } | null;
+	/** 服务商自己配置的密钥（仅账户查询的兜底；密钥正文不出服务端）。 */
+	resolveProviderKey: (providerId: string) => Promise<string | null>;
 	/** 让某个对话使用该模型（内部调用 SDK session.setModel，会落 model_change）。 */
 	setConversationModel: (conversationId: string, modelId: string) => Promise<void>;
 	activeConversationId: () => string;
@@ -152,6 +154,7 @@ export class ChannelService {
 			hasProvider: (providerId) => this.host.hasProvider(providerId),
 			keyNames: (providerId) => this.host.keyNames(providerId),
 			resolveKeyValue: (providerId, keyName) => this.host.resolveKeyValue(providerId, keyName),
+			resolveProviderKey: (providerId) => this.host.resolveProviderKey(providerId),
 			state: this.state,
 			dropPending: (conversationId) => this.disposeConversation(conversationId),
 			buildSelection: (input) => this.buildSelection(input),

@@ -36,6 +36,8 @@ const MODELS = [
 const CHANNELS = [
 	{ id: "ch-a", displayName: "渠道 A", providerId: "main", endpointId: "default",
 		credentialRef: { providerId: "main", keyName: "密钥 1" }, accountRef: null, enabled: true,
+		// 配了账户查询 → 输入框工具条要出现「余额」chip（PC 与移动端同位置）。
+		account: { kind: "openai-gateway", url: "{baseUrl}/api/user/self", method: "GET", unit: "USD" },
 		models: ["m1"],
 		keys: [{ keyName: "密钥 1", active: true }, { keyName: "密钥 2", active: false }], keyMissing: false, providerMissing: false },
 	{ id: "ch-b", displayName: "渠道 B", providerId: "main", endpointId: "default",
@@ -165,6 +167,10 @@ try {
 	// 2) 底部状态栏显示有效渠道（A11 的「当前渠道」入口）。
 	const footer = (await page.locator(".status-channel").first().innerText()).trim();
 	check("footer shows the effective channel", footer.includes("渠道 A"), footer);
+	// 渠道配了账户查询时，余额 chip 出现在输入框工具条（思考强度右侧），PC 端不必翻设置。
+	const desktopBalance = page.locator(".composer-tools-left .chan-balance");
+	check("toolbar shows the channel balance chip", (await desktopBalance.isVisible()) && (await desktopBalance.innerText()).includes("12.5"),
+		await desktopBalance.innerText().catch(() => "missing"));
 
 	// 3) 选择器按渠道分组，禁用渠道给出明确原因且不可点选。
 	// 触发器是 Dropdown 里的 .chip（内含 .chip-model 名称）。
@@ -416,6 +422,15 @@ try {
 		await mobilePage.locator(".chan-chip.effective").waitFor({ state: "visible", timeout: options.stepTimeout });
 		const mobileOk = await mobilePage.locator(".chan-chip.pending").isVisible();
 		check("mobile viewport shows effective + pending channel state", mobileOk);
+		// 手机上底栏仍要显示「上下文 + 缓存命中率」（命中率此前被整条规则隐藏）。
+		check("mobile footer keeps the cache hit rate next to context",
+			(await mobilePage.locator(".statusbar .status-ctx").isVisible()) &&
+			(await mobilePage.locator(".statusbar .status-cache").isVisible()));
+		// 余额 chip 在「思考强度」右侧、手机上也在同一行（文案随语言，按数字断言）。
+		const mobileBalance = mobilePage.locator(".composer-tools-left .chan-balance");
+		check("mobile toolbar shows the balance chip",
+			(await mobileBalance.isVisible()) && (await mobileBalance.innerText()).includes("12.5"),
+			await mobileBalance.innerText().catch(() => "missing"));
 		await mobilePage.locator("button.chip", { has: mobilePage.locator(".chip-model") }).first().click();
 		await mobilePage.locator(".chan-group").first().waitFor({ state: "visible", timeout: options.stepTimeout });
 		const mobileGroups = await mobilePage.locator(".chan-group").count();

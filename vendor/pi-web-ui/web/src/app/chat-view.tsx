@@ -54,7 +54,7 @@ export function ChatView({
 		isMobile,
 		panelSend,
 	} = panels;
-	const { setPreviewFile, searchJump, onJumpDone, openManageModels } = dialogs;
+	const { setPreviewFile, searchJump, onJumpDone, openManageModels, openUsage } = dialogs;
 	const {
 		attachments,
 		attach,
@@ -216,6 +216,7 @@ export function ChatView({
 					onAddLocalFiles={addLocalFilesCb}
 					onNotice={pushNotice}
 					onManageModels={openManageModels}
+					onOpenUsage={openUsage}
 					onSent={clearAttachments}
 					quickPhrases={chat.settings?.quickPhrases ?? []}
 					quickPhrasesEnabled={chat.settings?.quickPhrasesEnabled ?? true}

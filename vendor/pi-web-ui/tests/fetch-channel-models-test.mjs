@@ -47,6 +47,15 @@ const mock = createServer((req, res) => {
 			],
 		});
 	}
+	// 真实网关形态（CCQTCC / micu 同款）：裸路径挂的是 SPA，返回 200 + text/html，
+	// 真实清单在 /v1/models —— 探测必须能继续回退，而不是把网页当 JSON 解析。
+	if (url.pathname === "/gw/models") {
+		res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+		return res.end("<!doctype html><html><body>app</body></html>");
+	}
+	if (url.pathname === "/gw/v1/models") {
+		return send(200, { data: [{ id: "claude-opus-5", display_name: "opus5" }] });
+	}
 	// 无 baseUrl 的服务商走不到这里；其它路径一律 404（触发 /v1 回退后仍失败）。
 	send(404, { error: "no route" });
 });
@@ -66,6 +75,13 @@ writeFileSync(
 				models: [{ id: "cc1q/gpt-5.6-sol" }],
 			},
 			nobase: { api: "openai-completions", models: [{ id: "x" }] },
+			// 裸路径返回 SPA（200+text/html）、/v1/models 才是真清单（真实网关形态）
+			htmlgw: {
+				api: "anthropic-messages",
+				baseUrl: `http://127.0.0.1:${MOCK_PORT}/gw`,
+				apiKey: "inline-key",
+				models: [{ id: "claude-opus-5" }],
+			},
 		},
 	}),
 );
@@ -215,6 +231,15 @@ try {
 	c.send({ type: "fetch_channel_models", reqId: 4, providerId: "   " });
 	const r4 = await c.waitFor("channel_models_result", 30000, (m) => m.reqId === 4);
 	check("an empty providerId is rejected", r4.ok === false, r4.error);
+
+	// 5) 裸路径是 SPA（200 + text/html）的服务商：仍能拿到 /v1/models 的真清单
+	c.send({ type: "fetch_channel_models", reqId: 5, providerId: "htmlgw" });
+	const r5 = await c.waitFor("channel_models_result", 30000, (m) => m.reqId === 5);
+	check(
+		"200 + text/html 的网关也能拉到模型清单",
+		r5.ok === true && (r5.models ?? []).map((m) => m.id).join() === "claude-opus-5",
+		r5.error ?? JSON.stringify(r5.models),
+	);
 
 	console.log(`\n${passed} passed, ${failed} failed`);
 } catch (err) {
