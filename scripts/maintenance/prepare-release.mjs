@@ -20,6 +20,7 @@ import {
 	HARD_LINKED_TREES,
 	assertDependencyTreeUnmodified,
 	ensureDepsStore,
+	normalizeBinLinks,
 	populateFromStore,
 	snapshotTrees,
 } from "../lifecycle/release-deps.mjs";
@@ -82,6 +83,16 @@ try {
 		}
 		for (const rel of COPIED_TREES) {
 			if (existsSync(join(CURRENT, rel))) cpSync(join(CURRENT, rel), join(staging, rel), { recursive: true, dereference: false });
+		}
+		// @GOTCHA 复用是 cpSync 拷贝：源 release 的 .bin 若存的是**绝对**路径（指向当初装依赖的
+		// release 目录），prune 删掉那个目录后链接就全悬空了 —— 运行时无感，但候选构建会以
+		// `vite: not found` 这种离根因很远的方式失败（2026-09-12 实测）。这里统一改写为树内相对链接。
+		const links = normalizeBinLinks(staging);
+		if (links.fixed.length) log(`依赖 .bin 链接规范化：改写 ${links.fixed.length} 个指向其它 release 的绝对链接`);
+		if (links.unresolved.length) {
+			throw new Error(
+				`依赖 .bin 里有 ${links.unresolved.length} 个无法解析的链接，拒绝产出半成品候选（先修好依赖或按锁文件重装）：${links.unresolved.slice(0, 5).join("；")}`,
+			);
 		}
 		if (linkDeps) depGuard = snapshotTrees(staging);
 	} else {

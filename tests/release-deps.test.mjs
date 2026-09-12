@@ -8,7 +8,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";import { tmpdir } from "node:os";
 import {
 	HARD_LINKED_TREES,
@@ -19,6 +19,7 @@ import {
 	freezeTree,
 	linkTree,
 	listFiles,
+	normalizeBinLinks,
 	planObsoleteStores,
 	populateFromStore,
 	pruneObsoleteStores,
@@ -185,4 +186,31 @@ test("找不到锁文件的 release 不被当成引用来源（不会误保护�
 	// 新增一个没有锁文件的版本（例如被截断的候选）——它引用不了任何仓。
 	mkdirSync(join(releases, "rel-nolocks"), { recursive: true });
 	assert.deepEqual(planObsoleteStores(shared, ["rel-nolocks"], releases), [store.id]);
+});
+
+test("依赖复用的 .bin 绝对链接会被改写成树内相对链接（prune 之后不再悬空）", (t) => {
+	// 事故形态：源 release 的 .bin 指向当初 npm install 的那个 release 目录；那个目录被 prune 后，
+	// 复用拷贝把悬空链接带进候选，构建报 `vite: not found`。
+	const root = tempDir(t);
+	const release = join(root, "releases", "new-id");
+	mkdirSync(join(release, "node_modules/pkg/bin"), { recursive: true });
+	writeFileSync(join(release, "node_modules/pkg/bin/cli.js"), "#!/usr/bin/env node\n");
+	mkdirSync(join(release, "node_modules/.bin"), { recursive: true });
+	const pruned = join(root, "releases", "pruned-id");
+	symlinkSync(join(pruned, "node_modules/pkg/bin/cli.js"), join(release, "node_modules/.bin/pkg"));
+	// 断掉的相对链接 + 谁都不认的绝对链接：都必须是 unresolved，不能假装修好。
+	symlinkSync("../gone/bin/x.js", join(release, "node_modules/.bin/gone"));
+	symlinkSync(join(pruned, "node_modules/nowhere/bin/x.js"), join(release, "node_modules/.bin/nowhere"));
+
+	const result = normalizeBinLinks(release);
+	assert.deepEqual(result.fixed, ["node_modules/.bin/pkg"]);
+	assert.deepEqual(result.unresolved, [
+		"node_modules/.bin/gone → ../gone/bin/x.js",
+		"node_modules/.bin/nowhere → " + join(pruned, "node_modules/nowhere/bin/x.js"),
+	]);
+	// 改写成相对链接，且在本树内可解析。
+	assert.equal(readlinkSync(join(release, "node_modules/.bin/pkg")), "../pkg/bin/cli.js");
+	assert.ok(existsSync(join(release, "node_modules/.bin/pkg")));
+	// 幂等：第二次没有可修的。
+	assert.deepEqual(normalizeBinLinks(release).fixed, []);
 });
