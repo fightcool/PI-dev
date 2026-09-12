@@ -6,7 +6,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { FiCpu, FiSearch, FiZap } from "react-icons/fi";
 import type { ModelInfo, ProviderKeyInfo, UiChannelBindingView, UiState } from "../types";
-import { balanceTextOf, channelAccountView } from "../channel-account";
+import { balanceTextOf, channelAccountView, startBalanceRefresh } from "../channel-account";
 import { Dropdown, DropdownItem } from "./Dropdown";
 import { ChannelModelList, ChannelStatusChips } from "./ModelChannelPicker";
 import { useT } from "../i18n";
@@ -21,6 +21,7 @@ export type ModelThinkingMsg =
 	| { type: "activate_provider_key"; provider: string; keyName: string };
 
 const THINKING_VALUES = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
 
 /** Props are deliberately NARROW (no whole-ChatState object): every field is
  *  stable while tokens stream in, so the shallow-compared memo() below keeps
@@ -95,14 +96,26 @@ export const ModelThinking = memo(function ModelThinking({
 	const balanceChannel = balanceView.channel;
 	const accountStatus = balanceView.account;
 	const hasAccountQuery = !!balanceChannel;
-	/** 每个渠道每次会话自动查一次（服务端 5 分钟缓存 + 10 秒限频，重复调用无害）。 */
-	const balanceQueried = useRef<Set<string>>(new Set());
+	/**
+	 * 余额的自动更新：进入/切换渠道立刻查一次，之后每 {@link BALANCE_REFRESH_MS} 刷新一次；
+	 * 从后台标签页切回来时，若数据已经超过一个周期就补一次。
+	 * @WHY 余额是「还能不能继续跑」的信号，只在进入时查一次会一直停在旧值上。
+	 * @MAGIC 5 分钟与服务端的账户缓存 TTL 对齐（channel-accounts.ts 的 CACHE_TTL_MS）：
+	 *   比它更快只是重复打供应商接口（服务端 10 秒限频会挡掉过密的请求）。
+	 * @CONTRACT 后台标签页不刷（省电省流量）；切换渠道时旧定时器会被清掉，不会给别的渠道发查询。
+	 */
+	const lastCheckedAt = accountStatus?.checkedAt ?? 0;
+	const lastCheckedRef = useRef(lastCheckedAt);
+	lastCheckedRef.current = lastCheckedAt;
+	const balanceChannelId = balanceChannel?.id ?? null;
 	useEffect(() => {
-		if (!hasAccountQuery || !balanceChannel) return;
-		if (balanceQueried.current.has(balanceChannel.id)) return;
-		balanceQueried.current.add(balanceChannel.id);
-		channelApi.queryChannelAccount(balanceChannel.id);
-	}, [hasAccountQuery, balanceChannel, channelApi]);
+		if (!hasAccountQuery || !balanceChannelId) return;
+		// 调度细节（周期/后台跳过/回前台补一次）在 channel-account.ts，那里有假时钟单测。
+		return startBalanceRefresh({
+			query: () => channelApi.queryChannelAccount(balanceChannelId),
+			lastCheckedAt: () => lastCheckedRef.current,
+		});
+	}, [hasAccountQuery, balanceChannelId, channelApi]);
 	const balanceText = balanceTextOf(accountStatus, t as (k: string) => string);
 	/** 状态点：ok 绿；失败/过期/其他 用警示色；尚未查过用中性。 */
 	const balanceState = accountStatus?.status ?? "unknown";

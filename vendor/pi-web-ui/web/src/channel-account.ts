@@ -88,3 +88,41 @@ export function topupUrlOf(channel: UiChannelInfo | null | undefined): string | 
 	const url = raw.trim();
 	return /^https?:\/\//i.test(url) ? url : null;
 }
+
+/** 余额自动刷新周期：@MAGIC 与服务端账户缓存 TTL 对齐（channel-accounts.ts 的 CACHE_TTL_MS）。 */
+export const BALANCE_REFRESH_MS = 5 * 60_000;
+
+/**
+ * 余额自动刷新的调度（抽出来是为了能用假时钟精确单测「多久刷一次」）。
+ * @CONTRACT 立即查一次；之后每 intervalMs 一次；后台标签页不查；回到前台时若上次数据
+ *   已超过一个周期则补一次。返回停止函数（组件卸载/切换渠道时调用）。
+ */
+export function startBalanceRefresh(opts: {
+	/** 发一次账户查询（服务端有 10 秒限频 + 5 分钟缓存兜底）。 */
+	query: () => void;
+	/** 上次成功查询的时间（来自服务端快照 checkedAt）；0 = 还没有数据。 */
+	lastCheckedAt?: () => number;
+	/** 页面是否在后台（默认读 document.hidden）。 */
+	isHidden?: () => boolean;
+	now?: () => number;
+	intervalMs?: number;
+}): () => void {
+	const intervalMs = opts.intervalMs ?? BALANCE_REFRESH_MS;
+	const isHidden = opts.isHidden ?? (() => typeof document !== "undefined" && document.hidden);
+	const now = opts.now ?? (() => Date.now());
+	opts.query();
+	const timer = setInterval(() => {
+		if (isHidden()) return;
+		opts.query();
+	}, intervalMs);
+	const onVisible = () => {
+		if (isHidden()) return;
+		const last = opts.lastCheckedAt?.() ?? 0;
+		if (now() - last > intervalMs) opts.query();
+	};
+	if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisible);
+	return () => {
+		clearInterval(timer);
+		if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisible);
+	};
+}
