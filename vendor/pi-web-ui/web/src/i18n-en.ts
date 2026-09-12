@@ -1337,4 +1337,10 @@ export const en: EnDictionary = {
 	channelAccountAutoRefresh: "Refreshes every 2 minutes",
 	channelAccountRetry: "Retry",
 	channelAccountRetryHint: "Auto-refresh stopped after 3 failed attempts; press Retry to resume.",
+	channelErrorQuota:
+		"This channel's gateway account is out of credit (gateway reports {remaining} left). Top up that account or switch to another channel.",
+	channelErrorQuotaNoRemaining:
+		"This channel's gateway account is out of credit. Top up that account or switch to another channel.",
+	channelErrorDetail: "Details",
+	channelErrorDetailHide: "Hide details",
 };

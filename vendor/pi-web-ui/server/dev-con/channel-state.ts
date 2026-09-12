@@ -7,7 +7,7 @@
  * Breadcrumbs (changing this affects):
  *   @COUPLED channel-model.ts (纯逻辑/数据结构)、channel-store.ts (channels.json 读写),
  *            channel-service.ts (命令层唯一调用方)、channel-config.ts (渠道/默认值/账户命令),
- *            protocol.ts (channel_state 视图类型)
+ *            channel-accounts.ts（账户配置解析与 CCTQ 内存默认值）、protocol.ts (channel_state 视图类型)
  *   📖 docs/DEV-CON-PROPOSAL.md §4（配置对象、所有权与安全/组合命令）, §5（切换场景表）,
  *      §7（请求时绑定快照 → 用量归属）
  *   @CONTRACT 状态层只做三件事：目录内存态、持久化（先落盘成功再提交内存）、视图构造；
@@ -32,7 +32,7 @@ import {
 	type RequestBindingSnapshot,
 } from "./channel-model.js";
 import { loadCatalog, saveCatalog } from "./channel-store.js";
-import { topupUrlOf } from "./channel-accounts.js";
+import { accountQueryConfig, topupUrlOf } from "./channel-accounts.js";
 
 /** 状态层依赖的宿主能力（窄接口：只含目录/绑定语义需要的读口）。 */
 export interface ChannelStateHost {
@@ -271,19 +271,20 @@ export class ChannelState {
 				// 只允许白名单键，且**只允许字符串/数字/布尔/纯对象**——任何密钥值都不可能带出去
 				// （渠道配置本身也不允许出现 apiKey/key 字段，见 channel-store 的写入校验）。
 				account: (() => {
-					const raw = (c.extra as { account?: Record<string, unknown> } | undefined)?.account;
+					const raw = accountQueryConfig(c);
 					if (!raw || typeof raw !== "object" || typeof raw.kind !== "string") return null;
+					const fields = raw as unknown as Record<string, unknown>;
 					const allowed = ["kind", "url", "method", "apiKeyHeader", "apiKeyPrefix", "body", "unit", "scale", "credentialKeyName"] as const;
 					const out: Record<string, unknown> = {};
 					for (const key of allowed) {
-						const value = raw[key];
+						const value = fields[key];
 						if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") out[key] = value;
 					}
 					// 充值链接由服务端解析（{baseUrl} 占位需要服务商 baseUrl，前端不知道），前端直接当 href 用。
 					const topup = topupUrlOf(c);
 					if (topup) out.topupUrl = topup;
 					for (const key of ["mapping", "items"] as const) {
-						const value = raw[key];
+						const value = fields[key];
 						if (value && typeof value === "object" && !Array.isArray(value)) {
 							const entries = Object.entries(value as Record<string, unknown>)
 								.filter(([, v]) => typeof v === "string")

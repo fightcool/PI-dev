@@ -6,11 +6,13 @@
  *
  * Breadcrumbs (changing this affects):
  *   @COUPLED channel-config.ts (queryAccountCommand 调用 query), channel-service.ts (accounts 快照
- *            注入 stateMessage), protocol.ts (UiAccountStatus),
+ *            注入 stateMessage), protocol.ts (UiAccountStatus), channel-state.ts（账户配置视图）,
  *            channel-model.ts (ChannelRecord.extra.account 配置入口)
  *   📖 docs/DEV-CON-PROPOSAL.md §7（余额/配额/限频/失败状态）, §9（账户查询 P0 项）
- *   @CONTRACT 只在渠道显式配置账户端点（channel.extra.account）时查询；没有适配器时
- *             返回 unsupported，绝不用 Token 反推余额。
+ *   @CONTRACT 显式 channel.extra.account 优先；指向 *.cctq.ai 的既有渠道自动使用已验证的
+ *             openai-gateway 账单接口。其他未配置渠道返回 unsupported，绝不用 Token 反推余额。
+ *   @BUGFIX 2026-09-12: CCQTCC/cctq 旧渠道没有 extra.account，导致同一 CCTQ 服务无法查询；
+ *             fix: 按 provider baseUrl 统一派生内存配置，且不改写持久化渠道。
  *   @WHY 账户查询是外部网络 IO：必须同时具备有界超时、响应体上限、禁止重定向、
  *        限频与缓存；任一缺失都会让「查询故障不阻塞编码」变成空话（§4/§9）。
  *   @GOTCHA fetch 的 redirect 默认 follow 会把 Authorization 带到别的来源；
@@ -63,7 +65,7 @@ export interface AccountAdapter {
 }
 
 /** 渠道里的账户配置（channel.extra.account）。 */
-interface AccountConfig {
+export interface AccountConfig {
 	kind?: string;
 	url?: string;
 	unit?: string;
@@ -82,15 +84,38 @@ interface AccountConfig {
 	credentialKeyName?: string;
 }
 
-/** 账户配置（渠道 extra.account）；供注册表选择「账户专用凭据」。 */
-export function accountQueryConfig(channel: ChannelRecord): AccountConfig | null { return accountConfig(channel); }
+/**
+ * 账户配置的唯一读取入口：显式配置优先；CCTQ 的既有渠道按服务商地址补齐内存默认值。
+ * @WHY CCQTCC 与 cctq 只是同一服务商的不同 providerId，按名字判断会再次分叉；baseUrl 才是
+ *      两者共享且稳定的身份。此派生不落盘，也不影响其他 OpenAI 兼容服务。
+ */
+export function accountQueryConfig(channel: ChannelRecord): AccountConfig | null {
+	return accountConfig(channel);
+}
 
 function accountConfig(channel: ChannelRecord): AccountConfig | null {
 	const raw = channel.extra?.account;
-	if (!raw || typeof raw !== "object") return null;
-	const cfg = raw as AccountConfig;
-	if (typeof cfg.kind !== "string" || !cfg.kind.trim()) return null;
-	return cfg;
+	if (raw && typeof raw === "object") {
+		const cfg = raw as AccountConfig;
+		if (typeof cfg.kind === "string" && cfg.kind.trim()) return cfg;
+	}
+	const providerBaseUrl = providerBaseUrlOf(channel);
+	if (!isCctqUrl(providerBaseUrl)) return null;
+	return {
+		kind: "openai-gateway",
+		url: providerBaseUrl,
+		unit: "USD",
+		topupUrl: "{baseUrl}/console/topup",
+	};
+}
+
+function isCctqUrl(raw: string): boolean {
+	try {
+		const hostname = new URL(raw).hostname.toLowerCase();
+		return hostname === "cctq.ai" || hostname.endsWith(".cctq.ai");
+	} catch {
+		return false;
+	}
 }
 
 /** 有界 JSON 读取：超时、体积上限、禁止重定向、非 2xx 即失败。 */

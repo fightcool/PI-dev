@@ -1305,6 +1305,11 @@ export const zh = {
 	channelAccountAutoRefresh: "每 2 分钟自动更新",
 	channelAccountRetry: "重试",
 	channelAccountRetryHint: "连续 3 次获取失败后已停止自动更新；点「重试」会重新开始自动刷新。",
+	/* 报错卡：先说哪个渠道·哪个模型失败，认得的失败再给一句人话（原文收进「详情」） */
+	channelErrorQuota: "该渠道的网关账户额度不足（网关报告剩余 {remaining}）。请为这个账户充值，或切换到其他渠道。",
+	channelErrorQuotaNoRemaining: "该渠道的网关账户额度不足。请为这个账户充值，或切换到其他渠道。",
+	channelErrorDetail: "详情",
+	channelErrorDetailHide: "收起详情",
 } as const;
 
 /* ------------------------------------------------------------------ */

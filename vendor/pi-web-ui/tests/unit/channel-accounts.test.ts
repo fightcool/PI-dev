@@ -6,6 +6,7 @@ import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	AccountRegistry,
+	accountQueryConfig,
 	deepSeekAdapter,
 	topupUrlOf,
 	setProviderBaseUrlLookup,
@@ -16,6 +17,7 @@ let servers: Server[] = [];
 afterEach(() => {
 	for (const s of servers) s.close();
 	servers = [];
+	setProviderBaseUrlLookup(() => undefined);
 });
 
 async function stub(handler: (url: URL, res: import("node:http").ServerResponse) => void): Promise<string> {
@@ -48,6 +50,28 @@ describe("account queries", () => {
 		expect(result).toMatchObject({ status: "unsupported", kind: "unsupported" });
 		expect(result.error).toBeTruthy();
 		expect(r.snapshot()[0].status).toBe("unsupported");
+	});
+
+	it("infers one shared CCTQ account query for legacy CCQTCC and cctq channels", () => {
+		setProviderBaseUrlLookup((providerId) =>
+			providerId === "CCQTCC" || providerId === "cctq" ? "https://www.cctq.ai/v1" : "https://other.example/v1",
+		);
+		for (const providerId of ["CCQTCC", "cctq"]) {
+			const legacy = { ...channel(""), providerId, extra: {} };
+			expect(accountQueryConfig(legacy)).toEqual({
+				kind: "openai-gateway",
+				url: "https://www.cctq.ai/v1",
+				unit: "USD",
+				topupUrl: "{baseUrl}/console/topup",
+			});
+		}
+		expect(accountQueryConfig({ ...channel(""), providerId: "other", extra: {} })).toBeNull();
+	});
+
+	it("keeps an explicit account configuration ahead of the inferred CCTQ default", () => {
+		setProviderBaseUrlLookup(() => "https://www.cctq.ai/v1");
+		const explicit = { ...channel(""), extra: { account: { kind: "template", url: "https://billing.example/me" } } };
+		expect(accountQueryConfig(explicit)).toEqual({ kind: "template", url: "https://billing.example/me" });
 	});
 
 	it("probes the billing API first and never touches /api/user/self when billing answers (one request)", async () => {

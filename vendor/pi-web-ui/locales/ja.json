@@ -1162,7 +1162,11 @@
     "channelAccountTopupHint": "Shown next to the usage-detail title so topping up is one click away.",
     "channelAccountAutoRefresh": "Refreshes every 2 minutes",
     "channelAccountRetry": "Retry",
-    "channelAccountRetryHint": "Auto-refresh stopped after 3 failed attempts; press Retry to resume."
+    "channelAccountRetryHint": "Auto-refresh stopped after 3 failed attempts; press Retry to resume.",
+    "channelErrorQuota": "このチャネルのゲートウェイアカウントの残高が不足しています（ゲートウェイの残高: {remaining}）。このアカウントへチャージするか、別のチャネルに切り替えてください。",
+    "channelErrorQuotaNoRemaining": "このチャネルのゲートウェイアカウントの残高が不足しています。このアカウントへチャージするか、別のチャネルに切り替えてください。",
+    "channelErrorDetail": "詳細",
+    "channelErrorDetailHide": "詳細を閉じる"
   },
   "serverStrings": {
     "agent.subagent.stop.user": "ユーザーがサブエージェントを停止しました",

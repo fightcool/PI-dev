@@ -1162,6 +1162,10 @@
     "channelAccountTopupHint": "Shown next to the usage-detail title so topping up is one click away.",
     "channelAccountAutoRefresh": "Refreshes every 2 minutes",
     "channelAccountRetry": "Retry",
-    "channelAccountRetryHint": "Auto-refresh stopped after 3 failed attempts; press Retry to resume."
+    "channelAccountRetryHint": "Auto-refresh stopped after 3 failed attempts; press Retry to resume.",
+    "channelErrorQuota": "La cuenta de pasarela de este canal no tiene saldo (la pasarela informa de {remaining} restante). Recarga esa cuenta o cambia de canal.",
+    "channelErrorQuotaNoRemaining": "La cuenta de pasarela de este canal no tiene saldo. Recarga esa cuenta o cambia de canal.",
+    "channelErrorDetail": "Detalles",
+    "channelErrorDetailHide": "Ocultar detalles"
   }
 }

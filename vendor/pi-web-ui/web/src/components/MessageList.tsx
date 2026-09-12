@@ -8,8 +8,9 @@
  */
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { FiArrowDown } from "react-icons/fi";
-import type { PromptAttachment, ToolStatus, UiMessage, UiState } from "../types";
+import type { PromptAttachment, ToolStatus, UiChannelInfo, UiMessage, UiState } from "../types";
 import { Message, asText } from "./Message";
+import { channelErrorView, type ChannelErrorView } from "../error-hint";
 import { collectQuestionAttachments } from "../question-attachments";
 import { parseSkillBlock } from "../skill-block";
 import { CollapsedMessage } from "./CollapsedMessage";
@@ -22,6 +23,8 @@ import { MessageListStatus } from "./message-list/MessageListStatus";
 import { QuestionNavigation } from "./message-list/QuestionNavigation";
 
 const EMPTY_LIVE = new Map<string, { toolName: string; text: string }>();
+/** 没有渠道清单时的稳定空数组（避免每次 render 新数组，冲掉 errorHints 的 memo）。 */
+const EMPTY_CHANNELS: UiChannelInfo[] = [];
 const hasToolCall = (m: UiMessage) => m.content.some((b) => b.type === "toolCall");
 
 interface MessageListProps {
@@ -36,6 +39,9 @@ interface MessageListProps {
 	onLoadHistory?: (opts: { before?: string; all?: boolean }) => void;
 	thinkingWrap?: boolean;
 	toolsWrap?: boolean;
+	/** 渠道清单（channel_state）：报错卡需要把消息里的 providerId 还原成渠道显示名。
+	 *  UiState 本身不带渠道清单，所以由 chat-view 单独传入。 */
+	channels?: UiChannelInfo[];
 	jumpTarget?: { path: string; role: string; timestamp: number } | null;
 	onJumpDone?: () => void;
 }
@@ -68,6 +74,7 @@ export function MessageList({
 	onLoadHistory,
 	thinkingWrap,
 	toolsWrap,
+	channels: channelsProp,
 	jumpTarget,
 	onJumpDone,
 }: MessageListProps) {
@@ -94,6 +101,31 @@ export function MessageList({
 		return map;
 	}, [state.messages]);
 	const questionAttachments = useMemo(() => collectQuestionAttachments(state.messages), [state.messages]);
+	/** 当前对话有效绑定的渠道 id（报错归属的首选）；取到基本类型，Memo 依赖才不会每次快照都变。 */
+	const boundChannelId = state.channelBinding?.effective?.channelId ?? null;
+	/**
+	 * 报错消息的上下文（渠道 · 模型 · 人话原因 · 充值页）。
+	 * @WHY 只在**报错消息**上算：普通消息不进 Map，报错卡拿到的一直是同一个对象，
+	 *   Message 的 memo 不会因为每次快照重算而失效。
+	 */
+	const errorHints = useMemo(() => {
+		const map = new Map<string, ChannelErrorView>();
+		const channels = channelsProp ?? EMPTY_CHANNELS;
+		for (const message of state.messages) {
+			if (!message.errorMessage) continue;
+			map.set(
+				message.id,
+				channelErrorView({
+					errorMessage: message.errorMessage,
+					provider: message.provider,
+					modelId: message.model,
+					channels,
+					boundChannelId,
+				}),
+			);
+		}
+		return map;
+	}, [state.messages, channelsProp, boundChannelId]);
 	const questions = useMemo(
 		() =>
 			state.messages.flatMap((message) => {
@@ -300,6 +332,7 @@ export function MessageList({
 								) : (
 									<Message
 										message={m}
+										errorHint={errorHints.get(m.id)}
 										qnIndex={qIdx}
 										qnActive={qIdx === activeIdx}
 										onJump={jumpTo}

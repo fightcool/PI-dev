@@ -1162,6 +1162,10 @@
     "channelAccountTopupHint": "Shown next to the usage-detail title so topping up is one click away.",
     "channelAccountAutoRefresh": "Refreshes every 2 minutes",
     "channelAccountRetry": "Retry",
-    "channelAccountRetryHint": "Auto-refresh stopped after 3 failed attempts; press Retry to resume."
+    "channelAccountRetryHint": "Auto-refresh stopped after 3 failed attempts; press Retry to resume.",
+    "channelErrorQuota": "L'account gateway di questo canale è senza credito (il gateway segnala {remaining} rimanente). Ricarica quell'account o cambia canale.",
+    "channelErrorQuotaNoRemaining": "L'account gateway di questo canale è senza credito. Ricarica quell'account o cambia canale.",
+    "channelErrorDetail": "Dettagli",
+    "channelErrorDetailHide": "Nascondi dettagli"
   }
 }

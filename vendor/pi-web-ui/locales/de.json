@@ -1162,6 +1162,10 @@
     "channelAccountTopupHint": "Shown next to the usage-detail title so topping up is one click away.",
     "channelAccountAutoRefresh": "Refreshes every 2 minutes",
     "channelAccountRetry": "Retry",
-    "channelAccountRetryHint": "Auto-refresh stopped after 3 failed attempts; press Retry to resume."
+    "channelAccountRetryHint": "Auto-refresh stopped after 3 failed attempts; press Retry to resume.",
+    "channelErrorQuota": "Das Gateway-Konto dieses Kanals hat kein Guthaben mehr (Gateway meldet {remaining} Rest). Bitte dieses Konto aufladen oder den Kanal wechseln.",
+    "channelErrorQuotaNoRemaining": "Das Gateway-Konto dieses Kanals hat kein Guthaben mehr. Bitte dieses Konto aufladen oder den Kanal wechseln.",
+    "channelErrorDetail": "Details",
+    "channelErrorDetailHide": "Details ausblenden"
   }
 }
