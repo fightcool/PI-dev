@@ -1211,7 +1211,7 @@ export const zh = {
 	channelAccountCheckedAt: "查询时间",
 	channelAccountBalance: "余额",
 	channelAccountQuota: "配额",
-	channelAccountKeyQuota: "key 配额",
+	channelAccountKeyQuota: "Used",
 	channelInstanceDefault: "实例默认",
 	channelProjectDefault: "本项目默认",
 	channelDefaultNone: "未设置",
@@ -1295,7 +1295,13 @@ export const zh = {
 	customAddInChannels: "新建/修改服务商请到「设置 → 渠道 → 新增渠道 → 服务商连接」：那里会把请求地址、协议、密钥与模型一并写入。",
 	channelAccountModeGateway: "网关适配器（one-api / new-api，失败自动退回账单接口）",
 	channelAccountUsed: "已用",
-	channelBalanceDerived: "（该对话未绑定渠道，按当前模型的服务商匹配到的唯一渠道）",
+	channelBalanceDerived: "(matched from the current model)",
+	channelAccountUnknownBalance: "余额未知",
+	channelAccountDetailTitle: "渠道账户",
+	channelTopUp: "去充值",
+	channelAccountTopupUrl: "充值链接（可选）",
+	channelAccountTopupUrlPh: "如 {baseUrl}/console/topup",
+	channelAccountTopupHint: "显示在「用量详情」标题右侧，点开余额即可直达充值页。",
 } as const;
 
 /* ------------------------------------------------------------------ */

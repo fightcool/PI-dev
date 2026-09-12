@@ -192,6 +192,30 @@ describe("maintenance", () => {
 	});
 });
 
+describe("充值链接校验（会作为 href 渲染）", () => {
+	const base = (extra: Record<string, unknown>) => ({
+		id: "ch-1",
+		displayName: "渠道",
+		providerId: "main",
+		endpointId: "default",
+		credentialRef: null,
+		accountRef: null,
+		models: [],
+		enabled: true,
+		extra,
+	});
+	it("accepts http(s) and rejects anything else", () => {
+		expect(validateChannelRecord(base({ account: { kind: "template", topupUrl: "https://x.example/topup" } }))).toEqual([]);
+		const bad = validateChannelRecord(base({ account: { kind: "template", topupUrl: "javascript:alert(1)" } }));
+		expect(bad.join()).toContain("充值链接必须是 http(s) 地址");
+		expect(validateChannelRecord(base({ account: { kind: "template", topupUrl: "data:text/html,x" } })).join()).toContain("充值链接必须是 http(s)");
+	});
+	it("treats an empty value as not configured", () => {
+		expect(validateChannelRecord(base({ account: { kind: "template", topupUrl: "" } }))).toEqual([]);
+		expect(validateChannelRecord(base({ account: { kind: "template" } }))).toEqual([]);
+	});
+});
+
 describe("provider id generation (channel form → models.json)", () => {
 	it("slugifies a display name into a provider id", () => {
 		expect(providerIdFromName("CCTQ Claude")).toBe("cctq-claude");

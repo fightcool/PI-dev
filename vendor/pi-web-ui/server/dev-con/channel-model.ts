@@ -205,6 +205,11 @@ export function validateChannelRecord(rec: ChannelRecord, others: ChannelRecord[
 		if (rec.credentialRef.providerId !== rec.providerId) errors.push("凭据引用的服务商与渠道不一致");
 		if (!rec.credentialRef.keyName?.trim()) errors.push("命名凭据不能为空");
 	}
+	// 充值链接会作为 href 渲染：只允许 http(s)（防 javascript:/data:），空值 = 未配置。
+	const topup = (rec.extra?.account as Record<string, unknown> | undefined)?.topupUrl;
+	if (topup !== undefined && topup !== null && topup !== "") {
+		if (typeof topup !== "string" || !/^https?:\/\//i.test(topup.trim())) errors.push("充值链接必须是 http(s) 地址");
+	}
 	if (others.some((o) => o.id === rec.id)) errors.push(`渠道 ID「${rec.id}」已存在`);
 	return errors;
 }

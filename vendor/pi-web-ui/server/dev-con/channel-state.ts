@@ -32,6 +32,7 @@ import {
 	type RequestBindingSnapshot,
 } from "./channel-model.js";
 import { loadCatalog, saveCatalog } from "./channel-store.js";
+import { topupUrlOf } from "./channel-accounts.js";
 
 /** 状态层依赖的宿主能力（窄接口：只含目录/绑定语义需要的读口）。 */
 export interface ChannelStateHost {
@@ -278,6 +279,9 @@ export class ChannelState {
 						const value = raw[key];
 						if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") out[key] = value;
 					}
+					// 充值链接由服务端解析（{baseUrl} 占位需要服务商 baseUrl，前端不知道），前端直接当 href 用。
+					const topup = topupUrlOf(c);
+					if (topup) out.topupUrl = topup;
 					for (const key of ["mapping", "items"] as const) {
 						const value = raw[key];
 						if (value && typeof value === "object" && !Array.isArray(value)) {

@@ -37,7 +37,8 @@ const CHANNELS = [
 	{ id: "ch-a", displayName: "渠道 A", providerId: "main", endpointId: "default",
 		credentialRef: { providerId: "main", keyName: "密钥 1" }, accountRef: null, enabled: true,
 		// 配了账户查询 → 输入框工具条要出现「余额」chip（PC 与移动端同位置）。
-		account: { kind: "openai-gateway", url: "{baseUrl}/api/user/self", method: "GET", unit: "USD" },
+		account: { kind: "openai-gateway", url: "{baseUrl}/api/user/self", method: "GET", unit: "USD",
+			topupUrl: "https://pay.example/channel-a" },
 		models: ["m1"],
 		keys: [{ keyName: "密钥 1", active: true }, { keyName: "密钥 2", active: false }], keyMissing: false, providerMissing: false },
 	{ id: "ch-b", displayName: "渠道 B", providerId: "main", endpointId: "default",
@@ -225,6 +226,14 @@ try {
 	} else {
 		check("usage detail opens from the footer", false, "selector .usage-attr not found");
 	}
+	// 余额点开后的细节：主界面只说「余额未知」，细节（余额/已用/说明）在这里；标题右侧还要有充值直达。
+	const accountBlock = page.locator(".usage-account");
+	check("usage detail shows the channel account block", await accountBlock.isVisible(), await accountBlock.innerText().catch(() => "missing"));
+	const accountText = (await accountBlock.innerText()).replace(/\n/g, " / ");
+	check("the account block states the balance in plain words", /Balance|余额/.test(accountText) && accountText.includes("12.5"), accountText);
+	check("the account block shows the usage when only that is known", accountText.includes("1 USD") || accountText.includes("1.00"), accountText);
+	const topup = page.locator(".usage-panel-head .usage-topup");
+	check("the usage panel links straight to the provider top-up page", (await topup.getAttribute("href")) === "https://pay.example/channel-a" && (await topup.getAttribute("target")) === "_blank", String(await topup.getAttribute("href")));
 
 	// 5b) §7 逐请求记录：时间 + 计价依据；未知价格不得显示为 0。
 	const recent = page.locator(".usage-recent");
@@ -455,7 +464,7 @@ try {
 			);
 			check(
 				"the derived chip says it was matched by provider",
-				(await derivedChip.getAttribute("title")).includes("no channel bound"),
+				(await derivedChip.getAttribute("title")).includes("matched from the current model"),
 				String(await derivedChip.getAttribute("title")),
 			);
 		} finally {

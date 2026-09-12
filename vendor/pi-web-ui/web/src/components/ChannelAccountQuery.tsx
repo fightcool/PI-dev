@@ -57,6 +57,7 @@ export function draftFromTemplate(template: Record<string, unknown>): Partial<Ch
 		accountItemsJson: jsonText(template.items),
 		accountUnit: str(template.unit),
 		accountScale: typeof template.scale === "number" ? String(template.scale) : "",
+		accountTopupUrl: str(template.topupUrl),
 	};
 }
 
@@ -113,6 +114,13 @@ export function accountPayloadOf(draft: ChannelDraft, t: Translate): { account?:
 	if (draft.accountUnit.trim()) account.unit = draft.accountUnit.trim();
 	if (scale !== undefined) account.scale = scale;
 	if (draft.accountCredentialKeyName.trim()) account.credentialKeyName = draft.accountCredentialKeyName.trim();
+	// 充值链接会当 href 渲染：只允许 http(s)（服务端也会再校验一次，这里是即刻反馈）。
+	const topup = draft.accountTopupUrl.trim();
+	if (topup) {
+		const resolved = topup.replaceAll("{baseUrl}", "https://x");
+		if (!isHttpUrl(resolved)) return { error: t("channelUrlInvalid") };
+		account.topupUrl = topup;
+	}
 	return { account };
 }
 
@@ -218,6 +226,14 @@ export function ChannelAccountQuery({
 						onChange={(v) => set({ accountCredentialKeyName: v })}
 					/>
 					<TextField label={t("channelAccountUnit")} value={draft.accountUnit} onChange={(v) => set({ accountUnit: v })} />
+					{/* 充值直达：显示在「用量详情」标题右侧，点开余额即可去充值。 */}
+					<TextField
+						label={t("channelAccountTopupUrl")}
+						value={draft.accountTopupUrl}
+						ph={t("channelAccountTopupUrlPh")}
+						hint={t("channelAccountTopupHint")}
+						onChange={(v) => set({ accountTopupUrl: v })}
+					/>
 					<TextField
 						label={t("channelAccountScale")}
 						value={draft.accountScale}

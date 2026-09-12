@@ -81,6 +81,8 @@ export interface ChannelDraft {
 	accountScale: string;
 	/** 账户查询专用凭据名（少数供应商需要另一把 API key；留空 = 用渠道模型凭据）。 */
 	accountCredentialKeyName: string;
+	/** 充值页地址（可选；显示在「用量详情」标题右侧的直达链接）。 */
+	accountTopupUrl: string;
 }
 
 export function channelDraftOf(
@@ -125,6 +127,7 @@ export function channelDraftOf(
 		accountUnit: echoText("unit"),
 		accountScale: typeof echo.scale === "number" ? String(echo.scale) : "",
 		accountCredentialKeyName: echoText("credentialKeyName"),
+		accountTopupUrl: echoText("topupUrl"),
 	};
 }
 

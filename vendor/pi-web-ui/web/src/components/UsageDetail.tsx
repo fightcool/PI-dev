@@ -17,6 +17,7 @@ import type { UiChannelInfo, UiState, UiUsageAttribution,
 	UiUsageRecord } from "../types";
 import { useT, type Translate } from "../i18n";
 import type { UsageHistoryMsg, UsageHistoryWindow } from "../use-chat";
+import { balanceTextOf, type ChannelAccountView, topupUrlOf, usedTextOf } from "../channel-account";
 import { UsageHistory } from "./UsageHistory";
 
 /** 令牌数的人类可读格式（FooterBar 与明细表共用）。 */
@@ -70,6 +71,7 @@ export function UsageDetail({
 	onQueryUsageHistory,
 	runId,
 	channels,
+	accountView,
 }: {
 	tokens: UiState["stats"]["tokens"];
 	cost: number;
@@ -81,6 +83,8 @@ export function UsageDetail({
 	onQueryUsageHistory?: (groupBy: UsageHistoryMsg["groupBy"], window: UsageHistoryWindow) => void;
 	runId?: string | null;
 	channels: UiChannelInfo[];
+	/** 当前对话对应渠道的账户快照（chip 点开就看这里；主界面只说「余额未知」，细节在这里）。 */
+	accountView?: ChannelAccountView;
 }) {
 	const t = useT();
 	const request = tokens.request ?? tokens;
@@ -108,6 +112,60 @@ export function UsageDetail({
 			</span>
 		);
 	};
+	/**
+	 * 渠道账户区：主界面只说「余额未知」，一切细节（余额/已用/查询时间/说明/原始报错）在这里。
+	 * @CONTRACT 面向用户：标签用人话，说明用一句话；技术原因只在失败时附在后面。
+	 */
+	const accountSection = (() => {
+		const view = accountView;
+		if (!view?.channel) return null;
+		const status = view.account;
+		const used = usedTextOf(status);
+		const stateLabel =
+			status?.status === "ok"
+				? t("channelAccountOk")
+				: status?.status === "stale"
+					? t("channelAccountStale")
+					: status?.status === "failed"
+						? t("channelAccountFailed")
+						: status?.status === "unsupported"
+							? t("channelAccountUnsupported")
+							: t("channelQuerying");
+		return (
+			<div className="usage-account">
+				<div className="usage-account-head">
+					{t("channelAccountDetailTitle")}
+					<span className="usage-account-channel">{view.channel.displayName}</span>
+					<span className={`chan-acct ${status?.status ?? "unknown"}`}>{stateLabel}</span>
+				</div>
+				<div className="usage-account-rows">
+					<span>
+						{t("channelAccountBalance")}：{balanceTextOf(status, t as (k: string) => string)}
+					</span>
+					{used !== null && (
+						<span>
+							{t("channelAccountUsed")}：{used}
+						</span>
+					)}
+					{typeof status?.checkedAt === "number" && (
+						<span>
+							{t("channelAccountCheckedAt")}：{new Date(status.checkedAt).toLocaleString()}
+						</span>
+					)}
+				</div>
+				{(status?.note || status?.error) && (
+					<div className="usage-account-note">
+						{status?.note}
+						{status?.note && status?.error ? " · " : ""}
+						{status?.error}
+					</div>
+				)}
+				{view.derived && <div className="usage-account-note">{t("channelBalanceDerived")}</div>}
+			</div>
+		);
+	})();
+	/** 「去充值」：标题右侧的直达链接（渠道配置了充值时地址才出现）。 */
+	const topupUrl = topupUrlOf(accountView?.channel);
 	return (
 		<div className="usage-panel" onClick={(e) => e.stopPropagation()}>
 			<div className="usage-panel-head">
@@ -117,7 +175,13 @@ export function UsageDetail({
 						{t("usageRunId")}: {runId}
 					</span>
 				)}
+				{topupUrl && (
+					<a className="usage-topup" href={topupUrl} target="_blank" rel="noopener noreferrer">
+						{t("channelTopUp")}
+					</a>
+				)}
 			</div>
+			{accountSection}
 			<table className="usage-scope">
 				<thead>
 					<tr>
