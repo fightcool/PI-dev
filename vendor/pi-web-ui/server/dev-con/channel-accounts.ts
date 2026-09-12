@@ -71,8 +71,8 @@ interface AccountConfig {
 	scale?: number;
 	/**
 	 * 账户查询专用的命名凭据（provider-keys.json 里的密钥名）。
-	 * 说明：one-api/new-api 类网关的 /api/user/self 需要**控制台访问令牌**，通常不是模型 key；
-	 * 不填则回落到渠道的模型凭据（DeepSeek 官方这类用同一把 key 的供应商适用）。
+	 * 说明：少数供应商的账户接口需要用**另一把 API key**（如 OpenRouter 的 provisioning key）；
+	 * 不填则用渠道的模型凭据（DeepSeek 官方这类同一把 key 的供应商适用）。
 	 */
 	credentialKeyName?: string;
 }
@@ -138,7 +138,7 @@ function num(value: unknown): number | undefined {
 
 /** @MAGIC new-api/one-api 用「不限额度」占位值（实测 1e8）：大于等于它就不当成真余额。 */
 const UNLIMITED_QUOTA_MIN = 1e7;
-/** @MAGIC 账单接口的用量窗口（OpenAI 兼容 API 用 start_date/end_date 查询，取近 30 天）。 */
+/** @MAGIC 账单接口的用量窗口（部分部署要求 start_date/end_date，取近 30 天）。 */
 const BILLING_WINDOW_DAYS = 30;
 
 /** 站点根：从用户给的地址里剥掉 /api/user/self、/v1…、尾斜杠，得到 `https://host[:port]`。 */
@@ -153,13 +153,16 @@ function siteRootOf(raw: string): string {
 }
 
 /**
- * OpenAI 兼容账单接口（new-api / one-api 均实现；**模型 key 就能查**，不需要控制台令牌）：
- *   GET {origin}/v1/dashboard/billing/subscription → hard_limit_usd（总额度；不限额度时为 1e8 占位）
- *   GET {origin}/v1/dashboard/billing/usage?start_date&end_date → total_usage（窗口内已用，USD）
- * @WHY 实测（2026-09-12，www.cctq.ai）：`/api/user/self` 对模型 key 一律 401（需要控制台访问令牌），
- *   而这两个账单端点用模型 key 返回 200；`subscription` 在「不限额度」的 token 上只给占位值，
- *   所以**能查就报已用，查不到余额就不假装有余额**（§7：不猜测余额）。
- * @CONTRACT 返回 null = 该站不支持账单接口（调用方回落原错误 + 控制台令牌提示）。
+ * OpenAI 兼容账单接口（new-api / one-api 一类；**只用渠道里那把 API token**）：
+ *   GET {origin}/v1/dashboard/billing/usage[?start_date&end_date] → total_usage（已用，USD）
+ *   GET {origin}/v1/dashboard/billing/subscription → hard_limit_usd（总额度；不限额度时是 1e8 占位）
+ * @WHY 实测（2026-09-12，www.cctq.ai，两把 API token × 16 个端点）：API token 能读 /v1/models、
+ *   账单 usage/subscription；`/api/user/self`、`/api/user/dashboard`、`/api/token/` 一律 401
+ *   （那些是**控制台会话**接口，与 API token 无关，本模块不碰），/v1/balance、/v1/credits、
+ *   /v1/quota、/v1/me 则根本不存在。`subscription` 对「不限额度」的 token 只给占位值。
+ *   所以：**有真实总额度才报余额，否则只报已用**，并在 note 里说明（§7：不猜测余额）。
+ * @CONTRACT 返回 null = 该站没有可用的账单接口（调用方回落 /api/user/self 探针 → 再不行就报
+ *   「该供应商 API 未提供查询能力」，绝不引导用户去找控制台令牌）。
  */
 async function queryOpenAiBilling(
 	fetchImpl: typeof fetch,
@@ -170,14 +173,18 @@ async function queryOpenAiBilling(
 	const headers = { authorization: `Bearer ${apiKey}`, accept: "application/json" };
 	const end = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
 	const start = new Date(Date.now() - BILLING_WINDOW_DAYS * 864e5).toISOString().slice(0, 10);
-	const usage = await fetchJson(
-		fetchImpl,
-		`${origin}/v1/dashboard/billing/usage?start_date=${start}&end_date=${end}`,
-		{ method: "GET", headers },
-		signal,
-	);
-	if (!usage.ok) return null;
-	const used = num(((usage.body ?? {}) as Record<string, unknown>).total_usage);
+	// 先不带窗口（实测该部署直接可读，少两个参数）；不行再按日期窗口试一次。
+	let usage = await fetchJson(fetchImpl, `${origin}/v1/dashboard/billing/usage`, { method: "GET", headers }, signal);
+	let used = usage.ok ? num(((usage.body ?? {}) as Record<string, unknown>).total_usage) : undefined;
+	if (used === undefined) {
+		usage = await fetchJson(
+			fetchImpl,
+			`${origin}/v1/dashboard/billing/usage?start_date=${start}&end_date=${end}`,
+			{ method: "GET", headers },
+			signal,
+		);
+		used = usage.ok ? num(((usage.body ?? {}) as Record<string, unknown>).total_usage) : undefined;
+	}
 	if (used === undefined) return null;
 	const sub = await fetchJson(fetchImpl, `${origin}/v1/dashboard/billing/subscription`, { method: "GET", headers }, signal);
 	const subBody = (sub.ok ? (sub.body ?? {}) : {}) as Record<string, unknown>;
@@ -202,21 +209,21 @@ async function queryOpenAiBilling(
 		unit: "USD",
 		quota: { used, unit: "USD" },
 		scope: "gateway",
-		note: `${note}报出的已用额度；该网关未提供可用余额（/api/user/self 需要控制台访问令牌）`,
+		note: `${note}报出的已用额度；该网关的 API 没有余额字段（subscription 只返回「不限额度」占位值）`,
 		checkedAt: Date.now(),
 	};
 }
 
 /**
  * OpenAI 兼容自建网关（one-api / new-api 一类）的账户查询。
- * @CONTRACT 只用**渠道里已经配置好的那把 key**（渠道的命名凭据，或没绑命名凭据时服务商
- *   自己那把）；本适配器不引入任何额外凭据，也不写盘。
- * @WHY 顺序按「用户到底配了什么」决定，默认只发**一个**请求：
- *   - 用户在渠道里指定了「账户凭据」（= 控制台访问令牌）→ 打 /api/user/self（能给出真余额）；
- *   - 没指定 → 说明手上只有模型 key，直接打 OpenAI 兼容账单接口（模型 key 就能查「已用」），
- *     不再先吃一个必然 401 的控制台请求；
- *   - 每一步都有兜底：账单接口不可用时再试一次 /api/user/self（有些网关的模型 key 兼作令牌）。
- * 读不到就如实报失败 + 下一步提示，不猜（§7）。
+ * @CONTRACT **只用渠道里配置的那把 API token**（渠道命名凭据；没绑命名凭据时用服务商自己那把）。
+ *   本适配器不引入任何额外凭据，也不碰控制台会话接口——探的就是「这个 API token 有没有查询能力」。
+ * @WHY 探测顺序（都是同一把 API token）：
+ *   1. `{origin}/v1/dashboard/billing/usage`（OpenAI 兼容账单）→ 已用；subscription 给出真实
+ *      总额度时才算余额，是「不限额度」占位值就只报已用。
+ *   2. 账单接口不可用 → 探一次 `{origin}/api/user/self`：少数部署允许 API token 读它并给出额度。
+ *   3. 都不行 → 如实报「该供应商 API 未提供可用的查询接口」（§7：查不到就说查不到，不猜、不引导
+ *      用户去用控制台令牌）。
  */
 export const openAiGatewayAdapter: AccountAdapter = {
 	kind: "openai-gateway",
@@ -236,10 +243,10 @@ export const openAiGatewayAdapter: AccountAdapter = {
 		const scale = typeof cfg?.scale === "number" && cfg.scale > 0 ? cfg.scale : 1;
 		const unit = cfg?.unit ?? "quota";
 		/**
-		 * 控制台接口（/api/user/self）：能拿到真余额，但需要控制台访问令牌。
+		 * 额度探针（/api/user/self）：少数部署允许 API token 读它并直接返回 quota/used_quota。
 		 * 保留失败原因（HTTP 500 / 非 JSON / 重定向 / 超限…）：这些是用户该看到的真实诊断。
 		 */
-		const queryConsole = async (): Promise<
+		const queryQuotaProbe = async (): Promise<
 			{ result: Omit<AccountQueryResult, "accountRef" | "kind"> } | { error: string; status?: number }
 		> => {
 			const res = await fetchJson(fetch, selfUrl, { method: "GET", headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" } }, signal);
@@ -263,26 +270,18 @@ export const openAiGatewayAdapter: AccountAdapter = {
 				},
 			};
 		};
-		const consoleDesignated = typeof cfg?.credentialKeyName === "string" && cfg.credentialKeyName.trim() !== "";
-		let consoleAttempt: Awaited<ReturnType<typeof queryConsole>> | null = null;
-		if (consoleDesignated) {
-			consoleAttempt = await queryConsole();
-			if ("result" in consoleAttempt) return consoleAttempt.result;
-		}
+		// 1) 账单接口（API token 就能读用量）。
 		const billing = await queryOpenAiBilling(fetch, origin, apiKey, signal);
 		if (billing) return billing;
-		if (!consoleDesignated) {
-			// 最后再试一次控制台接口：少数网关的模型 key 也能读 /api/user/self。
-			consoleAttempt = await queryConsole();
-			if ("result" in consoleAttempt) return consoleAttempt.result;
-		}
-		const error = consoleAttempt && "error" in consoleAttempt ? consoleAttempt.error : "账户接口不可用";
-		const status = consoleAttempt && "status" in consoleAttempt ? consoleAttempt.status : undefined;
-		const hint =
-			status === 401 || status === 403
-				? "（该接口需要控制台访问令牌，而不是模型 key：请在渠道的「账户凭据」里指定网关控制台令牌；该站的 OpenAI 兼容账单接口也没有可用字段）"
-				: "";
-		return { status: "failed", error: `${error}${hint}` };
+		// 2) 再探一次 /api/user/self：不是「去要控制台令牌」，而是用**同一把 API token** 试一下，
+		//    有些部署直接放行并返回额度。
+		const quotaProbe = await queryQuotaProbe();
+		if ("result" in quotaProbe) return quotaProbe.result;
+		// 3) 都拿不到 → 如实说「这个 API 没有可用的查询接口」（不猜、不引导控制台令牌）。
+		return {
+			status: "failed",
+			error: `该供应商的 API 未提供可用的用量/余额查询接口（已用渠道里的 API token 探测 ${origin}/v1/dashboard/billing/usage 与 ${origin}/api/user/self：${quotaProbe.error}）`,
+		};
 	},
 };
 
