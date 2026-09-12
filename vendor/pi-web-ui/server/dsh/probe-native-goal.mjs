@@ -114,7 +114,7 @@ const onNotify = (method, params) => {
 };
 
 try {
-	await req("initialize", { cwd: HERE, provider: "deepseek-official", model: "deepseek-v4-flash" });
+	await req("initialize", { cwd: HERE, provider: "deepseek-official", model: "deepseek-flash" });
 	console.log("initialize OK");
 	const sessionId = "goal-probe-session";
 

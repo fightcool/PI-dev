@@ -876,6 +876,9 @@ export interface DispatchSession {
 		disabledPlugins?: string[];
 		/** 内置服务商「删除」= 从管理模型列表隐藏（纯 UI 偏好，不 reload）。 */
 		hiddenBuiltinProviders?: string[];
+		/** 模型路由规则（退役路由 + 别名），见 server/model-routing.ts。 */
+		retiredModelRoutes?: string[];
+		modelRouteAliases?: Record<string, string>;
 		terminalToolsEnabled?: boolean;
 		terminalBash?: boolean;
 		terminalBashIdleMs?: number;
@@ -1425,6 +1428,8 @@ wss.on("connection", (ws) => {
 					disabledExtensions: msg.disabledExtensions,
 					disabledPlugins: msg.disabledPlugins,
 					hiddenBuiltinProviders: msg.hiddenBuiltinProviders,
+					retiredModelRoutes: msg.retiredModelRoutes,
+					modelRouteAliases: msg.modelRouteAliases,
 					terminalToolsEnabled: msg.terminalToolsEnabled,
 					terminalBash: msg.terminalBash,
 					terminalBashIdleMs: msg.terminalBashIdleMs,

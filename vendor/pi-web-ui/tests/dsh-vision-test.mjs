@@ -2,7 +2,7 @@
  * dsh 引擎视觉桥测试（真 key 门控）——base64 图片附件（imageData）→
  * attachment/save → 真 image 块 → vision-exp 模型看图回复。
  *
- * 需要真实 DeepSeek API key + 模型目录含 deepseek-v4-flash-vision-exp。
+ * 需要真实 DeepSeek API key + 模型目录含官方 deepseek-flash（DeepSeek-V4.1-Flash，自带视觉）。
  * 无 key 时打印 SKIP 并退出 0。
  *
  * 用法：node tests/dsh-vision-test.mjs   （先 npm run build）

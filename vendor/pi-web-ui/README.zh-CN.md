@@ -72,7 +72,7 @@
 - **引擎可切换** —— `PI_WEB_ENGINE=pi|dsh`（默认 `pi`）。pi 引擎在进程内跑 pi SDK；**DSH 引擎**把官方 [`@deepseek-ai/dsh`](https://github.com/deepseek-ai/dsh)（DeepSeek Harness）运行时作为子进程拉起。`/api/health` 返回 `engine`；底栏显示 DSH 徽标。
 - **同一套 wire 协议** —— DSH 引擎实现与 pi 相同的 WebSocket 协议，目标/审查、SCM、后台任务、设置、插件、终端、message_delta 与快照全部一致。
 - **原生目标机制** —— DSH 自己的目标状态机 + round-driver 自动续轮；完成/受阻由模型自判定（无独立审查会话）。目标向导经模型 `ask_user_question` 驱动。
-- **真图片块** —— 图片作为真正的 image 内容发给支持视觉的 DeepSeek 模型（如 `deepseek-v4-flash-vision-exp`）；纯文本模型走文字转写桥。
+- **真图片块** —— 图片作为真正的 image 内容发给支持视觉的 DeepSeek 模型（官方 `deepseek-flash`，即 DeepSeek-V4.1-Flash）；纯文本模型走文字转写桥。
 - **提问对话框** —— 模型 `ask_user_question` 弹出浏览器对话框（单选/多选 + 自由文本），支持排队与倒计时。
 - **工具 & MCP 桥** —— 插件 AI 工具与外部 MCP 服务器（`mcp.json`）都桥进 DSH 运行时，DSH 模型可直接调用（服务端执行）。
 - **技能启停** —— 设置面板暴露 DSH 技能目录；禁用即运行时过滤该技能，模型不可见。

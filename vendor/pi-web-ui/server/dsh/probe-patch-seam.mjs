@@ -116,7 +116,7 @@ try {
 	await req("initialize", {
 		cwd: HERE,
 		provider: "deepseek-official",
-		model: "deepseek-v4-flash",
+		model: "deepseek-flash",
 	});
 	console.log("initialize OK");
 	const sessionId = "patch-probe-session";

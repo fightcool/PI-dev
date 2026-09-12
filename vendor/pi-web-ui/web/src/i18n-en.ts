@@ -311,12 +311,12 @@ export const en: EnDictionary = {
 	optionPreview: "Option preview",
 	questionTimeout: "⏳ {s}s left — auto-cancels on timeout",
 	questionTimeoutExpired: "Question timed out, resuming conversation…",
-	modelNoVision: "Current model {name} doesn't support images — switch to DeepSeek V4 Flash Vision (exp)",
+	modelNoVision: "Current model {name} doesn't support images — switch to a vision-capable model",
 	dshSkillsNote: "DSH uses runtime-built-in skills (dsh-skill); toggling is not supported in settings yet",
 	dshExtensionsNote:
 		"DSH has no pi extension system; capabilities are runtime-built-in (MCP/subagent/goal/plan/skill…)",
 	dshReviewPromptNote: "DSH has no separate reviewer: this text is appended to the system prompt for goal rounds",
-	dshVisionHiddenNote: "DSH supports real image input (DeepSeek V4 Flash Vision (exp) only) — no vision bridge needed",
+	dshVisionHiddenNote: "DSH supports real image input (the selected model must be natively multimodal) — no vision bridge needed",
 	dshNoReviewModel:
 		"DSH has no separate reviewer model — the model self-certifies goal completion; max rounds = auto-iteration count",
 	noOptions: "(no options)",
@@ -1115,6 +1115,17 @@ export const en: EnDictionary = {
 	usageWindow_30d: "30 days",
 	usageWindow_all: "All",
 	// P4 candidate: system resources (read-only; unreadable fields show "—" with their source).
+	// Model routing rules (editable in the settings panel; factory defaults in server/model-routing.ts / docs/MODEL-ROUTING.md)
+	modelRoutingTitle: "Model routing rules",
+	modelRoutingHint: "Upstream routes come and go; this list can be corrected without touching code or shipping a release.",
+	modelRoutingDesc:
+		"Routes listed here disappear from the model picker (existing sessions and channel bindings still resolve). One id per line: `provider/id` matches that provider only, a bare id matches every provider; write aliases as old=new. Model names/context/pricing/thinking levels live in “Manage models” (agent/models.json).",
+	modelRoutingRetiredLabel: "Retired routes (one id per line)",
+	modelRoutingAliasesLabel: "Route aliases (one old=new per line)",
+	modelRoutingSave: "Save rules",
+	modelRoutingReset: "Restore factory defaults",
+	modelRoutingCustomized: "Current: custom rules",
+	modelRoutingFactory: "Current: factory defaults",
 	resourcesTitle: "System resources",
 	resourcesLoading: "Collecting…",
 	resourcesSampling: "Sampling…",

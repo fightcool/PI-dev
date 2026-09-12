@@ -180,12 +180,15 @@ async function main() {
 	// --- 4. list_models → models（本地表 + 动态目录） ---
 	c.send({ type: "list_models" });
 	const models = await c.wait((m) => m.type === "models", 20000);
-	const hasFlash = models.models.some((m) => m.id.includes("deepseek-v4-flash"));
-	const hasVision = models.models.some((m) => m.id.includes("vision"));
+	const flash = models.models.find((m) => m.id === "deepseek-flash");
+	// 官方 2026-09-10 起 Flash 只有 deepseek-flash，且自带视觉；退役 id 不得再暴露。
+	const retired = models.models.filter((m) =>
+		["deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro"].includes(m.id),
+	);
 	check(
-		"list_models 本地表 + 动态目录合并",
-		models.models.length >= 2 && hasFlash,
-		`count=${models.models.length} flash=${hasFlash} vision=${hasVision}`,
+		"list_models 只暴露官方 deepseek-flash（带视觉、无退役 id）",
+		models.models.length >= 1 && !!flash && flash.vision === true && retired.length === 0,
+		`count=${models.models.length} flash=${!!flash} vision=${flash?.vision ?? "-"} retired=${retired.map((m) => m.id).join(",") || "-"}`,
 	);
 
 	// --- 5. 设置存储回显 + 重连持久化 ---

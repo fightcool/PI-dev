@@ -75,29 +75,30 @@ import { assessInputBudget, assessToolOutput, DEFAULT_GOVERNANCE } from "#govern
  * 📖 ../../docs/conversation-lifecycle.md
  */
 import { retirementCandidates } from "../conversation-retention.js";
+import {
+	DEEPSEEK_FLASH,
+	DEEPSEEK_PROVIDER as DEEPSEEK_FLASH_PROVIDER,
+	defaultModelRoutingRules,
+	dshModelChoices,
+	normalizeModelRoutingRules,
+} from "../model-routing.js";
 const SNAPSHOT_INTERVAL_MS = 60;
 const DEFAULT_CONV_TITLE = "新对话";
 const DEFAULT_CONV_TITLE_EN = "New chat";
-const DEFAULT_MODEL = "deepseek-v4-flash";
+/* 🍞 @COUPLED ../model-routing.ts（官方路由事实源）、dsh/runtime/override.patch.yml
+ * @WHY 官方 2026-09-10 起 Flash 只有 deepseek-flash（DeepSeek-V4.1-Flash，原生多模态）；
+ *      V4-Flash/V4-Flash-Vision-Exp 已退役、V4-Pro 自 2026-09-14 04:00 UTC 起转发，
+ *      因此本地表只留 deepseek-flash（详见 docs/MODEL-ROUTING.md）。 */
+const DEFAULT_MODEL = DEEPSEEK_FLASH.id;
 
-/** DSH 可选模型（顶栏模型选择器）。仅 deepseek-v4-flash-vision-exp 支持图片
- *  （adapter 默认目录 inputModalities: [text, image]）；flash/pro 是 text-only。 */
-const DSH_MODELS = [
-	{ id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", provider: "deepseek", vision: false },
-	{ id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", provider: "deepseek", vision: false },
-	{
-		id: "deepseek-v4-flash-vision-exp",
-		name: "DeepSeek V4 Flash Vision (exp)",
-		provider: "deepseek",
-		vision: true,
-	},
-];
+/** DSH 可选模型（顶栏模型选择器）。deepseek-flash 自身支持图片，无需单独的 vision 模型。 */
+const DSH_MODELS = dshModelChoices();
 
-/** DeepSeek V4 context window + 官方每 1M token 定价（USD，api-docs.deepseek.com）。 */
-const DSH_CONTEXT_WINDOW = 1_000_000;
-const DSH_PRICE_INPUT = 0.14;
-const DSH_PRICE_CACHE_READ = 0.0028;
-const DSH_PRICE_OUTPUT = 0.28;
+/** 官方 context window 与每 1M token 高峰价（USD）；低谷时段为一半。 */
+const DSH_CONTEXT_WINDOW = DEEPSEEK_FLASH.contextWindow;
+const DSH_PRICE_INPUT = DEEPSEEK_FLASH.cost.input;
+const DSH_PRICE_CACHE_READ = DEEPSEEK_FLASH.cost.cacheRead;
+const DSH_PRICE_OUTPUT = DEEPSEEK_FLASH.cost.output;
 
 /** 会话 root：<dataDir>/dsh-sessions（与 pi 引擎的会话目录隔离）。 */
 export function dshSessionRoot(dataDir: string): string {
@@ -175,6 +176,9 @@ interface DshSettings {
 	/** pi 引擎「管理模型」里删除（隐藏）的内置服务商 id：DSH 没有该面板，
 	 *  仅回显保持，切回 pi 引擎时列表不被重置。 */
 	hiddenBuiltinProviders: string[];
+	/** 模型路由规则（设置面板可改）：DSH 只回显保持。 */
+	retiredModelRoutes: string[];
+	modelRouteAliases: Record<string, string>;
 	/** 目标轮次附加指令（DSH 无独立审查者，经 DSH_PERSONA 注入让模型在目标轮次遵守）。 */
 	reviewPrompt: string;
 	/** 输入框上方的快捷短语（点击即发送；纯 UI 偏好）。 */
@@ -223,6 +227,8 @@ const DEFAULT_SETTINGS: DshSettings = {
 	toolsWrap: true,
 	disabledPlugins: [],
 	hiddenBuiltinProviders: [],
+	retiredModelRoutes: [],
+	modelRouteAliases: {},
 	reviewPrompt: "",
 	quickPhrases: [],
 	quickPhrasesEnabled: true,
@@ -258,7 +264,7 @@ export class DshClientSession {
 	private emittedRev = 0;
 	private disposed = false;
 
-	private model = DEFAULT_MODEL;
+	private model: string = DEFAULT_MODEL;
 	thinkingLevel = "high";
 
 	/** P0-1 watchdog：60s 窗口内最多自动重启 2 次，超限升级为报错 notice。 */
@@ -367,6 +373,8 @@ export class DshClientSession {
 				toolsWrap: savedSettings.toolsWrap,
 				disabledPlugins: savedSettings.disabledPlugins ?? [],
 				hiddenBuiltinProviders: savedSettings.hiddenBuiltinProviders ?? [],
+				retiredModelRoutes: savedSettings.retiredModelRoutes ?? [],
+				modelRouteAliases: { ...(savedSettings.modelRouteAliases ?? {}) },
 				reviewPrompt: savedSettings.reviewPrompt,
 				quickPhrases: savedSettings.quickPhrases ?? [],
 				quickPhrasesEnabled: savedSettings.quickPhrasesEnabled ?? true,
@@ -1242,8 +1250,8 @@ export class DshClientSession {
 			model: {
 				id: this.model,
 				name: DSH_MODELS.find((m) => m.id === this.model)?.name ?? this.model,
-				provider: "deepseek",
-				// dsh-llm-deepseek adapter：仅 vision-exp 模型 inputModalities 含 image
+				provider: DEEPSEEK_FLASH_PROVIDER,
+				// 官方 deepseek-flash 自带 inputModalities: [text, image]（见 model-routing.ts）
 				vision: DSH_MODELS.find((m) => m.id === this.model)?.vision ?? false,
 			},
 			thinkingLevel: this.thinkingLevel,
@@ -2436,12 +2444,16 @@ export class DshClientSession {
 	}
 
 	setThinking(level: string): void {
+		// @GOTCHA 本部署把 adapter 的 reasoningEffort 固定为 high（override.patch.yml），
+		// 尚未接线 off/low/max —— 官方模型本身支持这些档位（docs/MODEL-ROUTING.md
+		// 「思考档位」列出待接入项），所以这里只说明当前部署，不声称模型不支持。
 		if (level !== "high") {
 			this.emit({
 				type: "notice",
 				level: "info",
-				text: "DeepSeek V4 仅支持高思考强度",
-				textEn: "DeepSeek V4 only supports high thinking intensity",
+				text: "当前 DSH 部署固定使用高思考强度（官方还支持 off/low/max，尚未接线）",
+				textEn:
+					"This DSH deployment pins high thinking effort (official also supports off/low/max; not wired yet)",
 			});
 			return;
 		}
@@ -2487,6 +2499,11 @@ export class DshClientSession {
 			reviewDisabledSkills: [],
 			disabledPlugins: this.settings.disabledPlugins,
 			hiddenBuiltinProviders: [...this.settings.hiddenBuiltinProviders],
+			retiredModelRoutes: [...this.settings.retiredModelRoutes],
+			modelRouteAliases: { ...this.settings.modelRouteAliases },
+			defaultModelRouting: defaultModelRoutingRules(),
+			modelRoutingCustomized:
+				this.settings.retiredModelRoutes.length > 0 || Object.keys(this.settings.modelRouteAliases).length > 0,
 			promptTemplate: "",
 			promptOverrides: {},
 			effectiveSystemPrompt: this.settings.customSystemPrompt,
@@ -2519,6 +2536,8 @@ export class DshClientSession {
 		disabledSkills?: string[];
 		disabledExtensions?: string[];
 		disabledPlugins?: string[];
+		retiredModelRoutes?: string[];
+		modelRouteAliases?: Record<string, string>;
 		terminalToolsEnabled?: boolean;
 		terminalBash?: boolean;
 		terminalBashIdleMs?: number;
@@ -2553,6 +2572,18 @@ export class DshClientSession {
 		if (partial.thinkingWrap !== undefined) this.settings.thinkingWrap = partial.thinkingWrap;
 		if (partial.toolsWrap !== undefined) this.settings.toolsWrap = partial.toolsWrap;
 		if (partial.disabledPlugins !== undefined) this.settings.disabledPlugins = partial.disabledPlugins;
+		if (partial.retiredModelRoutes !== undefined) {
+			this.settings.retiredModelRoutes = normalizeModelRoutingRules({
+				retired: partial.retiredModelRoutes,
+				aliases: this.settings.modelRouteAliases,
+			}).retired;
+		}
+		if (partial.modelRouteAliases !== undefined) {
+			this.settings.modelRouteAliases = normalizeModelRoutingRules({
+				retired: this.settings.retiredModelRoutes,
+				aliases: partial.modelRouteAliases,
+			}).aliases;
+		}
 		if (partial.reviewPrompt !== undefined) this.settings.reviewPrompt = partial.reviewPrompt;
 		if (partial.quickPhrases !== undefined) {
 			const seen = new Set<string>();
@@ -3226,8 +3257,9 @@ export class DshClientSession {
 				this.emit({
 					type: "notice",
 					level: "info",
-					text: "DeepSeek V4 仅支持高思考强度",
-					textEn: "DeepSeek V4 only supports high thinking intensity",
+					text: "当前 DSH 部署固定使用高思考强度（官方还支持 off/low/max，尚未接线）",
+					textEn:
+						"This DSH deployment pins high thinking effort (official also supports off/low/max; not wired yet)",
 				});
 				return true;
 			case "pi-web-ui:quit":

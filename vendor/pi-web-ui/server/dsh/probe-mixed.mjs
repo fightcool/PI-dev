@@ -113,7 +113,7 @@ try {
 	const init = await send("initialize", {
 		cwd: HERE,
 		provider: "deepseek-official",
-		model: "deepseek-v4-flash",
+		model: "deepseek-flash",
 		maxTokens: 128,
 	});
 	console.log("  ok:", JSON.stringify(init).slice(0, 160));

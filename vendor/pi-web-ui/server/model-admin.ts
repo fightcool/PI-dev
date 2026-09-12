@@ -146,6 +146,22 @@ export interface ProviderKeysData {
 	keys: { name: string; apiKey: string }[];
 }
 
+/** 设置表单只管理这些服务商键；其余键（headers、modelOverrides、未来字段）服务端原样保留。 */
+const MANAGED_PROVIDER_KEYS = new Set(["name", "api", "baseUrl", "apiKey", "authHeader", "models"]);
+
+/** 设置表单只管理这些模型键；其余键（cost / thinkingLevelMap / compat / 未来字段）原样保留。 */
+const MANAGED_MODEL_KEYS = new Set(["id", "name", "reasoning", "input", "contextWindow", "maxTokens"]);
+
+/** 取上一个条目里不被表单管理的字段（浅拷贝进新对象，不动磁盘里的原引用）。 */
+function unmanagedEntries(source: Record<string, unknown> | undefined, managed: Set<string>): Record<string, unknown> {
+	if (!source) return {};
+	const out: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(source)) {
+		if (!managed.has(key) && value !== undefined) out[key] = value;
+	}
+	return out;
+}
+
 export class ModelAdminService {
 	constructor(private readonly host: ModelAdminHost) {}
 
@@ -1317,21 +1333,29 @@ export class ModelAdminService {
 		}
 		try {
 			const { providers } = this.readModelsConfig();
-			// headers never reach the browser, so the incoming config can't carry
-			// them — preserve the previously stored values when they are absent.
-			const prevHeaders = providers[pid]?.headers;
-			// 同理：apiKey 不再回传浏览器，所以空/缺失必须理解为「保留已保存的值」，
-			// 否则用户只改模型列表就会把密钥删掉。
-			const prevApiKey = typeof providers[pid]?.apiKey === "string" ? (providers[pid]?.apiKey as string) : undefined;
+			// 表单不回传 headers，也不承载 cost / thinkingLevelMap / compat / modelOverrides
+			// 等模型信息，所以这里按「表单管理的键全覆盖 + 其余键原样保留」合并：UI 保存
+			// 不会把手工对齐的模型元数据抹掉（见 docs/MODEL-ROUTING.md）。
+			const prev = providers[pid] ?? {};
+			const prevModels = new Map<string, Record<string, unknown>>();
+			if (Array.isArray(prev.models)) {
+				for (const entry of prev.models as Record<string, unknown>[]) {
+					const id = typeof entry?.id === "string" ? entry.id : "";
+					if (id) prevModels.set(id, entry);
+				}
+			}
+			// apiKey 不在表单里回传（空/缺失 = 保留已保存的值）；它与 headers 不同，必须单独算：
+			// MANAGED_PROVIDER_KEYS 把 apiKey 视作「表单管理的键」，unmanagedEntries 不会替它兜底。
+			const prevApiKey = typeof prev.apiKey === "string" ? prev.apiKey : undefined;
 			const nextApiKey = config.apiKey?.trim() ? config.apiKey.trim() : prevApiKey;
 			providers[pid] = {
+				...unmanagedEntries(prev, MANAGED_PROVIDER_KEYS),
 				...(config.name?.trim() ? { name: config.name.trim() } : {}),
 				...(config.api?.trim() ? { api: config.api.trim() } : {}),
 				...(config.baseUrl?.trim() ? { baseUrl: config.baseUrl.trim() } : {}),
 				...(nextApiKey ? { apiKey: nextApiKey } : {}),
 				...(config.authHeader ? { authHeader: true } : {}),
-				...(prevHeaders && Object.keys(prevHeaders).length > 0 ? { headers: prevHeaders } : {}),
-				models,
+				models: models.map((m) => ({ ...unmanagedEntries(prevModels.get(m.id), MANAGED_MODEL_KEYS), ...m })),
 			};
 			mkdirSync(this.host.agentDir, { recursive: true });
 			writeFileSync(this.modelsConfigPath(), JSON.stringify({ providers }, null, 2) + "\n");

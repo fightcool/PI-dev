@@ -93,7 +93,7 @@ const onNotify = (method, params) => {
 };
 
 try {
-	await req("initialize", { cwd: HERE, provider: "deepseek-official", model: "deepseek-v4-flash-vision-exp" });
+	await req("initialize", { cwd: HERE, provider: "deepseek-official", model: "deepseek-flash" });
 	console.log("initialize OK");
 
 	// 1) attachment/save（真实截图）

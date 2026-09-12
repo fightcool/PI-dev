@@ -14,6 +14,7 @@ import {
 	FiHelpCircle,
 	FiMessageSquare,
 	FiHardDrive,
+	FiGitBranch,
 	FiPackage,
 	FiPlus,
 	FiRadio,
@@ -462,7 +463,44 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 		reviewDisabledSkills?: string[];
 		markersEnabled?: boolean;
 		disabledMarkers?: string[];
+		/** 模型路由规则：null = 清除自定义（回到出厂默认）。 */
+		retiredModelRoutes?: string[] | null;
+		modelRouteAliases?: Record<string, string> | null;
 	}) => send({ type: "set_settings", ...patch });
+
+	/** 模型路由规则草稿（系统页；每行一个 id / 每行 旧id=新id）。null = 未编辑（显示生效值）。 */
+	const [routingDraft, setRoutingDraft] = useState<string | null>(null);
+	const [aliasDraft, setAliasDraft] = useState<string | null>(null);
+	const routingRetiredText = routingDraft ?? (settings.retiredModelRoutes ?? []).join("\n");
+	const routingAliasText =
+		aliasDraft ??
+		Object.entries(settings.modelRouteAliases ?? {})
+			.map(([from, to]) => `${from}=${to}`)
+			.join("\n");
+	/** 保存规则：解析两栏文本 → set_settings（服务端归一化去空行/去重/丢掉自映射别名）。 */
+	const saveRouting = () => {
+		const retired = routingRetiredText
+			.split("\n")
+			.map((line) => line.trim())
+			.filter(Boolean);
+		const aliases: Record<string, string> = {};
+		for (const line of routingAliasText.split("\n")) {
+			const at = line.indexOf("=");
+			if (at <= 0) continue;
+			const from = line.slice(0, at).trim();
+			const to = line.slice(at + 1).trim();
+			if (from && to) aliases[from] = to;
+		}
+		setRoutingDraft(null);
+		setAliasDraft(null);
+		setPartial({ retiredModelRoutes: retired, modelRouteAliases: aliases });
+	};
+	/** 恢复出厂默认：null = 清掉自定义（不是「空规则」）。 */
+	const resetRouting = () => {
+		setRoutingDraft(null);
+		setAliasDraft(null);
+		setPartial({ retiredModelRoutes: null, modelRouteAliases: null });
+	};
 
 	/** 提交快捷短语行内编辑（空 = 取消；与原值相同 = 无操作；其余走服务端归一化）。 */
 	const commitQuickEdit = () => {
@@ -2399,6 +2437,51 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 										onLoadDiagnostics={channelApi.listDiagnostics}
 										onSetOpsAlerts={channelApi.setOpsAlerts}
 									/>
+							</div>
+						)}
+
+						{/* ---- 模型路由规则（不改代码就能修正官方下架/改名） ------------- */}
+						{tab === "system" && (
+							<div className="set-section">
+								<div className="set-section-title">
+									<FiGitBranch className="set-section-icon" />
+									{t("modelRoutingTitle")}
+									<HintTip text={t("modelRoutingHint")} />
+								</div>
+								<p className="set-hint">{t("modelRoutingDesc")}</p>
+								<label className="set-field">
+									<span className="set-field-label">{t("modelRoutingRetiredLabel")}</span>
+									<textarea
+										className="set-prompt-input set-routes-input"
+										rows={5}
+										spellCheck={false}
+										placeholder="deepseek/deepseek-v4-pro"
+										value={routingRetiredText}
+										onChange={(e) => setRoutingDraft(e.target.value)}
+									/>
+								</label>
+								<label className="set-field">
+									<span className="set-field-label">{t("modelRoutingAliasesLabel")}</span>
+									<textarea
+										className="set-prompt-input set-routes-input"
+										rows={3}
+										spellCheck={false}
+										placeholder="deepseek/deepseek-v4-old=deepseek/deepseek-flash"
+										value={routingAliasText}
+										onChange={(e) => setAliasDraft(e.target.value)}
+									/>
+								</label>
+								<div className="set-mode-row">
+									<button type="button" className="set-btn" onClick={saveRouting}>
+										{t("modelRoutingSave")}
+									</button>
+									<button type="button" className="set-btn" onClick={resetRouting}>
+										{t("modelRoutingReset")}
+									</button>
+									<span className="set-hint set-muted">
+										{settings.modelRoutingCustomized ? t("modelRoutingCustomized") : t("modelRoutingFactory")}
+									</span>
+								</div>
 							</div>
 						)}
 					</div>
