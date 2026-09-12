@@ -1334,4 +1334,5 @@ export const en: EnDictionary = {
 	channelAccountTopupUrl: "Top-up link (optional)",
 	channelAccountTopupUrlPh: "e.g. {baseUrl}/console/topup",
 	channelAccountTopupHint: "Shown next to the usage-detail title so topping up is one click away.",
+	channelAccountAutoRefresh: "Refreshes every 5 minutes",
 };

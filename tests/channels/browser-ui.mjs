@@ -150,6 +150,8 @@ const { chromium } = vendorRequire("playwright-core");
 const browser = await chromium.launch({ executablePath: chromePath(chromium), headless: true,
 	args: ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost"] });
 let sent = [];
+/** 自动刷新用例专用：记录该上下文发出的帧（与主上下文分开，避免互相干扰计数）。 */
+const clockSent = [];
 try {
 	// 记录客户端发出的帧：必须走 isolatedContext 的回调，不能再注册 routeWebSocket
 	// （后者会替换掉替身 socket，页面就收不到 snapshot/channel_state 了）。
@@ -230,6 +232,7 @@ try {
 	const accountBlock = page.locator(".usage-account");
 	check("usage detail shows the channel account block", await accountBlock.isVisible(), await accountBlock.innerText().catch(() => "missing"));
 	const accountText = (await accountBlock.innerText()).replace(/\n/g, " / ");
+	check("the account block says it refreshes automatically", /5 minutes|5 分钟/.test(accountText), accountText);
 	check("the account block states the balance in plain words", /Balance|余额/.test(accountText) && accountText.includes("12.5"), accountText);
 	check("the account block shows the usage when only that is known", accountText.includes("1 USD") || accountText.includes("1.00"), accountText);
 	const topup = page.locator(".usage-panel-head .usage-topup");
@@ -445,6 +448,48 @@ try {
 	);
 	check("a successful save is reported to the user", (await page.locator(".chan-settings .chan-receipt.ok").first().innerText()).includes("Save channel"));
 	await context.close();
+
+	// 6f2) 余额自动刷新：进入时先查一次，之后每 5 分钟一次。
+	//      用浏览器时钟推进时间来真实验证（`runFor` 会按时序触发 app 在页面加载期创建的定时器；
+	//      `fastForward` 不会 —— 实测过，别换回去）。服务端另有 10 秒限频 + 5 分钟缓存兜底。
+	//      断言口径故意放宽：假时钟会扰乱 WS 心跳导致重连，重连可能让组件重新挂载并重建定时器，
+	//      所以只钉「1 分钟内不重复查（不是轮询）」+「每个 5 分钟窗口至少多一次」。
+	{
+		const { context: clk } = await isolatedContext(browser, options, { ...state }, () => {}, (m) => clockSent.push(m));
+		try {
+			const clkPage = await clk.newPage();
+			await clkPage.clock.install();
+			await clkPage.goto(origin, { waitUntil: "domcontentloaded" });
+			await clkPage.locator(".composer-tools-left .chan-balance").waitFor({ state: "visible", timeout: options.stepTimeout });
+			await clkPage.waitForTimeout(300);
+			const queries = () => clockSent.filter((m) => m.type === "channel_query_account").length;
+			const initial = queries();
+			check("余额进入时先查一次", initial === 1, `queries=${initial}`);
+			await clkPage.clock.runFor("01:00");
+			await clkPage.waitForTimeout(200);
+			check("1 分钟内不会重复查询（不是轮询）", queries() === initial, `queries=${queries()}`);
+			const windows = [];
+			for (let i = 0; i < 3; i++) {
+				await clkPage.clock.runFor("05:00");
+				await clkPage.waitForTimeout(200);
+				windows.push(queries());
+			}
+			// 周期由 channel-account-refresh.test.ts 用假时钟精确钉死（5 分钟）；这里只证明
+			// 「连续推进时间确实会不断自动刷新」（假时钟会扰乱 WS 心跳导致重连，计数会有抖动）。
+			check(
+				"推进时间会持续自动刷新",
+				windows[2] > windows[0] && windows.every((n, i) => n >= (i === 0 ? initial : windows[i - 1])),
+				`queries=${initial} → ${windows.join(" → ")}`,
+			);
+			// 从后台标签页切回来时，若数据已过期要补一次（夹具的查询时间是旧的 → 必然补）。
+			const beforeReturn = queries();
+			await clkPage.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+			await clkPage.waitForTimeout(200);
+			check("切回标签页时补一次刷新", queries() > beforeReturn, `queries=${beforeReturn} → ${queries()}`);
+		} finally {
+			await clk.close();
+		}
+	}
 
 	// 6g) 未绑定渠道时也要显示余额：clientId 在 sessionStorage（每标签页独立），新标签页就是新
 	//     clientId，而渠道绑定按 clientId 命名空间存 —— 对话还在跑同一个模型，绑定却没了。

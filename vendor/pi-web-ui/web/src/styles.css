@@ -10825,6 +10825,10 @@ button.source-default-toggle {
 	color: var(--text-faint);
 	line-height: 1.5;
 }
+.usage-account-auto {
+	color: var(--text-faint);
+	font-size: 11px;
+}
 /* 标题右侧的「去充值」：不抢标题视觉，但一眼可见、可点。 */
 .usage-topup {
 	margin-left: auto;

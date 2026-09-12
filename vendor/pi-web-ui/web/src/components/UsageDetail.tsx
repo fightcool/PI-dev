@@ -152,6 +152,8 @@ export function UsageDetail({
 							{t("channelAccountCheckedAt")}：{new Date(status.checkedAt).toLocaleString()}
 						</span>
 					)}
+					{/* 让用户知道这是自动更新的，不用自己反复点。 */}
+					<span className="usage-account-auto">{t("channelAccountAutoRefresh")}</span>
 				</div>
 				{(status?.note || status?.error) && (
 					<div className="usage-account-note">
