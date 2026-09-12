@@ -5397,6 +5397,61 @@ div.chead[role="button"]:focus-visible,
 	min-width: 0;
 }
 
+/* 报错卡第一行：**哪个渠道 · 哪个模型**失败的。两个渠道可能指向同一个站点（同一句「额度不足」
+   会被看反），所以渠道名比错误原文更需要靠前。 */
+.msg-error-where {
+	display: block;
+	margin-bottom: 2px;
+	font-weight: 600;
+	opacity: 0.85;
+}
+
+/* 报错卡的操作行：充值 / 详情 / 重试。 */
+.msg-error-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+}
+
+.msg-error-actions:not(:empty) {
+	margin-top: 8px;
+}
+
+.msg-error-link,
+.msg-error-more {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 14px;
+	font-size: 13px;
+	line-height: 1.6;
+	color: var(--red);
+	background: transparent;
+	border: 1px solid rgba(248, 113, 113, 0.55);
+	border-radius: 999px;
+	cursor: pointer;
+	text-decoration: none;
+}
+
+.msg-error-link:hover,
+.msg-error-more:hover {
+	background: rgba(248, 113, 113, 0.12);
+}
+
+/* 展开后的上游原文（含 request id）：等宽小字，能选中复制。 */
+.msg-error-detail {
+	margin: 8px 0 0;
+	padding: 6px 8px;
+	font-family: var(--mono, monospace);
+	font-size: 12px;
+	line-height: 1.5;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	background: rgba(0, 0, 0, 0.18);
+	border-radius: 6px;
+}
+
 .msg-retry-btn {
 	display: inline-flex;
 	align-items: center;

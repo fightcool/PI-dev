@@ -1162,6 +1162,10 @@
     "channelAccountTopupHint": "Shown next to the usage-detail title so topping up is one click away.",
     "channelAccountAutoRefresh": "Refreshes every 2 minutes",
     "channelAccountRetry": "Retry",
-    "channelAccountRetryHint": "Auto-refresh stopped after 3 failed attempts; press Retry to resume."
+    "channelAccountRetryHint": "Auto-refresh stopped after 3 failed attempts; press Retry to resume.",
+    "channelErrorQuota": "На счёте шлюза этого канала закончились средства (шлюз сообщает остаток: {remaining}). Пополните этот счёт или переключитесь на другой канал.",
+    "channelErrorQuotaNoRemaining": "На счёте шлюза этого канала закончились средства. Пополните этот счёт или переключитесь на другой канал.",
+    "channelErrorDetail": "Подробности",
+    "channelErrorDetailHide": "Скрыть подробности"
   }
 }

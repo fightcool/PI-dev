@@ -6,7 +6,7 @@ import { ChatInput } from "../components/ChatInput";
 import { GoalBar } from "../components/GoalBar";
 import { useT } from "../i18n";
 import { useWideChat } from "../chat-width-settings";
-import type { PromptAttachment, UiMessage } from "../types";
+import type { PromptAttachment, UiChannelInfo, UiMessage } from "../types";
 import type { AppConnection, ViewName } from "./types";
 import type { useAppDialogs } from "./use-app-dialogs";
 import type { useAttachments } from "./use-attachments";
@@ -22,6 +22,8 @@ const DshQuestionDialog = lazy(() =>
 	import("../components/DshQuestionDialog").then((m) => ({ default: m.DshQuestionDialog })),
 );
 const EMPTY_MESSAGES: UiMessage[] = [];
+/** 没有渠道清单时的稳定空数组（module 级常量：每次 render 新建数组会让子组件的 memo 失效）。 */
+const NO_CHANNELS: UiChannelInfo[] = [];
 
 /** @COUPLED components/MessageList.tsx: callbacks must survive token deltas. */
 export function ChatView({
@@ -169,6 +171,8 @@ export function ChatView({
 							onLoadHistory={(opts) => send({ type: "load_history", ...opts })}
 							thinkingWrap={chat.settings?.thinkingWrap ?? true}
 							toolsWrap={chat.settings?.toolsWrap ?? false}
+							// 报错卡要把消息里的 providerId 还原成渠道显示名（同站点的两个渠道很容易看反）。
+							channels={chat.channelState?.channels ?? NO_CHANNELS}
 							jumpTarget={searchJump}
 							onJumpDone={onJumpDone}
 						/>

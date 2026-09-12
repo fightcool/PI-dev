@@ -28,6 +28,10 @@ const check = (name, ok, extra = "") => {
 	if (!ok) failures++;
 };
 
+/** 真实上游原文（实测自 www.cctq.ai 的 new-api 网关）：报错卡要能说清「哪个渠道 · 哪个模型」失败。 */
+const CCTQ_QUOTA_ERROR =
+	'OpenAI API error (403): {"message":"用户额度不足, 剩余额度: ¥-0.013362 (request id: 202609121538353343706438268d9d6vAofL5Y9)","type":"new_api_error","param":"","code":"insufficient_user_quota"}';
+
 const MODELS = [
 	{ id: "main/m1", name: "Mock One", provider: "main", vision: false },
 	{ id: "main/m2", name: "Mock Two", provider: "main", vision: false },
@@ -53,8 +57,21 @@ const CHANNELS = [
 		keys: [], keyMissing: false, providerMissing: true },
 ];
 
+/** 末尾追加的一条「模型调用失败」消息（真实上游原文）：报错卡要能说清渠道与模型。 */
+const ERROR_MESSAGE = {
+	id: "assessment-err",
+	role: "assistant",
+	content: [],
+	provider: "main",
+	model: "m1",
+	stopReason: "error",
+	errorMessage: CCTQ_QUOTA_ERROR,
+	timestamp: 1700000000009,
+};
+
 const state = {
 	...snapshot(3),
+	messages: [...snapshot(3).messages, ERROR_MESSAGE],
 	model: { id: "m1", name: "Mock One", provider: "main", vision: false },
 	providerKeys: { main: [{ name: "密钥 1", active: true }, { name: "密钥 2", active: false }] },
 	models: MODELS,
@@ -174,6 +191,25 @@ try {
 	const desktopBalance = page.locator(".composer-tools-left .chan-balance");
 	check("toolbar shows the channel balance chip", (await desktopBalance.isVisible()) && (await desktopBalance.innerText()).includes("12.5"),
 		await desktopBalance.innerText().catch(() => "missing"));
+
+	// 2b) 模型调用失败：报错卡先把**哪个渠道·哪个模型**失败摆到最前面（两个渠道可能指向同一个站点，
+	// 只有「用户额度不足」原文时用户会把一个渠道的欠费看反），人话原因 + 充值直达，「详情」里才是上游原文。
+	const errCard = page.locator(".msg-error").first();
+	await errCard.waitFor({ state: "visible", timeout: options.stepTimeout });
+	const errWhere = (await errCard.locator(".msg-error-where").innerText()).trim();
+	check("error card names the failing channel and model", errWhere === "渠道 A · m1", errWhere);
+	const errText = (await errCard.locator(".msg-error-text").innerText()).trim();
+	const errHref = await errCard.locator(".msg-error-link").getAttribute("href").catch(() => null);
+	check("error card explains quota exhaustion in plain words (gateway figure kept)",
+		errText.includes("¥-0.013362") && !errText.includes("insufficient_user_quota"), errText);
+	check("error card links straight to the channel top-up page", errHref === "https://pay.example/channel-a", String(errHref));
+	check("raw upstream error stays folded until Details is pressed", (await errCard.locator(".msg-error-detail").count()) === 0);
+	await errCard.locator(".msg-error-more").first().click();
+	const errDetail = await errCard.locator(".msg-error-detail").first().innerText();
+	check("Details reveals the raw upstream error (request id included)",
+		errDetail.includes("insufficient_user_quota") && errDetail.includes("request id:"), errDetail.slice(0, 120));
+	await errCard.locator(".msg-error-more").first().click();
+	check("Details folds back", (await errCard.locator(".msg-error-detail").count()) === 0);
 
 	// 3) 选择器按渠道分组，禁用渠道给出明确原因且不可点选。
 	// 触发器是 Dropdown 里的 .chip（内含 .chip-model 名称）。

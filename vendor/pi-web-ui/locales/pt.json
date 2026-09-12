@@ -1162,7 +1162,11 @@
     "channelAccountTopupHint": "Shown next to the usage-detail title so topping up is one click away.",
     "channelAccountAutoRefresh": "Refreshes every 2 minutes",
     "channelAccountRetry": "Retry",
-    "channelAccountRetryHint": "Auto-refresh stopped after 3 failed attempts; press Retry to resume."
+    "channelAccountRetryHint": "Auto-refresh stopped after 3 failed attempts; press Retry to resume.",
+    "channelErrorQuota": "A conta de gateway deste canal está sem crédito (o gateway informa {remaining} restante). Recarregue essa conta ou troque de canal.",
+    "channelErrorQuotaNoRemaining": "A conta de gateway deste canal está sem crédito. Recarregue essa conta ou troque de canal.",
+    "channelErrorDetail": "Detalhes",
+    "channelErrorDetailHide": "Ocultar detalhes"
   },
   "serverStrings": {
     "agent.subagent.template.unavailable": "Template de subagente indisponível: {templateName} (ausente ou desativado)",
