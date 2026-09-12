@@ -437,6 +437,32 @@ try {
 	check("a successful save is reported to the user", (await page.locator(".chan-settings .chan-receipt.ok").first().innerText()).includes("Save channel"));
 	await context.close();
 
+	// 6g) 未绑定渠道时也要显示余额：clientId 在 sessionStorage（每标签页独立），新标签页就是新
+	//     clientId，而渠道绑定按 clientId 命名空间存 —— 对话还在跑同一个模型，绑定却没了。
+	//     此时若该模型的服务商只对应一个带账户查询的渠道，就用它（多义则不猜）。
+	{
+		const noBinding = { ...state, channelBinding: { effective: null, pending: null, source: "none" } };
+		const { context: bare } = await isolatedContext(browser, options, noBinding, () => {}, () => {});
+		try {
+			const barePage = await bare.newPage();
+			await barePage.goto(origin, { waitUntil: "domcontentloaded" });
+			const derivedChip = barePage.locator(".composer-tools-left .chan-balance");
+			await derivedChip.waitFor({ state: "visible", timeout: options.stepTimeout });
+			check(
+				"balance chip still shows when the conversation has no channel binding",
+				(await derivedChip.innerText()).includes("12.5"),
+				await derivedChip.innerText(),
+			);
+			check(
+				"the derived chip says it was matched by provider",
+				(await derivedChip.getAttribute("title")).includes("no channel bound"),
+				String(await derivedChip.getAttribute("title")),
+			);
+		} finally {
+			await bare.close();
+		}
+	}
+
 	// 7) 移动端视口（A11 要求桌面与移动端均可用）：同一套渠道状态在手机宽度下仍可读可操作。
 	const mobile = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true,
 		locale: "en-US", serviceWorkers: "block" });

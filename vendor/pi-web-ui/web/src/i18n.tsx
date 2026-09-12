@@ -1295,6 +1295,7 @@ export const zh = {
 	customAddInChannels: "新建/修改服务商请到「设置 → 渠道 → 新增渠道 → 服务商连接」：那里会把请求地址、协议、密钥与模型一并写入。",
 	channelAccountModeGateway: "网关适配器（one-api / new-api，失败自动退回账单接口）",
 	channelAccountUsed: "已用",
+	channelBalanceDerived: "（该对话未绑定渠道，按当前模型的服务商匹配到的唯一渠道）",
 } as const;
 
 /* ------------------------------------------------------------------ */
