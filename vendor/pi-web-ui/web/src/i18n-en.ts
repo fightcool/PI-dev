@@ -735,6 +735,21 @@ export const en: EnDictionary = {
 	removeModel: "Remove model",
 	addModel: "Add model",
 	deleteProviderConfirm: "Delete provider {id} and its {n} models?",
+	hideProviderTitle:
+		"Delete: remove this built-in provider from the list (its saved keys are cleared too; restorable at the bottom of the list)",
+	hideProviderConfirm:
+		"Remove {name} ({id}) from the list?\nIt is a pi built-in provider and cannot be uninstalled — it just stops showing here, and can be restored from “Deleted” at the bottom of the list.",
+	hideProviderConfirmKeys:
+		"Remove {name} ({id}) from the list and delete its {n} saved key(s)?\nWithout keys the provider is unusable; you can restore it from “Deleted” at the bottom of the list at any time.",
+	hiddenProviders: "{n} built-in provider(s) deleted",
+	hiddenExpand: "Show",
+	hiddenCollapse: "Hide",
+	restoreProvider: "Restore",
+	restoreProviderTitle: "Put back into the built-in provider list (keys are not restored)",
+	allProvidersHidden: "All built-in providers are deleted (hidden) — restore them below.",
+	deleteUnconfigured: "Delete {n} unconfigured",
+	hideUnconfiguredConfirm:
+		"Remove all unconfigured built-in providers ({n}) from the list?\nNone of them has a saved key and providers configured through environment variables are unaffected; you can restore them from “Deleted” at the bottom of the list at any time.",
 	fetchModels: "Fetch model list",
 	fetchModelsHint: "Pull model IDs from the baseUrl /models endpoint (server-side, no CORS)",
 	fetchingModels: "Fetching…",
@@ -1234,6 +1249,13 @@ export const en: EnDictionary = {
 	channelModelsUnknown: "(not in the current model list)",
 	channelModelsHint:
 		"Checked models are the only ones this channel offers; none checked = unrestricted. Stored as provider-internal ids (e.g. deepseek-flash).",
+	channelModelsFetch: "Fetch from endpoint",
+	channelModelsFetchTip:
+		"Request /models on the provider's baseUrl and merge what it returns into the list below (server-side request; the key never leaves the server)",
+	channelModelsFetching: "Fetching…",
+	channelModelsFetched: "Fetched {n} models from {baseUrl}",
+	channelModelsFetchFailed: "Fetch failed: {msg}",
+	channelModelsFromApi: "API",
 	channelModelsNoProvider: "This provider has no selectable models yet (add them in the model config first).",
 	channelId: "Channel id",
 	channelIdPh: "auto-generated when empty",

@@ -172,6 +172,9 @@ interface DshSettings {
 	toolsWrap: boolean;
 	/** 设置面板隐藏的 UI 插件（纯 UI 开关，回显保持）。 */
 	disabledPlugins: string[];
+	/** pi 引擎「管理模型」里删除（隐藏）的内置服务商 id：DSH 没有该面板，
+	 *  仅回显保持，切回 pi 引擎时列表不被重置。 */
+	hiddenBuiltinProviders: string[];
 	/** 目标轮次附加指令（DSH 无独立审查者，经 DSH_PERSONA 注入让模型在目标轮次遵守）。 */
 	reviewPrompt: string;
 	/** 输入框上方的快捷短语（点击即发送；纯 UI 偏好）。 */
@@ -219,6 +222,7 @@ const DEFAULT_SETTINGS: DshSettings = {
 	thinkingWrap: false,
 	toolsWrap: true,
 	disabledPlugins: [],
+	hiddenBuiltinProviders: [],
 	reviewPrompt: "",
 	quickPhrases: [],
 	quickPhrasesEnabled: true,
@@ -362,6 +366,7 @@ export class DshClientSession {
 				thinkingWrap: savedSettings.thinkingWrap,
 				toolsWrap: savedSettings.toolsWrap,
 				disabledPlugins: savedSettings.disabledPlugins ?? [],
+				hiddenBuiltinProviders: savedSettings.hiddenBuiltinProviders ?? [],
 				reviewPrompt: savedSettings.reviewPrompt,
 				quickPhrases: savedSettings.quickPhrases ?? [],
 				quickPhrasesEnabled: savedSettings.quickPhrasesEnabled ?? true,
@@ -2481,6 +2486,7 @@ export class DshClientSession {
 			reviewPrompt: this.settings.reviewPrompt,
 			reviewDisabledSkills: [],
 			disabledPlugins: this.settings.disabledPlugins,
+			hiddenBuiltinProviders: [...this.settings.hiddenBuiltinProviders],
 			promptTemplate: "",
 			promptOverrides: {},
 			effectiveSystemPrompt: this.settings.customSystemPrompt,
@@ -3620,6 +3626,22 @@ export class DshClientSession {
 				"DSH 引擎不支持自定义 provider",
 				"The DSH engine does not support custom providers",
 				"dsh.provider.custom.unsupported",
+			),
+		});
+	}
+
+	/** 渠道表单「获取接口清单」：DSH 侧没有模型目录/密钥库，明确回不支持。 */
+	async fetchChannelModels(_reqId: number, _providerId: string, _keyName?: string | null): Promise<void> {
+		this.emit({
+			type: "channel_models_result",
+			reqId: _reqId,
+			providerId: _providerId,
+			ok: false,
+			error: pick(
+				this.getLang(),
+				"DSH 引擎不支持自定义 provider 探测",
+				"The DSH engine does not support custom provider probing",
+				"dsh.provider.probing.unsupported",
 			),
 		});
 	}

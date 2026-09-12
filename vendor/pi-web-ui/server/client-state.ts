@@ -6,6 +6,9 @@
  *
  * 从 agent-service.ts 抽出，行为保持不变。
  */
+/* 🍞 @COUPLED server/settings-service.ts（get/set 的字段映射）、web/src/components/ModelConfigModal.tsx
+ *   （hiddenBuiltinProviders 的唯一写方） — 新增设置字段要同时改这两处，否则重启即丢。
+ */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -99,6 +102,12 @@ export interface ClientSettings {
 	/** 输入框上方的快捷短语（点击即发送）。纯 UI 偏好，不进预设、不需 reload。 */
 	quickPhrases: string[];
 	quickPhrasesEnabled: boolean;
+	/** 内置服务商里被用户「删除」（= 从「管理模型」列表移除）的 providerId。
+	 *  内置服务商来自 pi 运行时注册表，无法真正卸载；这里只记「不再展示」。
+	 *  纯 UI 偏好：不进预设、不需 reload，全局共享（同 disabledPlugins）。
+	 *  删除时前端会一并调 clear_provider_api_key 清掉它的密钥——否则残留密钥
+	 *  会让该服务商继续出现在模型选择器/视觉桥里，看起来像「删了还在」。 */
+	hiddenBuiltinProviders?: string[];
 }
 
 /** A named combo of prompt + skill/extension toggles the user can re-apply.
@@ -117,6 +126,7 @@ export interface SettingsPreset extends Omit<
 	| "subagentDefaultModel"
 	| "quickPhrases"
 	| "quickPhrasesEnabled"
+	| "hiddenBuiltinProviders"
 > {
 	name: string;
 }
@@ -426,6 +436,7 @@ export class ClientStateStore {
 			retryMaxAttempts: normalizeRetryMaxAttempts(stored?.retryMaxAttempts),
 			quickPhrases: stored?.quickPhrases ?? [],
 			quickPhrasesEnabled: stored?.quickPhrasesEnabled ?? true,
+			hiddenBuiltinProviders: stored?.hiddenBuiltinProviders ?? [],
 			reviewPrompt: stored?.reviewPrompt ?? "",
 			reviewDisabledSkills: stored?.reviewDisabledSkills ?? [],
 			disabledPlugins: stored?.disabledPlugins ?? [],
@@ -466,6 +477,7 @@ export class ClientStateStore {
 			disabledPlugins: settings.disabledPlugins ?? cur.disabledPlugins ?? [],
 			quickPhrases: settings.quickPhrases ?? cur.quickPhrases ?? [],
 			quickPhrasesEnabled: settings.quickPhrasesEnabled ?? cur.quickPhrasesEnabled ?? true,
+			hiddenBuiltinProviders: settings.hiddenBuiltinProviders ?? cur.hiddenBuiltinProviders ?? [],
 		};
 		this.save();
 	}

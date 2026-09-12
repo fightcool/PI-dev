@@ -9,7 +9,10 @@
  *            components/ChannelModelWhitelist.tsx（模型白名单勾选）,
  *            components/ChannelAccountQuery.tsx（账户查询模板 + accountPayloadOf 校验）,
  *            components/ChannelFields.tsx（字段控件）, channel-models.ts（白名单 id 口径）,
- *            server/dev-con/channel-config.ts（channel_save 校验：id/名称/服务商/凭据/白名单）
+ *            server/dev-con/channel-config.ts（channel_save 校验：id/名称/服务商/凭据/白名单）,
+ *            use-chat.ts（channelModelsResult 状态 + fetch_channel_models 出帧）
+ *   @GOTCHA 「获取接口清单」的结果按 providerId 归属：换服务商后旧结果必须丢弃（否则会把
+ *           别的服务商的模型塞进白名单）。
  *   📖 docs/DEV-CON-PROPOSAL.md §4（渠道档案只存引用、不存密钥）, §6（设置页校验）
  *   @CONTRACT 只提交 channel_save 的 payload；凭据按名称引用（null = 跟随服务商 active key）。
  *   @ASSUME channel_state 不下发 extra 里的 mapping/items/method/prefix，因此**没动过账户配置
@@ -23,9 +26,9 @@
  *        「查询账户」命令验证（channel_query_account，只读）。
  * ──────────────────────────────────────────────────
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChannelSaveInput } from "../use-chat";
-import type { ModelInfo, ProviderKeyInfo, UiChannelInfo } from "../types";
+import type { ModelInfo, ProviderKeyInfo, UiChannelInfo, UiModelConfigEntry } from "../types";
 import { useT } from "../i18n";
 import { ChannelModelWhitelist } from "./ChannelModelWhitelist";
 import { ChannelAccountQuery, accountPayloadOf, type AccountPreset } from "./ChannelAccountQuery";
@@ -108,6 +111,8 @@ export function ChannelForm({
 	providerKeys,
 	models,
 	accountPresets,
+	onFetchChannelModels,
+	channelModelsResult,
 	onSave,
 	onCancel,
 }: {
@@ -118,6 +123,17 @@ export function ChannelForm({
 	models: ModelInfo[];
 	/** 服务端下发的账户查询预设（一键填充）。 */
 	accountPresets?: AccountPreset[];
+	/** 「获取接口清单」：请求服务端按该服务商的 baseUrl 探测 /models（密钥不出服务端）。 */
+	onFetchChannelModels?: (providerId: string, keyName: string | null, reqId: number) => void;
+	/** 上一次探测结果（按 reqId + providerId 匹配，见 use-chat 的 channelModelsResult）。 */
+	channelModelsResult?: {
+		reqId: number;
+		providerId: string;
+		ok: boolean;
+		models?: UiModelConfigEntry[];
+		baseUrl?: string;
+		error?: string;
+	} | null;
 	onSave: (payload: ChannelSaveInput) => void;
 	onCancel: () => void;
 }) {
@@ -128,6 +144,36 @@ export function ChannelForm({
 	const [accountTouched, setAccountTouched] = useState(false);
 	const set = (patch: Partial<ChannelDraft>) => setForm((d) => ({ ...d, ...patch }));
 	const knownKeys = providerKeys[form.providerId] ?? [];
+
+	// 「获取接口清单」：reqId 自增（并发/重复点击时只认最后一次），结果按 providerId 过滤，
+	// 换了服务商就丢弃过期结果（旧服务商的模型 id 在新服务商下没有意义）。
+	const reqSeq = useRef(0);
+	const [pendingReq, setPendingReq] = useState<number | null>(null);
+	const [fetchErr, setFetchErr] = useState<string | null>(null);
+	useEffect(() => {
+		if (!channelModelsResult || pendingReq === null || channelModelsResult.reqId !== pendingReq) return;
+		setPendingReq(null);
+		setFetchErr(channelModelsResult.ok ? null : (channelModelsResult.error ?? ""));
+	}, [channelModelsResult, pendingReq]);
+	/** 属于当前服务商的那次结果（其他服务商的过期结果一律当没有）。 */
+	const fetchResult =
+		channelModelsResult && channelModelsResult.providerId === form.providerId ? channelModelsResult : null;
+	const fetchModels = fetchResult?.ok ? fetchResult.models : undefined;
+	const fetchState = onFetchChannelModels
+		? {
+				busy: pendingReq !== null,
+				ok: fetchErr !== null ? false : fetchResult ? true : null,
+				baseUrl: fetchResult?.baseUrl,
+				error: fetchErr ?? undefined,
+			}
+		: undefined;
+	const fetchFromEndpoint = () => {
+		if (!onFetchChannelModels || !form.providerId || pendingReq !== null) return;
+		const reqId = ++reqSeq.current;
+		setFetchErr(null);
+		setPendingReq(reqId);
+		onFetchChannelModels(form.providerId, form.credentialKeyName, reqId);
+	};
 
 	const submit = () => {
 		const newId = form.idInput.trim();
@@ -214,6 +260,9 @@ export function ChannelForm({
 				providerId={form.providerId}
 				value={form.models}
 				onChange={(next) => set({ models: next })}
+				onFetchModels={onFetchChannelModels ? fetchFromEndpoint : undefined}
+				fetchModels={fetchModels}
+				fetchState={fetchState}
 			/>
 			<TextField
 				label={t("channelAccountRef")}

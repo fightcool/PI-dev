@@ -978,6 +978,98 @@ export class ModelAdminService {
 	}
 
 	/**
+	 * 渠道表单的「获取接口清单」：按服务商解析 baseUrl 与凭据密钥，探测 <baseUrl>/models。
+	 * @WHY 与 fetch_models（浏览器传 baseUrl/apiKey）不同，这里让**服务端**自己解析密钥——
+	 *   渠道面板的凭据只是一个名字引用，密钥正文从不下发浏览器；顺带绕开 CORS。
+	 * @CONTRACT 只读探测：不写 models.json、不改运行时（刷新目录是 refresh_provider_models 的事）。
+	 */
+	async fetchChannelModels(
+		reqId: number,
+		providerId: string,
+		keyName?: string | null,
+		lang?: () => ServerLang,
+	): Promise<void> {
+		const l = lang?.() ?? "en";
+		const pid = providerId.trim();
+		const done = (ok: boolean, extra: { models?: UiModelConfigEntry[]; baseUrl?: string; error?: string } = {}) =>
+			this.host.emit({ type: "channel_models_result", reqId, providerId: pid, ok, ...extra });
+		if (!pid) {
+			return done(false, {
+				error: pick(l, "请先选择服务商", "Pick a provider first", "models.fetch.channel.noprovider"),
+			});
+		}
+		let baseUrl = "";
+		/** 认证头口径来自该服务商的模型（Provider 本身不带 api 字段，见 pi-ai 的 Provider）。 */
+		let api: string | undefined;
+		/** 运行时自己解析出的凭据（models.json 内联 key / $ENV 引用 / auth.json / OAuth）——
+		 *  它才是真实请求用的那把，所以「跟随服务商当前密钥」时必须用它兜底。 */
+		let runtimeAuth: { apiKey?: string; baseUrl?: string; headers?: Record<string, string> } | undefined;
+		try {
+			const mr = this.host.modelRuntime();
+			const provider = mr.getProviders().find((x) => x.id === pid);
+			baseUrl = (provider?.baseUrl ?? "").trim();
+			api = provider?.getModels()[0]?.api;
+			const resolved = await mr.getAuth(pid);
+			if (resolved) {
+				runtimeAuth = {
+					apiKey: resolved.auth.apiKey,
+					baseUrl: resolved.auth.baseUrl,
+					headers: resolved.auth.headers as Record<string, string> | undefined,
+				};
+			}
+		} catch {
+			// 运行时未就绪/凭据解析失败 → 下面按「没有 baseUrl / 没有密钥」如实报错
+		}
+		if (!baseUrl) baseUrl = (runtimeAuth?.baseUrl ?? "").replace(/\/+$/, "");
+		if (!baseUrl) {
+			return done(false, {
+				error: pick(
+					l,
+					`服务商 ${pid} 没有可探测的 baseUrl（内置服务商的地址由 pi 提供；自定义服务商请在模型配置里填 baseUrl）`,
+					`Provider ${pid} has no baseUrl to probe (built-ins get theirs from pi; custom providers need one in the model config)`,
+					"models.fetch.channel.nobaseurl",
+					{ pid },
+				),
+			});
+		}
+		// 凭据：指定了名字就必须用那把（解析不到 = 明确报错，不偷偷换密钥）；
+		// 没指定 = 该服务商当前生效的命名密钥，其次回落到运行时解析出的凭据。
+		let apiKey: string | undefined;
+		if (keyName?.trim()) {
+			const named = this.resolveProviderKeyValue(pid, keyName);
+			if (!named) {
+				return done(false, {
+					baseUrl,
+					error: pick(
+						l,
+						`命名凭据「${keyName}」已不存在，请重新选择凭据`,
+						`Named credential “${keyName}” no longer exists; pick another one`,
+						"models.fetch.channel.nokey",
+						{ keyName },
+					),
+				});
+			}
+			apiKey = named;
+		} else {
+			const active = this.keyNameList(pid).find((k) => k.active);
+			apiKey = active ? (this.resolveProviderKeyValue(pid, active.keyName) ?? undefined) : runtimeAuth?.apiKey;
+		}
+		try {
+			const models = await ModelAdminService.probeModelsEndpoint(
+				baseUrl,
+				apiKey,
+				true,
+				api,
+				runtimeAuth?.headers,
+				lang,
+			);
+			done(true, { models, baseUrl });
+		} catch (err) {
+			done(false, { baseUrl, error: (err as Error).message });
+		}
+	}
+
+	/**
 	 * Probe a custom provider's model-list endpoint (OpenAI-compatible /models
 	 * with a /v1 retry; Google {models:[…]} shape supported). Throws Error with
 	 * a user-facing message on any failure; returns deduped+sorted entries.

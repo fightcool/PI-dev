@@ -1,10 +1,16 @@
 /**
  * Settings service — 从 agent-service.ts 抽出（系统提示词 / 技能插件开关 /
- * 目标审查提示词 / 预设 / 视觉桥偏好）。设置持久化在 client-state.json 按客户端隔离。
+ * 目标审查提示词 / 预设 / 视觉桥偏好）。设置持久化在 client-state.json 的全局共享键
+ * （跨标签页/浏览器同一套配置，见 client-state.ts 的 GLOBAL_SETTINGS_KEY）。
  *
  * 经 SettingsHost 回调与 ClientSession 解耦：本模块只管「设置状态 + 面板推送 +
  * 预设存取 + 何时需要 reload」，真正动 runtime 的 session.reload() 走宿主回调
  * （reloadSession 里还会刷新斜杠命令目录）。
+ */
+/* 🍞 @COUPLED server/client-state.ts（ClientSettings 字段与默认值）、server/protocol.ts（UiSettingsState）、
+ *   server/index.ts（set_settings 转发）、web/src/components/SettingsModal.tsx（面板开关）。
+ *   @GOTCHA 纯 UI 偏好（disabledPlugins / hiddenBuiltinProviders）不进 needsReload，也不进预设：
+ *   新增这类字段必须在 applyPreset 里显式「保留当前值」，否则应用预设会把它们清空。
  */
 import { existsSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -242,6 +248,7 @@ export class SettingsService {
 				reviewPrompt: this.settings.reviewPrompt,
 				reviewDisabledSkills: [...this.settings.reviewDisabledSkills],
 				disabledPlugins: [...(this.settings.disabledPlugins ?? [])],
+				hiddenBuiltinProviders: [...(this.settings.hiddenBuiltinProviders ?? [])],
 				// The composed system prompt actually in effect (read-only view).
 				effectiveSystemPrompt: promptSnap.full,
 				// 每个来源未覆盖时的默认（自动）内容（「各来源」行预览用）。
@@ -338,6 +345,7 @@ export class SettingsService {
 		reviewPrompt?: string;
 		reviewDisabledSkills?: string[];
 		disabledPlugins?: string[];
+		hiddenBuiltinProviders?: string[];
 		subagentDefaultModel?: string | null;
 		retryMaxAttempts?: number;
 		markersEnabled?: boolean;
@@ -379,6 +387,10 @@ export class SettingsService {
 		// 插件开关是纯 UI 隐藏（不进 needsReload——运行时无需重载）。
 		if (partial.disabledPlugins !== undefined) {
 			this.settings.disabledPlugins = partial.disabledPlugins;
+		}
+		// 内置服务商隐藏同理：纯 UI 展示偏好，运行时无需重载。
+		if (partial.hiddenBuiltinProviders !== undefined) {
+			this.settings.hiddenBuiltinProviders = partial.hiddenBuiltinProviders;
 		}
 		if (partial.terminalToolsEnabled !== undefined) {
 			this.settings.terminalToolsEnabled = partial.terminalToolsEnabled;
@@ -532,6 +544,8 @@ export class SettingsService {
 			// 快捷短语是纯 UI 偏好，不进预设——保留当前值。
 			quickPhrases: [...this.settings.quickPhrases],
 			quickPhrasesEnabled: this.settings.quickPhrasesEnabled,
+			// 隐藏的内置服务商同样不进预设——保留当前值（否则应用预设会把列表弹回来）。
+			hiddenBuiltinProviders: [...(this.settings.hiddenBuiltinProviders ?? [])],
 		};
 		this.host.stateStore.saveSettings(this.host.clientId, this.settings);
 		// 预设可能改了重试次数：即时注入（流式中延迟的 reload 之后还会由调用方重放）。
