@@ -45,7 +45,7 @@ describe("account queries", () => {
 		expect(r.snapshot()[0].status).toBe("unsupported");
 	});
 
-	it("asks the billing API first when no console credential is designated (one request, no pointless 401)", async () => {
+	it("probes the billing API first and never touches /api/user/self when billing answers (one request)", async () => {
 		const paths: string[] = [];
 		const base = await stub((url, res) => {
 			paths.push(url.pathname);
@@ -63,19 +63,19 @@ describe("account queries", () => {
 		const result = await registry().query(channel(base), () => "sk-model-key");
 		expect(result.status).toBe("ok");
 		expect(result.quota).toEqual({ used: 1.25, unit: "USD" });
-		// 只有账单接口被访问；控制台接口一次都没打（模型 key 打它必然 401）。
+		// 只有账单接口被访问；/api/user/self 一次都没打（API token 打它必然 401）。
 		expect(paths).not.toContain("/api/user/self");
 	});
 
-	it("falls back to the OpenAI-compatible billing API when the console token is missing", async () => {
-		// 实测形态（www.cctq.ai）：模型 key 打 /api/user/self 一律 401，但账单接口可用。
+	it("uses the OpenAI-compatible billing API when the provider exposes no balance endpoint", async () => {
+		// 实测形态（www.cctq.ai）：API token 打 /api/user/self 一律 401，但账单接口可用（只有已用）。
 		const base = await stub((url, res) => {
 			if (url.pathname === "/api/user/self") {
 				res.writeHead(401, { "content-type": "application/json" });
 				return res.end(JSON.stringify({ code: "AUTH_UNAUTHORIZED", success: false }));
 			}
 			if (url.pathname === "/v1/dashboard/billing/usage") {
-				expect(url.searchParams.get("start_date")).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+				// 默认先不带日期窗口（实测该部署直接可读）；带窗口是兜底路径。
 				res.writeHead(200, { "content-type": "application/json" });
 				return res.end(JSON.stringify({ object: "list", total_usage: 3.5 }));
 			}
@@ -105,30 +105,32 @@ describe("account queries", () => {
 		expect(result.status).toBe("ok");
 		expect(result.balance).toBeUndefined();
 		expect(result.quota).toEqual({ used: 0.0558, unit: "USD" });
-		expect(result.note).toContain("控制台访问令牌");
+		expect(result.note).toContain("API 没有余额字段");
 	});
 
-	it("keeps the console-token hint when neither the console nor the billing API answers", async () => {
+	it("says the provider API has no query endpoint when nothing answers", async () => {
+		// 按设计：探不到就说探不到（§7），不引导用户去用控制台令牌。
 		const base = await stub((_url, res) => {
 			res.writeHead(401, { "content-type": "application/json" });
 			res.end(JSON.stringify({ success: false }));
 		});
 		const result = await registry().query(channel(base), () => "sk");
 		expect(result.status).toBe("failed");
-		expect(result.error).toContain("控制台访问令牌");
+		expect(result.error).toContain("未提供可用的用量/余额查询接口");
+		expect(result.error).not.toContain("控制台");
 	});
 
 	it("parses an OpenAI-compatible gateway balance with the configured scale and unit", async () => {
-		// 指定了「账户凭据」= 控制台访问令牌 → 直接打控制台接口（能给出真余额）。
+		// 该部署的 API 没有账单接口（404）→ 探到 /api/user/self 并解析出额度（scale/unit 生效）。
 		const base = await stub((url, res) => {
-			expect(url.pathname).toBe("/api/user/self");
+			if (url.pathname !== "/api/user/self") {
+				res.writeHead(404);
+				return res.end("{}");
+			}
 			res.writeHead(200, { "content-type": "application/json" });
 			res.end(JSON.stringify({ success: true, data: { quota: 1000, used_quota: 400, display_name: "acct" } }));
 		});
-		const result = await registry().query(
-			channel(base, { scale: 2, kind: "openai-gateway", unit: "USD", credentialKeyName: "控制台令牌" }),
-			() => "sk-secret",
-		);
+		const result = await registry().query(channel(base), () => "sk-secret");
 		expect(result).toMatchObject({ status: "ok", unit: "USD", scope: "acct", balance: 300 });
 		expect(result.quota).toEqual({ used: 200, limit: 500, remaining: 300, unit: "USD" });
 		expect(result.checkedAt).toBeTypeOf("number");
@@ -156,7 +158,7 @@ describe("account queries", () => {
 			res.writeHead(500);
 			res.end("boom");
 		});
-		expect(await registry().query(channel(bad), () => "sk")).toMatchObject({ status: "failed", error: "账户接口返回 HTTP 500" });
+		expect((await registry().query(channel(bad), () => "sk")).error).toContain("账户接口返回 HTTP 500");
 
 		const notJson = await stub((_url, res) => {
 			res.writeHead(200, { "content-type": "text/html" });
@@ -195,7 +197,7 @@ describe("account queries", () => {
 		const started = Date.now();
 		const result = await registry({ timeoutMs: 150 }).query(channel(slow), () => "sk");
 		expect(result.status).toBe("failed");
-		expect(result.error).toBe("查询超时");
+		expect(result.error).toContain("查询超时");
 		expect(Date.now() - started).toBeLessThan(3_000);
 	});
 
@@ -263,24 +265,19 @@ describe("account queries", () => {
 			res.writeHead(200, { "content-type": "application/json" });
 			res.end(JSON.stringify({ success: true, data: { quota: 500, used_quota: 500, display_name: "gw" } }));
 		});
-		// 渠道里填的是 OpenAI 兼容基址（末尾 /v1）——账户接口必须落在站点根 /api/user/self。
-		// 指定「账户凭据」= 走控制台接口这条路径（没指定时先打账单接口，见下一条用例）。
-		const withV1 = {
-			...channel(`${base}/v1`),
-			extra: { account: { kind: "openai-gateway", url: `${base}/v1`, unit: "CNY", scale: 1, credentialKeyName: "控制台令牌" } },
-		};
+		// 渠道里填的是 OpenAI 兼容基址（末尾 /v1）——额度接口必须落在站点根 /api/user/self，
+		// 不能拼成 /v1/api/user/self。
+		const withV1 = { ...channel(`${base}/v1`), extra: { account: { kind: "openai-gateway", url: `${base}/v1`, unit: "CNY", scale: 1 } } };
 		const result = await registry().query(withV1, () => "gw-key");
 		expect(seen).toContain("/api/user/self");
 		expect(seen).not.toContain("/v1/api/user/self");
 		expect(result.status).toBe("ok");
 		// 已经给出完整账户路径时原样使用，不做二次拼接。
 		seen.length = 0;
-		const explicit = {
-			...channel(base),
-			extra: { account: { kind: "openai-gateway", url: `${base}/api/user/self`, scale: 1, credentialKeyName: "控制台令牌" } },
-		};
+		const explicit = { ...channel(base), extra: { account: { kind: "openai-gateway", url: `${base}/api/user/self`, scale: 1 } } };
 		await registry().query(explicit, () => "gw-key");
-		expect(seen).toEqual(["/api/user/self"]);
+		expect(seen).toContain("/api/user/self");
+		expect(seen).not.toContain("/v1/api/user/self");
 	});
 
 	it("falls back to the provider's own key when the channel has no named credential", async () => {
@@ -317,7 +314,7 @@ describe("account queries", () => {
 		expect(seenAuth).toBe("Bearer model-key");
 	});
 
-	it("surfaces an actionable hint when a gateway account endpoint rejects the model key", async () => {
+	it("tells the user the provider API has no query endpoint when the API token is rejected everywhere", async () => {
 		const base = await stub((_url, res) => {
 			res.writeHead(401, { "content-type": "application/json" });
 			res.end(JSON.stringify({ success: false, message: "unauthorized" }));
@@ -325,7 +322,10 @@ describe("account queries", () => {
 		const gateway = { ...channel(`${base}/v1`), extra: { account: { kind: "openai-gateway", url: `${base}/v1`, scale: 1 } } };
 		const result = await registry().query(gateway, () => "model-key");
 		expect(result.status).toBe("failed");
-		expect(result.error).toContain("控制台访问令牌");
+		// 如实说「这个 API 没有可用的查询接口」，并列出探测过的地址；不引导控制台令牌（设计决定）。
+		expect(result.error).toContain("未提供可用的用量/余额查询接口");
+		expect(result.error).toContain("/v1/dashboard/billing/usage");
+		expect(result.error).not.toContain("控制台");
 	});
 
 	it("exposes the DeepSeek adapter with its documented kind", () => {
@@ -343,12 +343,12 @@ describe("account queries", () => {
 		});
 		const clock = { value: 1_000 };
 		const r = registry({ minIntervalMs: 60_000, now: () => clock.value });
-		// 指定账户凭据 → 单次请求即出结果，calls 才能干净地当作「查询次数」计数。
-		const limited = channel(base, { scale: 1, kind: "openai-gateway", unit: "USD", credentialKeyName: "控制台令牌" });
-		const first = await r.query(limited, () => "sk");
+		const first = await r.query(channel(base), () => "sk");
 		expect(first.status).toBe("ok");
-		const second = await r.query(limited, () => "sk");
-		expect(calls).toBe(1);
+		// 探测可能不止一个请求，所以比较「第二次查询有没有新增请求」，而不是硬编码 1。
+		const callsAfterFirst = calls;
+		const second = await r.query(channel(base), () => "sk");
+		expect(calls).toBe(callsAfterFirst);
 		expect(second.error).toContain("查询过于频繁");
 		expect(second.balance).toBe(first.balance);
 	});

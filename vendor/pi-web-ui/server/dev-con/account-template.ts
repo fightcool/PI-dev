@@ -198,7 +198,7 @@ export const ACCOUNT_TEMPLATE_PRESETS: {
 	id: string;
 	label: string;
 	description: string;
-	/** 预设可以指向内置适配器（如 openai-gateway）：那个适配器带「控制台令牌失败 → 账单接口」回退。 */
+	/** 预设可以指向内置适配器（如 openai-gateway）：它会用渠道那把 API token 依次探测账单/额度接口。 */
 	template: Omit<AccountTemplate, "kind"> & { kind: "template" | "openai-gateway" };
 }[] = [
 	{
@@ -216,9 +216,9 @@ export const ACCOUNT_TEMPLATE_PRESETS: {
 	{
 		id: "openai-gateway",
 		label: "OpenAI 兼容网关（one-api / new-api）",
-		// @WHY 用内置适配器而不是模板：实测模型 key 打 /api/user/self 一律 401（需要控制台访问令牌），
-		// 适配器会在这时自动退回 OpenAI 兼容账单接口，至少给出「已用」；模板只能打一个地址。
-		description: "先 GET {baseUrl}/api/user/self（Bearer，需要控制台访问令牌）→ 不可用时退回 /v1/dashboard/billing（模型 key 可查「已用」）",
+		// @WHY 用内置适配器而不是模板：它只用渠道那把 API token 依次探账单接口与 /api/user/self，
+		// 拿得到余额就报余额、只有用量就报已用、都没有就如实说「该 API 无查询接口」；模板只能打一个地址。
+		description: "GET {baseUrl}/v1/dashboard/billing/usage（API token）→ 用量；该 API 若有余额字段则一并给出",
 		template: {
 			kind: "openai-gateway",
 			url: "{baseUrl}",

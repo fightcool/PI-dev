@@ -1217,7 +1217,7 @@ export const en: EnDictionary = {
 	channelAccountUrl: "Account endpoint URL",
 	channelAccountUnit: "Unit",
 	channelAccountCredential: "Account credential (optional)",
-	channelAccountCredentialPh: "key name of the gateway console token; empty = channel credential",
+	channelAccountCredentialPh: "Key name of a separate API key (e.g. OpenRouter provisioning key); blank = the channel's model credential",
 	channelAccountScale: "Quota scale",
 	channelAccountScalePh: "default 1",
 	channelAccountHint:

@@ -178,7 +178,7 @@ export function ChannelAccountQuery({
 					{t("channelAccountModeNone")}
 				</option>
 				<option value="template">{t("channelAccountModeTemplate")}</option>
-				{/* 内置适配器：自带「控制台令牌失败 → 账单接口」回退，比手写模板更省事。 */}
+				{/* 内置适配器：只用渠道那把 API token，自动探测账单/额度接口，比手写模板更省事。 */}
 				<option value="openai-gateway">{t("channelAccountModeGateway")}</option>
 				{/* 其它旧配置的 kind 保留可选，避免编辑一次就把兼容适配器改成模板。 */}
 				{draft.accountKind &&

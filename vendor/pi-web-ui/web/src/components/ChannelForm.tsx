@@ -79,7 +79,7 @@ export interface ChannelDraft {
 	accountItemsJson: string;
 	accountUnit: string;
 	accountScale: string;
-	/** 账户查询专用凭据名（网关控制台令牌；留空 = 用渠道模型凭据）。 */
+	/** 账户查询专用凭据名（少数供应商需要另一把 API key；留空 = 用渠道模型凭据）。 */
 	accountCredentialKeyName: string;
 }
 
