@@ -141,6 +141,41 @@ journalctl --user -u pi-dev-switch.service --no-pager
 
 阶段：quiesce → 排空（active/pending 均归零，超时即中止并恢复接收）→ 停用并 disable 旧 unit/watchdog → 原子替换 current → `manager start` → 验收（新 PID、健康、build-info 与 release-source 一致、公网入口发的是该版本前端、匿名 WebSocket 仍被 401 拒绝）→ `unquiesce`。失败时原子回退旧 release 并重启 PM2；PM2 起不来则用旧 unit 兜底保证站点可用（并在状态文件中标注）。`--collect` 的 transient unit 在退出时可能打印一条 "Failed to open …/transient/…: No such file or directory"，属清理噪声。
 
+### 2026-09-12 第七次生产升级（`266fff494684` → `7466643885f4`）
+
+| 项 | 结果 |
+| --- | --- |
+| 版本 | `current` → `releases/7466643885f4`，提交 `7466643885f411121b167bf450529aa698a6b0c5`（PR #3：DeepSeek-V4.1-Flash 路由对齐 + **路由规则改为设置面板可配置**，协议 v28） |
+| 候选构建 | `prepare-release.mjs 7466643`（锁文件未变 → 复用当前 release 的依赖，约 1 分钟）；`build-info` 与 `release-source` 一致、`protocolVersion` 28、`release-source` 提交 = 目标提交 |
+| 候选验证 | 产物级：dev checkout 按同一提交重建（`build-info` 提交一致）→ `SMOKE_JOBS=3 npm run test:smoke` **44/44**、`test:channels:browser` 全通过。源码级由同一提交上的 CI 覆盖（PR #3 两次 run 均 success，约 5 分钟） |
+| 切换验收 | `phase=deployed`；新 PID 1117381、`/api/health` 正常（engine=pi, pid 一致）、公网 `dev.ftai.cc` 首页发新前端（`index-D67vER19.js`，与本地 8788 一致）、匿名 `/ws` 与 `/api/models` 仍 401、PM2 unit active；中断约 4 秒（03:52:05 排空完成 → 03:52:09 DEPLOYED） |
+| 线上内容复核 | 从公网拉取该版本前端 bundle，确认三个新功能的文案都在（`模型路由规则` / `获取接口清单` / `已删除 {n} 个内置服务商`），排除「链接换了但公网仍在发旧壳」 |
+| 回滚 | 目标 `releases/266fff494684` 完整保留 |
+
+### 2026-09-12 第六次生产升级（`408770b910fc` → `266fff494684`）
+
+| 项 | 结果 |
+| --- | --- |
+| 版本 | `current` → `releases/266fff494684`，提交 `266fff494684a3aa2311a4ac46193e0474830112`（PR #35：PC 设置面板放大 / 内置服务商可删除 / 渠道按 baseUrl 拉模型清单；同时带上未单独上线的 PR #34） |
+| 候选构建 | `prepare-release.mjs 266fff4`（依赖复用）；`build-info` 与 `release-source` 一致、`protocolVersion` 27 |
+| 候选验证 | 产物级：`SMOKE_JOBS=3 npm run test:smoke` **43/43**（含渠道隔离 e2e）、`test:channels:browser` 全通过；源码级由 PR #35 的 CI 覆盖（两次 run 均 success） |
+| 切换验收 | `phase=deployed`；新 PID 1104200、公网入口 `index-C-9ZDdDn.js` 与本地一致、匿名 `/ws` 仍 401、PM2 unit active；中断约 4 秒（02:09:50 排空完成 → 02:09:55 DEPLOYED） |
+| 回滚 | 目标 `releases/408770b910fc` 完整保留 |
+
+### 补记：2026-09-11 第四次、失败尝试与第五次生产升级
+
+这一段当时没有写入本文，现按切换单元日志（`journalctl --user -u pi-dev-switch.service`）与保留的 release 目录重建；**候选验证明细未留档**，只记录可核对的产物与结果。
+
+| 次序 | 时间（UTC） | 结果 |
+| --- | --- | --- |
+| 尝试（未生效） | 09-11 14:3x | 排空等待超过 `SWITCH_WAIT_MINUTES=45` → `FAILED: active work did not drain`，脚本在触碰任何 manager 之前中止，实例恢复接收工作，`current` 未动 |
+| 第四次 | 09-11 | `d803f7e8d45c → 12cee71a1978`（PR #30 渠道从「死功能」变成可配置），release 提交 `12cee71`、`protocolVersion` 25 |
+| 失败尝试 A | 09-11 15:19:22 | `12cee71a1978 → e1018192e40f`（PR #32）→ `FAILED: public ingress health failed`，原子回滚到 `d803f7e8d45c` |
+| 失败尝试 B | 09-11 15:19:25 | 重试 → `FAILED: public ingress is not serving this release's frontend`（公网仍在发旧壳/旧资源），回滚到 `12cee71a1978`。这两次失败直接催生 PR #33（SPA 壳改 `no-store`，见 `fix/spa-shell-no-store`） |
+| 第五次 | 09-11 15:40:15 启动 → 15:52:29 DEPLOYED | `12cee71a1978 → 408770b910fc`（PR #33；PR #34 的磁盘治理随后合并但未单独上线），PID 1053655、`protocolVersion` 25、entry `index-CQiwhItz.js`；本次切换在排空阶段等待较久（约 12 分钟）后才完成 |
+
+> 教训沿用上文步骤 3 的三条：维护任务必须在独立 cgroup（`systemd-run --user`）、PM2 → PM2 升级必须先停 unit 再换链接、公网验收必须核对「入口资源是不是本版本的」——失败尝试 A/B 正是第三条的实例，也是 PR #33 的由来。
+
 ### 2026-09-11 第三次生产升级（`91c6e5809f06` → `d803f7e8d45c`）
 
 | 项 | 结果 |
