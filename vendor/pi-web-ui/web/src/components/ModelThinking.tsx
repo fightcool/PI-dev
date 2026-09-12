@@ -5,7 +5,7 @@
  *         没有这行用户只会看到一个空列表。 */
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { FiCpu, FiSearch, FiZap } from "react-icons/fi";
-import type { ModelInfo, ProviderKeyInfo, UiChannelBindingView, UiState } from "../types";
+import type { ModelInfo, ProviderKeyInfo, UiChannelBindingView, UiChannelInfo, UiState } from "../types";
 import { Dropdown, DropdownItem } from "./Dropdown";
 import { ChannelModelList, ChannelStatusChips } from "./ModelChannelPicker";
 import { useT } from "../i18n";
@@ -82,9 +82,26 @@ export const ModelThinking = memo(function ModelThinking({
 	// @CONTRACT 只在有效渠道确实配了账户查询时出现（channel.account.kind 非空）；值缺失写「—」，
 	//   绝不把缺失当 0（§7）；状态点与设置页账户状态行同义。
 	const effectiveChannelId = channelBinding?.effective?.channelId ?? null;
-	const balanceChannel = effectiveChannelId ? (channels.find((c) => c.id === effectiveChannelId) ?? null) : null;
-	const hasAccountQuery =
-		!!balanceChannel?.account && typeof (balanceChannel.account as { kind?: unknown }).kind === "string" && (balanceChannel.account as { kind: string }).kind !== "";
+	/** 渠道是否配了账户查询（kind 非空）。 */
+	const accountKindOf = (c: UiChannelInfo): string => {
+		const account = c.account as { kind?: unknown } | null | undefined;
+		return account && typeof account.kind === "string" ? account.kind : "";
+	};
+	const boundChannel = effectiveChannelId ? (channels.find((c) => c.id === effectiveChannelId) ?? null) : null;
+	/**
+	 * @WHY 没绑定时也要能显示余额：clientId 存在 sessionStorage（每标签页独立，见 use-chat 的
+	 * getClientId），新标签页/重开浏览器就是新 clientId，而渠道绑定按 clientId 命名空间存 ——
+	 * 于是「对话还在跑同一个模型，但绑定没了」。此时若当前模型的服务商只对应**一个**带账户
+	 * 查询的渠道，就用它（多义时不猜，宁可没有）。
+	 */
+	const modelProvider = state?.model?.provider ?? null;
+	const derivedChannel = useMemo(() => {
+		if (boundChannel || !modelProvider) return null;
+		const candidates = channels.filter((c) => c.providerId === modelProvider && c.enabled && accountKindOf(c) !== "");
+		return candidates.length === 1 ? candidates[0] : null;
+	}, [boundChannel, modelProvider, channels]);
+	const balanceChannel = boundChannel ?? derivedChannel;
+	const hasAccountQuery = !!balanceChannel && accountKindOf(balanceChannel) !== "";
 	const accountStatus = hasAccountQuery
 		? (channelState?.accounts ?? []).find((a) => a.accountRef === ((balanceChannel?.accountRef || balanceChannel?.id) ?? ""))
 		: undefined;
@@ -123,6 +140,7 @@ export const ModelThinking = memo(function ModelThinking({
 					: t("channelAccountUnsupported");
 	const balanceTitle = [
 		balanceChannel ? `${balanceChannel.displayName} · ${balanceChannel.accountRef || balanceChannel.id}` : "",
+		!boundChannel && derivedChannel ? t("channelBalanceDerived") : "",
 		balanceStateLabel,
 		accountStatus?.checkedAt !== undefined
 			? `${t("channelAccountCheckedAt")} ${new Date(accountStatus.checkedAt).toLocaleString()}`

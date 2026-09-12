@@ -1327,4 +1327,5 @@ export const en: EnDictionary = {
 	customAddInChannels: "To add or edit a provider, use Settings → Channels → Add channel → Provider connection: it writes the endpoint, protocol, key and models together.",
 	channelAccountModeGateway: "Gateway adapter (one-api / new-api, falls back to the billing API)",
 	channelAccountUsed: "Used",
+	channelBalanceDerived: "(no channel bound; matched the unique channel of this model's provider)",
 };
