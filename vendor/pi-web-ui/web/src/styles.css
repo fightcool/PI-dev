@@ -11003,6 +11003,13 @@ button.source-default-toggle {
 	background: var(--bg-elev2);
 }
 
+/* 自定义服务商行：不再提供增删改入口，改为指向渠道面板的说明文字。 */
+.provider-managed {
+	font-size: 11.5px;
+	color: var(--text-faint);
+	white-space: nowrap;
+}
+
 /* ---- 「服务商连接」区块（方案 A：渠道表单直接管连接） ---- */
 .chan-conn {
 	display: flex;

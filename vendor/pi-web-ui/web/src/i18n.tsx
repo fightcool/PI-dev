@@ -1291,6 +1291,8 @@ export const zh = {
 	channelConnNeedsModels: "新建服务商至少需要一个模型：先「获取接口清单」或手动添加一个 ID。",
 	channelModelsAdd: "添加",
 	channelModelsAddPh: "手动填模型 ID（如 claude-opus-5）",
+	customManagedInChannels: "在「设置 → 渠道」管理",
+	customAddInChannels: "新建/修改服务商请到「设置 → 渠道 → 新增渠道 → 服务商连接」：那里会把请求地址、协议、密钥与模型一并写入。",
 } as const;
 
 /* ------------------------------------------------------------------ */

@@ -1357,15 +1357,21 @@ export class ModelAdminService {
 		input: ChannelProviderInput & { providerId: string },
 	): Promise<{ ok: true } | { ok: false; error: string }> {
 		const pid = input.providerId.trim();
-		const result = await this.writeModelConfig(pid, {
-			providerId: pid,
-			name: input.name,
-			api: input.api,
-			baseUrl: input.baseUrl,
-			apiKey: input.apiKey,
-			authHeader: input.authHeader,
-			models: input.models ?? [],
-		});
+		const result = await this.writeModelConfig(
+			pid,
+			{
+				providerId: pid,
+				name: input.name,
+				api: input.api,
+				baseUrl: input.baseUrl,
+				apiKey: input.apiKey,
+				authHeader: input.authHeader,
+				models: input.models ?? [],
+			},
+			// 渠道表单只表达「连接 + 用哪些模型」，不表达 reasoning/contextWindow/cost 等元数据：
+			// 用 patch 合并，避免每次改渠道就把手工对齐过的模型元数据抹掉（§4 单一事实源）。
+			{ modelMerge: "patch" },
+		);
 		if (!result.ok) return { ok: false, error: result.error };
 		return { ok: true };
 	}
@@ -1378,6 +1384,7 @@ export class ModelAdminService {
 	private async writeModelConfig(
 		pid: string,
 		config: UiProviderConfig,
+		opts: { modelMerge?: "replace" | "patch" } = {},
 	): Promise<{ ok: true; count: number } | { ok: false; error: string; errorEn?: string }> {
 		if (!pid || !/^[\w.-]+$/.test(pid)) {
 			return { ok: false, error: "服务商 ID 无效（仅字母/数字/._-）", errorEn: "Invalid provider ID (letters/digits/._- only)" };
@@ -1433,7 +1440,14 @@ export class ModelAdminService {
 				...(config.baseUrl?.trim() ? { baseUrl: config.baseUrl.trim() } : {}),
 				...(nextApiKey ? { apiKey: nextApiKey } : {}),
 				...(config.authHeader ? { authHeader: true } : {}),
-				models: models.map((m) => ({ ...unmanagedEntries(prevModels.get(m.id), MANAGED_MODEL_KEYS), ...m })),
+				// replace（表单管理全部键，未给 = 清空）vs patch（渠道表单：只覆盖它给到的键，
+				// 其余保留——reasoning/contextWindow/cost 等由模型目录或探测结果拥有）。
+				models: models.map((m) => {
+					const prevEntry = prevModels.get(m.id);
+					return opts.modelMerge === "patch"
+						? { ...prevEntry, ...m }
+						: { ...unmanagedEntries(prevEntry, MANAGED_MODEL_KEYS), ...m };
+				}),
 			};
 			mkdirSync(this.host.agentDir, { recursive: true });
 			writeFileSync(this.modelsConfigPath(), JSON.stringify({ providers }, null, 2) + "\n");

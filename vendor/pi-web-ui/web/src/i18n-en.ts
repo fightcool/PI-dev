@@ -1323,4 +1323,6 @@ export const en: EnDictionary = {
 	channelConnNeedsModels: "A new provider needs at least one model: fetch the list or add an ID manually.",
 	channelModelsAdd: "Add",
 	channelModelsAddPh: "Type a model ID (e.g. claude-opus-5)",
+	customManagedInChannels: "Managed in Settings → Channels",
+	customAddInChannels: "To add or edit a provider, use Settings → Channels → Add channel → Provider connection: it writes the endpoint, protocol, key and models together.",
 };

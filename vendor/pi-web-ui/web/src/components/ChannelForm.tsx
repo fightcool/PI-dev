@@ -293,8 +293,20 @@ export function ChannelForm({
 				baseUrl: form.providerBaseUrl.trim(),
 				...(form.providerApiKey.trim() ? { apiKey: form.providerApiKey.trim() } : {}),
 				authHeader: form.providerAuthHeader,
-				// 服务商清单 = 该渠道勾选的模型（拿不到勾选就回落到本次接口清单）。
-				models: modelIds.map((id) => ({ id })),
+				// 服务商清单 = 该渠道勾选的模型（拿不到勾选就回落到本次接口清单）；
+				// 接口清单里带的元数据一并写入，省得用户手填上下文/推理标记。
+				models: modelIds.map((id) => {
+					const probed = (newProviderCandidates ?? []).find((m) => m.id === id);
+					if (!probed) return { id };
+					return {
+						id,
+						...(probed.name ? { name: probed.name } : {}),
+						...(probed.reasoning ? { reasoning: true } : {}),
+						...(probed.input?.length ? { input: probed.input } : {}),
+						...(probed.contextWindow ? { contextWindow: probed.contextWindow } : {}),
+						...(probed.maxTokens ? { maxTokens: probed.maxTokens } : {}),
+					};
+				}),
 			};
 		}
 		const channel: ChannelSaveInput = {

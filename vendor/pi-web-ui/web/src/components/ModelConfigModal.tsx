@@ -5,7 +5,7 @@
  *   hiddenBuiltinProviders 并清密钥，仅控制本面板是否展示（渠道/模型选择器不受影响）。
  *   📖 docs/DEV-CON-PROPOSAL.md §4 */
 import { useEffect, useRef, useState } from "react";
-import { FiCheck, FiDownload, FiEdit2, FiPlus, FiRotateCcw, FiTrash2, FiX } from "react-icons/fi";
+import { FiCheck, FiDownload, FiPlus, FiRotateCcw, FiTrash2, FiX } from "react-icons/fi";
 import type { ClientMessage, ProviderKeyInfo, ProviderStatus, UiModelConfigEntry, UiProviderConfig } from "../types";
 import { useT } from "../i18n";
 
@@ -78,16 +78,6 @@ const emptyModel = (): DraftModel => ({
 	maxTokens: "",
 });
 
-const emptyDraft = (): Draft => ({
-	providerId: "",
-	name: "",
-	api: "openai-completions",
-	baseUrl: "",
-	apiKey: "",
-	hasApiKey: false,
-	authHeader: true,
-	models: [emptyModel()],
-});
 
 function toDraft(p: UiProviderConfig): Draft {
 	return {
@@ -341,18 +331,6 @@ export function ModelConfigModal({
 		}
 	};
 
-	const removeProvider = (p: UiProviderConfig) => {
-		if (
-			window.confirm(
-				t("deleteProviderConfirm", {
-					id: p.providerId,
-					n: p.models.length,
-				}),
-			)
-		) {
-			send({ type: "delete_model_config", providerId: p.providerId });
-		}
-	};
 
 	/** 已被「删除」的内置服务商 id 集合（服务端持久化 + 全局共享）。 */
 	const hidden = new Set(hiddenProviders);
@@ -751,32 +729,19 @@ export function ModelConfigModal({
 												{p.models.length > 0 && ` · ${t("modelsCount", { n: p.models.length })}`}
 											</span>
 										</div>
+										{/* 方案 B：自定义服务商不再在这里增删改 —— 连接/密钥/模型都在
+									    「设置 → 渠道」的「服务商连接」里管理（单一入口）。这里只读展示，
+									    方便对照模型目录。 */}
 										<div className="provider-actions">
-											<button
-												type="button"
-												className="iconbtn"
-												title={t("edit")}
-												onClick={() => setEditing(toDraft(p))}
-											>
-												<FiEdit2 />
-											</button>
-											<button
-												type="button"
-												className="iconbtn danger"
-												title={t("delete")}
-												onClick={() => removeProvider(p)}
-											>
-												<FiTrash2 />
-											</button>
+											<span className="provider-managed">{t("customManagedInChannels")}</span>
 										</div>
 									</div>
 								))}
 							</div>
 						</div>
 						<div className="modal-actions">
-							<button type="button" className="btn primary" onClick={() => setEditing(emptyDraft())}>
-								<FiPlus /> {t("addProvider")}
-							</button>
+							{/* 唯一入口：设置 → 渠道 → 新增渠道 → 服务商连接（会一并写 models.json）。 */}
+							<p className="modal-desc">{t("customAddInChannels")}</p>
 						</div>
 					</>
 				) : (
