@@ -1,11 +1,28 @@
+/*
+ * ─── 🍞 AI Breadcrumb Navigation ──────────────────
+ * Tag meanings: @COUPLED=linked files @GOTCHA=gotcha @BUGFIX=bug fix @MAGIC=magic number
+ *              @DEPENDS=external dependency @ASSUME=assumption @TODO=todo @WHY=design rationale
+ *              @PERF=performance @CONTRACT=interface contract 📖=dev doc reference
+ *
+ * Breadcrumbs (changing this affects):
+ *   @COUPLED components/UsageDetail.tsx (令牌项点开的用量/归属面板), use-chat.ts (channelState / state.channelBinding)
+ *   📖 docs/DEV-CON-PROPOSAL.md §6（状态栏：当前渠道/模型 + 用量）, §7（渠道归属）
+ *   @CONTRACT 底栏只显示「有效」渠道与待生效标记；待生效不等于已生效，两者必须能同时看到。
+ *   @GOTCHA 令牌项是按钮（点开明细），不要再把整行当成纯文本。
+ * ──────────────────────────────────────────────────
+ */
 import { useEffect, useRef, useState } from "react";
 import { FiFolder } from "react-icons/fi";
-import type { ChatState } from "../use-chat";
+import type { UiChannelBinding } from "../types";
+import type { ChatState , UsageHistoryMsg, UsageHistoryWindow } from "../use-chat";
 import { useT } from "../i18n";
 import { cacheMetrics, estimateStreamTokens, streamRate, trimRateSamples, type RateSample } from "../cache-stats";
+import { UsageDetail, formatTokens } from "./UsageDetail";
 
 interface FooterBarProps {
 	chat: ChatState;
+	/** P4：用量历史查询（只读）；未提供时用量详情不显示历史区。 */
+	onQueryUsageHistory?: (groupBy: UsageHistoryMsg["groupBy"], window: UsageHistoryWindow) => number;
 	send: (
 		msg:
 			{ type: "complete_path"; path: string } | { type: "set_cwd"; path: string } | { type: "make_dir"; path: string },
@@ -20,7 +37,7 @@ const MACHINE_ROOT = "@root";
  * workspace path — click the path to open a directory picker (browse into
  * folders, go up, create folders, or pick one as the working directory).
  */
-export function FooterBar({ chat, send }: FooterBarProps) {
+export function FooterBar({ chat, send, onQueryUsageHistory }: FooterBarProps) {
 	const t = useT();
 	const state = chat.state;
 	const [editing, setEditing] = useState(false);
@@ -33,6 +50,8 @@ export function FooterBar({ chat, send }: FooterBarProps) {
 	const [newName, setNewName] = useState("");
 	/** Tab 补全的当前候选下标（-1 = 未选中，Tab 从头开始）。 */
 	const [compIndex, setCompIndex] = useState(-1);
+	/** 用量明细面板（令牌项点开；与 cwd 选择器同为底栏 overlay）。 */
+	const [usageOpen, setUsageOpen] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
 	const newInputRef = useRef<HTMLInputElement>(null);
 	/** Completion list scoped to the picker: directories only (files are noise
@@ -123,6 +142,14 @@ export function FooterBar({ chat, send }: FooterBarProps) {
 
 	const queueTotal = state.queue.steering.length + state.queue.followUp.length;
 
+	// -- DEV-CON 渠道：只显示有效绑定（与待生效标记分开），名字从 channel_state 解析。
+	const channels = chat.channelState?.channels ?? [];
+	const channelBinding = state.channelBinding ?? null;
+	const effectiveBinding = channelBinding?.effective ?? null;
+	const pendingBinding = channelBinding?.pending ?? null;
+	const channelName = (sel: UiChannelBinding): string =>
+		channels.find((c) => c.id === sel.channelId)?.displayName ?? sel.channelName ?? sel.channelId;
+
 	const startEdit = () => {
 		// 服务端 cwd 是原生分隔符（Windows 下带反斜杠），选择器内部统一用 "/"，
 		// 否则 parentOf 按 "/" 切分会直接返回 null，↑ 按钮一开始就是禁用的。
@@ -192,6 +219,32 @@ export function FooterBar({ chat, send }: FooterBarProps) {
 				</>
 			)}
 
+			{effectiveBinding && (
+				<>
+					<span
+						className="status-item status-channel"
+						title={t("channelFooterTip", { sel: `${channelName(effectiveBinding)} · ${effectiveBinding.modelId}` })}
+					>
+						{t("channelFooter")} {channelName(effectiveBinding)}
+						{channelBinding?.source === "project" && (
+							<span className="status-channel-src">{t("channelSourceProject")}</span>
+						)}
+						{channelBinding?.source === "instance" && (
+							<span className="status-channel-src">{t("channelSourceInstance")}</span>
+						)}
+					</span>
+					<span className="status-sep">·</span>
+				</>
+			)}
+			{pendingBinding && (
+				<>
+					<span className="status-item status-channel-pending" title={t("channelPendingTip")}>
+						⏳ {channelName(pendingBinding)} · {t("channelPendingBadge")}
+					</span>
+					<span className="status-sep">·</span>
+				</>
+			)}
+
 			<span className="status-item status-ctx" title={t("contextUsage")}>
 				{t("context")}
 				<span className={`ctx-bar ${ctxBarClass}`}>
@@ -201,16 +254,16 @@ export function FooterBar({ chat, send }: FooterBarProps) {
 			</span>
 			<span className="status-sep">·</span>
 
-				<span className="status-item status-tokens" title={t("tokenUsageTip", {
-					input: formatTokens(s.tokens.input),
-					output: formatTokens(s.tokens.output),
-					total: formatTokens(s.tokens.total),
-				})}>
-						{t("tokensShort")} I/O/T {formatTokens(s.tokens.input)} / {formatTokens(s.tokens.output)} / {formatTokens(s.tokens.total)} · R {formatTokens(request.total)} · Run {formatTokens(run.total)}
-
-				</span>
-				<span className="status-sep">·</span>
-
+			<button
+				type="button"
+				className={`status-item status-tokens${usageOpen ? " active" : ""}`}
+				title={t("usageDetailTip")}
+				onClick={() => setUsageOpen((v) => !v)}
+			>
+				{t("tokensShort")} I/O/T {formatTokens(s.tokens.input)} / {formatTokens(s.tokens.output)} /{" "}
+				{formatTokens(s.tokens.total)} · R {formatTokens(request.total)} · Run {formatTokens(run.total)}
+			</button>
+			<span className="status-sep">·</span>
 
 			<span
 				className="status-item status-cache"
@@ -254,6 +307,22 @@ export function FooterBar({ chat, send }: FooterBarProps) {
 					<span className="status-item status-rate" title={t("rateTip")}>
 						{rate > 0 ? `${Math.round(rate)}${t("tps")}` : "…"}
 					</span>
+				</>
+			)}
+
+			{usageOpen && (
+				<>
+					<div className="status-cwd-backdrop" onClick={() => setUsageOpen(false)} />
+					<UsageDetail
+						tokens={s.tokens}
+						cost={s.cost}
+						attribution={s.attribution}
+						recentRequests={s.recentRequests}
+						usageHistory={chat.usageHistory}
+						onQueryUsageHistory={onQueryUsageHistory}
+						runId={s.runId}
+						channels={channels}
+					/>
 				</>
 			)}
 
@@ -402,9 +471,4 @@ export function FooterBar({ chat, send }: FooterBarProps) {
 			)}
 		</footer>
 	);
-}
-
-function formatTokens(n: number): string {
-	if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}K`;
-	return String(n);
 }

@@ -1,7 +1,7 @@
-import { lazy, Suspense, useCallback, useMemo } from "react";
+/* 🍞 @COUPLED web/src/components/ChatInput.tsx, web/src/app/app-dialogs.tsx — 📖 docs/DEV-CON-PROPOSAL.md §6 */
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { LeftPanel } from "../components/LeftPanel";
 import { RightPanel } from "../components/RightPanel";
-import { MessageList } from "../components/MessageList";
 import { ChatInput } from "../components/ChatInput";
 import { GoalBar } from "../components/GoalBar";
 import { useT } from "../i18n";
@@ -11,7 +11,13 @@ import type { AppConnection, ViewName } from "./types";
 import type { useAppDialogs } from "./use-app-dialogs";
 import type { useAttachments } from "./use-attachments";
 import { PanelRail, ResizeHandle, type usePanels } from "./panels";
+import { perfMarkPaint } from "../perf-trace";
 const Dialog = lazy(() => import("../components/Dialog").then((m) => ({ default: m.Dialog })));
+// 🍞 @PERF 对话区（MessageList → Message → markdown 渲染器 + highlight.js）改为动态 chunk：
+// 它以前是 App chunk 的**静态依赖**，于是「打开 WebSocket」必须等这 ~507KB（153KB gz）
+// 下载并执行完。现在 App 一执行就握手，markdown 下载与 hello→首份 snapshot 并行。
+// 对话区首屏必定要用，所以挂载后立刻预取——目的是并行，不是条件加载。
+const MessageList = lazy(() => import("../components/MessageList").then((m) => ({ default: m.MessageList })));
 const DshQuestionDialog = lazy(() =>
 	import("../components/DshQuestionDialog").then((m) => ({ default: m.DshQuestionDialog })),
 );
@@ -31,7 +37,7 @@ export function ChatView({
 	dialogs: ReturnType<typeof useAppDialogs>;
 	uploads: ReturnType<typeof useAttachments>;
 }) {
-	const { chat, send, pushNotice } = connection;
+	const { chat, send, pushNotice, channelApi } = connection;
 	const t = useT();
 	const wide = useWideChat();
 	const {
@@ -100,6 +106,23 @@ export function ChatView({
 		// so the object identity survives token deltas and ChatInput's memo holds.
 		[model, thinkingLevel, availableThinkingLevels],
 	);
+	// DEV-CON：channelBinding 由服务端在每个 checkpoint 重新构造（对象身份每次都变），
+	// 直接透传会击穿上面这条 memo 链；按内容键缓存，内容不变就保持同一引用。
+	const rawChannelBinding = chat.state?.channelBinding ?? null;
+	const channelBindingKey = rawChannelBinding
+		? JSON.stringify([rawChannelBinding.source, rawChannelBinding.effective, rawChannelBinding.pending])
+		: "";
+	const channelBinding = useMemo(() => rawChannelBinding, [channelBindingKey]);
+
+	// 端到端打点：会话内容「已提交到 DOM」的时刻（配合 switch 点击点算出可感知延迟）。
+	// 依赖只看 conversationId，流式 token 不会反复打点。
+	const activeConvId = chat.state?.conversationId ?? null;
+	const paintedConvRef = useRef<string | null>(null);
+	useLayoutEffect(() => {
+		if (!activeConvId || paintedConvRef.current === activeConvId) return;
+		paintedConvRef.current = activeConvId;
+		perfMarkPaint(activeConvId);
+	}, [activeConvId]);
 
 	return (
 		<div className={`view-pane ${view === "chat" ? "" : "hidden"}`}>
@@ -124,23 +147,39 @@ export function ChatView({
 			</div>
 			{!isMobile && <ResizeHandle side="left" width={leftWidth} onResize={resizeLeft} />}
 			<main className={wide ? "main wide-chat" : "main"}>
-				{chat.state ? (
-					<MessageList
-						key={chat.state.conversationId ?? "boot"}
-						state={chat.state}
-						liveOutputs={chat.liveOutputs}
-						toolStatuses={chat.toolStatuses}
-						onEdit={onEditMessage}
-						onKillBash={onKillBash}
-						onRetry={onRetry}
-						onRemoveQueued={onRemoveQueued}
-						thinkingWrap={chat.settings?.thinkingWrap ?? true}
-						toolsWrap={chat.settings?.toolsWrap ?? true}
-						jumpTarget={searchJump}
-						onJumpDone={onJumpDone}
-					/>
+				{chat.state && !chat.switching ? (
+					// 对话区 chunk 还没到位时先占位（与首帧占位同一外观）。
+					<Suspense
+						fallback={
+							<div className="boot-wait" role="status">
+								{t("loadingSession")}
+							</div>
+						}
+					>
+						<MessageList
+							key={chat.state.conversationId ?? "boot"}
+							state={chat.state}
+							liveOutputs={chat.liveOutputs}
+							toolStatuses={chat.toolStatuses}
+							onEdit={onEditMessage}
+							onKillBash={onKillBash}
+							onRetry={onRetry}
+							onRemoveQueued={onRemoveQueued}
+							// 尾部优先历史：向上翻/搜索前补全更早的消息（P1-8）。
+							onLoadHistory={(opts) => send({ type: "load_history", ...opts })}
+							thinkingWrap={chat.settings?.thinkingWrap ?? true}
+							toolsWrap={chat.settings?.toolsWrap ?? false}
+							jumpTarget={searchJump}
+							onJumpDone={onJumpDone}
+						/>
+					</Suspense>
 				) : (
-					<div className="boot-wait">{chat.ready ? t("loadingSession") : t("connectingServer")}</div>
+					// 首帧加载与乐观切换共用同一个占位：切换时先揭掉上一个会话的内容，
+					// 目标快照一到（reducer 清掉 switching）立刻换成真实内容——不再出现
+					// 「点了没反应，几秒后整页跳一下」的观感。
+					<div className="boot-wait" role="status" aria-live="polite">
+						{chat.ready ? t("loadingSession") : t("connectingServer")}
+					</div>
 				)}
 				{chat.settings?.goalModeEnabled !== false && (
 					<GoalBar
@@ -167,6 +206,10 @@ export function ChatView({
 					models={chat.models}
 					modelsLoading={chat.modelsLoading}
 					providerKeys={chat.providerKeys}
+					channelState={chat.channelState}
+					channelBinding={channelBinding}
+					channelResults={chat.channelResults}
+					channelApi={channelApi}
 					attachments={attachments}
 					onRemoveAttachment={removeAttachmentCb}
 					onAddImageFiles={addImageFilesCb}

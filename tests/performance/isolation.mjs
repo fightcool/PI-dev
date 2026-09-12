@@ -15,7 +15,13 @@ const mime = { '.html': 'text/html', '.js': 'application/javascript', '.mjs': 'a
   '.woff2': 'font/woff2', '.woff': 'font/woff', '.jpg': 'image/jpeg', '.webp': 'image/webp' };
 const increment = (map, key) => { map[key] = (map[key] ?? 0) + 1; };
 
-export async function isolatedContext(browser, options, state, onPageError = () => {}) {
+/**
+ * @param onPageError page 内异常回调（性能报告用）
+ * @param onClientMessage 客户端发出的每一帧（可选；供功能型浏览器用例断言实际发出的命令）。
+ *        ⚠️ 不要在调用方再注册 context.routeWebSocket —— 那会替换掉这里的替身 socket，
+ *        导致 hello 之后收不到任何服务端消息。要观察客户端帧就用这个回调。
+ */
+export async function isolatedContext(browser, options, state, onPageError = () => {}, onClientMessage = () => {}) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 },
     locale: 'en-US', serviceWorkers: 'block', acceptDownloads: false });
   const traffic = { http: {}, ws: {}, assetBytes: 0, assetRequests: 0,
@@ -78,6 +84,7 @@ export async function isolatedContext(browser, options, state, onPageError = () 
           const message = JSON.parse(String(raw));
           const type = typeof message.type === 'string' && /^[a-z_]{1,60}$/.test(message.type) ? message.type : 'invalid';
           increment(traffic.ws, type);
+          onClientMessage(message);
           for (const reply of socketReply(message, state)) socket.send(JSON.stringify(reply));
         } catch { traffic.routeErrors++; }
       });

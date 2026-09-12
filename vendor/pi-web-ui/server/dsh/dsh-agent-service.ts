@@ -25,8 +25,10 @@
  * BgServerTracker（后台任务）、TerminalManager（PTY）、uploads.ts。
  */
 
+import { collectResources } from "../dev-con/system-resources.js";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
+import { PROTOCOL_VERSION } from "../protocol-version.js";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { BgServerTracker } from "../bg-servers.js";
@@ -165,6 +167,9 @@ interface DshSettings {
 	toolsWrap: boolean;
 	/** 设置面板隐藏的 UI 插件（纯 UI 开关，回显保持）。 */
 	disabledPlugins: string[];
+	/** pi 引擎「管理模型」里删除（隐藏）的内置服务商 id：DSH 没有该面板，
+	 *  仅回显保持，切回 pi 引擎时列表不被重置。 */
+	hiddenBuiltinProviders: string[];
 	/** 目标轮次附加指令（DSH 无独立审查者，经 DSH_PERSONA 注入让模型在目标轮次遵守）。 */
 	reviewPrompt: string;
 	/** 输入框上方的快捷短语（点击即发送；纯 UI 偏好）。 */
@@ -212,6 +217,7 @@ const DEFAULT_SETTINGS: DshSettings = {
 	thinkingWrap: false,
 	toolsWrap: true,
 	disabledPlugins: [],
+	hiddenBuiltinProviders: [],
 	reviewPrompt: "",
 	quickPhrases: [],
 	quickPhrasesEnabled: true,
@@ -355,6 +361,7 @@ export class DshClientSession {
 				thinkingWrap: savedSettings.thinkingWrap,
 				toolsWrap: savedSettings.toolsWrap,
 				disabledPlugins: savedSettings.disabledPlugins ?? [],
+				hiddenBuiltinProviders: savedSettings.hiddenBuiltinProviders ?? [],
 				reviewPrompt: savedSettings.reviewPrompt,
 				quickPhrases: savedSettings.quickPhrases ?? [],
 				quickPhrasesEnabled: savedSettings.quickPhrasesEnabled ?? true,
@@ -1223,6 +1230,8 @@ export class DshClientSession {
 			sessionId: conv.sessionId,
 			conversationId: this.activeId,
 			rev,
+			// DSH 引擎未实现尾部优先历史：始终视为「客户端持有全量」。
+			messagesOmitted: 0,
 			streamingMessage: conv.streaming ? conv.streaming.toUiMessage(conv.lastEventAt, this.model, "deepseek") : null,
 			isStreaming: conv.isStreaming,
 			model: {
@@ -2476,6 +2485,7 @@ export class DshClientSession {
 			reviewPrompt: this.settings.reviewPrompt,
 			reviewDisabledSkills: [],
 			disabledPlugins: this.settings.disabledPlugins,
+			hiddenBuiltinProviders: [...this.settings.hiddenBuiltinProviders],
 			promptTemplate: "",
 			promptOverrides: {},
 			effectiveSystemPrompt: this.settings.customSystemPrompt,
@@ -3435,6 +3445,130 @@ export class DshClientSession {
 		this.emit({ type: "provider_keys", keys: {} });
 	}
 
+	// DEV-CON 渠道能力：DSH 换模型 = 重启运行时（会中止全部运行），不能提供 Pi 式热切换，
+	// 因此这里明确回「不支持」而不是假装成功（docs/DEV-CON-PROPOSAL.md §2/§5）。
+	pushChannelState(): void {
+		this.emit({
+			type: "channel_state",
+			configRevision: 0,
+			bindingRevision: 0,
+			channels: [],
+			instanceDefault: null,
+			projectDefault: null,
+			bindings: [],
+			pending: [],
+			accounts: [],
+		});
+	}
+
+	private channelUnsupported(commandId: string): void {
+		this.emit({
+			type: "channel_command_result",
+			commandId,
+			ok: false,
+			phase: "rejected",
+			error: "DSH 引擎不支持渠道热切换（换模型即重启运行时）",
+			errorEn: "The DSH engine does not support hot channel switching (changing the model restarts the runtime)",
+			configRevision: 0,
+			bindingRevision: 0,
+		});
+	}
+
+	async selectChannel(msg: { commandId: string }): Promise<void> {
+		this.channelUnsupported(msg.commandId);
+	}
+
+	async clearChannelBinding(commandId: string): Promise<void> {
+		this.channelUnsupported(commandId);
+	}
+
+	async saveChannelConfig(commandId: string): Promise<void> {
+		this.channelUnsupported(commandId);
+	}
+
+	async deleteChannelConfig(commandId: string): Promise<void> {
+		this.channelUnsupported(commandId);
+	}
+
+	async setChannelDefault(input: { commandId: string }): Promise<void> {
+		this.channelUnsupported(input.commandId);
+	}
+
+	async queryChannelAccount(commandId: string): Promise<void> {
+		this.channelUnsupported(commandId);
+	}
+
+	/** P4 候选：系统资源与引擎无关（只读采集宿主信息）。 */
+	async listResources(reqId: number): Promise<void> {
+		try {
+			const snapshot = collectResources({ disks: [{ path: this.cwd, label: "workspace" }] });
+			this.emit({ type: "resources", reqId, ok: true, snapshot });
+		} catch (err) {
+			this.emit({ type: "resources", reqId, ok: false, error: (err as Error).message });
+		}
+	}
+
+	/** P4 运维：诊断包（元数据；密钥值/会话内容/日志正文一律不含）。 */
+	async listDiagnostics(reqId: number): Promise<void> {
+		try {
+			const resources = collectResources({ disks: [{ path: this.cwd, label: "workspace" }] });
+			this.emit({
+				type: "diagnostics",
+				reqId,
+				ok: true,
+				bundle: {
+					generatedAt: Date.now(),
+					app: { node: process.version, pid: process.pid, uptimeSec: Math.round(process.uptime()), engine: "dsh", protocolVersion: PROTOCOL_VERSION },
+					release: { commit: null, appVersion: null, protocolVersion: null, builtAt: null, source: null },
+					instance: { configDir: dirname(this.agentDir), dataDir: this.dataDir, agentDir: this.agentDir, workspaceDir: this.cwd, host: process.env.PI_WEB_HOST ?? null, port: Number(process.env.PI_WEB_PORT ?? "") || null, profile: process.env.PI_DEV_PROFILE ?? null },
+					units: [],
+					resources,
+					storage: { at: Date.now(), areas: [], totalBytes: 0, retention: { maxAgeDays: 0, maxBytes: 0, fileBytes: 0, choices: [0, 7, 30, 90, 365] } },
+					channels: { configRevision: 0, count: 0, enabledCount: 0, bindings: 0, pending: 0, accounts: 0, brokenRefs: 0 },
+					usage: { windowDays: 0, requests: 0, totalTokens: 0, cost: 0, unpricedRequests: 0, bySource: {}, byChannel: {} },
+					environment: { platform: process.platform, cpuCount: resources.host.cpuCount, totalMemBytes: resources.host.mem.totalBytes },
+					warnings: ["DSH 引擎不提供渠道/用量历史元数据"],
+				},
+				alertsEnabled: false,
+				thresholds: { warnPercent: 85, criticalPercent: 90, cooldownMs: 3_600_000 },
+			});
+		} catch (err) {
+			this.emit({ type: "diagnostics", reqId, ok: false, error: (err as Error).message });
+		}
+	}
+
+	/** P4 运维：DSH 引擎不提供资源告警。 */
+	setOpsAlerts(_enabled: boolean): void {
+		this.emit({ type: "notice", level: "warning", text: "DSH 引擎不提供资源告警", textEn: "The DSH engine has no resource alerts" });
+	}
+
+	/** P4 运维：DSH 引擎没有逐请求历史，因此不提供存储明细与保留设置。 */
+	async listStorage(reqId: number): Promise<void> {
+		this.emit({ type: "storage", reqId, ok: false, error: "DSH 引擎不提供用量历史存储明细" });
+	}
+
+	setUsageRetention(_maxAgeDays: number): void {
+		this.emit({ type: "notice", level: "warning", text: "DSH 引擎不提供用量历史保留设置", textEn: "The DSH engine has no usage-history retention setting" });
+	}
+
+	/** P4 用量历史：DSH 引擎不记录逐请求归属，明确回空结果而不是伪造数据。 */
+	async queryUsageHistory(reqId: number, query: { groupBy: "channel" | "project" | "model" | "source" | "day" }): Promise<void> {
+		this.emit({
+			type: "usage_history",
+			reqId,
+			ok: false,
+			error: "DSH 引擎不提供逐请求用量历史",
+			groupBy: query.groupBy,
+			from: null,
+			to: null,
+			rows: [],
+			totals: { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, unpricedRequests: 0, unreportedRequests: 0 },
+			scanned: 0,
+			skipped: 0,
+			truncated: false,
+		});
+	}
+
 	async addProviderKey(_provider: string, _apiKey: string, _name?: string): Promise<void> {
 		this.emit({
 			type: "notice",
@@ -3492,6 +3626,22 @@ export class DshClientSession {
 				"DSH 引擎不支持自定义 provider",
 				"The DSH engine does not support custom providers",
 				"dsh.provider.custom.unsupported",
+			),
+		});
+	}
+
+	/** 渠道表单「获取接口清单」：DSH 侧没有模型目录/密钥库，明确回不支持。 */
+	async fetchChannelModels(_reqId: number, _providerId: string, _keyName?: string | null): Promise<void> {
+		this.emit({
+			type: "channel_models_result",
+			reqId: _reqId,
+			providerId: _providerId,
+			ok: false,
+			error: pick(
+				this.getLang(),
+				"DSH 引擎不支持自定义 provider 探测",
+				"The DSH engine does not support custom provider probing",
+				"dsh.provider.probing.unsupported",
 			),
 		});
 	}

@@ -1,9 +1,16 @@
+/* 🍞 @COUPLED web/src/components/ModelChannelPicker.tsx, web/src/channel-models.ts, web/src/use-chat.ts — 📖 docs/DEV-CON-PROPOSAL.md §6
+ * @CONTRACT 有渠道时模型行交给 ChannelModelList（按渠道分组），那里按 channel.models 白名单过滤；
+ *           无渠道时保持原有「服务商 + 命名密钥」分组行为，零回归。
+ * @GOTCHA 渠道分组下也要有「没有匹配的模型」提示：搜索词与白名单叠加时，
+ *         没有这行用户只会看到一个空列表。 */
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { FiCpu, FiSearch, FiZap } from "react-icons/fi";
-import type { ModelInfo, ProviderKeyInfo, UiState } from "../types";
+import type { ModelInfo, ProviderKeyInfo, UiChannelBindingView, UiState } from "../types";
 import { Dropdown, DropdownItem } from "./Dropdown";
+import { ChannelModelList, ChannelStatusChips } from "./ModelChannelPicker";
 import { useT } from "../i18n";
 import { loadModelUsage, sortByUsage } from "../model-usage";
+import type { ChannelApi, ChannelCommandResult, ChannelStateMsg } from "../use-chat";
 
 /** Messages this component sends (a subset shared by TopBar and ChatInput). */
 export type ModelThinkingMsg =
@@ -28,6 +35,14 @@ interface Props {
 	 *  keys renders its model list once per key so clicking a model under a key
 	 *  switches the active key on the fly (no static model-list copy). */
 	providerKeys: Record<string, ProviderKeyInfo[]>;
+	/** 已配置渠道快照（null / channels 为空 → 完全按原有服务商分组行为渲染）。 */
+	channelState: ChannelStateMsg | null;
+	/** 当前对话的有效/待生效绑定视图（每个快照都带）。 */
+	channelBinding: UiChannelBindingView | null | undefined;
+	/** 渠道命令回执，按 commandId 匹配最新一次结果。 */
+	channelResults: Record<string, ChannelCommandResult>;
+	/** DEV-CON 渠道命令 API（含 revision 提交与 commandId 注册）。 */
+	channelApi: ChannelApi;
 	/** Compact triggers for narrow toolbars (mobile input row). */
 	compact?: boolean;
 }
@@ -42,10 +57,21 @@ export const ModelThinking = memo(function ModelThinking({
 	send,
 	onManageModels,
 	providerKeys,
+	channelState,
+	channelBinding,
+	channelResults,
+	channelApi,
 	compact = false,
 }: Props) {
 	const t = useT();
 	const model = state?.model;
+	// DEV-CON：有渠道时模型按渠道分组（渠道+命名凭据+模型一次提交）；没有渠道时
+	// 完全走原有「服务商 + 命名密钥」分组，行为零回归。
+	const channels = useMemo(() => channelState?.channels ?? [], [channelState]);
+	const hasChannels = channels.length > 0;
+	/** 最近一次 channel_select 的 commandId —— 回执只展示它对应的那一条。 */
+	const [lastChannelCommand, setLastChannelCommand] = useState<string | null>(null);
+	const channelReceipt = lastChannelCommand ? (channelResults[lastChannelCommand] ?? null) : null;
 	// snapshot model.id is the bare id; list ids are "provider/id".
 	const currentModelId = model ? `${model.provider}/${model.id}` : null;
 	const [modelOpen, setModelOpen] = useState(false);
@@ -218,7 +244,7 @@ export const ModelThinking = memo(function ModelThinking({
 				{/* Scrollable middle band — provider sidebar (left) + model list
 				    (right). The header/search above and footer below stay fixed. */}
 				<div className="dd-model-body">
-					{providerEntries.length > 1 && (
+					{!hasChannels && providerEntries.length > 1 && (
 						<div className="dd-provider-col">
 							<div className="dd-provider-head">{t("providers")}</div>
 							<button
@@ -255,52 +281,70 @@ export const ModelThinking = memo(function ModelThinking({
 					<div className="dd-model-scroll" ref={modelScrollRef}>
 						{(reqLoading || modelsLoading) && <div className="dd-loading">{t("loading")}</div>}
 						{models.length === 0 && !reqLoading && !modelsLoading && <div className="dd-loading">{t("noModels")}</div>}
-						{filteredModels.length === 0 && models.length > 0 && (
+						{!hasChannels && filteredModels.length === 0 && models.length > 0 && (
 							<div className="dd-loading">{t("noModelMatches")}</div>
 						)}
-						{displayRows.map((row) => {
-							const m = row.model;
-							const isActive = currentModelId === m.id && (!row.key || row.key.active);
-							return (
-								<DropdownItem
-									key={row.key ? `${m.id}::${row.key.name}` : m.id}
-									active={isActive}
-									onClick={() => {
-										// Clicking a model under a non-active key switches to it first,
-										// then selects the model (no static model-list copy — the
-										// provider's default system catalog is reused as-is).
-										if (row.key && !row.key.active) {
-											send({ type: "activate_provider_key", provider: m.provider, keyName: row.key.name });
-										}
-										if (currentModelId !== m.id) {
-											send({ type: "set_model", modelId: m.id });
-										}
-										setModelOpen(false);
-									}}
-								>
-									<span className="dd-model-cell">
-										<span className="dd-model-name">{m.name}</span>
-										<span className="dd-model-meta">
-											<span className="dd-model-provider">{m.provider}</span>
-											{row.key && (
-												<span className={`dd-model-key ${row.key.active ? "active" : ""}`}>
-													{row.key.active ? "●" : "○"} {row.key.name}
-												</span>
-											)}
-											{(usage[m.id] ?? 0) > 0 && (
-												<span className="dd-model-usage">{t("modelUsedCount", { n: usage[m.id] })}</span>
-											)}
-											{(m.reasoning || m.vision) && (
-												<span className="dd-model-badges">
-													{m.reasoning && <span className="dd-model-badge">{t("reasoning")}</span>}
-													{m.vision && <span className="dd-model-badge">{t("vision")}</span>}
-												</span>
-											)}
+						{/* 渠道分组下的空结果提示（白名单/搜索词叠加时，见 @GOTCHA）。 */}
+						{hasChannels && filteredModels.length === 0 && models.length > 0 && (
+							<div className="dd-loading">{t("noModelMatches")}</div>
+						)}
+						{hasChannels && (
+							<ChannelModelList
+								channels={channels}
+								models={sortedModels}
+								filter={modelFilter}
+								binding={channelBinding}
+								onSelect={(channelId, credentialKeyName, modelId) => {
+									const commandId = channelApi.selectChannel({ channelId, credentialKeyName, modelId });
+									if (commandId) setLastChannelCommand(commandId);
+									setModelOpen(false);
+								}}
+							/>
+						)}
+						{!hasChannels &&
+							displayRows.map((row) => {
+								const m = row.model;
+								const isActive = currentModelId === m.id && (!row.key || row.key.active);
+								return (
+									<DropdownItem
+										key={row.key ? `${m.id}::${row.key.name}` : m.id}
+										active={isActive}
+										onClick={() => {
+											// Clicking a model under a non-active key switches to it first,
+											// then selects the model (no static model-list copy — the
+											// provider's default system catalog is reused as-is).
+											if (row.key && !row.key.active) {
+												send({ type: "activate_provider_key", provider: m.provider, keyName: row.key.name });
+											}
+											if (currentModelId !== m.id) {
+												send({ type: "set_model", modelId: m.id });
+											}
+											setModelOpen(false);
+										}}
+									>
+										<span className="dd-model-cell">
+											<span className="dd-model-name">{m.name}</span>
+											<span className="dd-model-meta">
+												<span className="dd-model-provider">{m.provider}</span>
+												{row.key && (
+													<span className={`dd-model-key ${row.key.active ? "active" : ""}`}>
+														{row.key.active ? "●" : "○"} {row.key.name}
+													</span>
+												)}
+												{(usage[m.id] ?? 0) > 0 && (
+													<span className="dd-model-usage">{t("modelUsedCount", { n: usage[m.id] })}</span>
+												)}
+												{(m.reasoning || m.vision) && (
+													<span className="dd-model-badges">
+														{m.reasoning && <span className="dd-model-badge">{t("reasoning")}</span>}
+														{m.vision && <span className="dd-model-badge">{t("vision")}</span>}
+													</span>
+												)}
+											</span>
 										</span>
-									</span>
-								</DropdownItem>
-							);
-						})}
+									</DropdownItem>
+								);
+							})}
 					</div>
 				</div>
 				{/* Fixed footer — refresh / manage never scroll away. */}
@@ -320,6 +364,14 @@ export const ModelThinking = memo(function ModelThinking({
 					</button>
 				</div>
 			</Dropdown>
+
+			{/* DEV-CON：有效/待生效渠道绑定与最新回执（只在渠道功能启用时出现）。 */}
+			<ChannelStatusChips
+				binding={channelBinding}
+				channels={channels}
+				receipt={channelReceipt}
+				onRefresh={() => channelApi.listChannels()}
+			/>
 
 			<Dropdown
 				trigger={

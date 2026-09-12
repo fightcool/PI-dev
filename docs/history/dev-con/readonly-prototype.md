@@ -2,11 +2,10 @@
 
 > **历史材料，不作为开发依据。** 正文保留当时的判断、建议和验证状态；不得据此恢复旧范围、旧排期或执行部署。当前唯一开发基准为 [DEV-CON-PROPOSAL.md](../../DEV-CON-PROPOSAL.md)。
 
-<!-- 🍞 AI Breadcrumb — @COUPLED dev-con/cli.mjs, dev-con/server.mjs, dev-con/overview.mjs
-     @COUPLED docs/DEV-CON-PROPOSAL.md, docs/history/dev-con/assessment.md, tests/dev-con-browser.mjs
-     @CONTRACT 路径相对仓库根；正文为历史原型记录。 -->
+<!-- 🍞 AI Breadcrumb — @COUPLED ../../DEV-CON-PROPOSAL.md, ../../P0-VERIFICATION.md, README.md
+     @CONTRACT 正文为历史原型记录；原型代码（原 dev-con/ 与 tests/dev-con-*.mjs）已按决定从仓库删除，文中路径仅为历史引用。 -->
 
-**当前状态：实现继续暂停。用户已明确Pi为核心、保留Pi/DSH、排除外部原生Agent集成；CC Switch仅作多渠道参考，见[当前架构](architecture-v1.2.md)。本文保留旧M0原型事实，外部Agent占位不代表后续范围；代码与测试尚未提交或作为正式交付。**
+**当前状态（更新）：原型代码与专用测试已从仓库移除，渠道功能改在现有 Web 应用内实现（见 [P0 技术验证](../../P0-VERIFICATION.md)）。以下为原型当时的状态记录：实现曾暂停。用户已明确Pi为核心、保留Pi/DSH、排除外部原生Agent集成；CC Switch仅作多渠道参考，见[当前架构](architecture-v1.2.md)。本文保留旧M0原型事实，外部Agent占位不代表后续范围；代码与测试尚未提交或作为正式交付。**
 
 本轮从 `c3f845b` 开发，分支 `feature/dev-con-foundation`。交付独立的只读控制台，完成原方案评估并把实施顺序调整为 M0→M1a→M1b→M2–M5。M0 不包含渠道切换、Agent 私有配置读取、Skills/MCP 同步、模型探测或生产服务变更。
 

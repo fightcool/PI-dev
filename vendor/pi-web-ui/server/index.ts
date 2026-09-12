@@ -26,11 +26,21 @@ import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import express from "express";
 import compression from "compression";
 import { WebSocket, WebSocketServer } from "ws";
 import { VERSION, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { InitialSnapshotGate } from "./initial-snapshot-gate.js";
+import { logPhase, startTrace, type TimingTrace } from "./timing.js";
+
+/**
+ * Upper bound on waiting for an in-flight disk catch-up reload before sending the
+ * baseline anyway (see the hello handler). Reloads measure well under this; the
+ * bound only exists so a stuck reload can never leave the chat pane empty.
+ * @MAGIC 1500ms ≫ observed reload cost (open + runtime creation, ~0.1–0.3s).
+ */
+const BASELINE_DISK_SYNC_MAX_MS = 1500;
 import { PROTOCOL_VERSION } from "./protocol-version.js";
 import { AgentService, workspacePath, QuiesceRejectedError } from "./agent-service.js";
 import { isAbsoluteWirePath, wireToAbs } from "./files-service.js";
@@ -184,9 +194,41 @@ app.post(["/api/auth/login/verify", "/dev/api/auth/login/verify"], async (req, r
 		res.status(401).json({ error: "认证失败" });
 	}
 });
+/**
+ * 认证面固定窗口限流（§4 复核结论：恢复码与口令登录此前无限频）。
+ * 单用户实例部署在回环 + 反向代理后，远端地址可能都是代理地址，因此按
+ * 「socket 远端地址」分桶（实际等同全局窗口）。命中即 429 + Retry-After。
+ * @MAGIC AUTH_WINDOW_MS=60_000 / AUTH_MAX_ATTEMPTS=10（每窗口每桶）。
+ */
+const AUTH_WINDOW_MS = 60_000;
+const AUTH_MAX_ATTEMPTS = 10;
+const authAttempts = new Map<string, { count: number; resetAt: number }>();
+function authRateLimited(bucket: string, now = Date.now()): { limited: boolean; retryAfterSec: number } {
+	const entry = authAttempts.get(bucket);
+	if (!entry || entry.resetAt <= now) {
+		authAttempts.set(bucket, { count: 1, resetAt: now + AUTH_WINDOW_MS });
+		return { limited: false, retryAfterSec: 0 };
+	}
+	entry.count += 1;
+	if (entry.count > AUTH_MAX_ATTEMPTS) return { limited: true, retryAfterSec: Math.max(1, Math.ceil((entry.resetAt - now) / 1000)) };
+	return { limited: false, retryAfterSec: 0 };
+}
+/** 成功即清空该桶，避免正常用户被自己之前的失败计数拖累。 */
+function authRateLimitReset(bucket: string): void {
+	authAttempts.delete(bucket);
+}
+const authBucket = (req: { socket?: { remoteAddress?: string } }, kind: string): string => `${kind}:${req.socket?.remoteAddress ?? "unknown"}`;
+
 app.post(["/api/auth/recovery", "/dev/api/auth/recovery"], async (req, res) => {
+	const bucket = authBucket(req, "recovery");
+	const gate = authRateLimited(bucket);
+	if (gate.limited) {
+		res.setHeader("Retry-After", String(gate.retryAfterSec));
+		return res.status(429).json({ error: "尝试过于频繁，请稍后重试" });
+	}
 	const t = await webauthn.recovery(String(req.body?.code ?? ""));
 	if (!t) return res.status(401).json({ error: "恢复码无效" });
+	authRateLimitReset(bucket);
 	res.setHeader("Set-Cookie", `pi_web_session=${t}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`);
 	res.json({ verified: true });
 });
@@ -210,6 +252,13 @@ app.get(["/login", "/dev/login"], (_req, res) => {
 });
 app.use(express.urlencoded({ extended: false }));
 app.post(["/login", "/dev/login"], (req, res) => {
+	const bucket = authBucket(req, "login");
+	const gate = authRateLimited(bucket);
+	if (gate.limited) {
+		res.setHeader("Retry-After", String(gate.retryAfterSec));
+		res.status(429).type("html").send('尝试过于频繁，请稍后重试。<a href="/login">返回</a>');
+		return;
+	}
 	const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
 	if (!token || token !== AUTH_TOKEN) {
 		res.status(401).type("html").send('登录失败：口令不正确。<a href="/login">重试</a>');
@@ -324,8 +373,25 @@ const MANAGED = isManaged();
 /** PI_WEB_TABS: the tabs this instance offers. null = all of them, as before. */
 const TABS = parseTabs();
 
-app.get("/api/health", (_req, res) => {
-	res.json({ ok: true, piVersion: VERSION, cwd: CWD, pid: process.pid, engine: ENGINE });
+/**
+ * 健康端点：探针必须能匿名拿到 `ok`，但**绝对工作区路径/进程号/版本**只在
+ * 「已鉴权」或「直连回环且未经代理转发」时返回（§4 复核：公网暴露绝对路径与 PID 无必要）。
+ * @GOTCHA 反向代理若注入 X-Forwarded-*，远端请求即便落到回环也不返回详情；
+ *          容器/CI 的健康探针直连回环、不带转发头，因此仍然拿到完整字段。
+ */
+const healthForwarded = (req: { headers: IncomingMessage["headers"] }): boolean =>
+	Boolean(req.headers["x-forwarded-for"] || req.headers["x-forwarded-proto"] || req.headers["x-real-ip"]);
+const healthLoopback = (req: { socket?: { remoteAddress?: string } }): boolean => {
+	const address = req.socket?.remoteAddress ?? "";
+	return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+};
+app.get("/api/health", (req, res) => {
+	const detailed = (AUTH_TOKEN ? tokenOk(req) : false) || (healthLoopback(req) && !healthForwarded(req));
+	res.json({
+		ok: true,
+		engine: ENGINE,
+		...(detailed ? { piVersion: VERSION, cwd: CWD, pid: process.pid } : {}),
+	});
 });
 
 /**
@@ -525,20 +591,35 @@ if (existsSync(webDist)) {
 	app.use(compression());
 	app.use(
 		express.static(webDist, {
-			// Vite 产物文件名带内容 hash，可永久强缓存——业务发版后 hash 变化自然失效，
-			// index.html 由下方 catch-all 处理（sendFile 不走这里）
+			// Vite 产物文件名带内容 hash，可永久强缓存——业务发版后 hash 变化自然失效。
+			// @GOTCHA 对 `/` 的请求 **由 static 中间件直接返回 index.html**（不是下面的 catch-all），
+			// 所以 SPA 壳的缓存策略必须在这里也设一遍：否则它带 `public, max-age=0`，被反向代理
+			// 缓存后会出现「公网仍在发旧壳 → 部署验收误判失败并自动回滚」（2026-09-11 实际发生）。
 			setHeaders(res, filePath) {
 				if (filePath.includes(`${sep}assets${sep}`)) {
 					res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+					return;
+				}
+				if (/(^|[\\/])index\.html$/.test(filePath)) {
+					res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+					res.setHeader("Pragma", "no-cache");
 				}
 			},
 		}),
 	);
 	app.get(/^\/(?!api\/|ws).*/, (_req, res) => {
+		// SPA 壳必须每次回源校验：它引用带内容哈希的入口 JS，一旦被反向代理/浏览器缓存住，
+		// 发布新版本后会出现「公网还在发旧壳 → 部署验收误判失败并回滚」（2026-09-11 实际发生）。
+		// 带哈希的 /assets/* 仍是 immutable 长缓存（见上面的 express.static）。
+		// @GOTCHA sendFile 默认会自带 `Cache-Control: public, max-age=0`，用自己的头覆盖
+		// res.setHeader —— 必须走 sendFile 的选项（cacheControl:false + headers）才生效。
 		// Callback form: a failed stat here (npm i -g is mid-replacement of the
 		// package dir) responds 503 instead of crashing the request pipeline
 		// with an unhandled ENOENT stack trace.
-		res.sendFile(join(webDist, "index.html"), (err) => {
+		res.sendFile(join(webDist, "index.html"), {
+			cacheControl: false,
+			headers: { "Cache-Control": "no-cache, no-store, must-revalidate", Pragma: "no-cache" },
+		}, (err) => {
 			if (err && !res.headersSent) {
 				res.status(503).send("正在更新 pi-web-ui，请稍后刷新…");
 			}
@@ -677,6 +758,12 @@ export interface TerminalManagerLike {
 
 export interface DispatchSession {
 	cwd: string;
+	/** In-flight disk catch-up reload for the active conversation, if any.
+	 *  Optional: the DSH engine session has no equivalent. */
+	diskSyncPending?(): Promise<void> | null;
+	/** Page of earlier messages for the ACTIVE conversation (tail-first history).
+	 *  Optional: the DSH engine session has no equivalent. */
+	loadHistory?(opts: { before?: string; limit?: number; all?: boolean }): void;
 	prompt(text: string, attachments?: PromptAttachment[], queue?: boolean): Promise<void>;
 	/** Remove one queued prompt text (steer/followUp) — the ✕ on a pending bubble. */
 	removeQueued(kind: "steer" | "followUp", text: string): void;
@@ -715,6 +802,38 @@ export interface DispatchSession {
 	uploadFile(dirPath: string, name: string, data: string): Promise<void>;
 	listModels(): Promise<void>;
 	setModel(modelId: string): Promise<void>;
+	// -- DEV-CON channels（接口由 ClientSession 实现；DSH 引擎给出显式不支持回执） --
+	pushChannelState(): void;
+	selectChannel(msg: Extract<ClientMessage, { type: "channel_select" }>): Promise<void>;
+	clearChannelBinding(commandId: string, conversationId?: string): Promise<void>;
+	saveChannelConfig(
+		commandId: string,
+		channel: Extract<ClientMessage, { type: "channel_save" }>["channel"],
+		expectedConfigRevision?: number,
+	): Promise<void>;
+	deleteChannelConfig(commandId: string, channelId: string, expectedConfigRevision?: number): Promise<void>;
+	setChannelDefault(input: {
+		commandId: string;
+		scope: "instance" | "project";
+		selection: { channelId: string; credentialKeyName?: string | null; modelId: string } | null;
+		expectedConfigRevision?: number;
+	}): Promise<void>;
+	queryChannelAccount(commandId: string, channelId: string): Promise<void>;
+	/** P4 候选：系统资源只读快照。 */
+	listResources(reqId: number): Promise<void>;
+	/** P4 运维：存储占用明细（只读、有界遍历）。 */
+	listStorage(reqId: number): Promise<void>;
+	/** P4 运维：设置用量历史保留天数。 */
+	setUsageRetention(maxAgeDays: number): void;
+	/** P4 运维：诊断包（只读元数据）。 */
+	listDiagnostics(reqId: number): Promise<void>;
+	/** P4 运维：开关资源告警。 */
+	setOpsAlerts(enabled: boolean): void;
+	/** P4 首个切片：跨渠道/项目/时间的用量历史（只读聚合）。 */
+	queryUsageHistory(
+		reqId: number,
+		query: { groupBy: "channel" | "project" | "model" | "source" | "day"; from?: number; to?: number },
+	): Promise<void>;
 	setThinking(level: string): void;
 	setCwd(path: string): Promise<void>;
 	completePath(path: string): Promise<void>;
@@ -729,6 +848,8 @@ export interface DispatchSession {
 	saveModelConfig(providerId: string, config: unknown): Promise<void>;
 	deleteModelConfig(providerId: string): Promise<void>;
 	listProviders(): Promise<void>;
+	/** 渠道表单「获取接口清单」（服务端解析密钥，不下发浏览器）。 */
+	fetchChannelModels(reqId: number, providerId: string, keyName?: string | null): Promise<void>;
 	listProviderKeys(): void;
 	addProviderKey(provider: string, apiKey: string, name?: string): Promise<void>;
 	activateProviderKey(provider: string, keyName: string): Promise<void>;
@@ -753,6 +874,8 @@ export interface DispatchSession {
 		disabledSkills?: string[];
 		disabledExtensions?: string[];
 		disabledPlugins?: string[];
+		/** 内置服务商「删除」= 从管理模型列表隐藏（纯 UI 偏好，不 reload）。 */
+		hiddenBuiltinProviders?: string[];
 		terminalToolsEnabled?: boolean;
 		terminalBash?: boolean;
 		terminalBashIdleMs?: number;
@@ -795,7 +918,7 @@ export interface DispatchSession {
 
 /** 引擎无关的服务接口（index.ts attach 流程 + 插件扩展点所需）。 */
 export interface EngineService {
-	attach(clientId: string, send: (msg: ServerMessage) => void): Promise<DispatchSession>;
+	attach(clientId: string, send: (msg: ServerMessage) => void, trace?: TimingTrace): Promise<DispatchSession>;
 	detach(clientId: string, send: (msg: ServerMessage) => void): void;
 	get(clientId: string): DispatchSession | undefined;
 	disposeAll(): Promise<void>;
@@ -957,6 +1080,9 @@ wss.on("connection", (ws) => {
 	let lastSnapshotBytes = 0;
 	/** Commands received while the session is still being created — replayed after attach. */
 	let pending: ClientMessage[] = [];
+	/** Ends the opt-in startup trace (timing.ts) once plugins + first snapshot
+	 *  are settled, or when the socket closes first. Set by the hello handler. */
+	let finishHelloTrace: ((extra?: Record<string, string | number | boolean>) => void) | undefined;
 	/** 背压丢快照后的延迟重发定时器（去重：一次只排一个）。 */
 	let snapshotRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1018,7 +1144,7 @@ wss.on("connection", (ws) => {
 	// cid getter lets plugins target THIS socket via host.sendTo(clientId).
 	const removePluginSender = pluginMgr.addSender(send, () => clientId);
 
-	const dispatch = (msg: ClientMessage): void => {
+	const dispatchUnsafe = (msg: ClientMessage): void => {
 		if (!clientId) {
 			pending.push(msg);
 			return;
@@ -1082,6 +1208,10 @@ wss.on("connection", (ws) => {
 				break;
 			case "get_commands":
 				void cs.pushSlashCommands();
+				break;
+			case "load_history":
+				// 尾部优先历史的「载入更早/搜索前补全」；DSH 引擎没有等价实现。
+				cs.loadHistory?.({ before: msg.before, limit: msg.limit, all: msg.all });
 				break;
 			case "list_sessions":
 				void cs.refreshSessions();
@@ -1199,6 +1329,9 @@ wss.on("connection", (ws) => {
 			case "refresh_provider_models":
 				void cs.refreshProviderModels(msg.providerId, msg.reqId);
 				break;
+			case "fetch_channel_models":
+				void cs.fetchChannelModels(msg.reqId, msg.providerId, msg.keyName);
+				break;
 			case "clone_provider":
 				void cs.cloneProvider(msg.provider, msg.reqId);
 				break;
@@ -1291,6 +1424,7 @@ wss.on("connection", (ws) => {
 					disabledSkills: msg.disabledSkills,
 					disabledExtensions: msg.disabledExtensions,
 					disabledPlugins: msg.disabledPlugins,
+					hiddenBuiltinProviders: msg.hiddenBuiltinProviders,
 					terminalToolsEnabled: msg.terminalToolsEnabled,
 					terminalBash: msg.terminalBash,
 					terminalBashIdleMs: msg.terminalBashIdleMs,
@@ -1374,15 +1508,78 @@ wss.on("connection", (ws) => {
 			case "delete_preset":
 				void cs.deletePreset(msg.name);
 				break;
+			// -- DEV-CON channels ----------------------------------------
+			case "list_channels":
+				cs.pushChannelState();
+				break;
+			case "channel_select":
+				void cs.selectChannel(msg);
+				break;
+			case "channel_binding_clear":
+				void cs.clearChannelBinding(msg.commandId, msg.conversationId);
+				break;
+			case "channel_save":
+				void cs.saveChannelConfig(msg.commandId, msg.channel, msg.expectedConfigRevision);
+				break;
+			case "channel_delete":
+				void cs.deleteChannelConfig(msg.commandId, msg.channelId, msg.expectedConfigRevision);
+				break;
+			case "channel_set_default":
+				void cs.setChannelDefault({
+					commandId: msg.commandId,
+					scope: msg.scope,
+					selection: msg.selection,
+					expectedConfigRevision: msg.expectedConfigRevision,
+				});
+				break;
+			case "channel_query_account":
+				void cs.queryChannelAccount(msg.commandId, msg.channelId);
+				break;
+			case "usage_history_query":
+				void cs.queryUsageHistory(msg.reqId, { groupBy: msg.groupBy, from: msg.from, to: msg.to });
+				break;
+			case "list_resources":
+				void cs.listResources(msg.reqId);
+				break;
+			case "list_storage":
+				void cs.listStorage(msg.reqId);
+				break;
+			case "set_usage_retention":
+				cs.setUsageRetention(msg.maxAgeDays);
+				break;
+			case "list_diagnostics":
+				void cs.listDiagnostics(msg.reqId);
+				break;
+			case "set_ops_alerts":
+				cs.setOpsAlerts(msg.enabled);
+				break;
 			default:
 				break;
+		}
+	};
+
+	/**
+	 * 入口防护（P0「入口安全」）：畸形/越界命令只能影响本条命令。
+	 * 之前 dispatch 里的同步异常会冒泡到 ws 的 message 处理器并终止进程；
+	 * 这里统一包一层，并把失败变成可见的 notice。
+	 */
+	const dispatch = (msg: ClientMessage): void => {
+		try {
+			dispatchUnsafe(msg);
+		} catch (err) {
+			send({ type: "notice", level: "error", text: `命令处理失败：${(err as Error).message}` });
 		}
 	};
 
 	ws.on("message", (data) => {
 		let msg: ClientMessage;
 		try {
-			msg = JSON.parse(data.toString()) as ClientMessage;
+			const parsed: unknown = JSON.parse(data.toString());
+			// 非对象帧（null / 字符串 / 数字 / 数组，或 type 不是字符串）会让
+			// 后面的 msg.type 直接抛错并杀死进程 —— 在这里就丢掉。
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+			if (typeof (parsed as { type?: unknown }).type !== "string") return;
+			msg = parsed as ClientMessage;
 		} catch {
 			return;
 		}
@@ -1390,11 +1587,21 @@ wss.on("connection", (ws) => {
 		if (msg.type === "hello") {
 			const cid = msg.clientId || randomUUID();
 			clientId = cid;
+			// Startup phase trace (PI_WEB_TIMING=1): attach() records the session
+			// phases, this handler records hello → plugins → first snapshot, so a
+			// single log line covers the whole cold start.
+			const trace = startTrace(`attach ${cid}`);
 			service
-				.attach(cid, send)
+				.attach(cid, send, trace)
 				.then((cs) => {
 					if (closed) return;
-					if (ENGINE === "pi") initialSnapshot.start(() => cs.flushSnapshot(true));
+					let traced = false;
+					finishHelloTrace = (extra = {}) => {
+						if (traced) return;
+						traced = true;
+						trace?.end({ engine: ENGINE, ...extra });
+					};
+					trace?.mark("hello");
 					send({
 						type: "ready",
 						clientId: cid,
@@ -1408,6 +1615,33 @@ wss.on("connection", (ws) => {
 						managed: MANAGED,
 						tabs: TABS ? [...TABS] : undefined,
 					});
+					// Open the gate and push the authoritative baseline. Plugin activation used to
+					// gate this (with a 5s fallback), so a slow/hung plugin showed the user an
+					// empty chat pane for seconds; renderer fences arrive later and
+					// plugin-fence.ts re-renders the misses when the catalog lands.
+					//
+					// @PERF One exception: a disk catch-up reload (another device wrote while we
+					// were away) is already in flight. Its own full flush would be dropped by the
+					// still-closed gate, so flushing NOW would send the STALE transcript and the
+					// reload would send a second full one — two multi-hundred-KB transfers plus a
+					// visible old→new jump. Wait for it instead (bounded, so a stuck reload can
+					// never leave the pane empty).
+					const baseline = () => {
+						if (ENGINE === "pi") initialSnapshot.complete(() => cs.flushSnapshot(true));
+						trace?.mark("snapshot-sent");
+						// The user-visible number is now known: end the main trace here. Plugin
+						// activation continues behind it and is logged separately (logPhase).
+						finishHelloTrace?.({ snapWireB: lastSnapshotBytes, activeConvs: service.activeConversations() });
+					};
+					const diskSync = cs.diskSyncPending?.();
+					if (diskSync) {
+						void Promise.race([diskSync, delay(BASELINE_DISK_SYNC_MAX_MS)]).then(() => {
+							if (!closed) baseline();
+						});
+					} else {
+						baseline();
+					}
+					const pluginsStartedAt = performance.now();
 					// Plugin catalog: re-scan + activate new dirs on every attach so
 					// freshly dropped plugins show up without a server restart.
 					pluginMgr
@@ -1433,7 +1667,8 @@ wss.on("connection", (ws) => {
 						})
 						.then(() => {
 							if (closed) return;
-							initialSnapshot.complete(() => cs.flushSnapshot(true));
+							// Plugin activation cost, recorded but no longer on the critical path.
+							logPhase(`attach ${cid}`, "plugins", performance.now() - pluginsStartedAt);
 						});
 					// hello may carry the UI locale — persist it before replaying
 					// anything queued during startup (issue #91).
@@ -1473,7 +1708,7 @@ wss.on("connection", (ws) => {
 	ws.on("close", () => {
 		service.noteSocketClose();
 		closed = true;
-		initialSnapshot.dispose();
+		finishHelloTrace?.();
 		pending = [];
 		removePluginSender();
 		if (snapshotRetryTimer) {

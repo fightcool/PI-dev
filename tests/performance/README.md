@@ -7,6 +7,34 @@ tests/performance/metrics.mjs, tests/performance/scenarios.mjs,
 tests/performance/diagnostics.mjs
 -->
 
+## Server-side probe / 服务端探针
+
+```sh
+node tests/performance/server-timing.mjs
+SMALL=200 BIG=1460 node tests/performance/server-timing.mjs
+```
+
+The browser harness below mocks the WebSocket, so it cannot measure the server
+half of "session switching feels slow". This probe starts an **isolated**
+instance from TS source (`--import tsx`, no build) with its own agent dir, data
+dir, workspace and a free port, seeds synthetic sessions with
+`session-fixture.mjs`, and walks the two paths a browser walks:
+
+1. `hello` → first `snapshot` (cold attach)
+2. `list_sessions` → `switch_session` to the large fixture (disk switch)
+3. switch back to the small fixture
+4. a no-op switch (already active) — must still be answered with a snapshot
+
+`PI_WEB_TIMING=1` makes `server/timing.ts` print one `[timing] …` line per path
+(attach/switch phases, snapshot build time, wire bytes); the probe prints those
+lines next to the measured wall-clock deltas. `session-fixture.mjs` generates
+`N` messages in the SDK's on-disk JSONL shape, so history size is a parameter
+instead of a fixed fixture.
+
+Both files only ever write to a fresh temp directory: they never read or write a
+real agent directory, and never touch a live instance.
+
+
 Run from the repository root after the main build finishes:
 
 ```sh
@@ -55,7 +83,11 @@ The four scenarios per iteration are:
   and plugin code remains deferred. Select the local synthetic plugin and verify its
   mount, then select terminal and verify xterm is requested. No shell is started.
 - **200 messages:** measure history startup with the same bounded DOM budgets.
-- **1,000 messages:** measure startup, scroll to top, unfold an old collapsed message,
+- **1,000 messages (tail-first since protocol v22):** the mock now sends the same shape the
+  server does — the newest 40 messages plus `messagesOmitted`, answering `load_history` with the
+  missing prefix — so the scenario exercises the real path: measure startup, scroll to top
+  (which auto-loads the earlier page and anchors the viewport), scroll again to reach the true
+  oldest row, unfold an old collapsed message,
   scroll to bottom, search two old messages using next/previous, close search, jump
   via the first question-navigation tick, and use the return-to-bottom control.
   The search term occurs once in each of rows 0 and 2, beyond the collapsed preview.

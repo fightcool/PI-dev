@@ -23,6 +23,8 @@ function client(load: (cwd: string) => Promise<SessionInfo[]>) {
 		disposed: false,
 		sessionsRequested: false,
 		sessionHistory: new SessionHistoryCache(load),
+		// invalidateSessionInfos 同时失效「全部项目」扫描缓存（会话变化影响二者）。
+		projectSessions: new SessionHistoryCache(() => Promise.resolve([]), 30_000),
 		emit: (msg: ServerMessage) => received.push(msg),
 	});
 	return { cs, received };

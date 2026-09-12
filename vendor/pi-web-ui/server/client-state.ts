@@ -6,6 +6,9 @@
  *
  * 从 agent-service.ts 抽出，行为保持不变。
  */
+/* 🍞 @COUPLED server/settings-service.ts（get/set 的字段映射）、web/src/components/ModelConfigModal.tsx
+ *   （hiddenBuiltinProviders 的唯一写方） — 新增设置字段要同时改这两处，否则重启即丢。
+ */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -25,6 +28,17 @@ export function normalizeRetryMaxAttempts(v: unknown): number {
 }
 
 /** Settings-panel state (system prompt + disabled skills/extensions). */
+/**
+ * UI 偏好默认值的版本标记。设置是**全局共享**并整对象落盘的（见 saveSettings），
+ * 所以「等于旧默认值的存量值」与「用户真的点过开关」无法区分：不改默认就会对
+ * 所有人失效、改默认又会覆盖用户的显式选择。用这个标记把两者分开——
+ * 写入时打上新版本号，读取时低于当前版本的记录按「没被用户碰过」处理。
+ *
+ * v2：`toolsWrap` 默认由「展开」改为「折叠」（工具/ bash 输出默认收起，点击展开；
+ *     展开会占掉大量阅读空间，且把单条可达数百 KB 的输出写进 DOM）。
+ */
+export const UI_DEFAULTS_VERSION = 2;
+
 export interface ClientSettings {
 	promptMode: PromptMode;
 	customSystemPrompt: string;
@@ -72,7 +86,11 @@ export interface ClientSettings {
 	/** 思考块默认折叠与否（默认关 = 折叠；开 = 始终完整展开并自动换行，流式推理
 	 *  也实时可见）。纯 UI 偏好，与视觉桥 / disabledPlugins 一样不进预设。 */
 	thinkingWrap: boolean;
-	/** 工具调用是否默认展开（默认开 = 展开；关 = 折叠）。纯 UI 偏好，不进预设。 */
+	/** 工具调用是否默认展开（默认关 = 折叠，点击展开；开 = 始终完整展开）。
+	 *  纯 UI 偏好，不进预设。
+	 *  @PERF 默认折叠是性能决定而非审美：展开会把每个工具输出（单条可达数百 KB）
+	 *  写进 DOM，切会话/滚动时布局与主线程成本随输出体积线性上涨。
+	 *  旧的默认值是 true（始终展开）。 */
 	toolsWrap: boolean;
 	/** 子代理默认模型 ("provider/id")；null/未设 = 跟随主对话当前模型。不改会话右侧栏的模型。 */
 	subagentDefaultModel?: string | null;
@@ -84,6 +102,12 @@ export interface ClientSettings {
 	/** 输入框上方的快捷短语（点击即发送）。纯 UI 偏好，不进预设、不需 reload。 */
 	quickPhrases: string[];
 	quickPhrasesEnabled: boolean;
+	/** 内置服务商里被用户「删除」（= 从「管理模型」列表移除）的 providerId。
+	 *  内置服务商来自 pi 运行时注册表，无法真正卸载；这里只记「不再展示」。
+	 *  纯 UI 偏好：不进预设、不需 reload，全局共享（同 disabledPlugins）。
+	 *  删除时前端会一并调 clear_provider_api_key 清掉它的密钥——否则残留密钥
+	 *  会让该服务商继续出现在模型选择器/视觉桥里，看起来像「删了还在」。 */
+	hiddenBuiltinProviders?: string[];
 }
 
 /** A named combo of prompt + skill/extension toggles the user can re-apply.
@@ -102,6 +126,7 @@ export interface SettingsPreset extends Omit<
 	| "subagentDefaultModel"
 	| "quickPhrases"
 	| "quickPhrasesEnabled"
+	| "hiddenBuiltinProviders"
 > {
 	name: string;
 }
@@ -181,6 +206,8 @@ export interface ClientState {
 	lastCwd?: string;
 	/** Workspaces this client opened before, most recent first (capped at 30). */
 	projects: { path: string; lastUsed: number }[];
+	/** UI 偏好默认值版本（见 UI_DEFAULTS_VERSION）：只在共享设置记录上写入。 */
+	uiDefaultsVersion?: number;
 	/** Last-used goal / review preferences (model choice, max rounds, locked) so
 	 *  they survive a reload — "全局记忆". maxRounds: 0 means unlimited. The model
 	 *  choice is shared by both the goal-reviewer and the goal-wizard. */
@@ -398,7 +425,9 @@ export class ClientStateStore {
 			questionnaireEnabled: stored?.questionnaireEnabled ?? true,
 			goalModeEnabled: stored?.goalModeEnabled ?? true,
 			thinkingWrap: stored?.thinkingWrap ?? false,
-			toolsWrap: stored?.toolsWrap ?? true,
+			// @MIGRATION v2：存量 toolsWrap 若是旧默认（true）盖进去的，按「未设置」
+			// 处理 → 落到新默认 false。用户之后显式开关会被记进新版本号，不再被覆盖。
+			toolsWrap: (s?.uiDefaultsVersion ?? 1) >= 2 ? (stored?.toolsWrap ?? false) : false,
 			visionBridgeEnabled: stored?.visionBridgeEnabled ?? true,
 			visionBridgeModel: stored?.visionBridgeModel ?? null,
 			visionBridgePromptMode: stored?.visionBridgePromptMode === "replace" ? "replace" : "append",
@@ -407,6 +436,7 @@ export class ClientStateStore {
 			retryMaxAttempts: normalizeRetryMaxAttempts(stored?.retryMaxAttempts),
 			quickPhrases: stored?.quickPhrases ?? [],
 			quickPhrasesEnabled: stored?.quickPhrasesEnabled ?? true,
+			hiddenBuiltinProviders: stored?.hiddenBuiltinProviders ?? [],
 			reviewPrompt: stored?.reviewPrompt ?? "",
 			reviewDisabledSkills: stored?.reviewDisabledSkills ?? [],
 			disabledPlugins: stored?.disabledPlugins ?? [],
@@ -417,6 +447,7 @@ export class ClientStateStore {
 	saveSettings(_clientId: string, settings: Partial<ClientSettings>): void {
 		const all = this.load();
 		const state = (all[ClientStateStore.GLOBAL_SETTINGS_KEY] ??= { projects: [] });
+		state.uiDefaultsVersion = UI_DEFAULTS_VERSION;
 		const cur = state.settings ?? ({} as ClientSettings);
 		state.settings = {
 			promptMode: settings.promptMode ?? cur.promptMode ?? "append",
@@ -432,7 +463,7 @@ export class ClientStateStore {
 			questionnaireEnabled: settings.questionnaireEnabled ?? cur.questionnaireEnabled ?? true,
 			goalModeEnabled: settings.goalModeEnabled ?? cur.goalModeEnabled ?? true,
 			thinkingWrap: settings.thinkingWrap ?? cur.thinkingWrap ?? false,
-			toolsWrap: settings.toolsWrap ?? cur.toolsWrap ?? true,
+			toolsWrap: settings.toolsWrap ?? cur.toolsWrap ?? false,
 			visionBridgeEnabled: settings.visionBridgeEnabled ?? cur.visionBridgeEnabled ?? true,
 			visionBridgeModel: settings.visionBridgeModel ?? cur.visionBridgeModel ?? null,
 			subagentDefaultModel: settings.subagentDefaultModel ?? cur.subagentDefaultModel ?? null,
@@ -446,6 +477,7 @@ export class ClientStateStore {
 			disabledPlugins: settings.disabledPlugins ?? cur.disabledPlugins ?? [],
 			quickPhrases: settings.quickPhrases ?? cur.quickPhrases ?? [],
 			quickPhrasesEnabled: settings.quickPhrasesEnabled ?? cur.quickPhrasesEnabled ?? true,
+			hiddenBuiltinProviders: settings.hiddenBuiltinProviders ?? cur.hiddenBuiltinProviders ?? [],
 		};
 		this.save();
 	}

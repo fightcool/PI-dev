@@ -4,7 +4,7 @@
 
 本文只规定工程结构与运行边界；当前功能范围、架构和验收统一以 [DEV-CON-PROPOSAL.md](DEV-CON-PROPOSAL.md) 为准。
 
-PI-dev 是以 Pi 为核心的个人远程开发环境，保留定制 pi-web-ui 的 Pi/DSH 架构。仓库包含开发环境编排、应用源码，以及暂停开发的 `dev-con/` 只读原型。源码按责任归属；私有配置、会话和上传按实例归属；部署版本按提交归属。
+PI-dev 是以 Pi 为核心的个人远程开发环境，保留定制 pi-web-ui 的 Pi/DSH 架构。仓库包含开发环境编排与应用源码；渠道管理功能实现于现有 Web 应用内（`vendor/pi-web-ui/server/dev-con/`），不再有独立控制台。源码按责任归属；私有配置、会话和上传按实例归属；部署版本按提交归属。
 
 ## 目录地图
 
@@ -20,7 +20,7 @@ PI-dev 是以 Pi 为核心的个人远程开发环境，保留定制 pi-web-ui �
 | `tests/` | 根工程链、生命周期、隔离浏览器性能回归 | 真实会话和凭据 |
 | `docs/` | 当前开发运维规范、提案、验收记录 | 零散根目录完成说明 |
 | `upstream/` | 上游来源和兼容性记录 | 第三份业务实现 |
-| `dev-con/` | 暂停开发的只读原型；最终渠道管理优先整合进现有 Web 模块，见当前方案 | 外部原生 Agent 集成、第二套模型/密钥业务实现 |
+| `vendor/pi-web-ui/server/dev-con/` | 渠道元数据、对话绑定、组合切换命令、账户查询适配器、用量历史（逐请求记录 + 只读聚合 + 保留策略）、系统资源与存储占用只读采集、**运维诊断快照（仅元数据）与资源告警** | 第二套模型/密钥事实源、外部原生 Agent 集成、长期计费平台 |
 
 根 `package.json` 锁定环境扩展；vendor 的 `package.json` 锁定应用依赖。两者各自保留锁文件，避免把独立上游项目变成无法单独构建的目录。根目录不再额外安装 npm 版 pi-web-ui，也不再人工修改 node_modules 内的 SDK 链接。
 
@@ -34,13 +34,19 @@ Node `#usage` / `#governance` package imports 让源码与编译产物引用同�
 - `npm run typecheck`：应用双端类型检查。
 - `npm test`：根工程及生命周期测试。
 - `npm run test:unit`：应用纯逻辑单测。
-- `npm run test:smoke`：应用自包含协议冒烟。
+- `npm run test:smoke`：应用自包含协议冒烟；**默认并行 3**（`SMOKE_JOBS=N` 覆盖），实测 ~190s（串行约 10–11 分钟）。按 [AGENTS.md](../AGENTS.md)「测试分层与验证节奏」只在里程碑跑。
 - `npm run test:performance`：模拟HTTP/WS的浏览器回归；不接触真实服务或模型。
-- `npm run dev-con -- --help`：旧只读原型 CLI，配置位于 checkout 的 `.dev/dev-con/`；仅供复查，见[历史原型记录](history/dev-con/readonly-prototype.md)。
-- `npm run test:dev-con` / `npm run test:dev-con:browser` / `npm run test:dev-con:integration`：旧原型验证，不代表当前渠道功能验收。
+- `node scripts/maintenance/prepare-release.mjs <commit>`：准备候选 release（锁文件未变时复用依赖，~3 分钟省掉）。
+- `node scripts/maintenance/switch-production-release.mjs <releaseId>`：原子切换上线（含排空/验收/回滚），见 [PM2-PRODUCTION.md](PM2-PRODUCTION.md)。
+- `npm run test:channels:unit`：渠道模型/存储/服务/账户的纯逻辑单测。
+- `npm run test:channels`：端到端双对话双密钥隔离验证（先 `npm run build`，使用本地替身模型端点）。
+- `npm run test:channels:multi`：端到端多客户端验证（广播一致、外部修改冲突可恢复、绑定键按 clientId 隔离）。
+- `npm run test:channels:browser`：真实 Chromium 下的渠道界面断言（合成数据 + 模拟 WS）。
 - `npm run check:publish`：交付文件及常见秘密检查。
 
 开发数据 `.dev/`、依赖、构建输出与Python虚拟环境均不进入Git。测试夹具自行生成配置及测试令牌；测试不能调用 `loadConfig()` 去读取操作人的实际凭据。
+
+测试环境约定：测试起的隔离实例不得继承宿主的鉴权环境（`PI_WEB_TOKEN`/`PI_WEB_MANAGED`）。冒烟跑器 `tests/run-smoke.mjs` 统一清理；单独跑某个 `node tests/*.mjs` 时若宿主带这些变量，请自行 `env -u PI_WEB_TOKEN -u PI_WEB_MANAGED`，否则匿名 WebSocket 会 401 造成与产品无关的假失败。
 
 ## 开发、运行与工作区
 
@@ -54,11 +60,11 @@ Node `#usage` / `#governance` package imports 让源码与编译产物引用同�
 
 同一服务仅由一个主要进程管理器管理。systemd适用于当前Linux工作站，PM2使用单实例fork；Docker Compose使用自身重启策略。会话、PTY和WS状态尚未设计为多进程共享，不能直接启用PM2 cluster实现横向扩容。
 
-## 与 dev-con 的衔接
+## 渠道模块的落位
 
-当前功能的唯一开发依据为 [DEV-CON-PROPOSAL.md](DEV-CON-PROPOSAL.md)。架构讨论已合并，不再维护并行方案。`dev-con/` 与8791保留为暂停原型/后续运维预留，其存在不要求当前渠道功能独立部署；具体实现仍暂停。旧原型目录与测试的保留、迁移或移除遵循开发基准，不自动处理。
+当前功能（含 P0 结论）的唯一依据为 [DEV-CON-PROPOSAL.md](DEV-CON-PROPOSAL.md) 与 [P0-VERIFICATION.md](P0-VERIFICATION.md)。渠道元数据落在实例私有目录 `<agentDir>/dev-con/channels.json`（0600，只存 providerId/keyName/modelId 引用）；用量历史落在同目录的 `usage-history.jsonl`（append-only、0600、超过 8 MiB 轮转保留一代，保留天数在 `usage-settings.json`），告警开关在 `ops-settings.json`；密钥仍由 `provider-keys.json`/`auth.json` 拥有，模型目录仍由 `models.json` 拥有，不新增第二份可写事实源。历史 `dev-con/` 只读原型及其专用测试已移除，记录留在 [历史归档](history/dev-con/readonly-prototype.md)。
 
-端口约定：8788在线UI、8790发布候选、8791原型预留、8890开发后端；协议/浏览器测试使用独立空闲端口或完全模拟网络。
+端口约定：8788在线UI、8790发布候选、8791后续运维预留、8890开发后端；协议/浏览器测试使用独立空闲端口或完全模拟网络。
 
 ## 上游更新
 

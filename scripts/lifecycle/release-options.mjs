@@ -1,11 +1,14 @@
-/* 🍞 AI Breadcrumb: @COUPLED scripts/release.mjs, scripts/lifecycle/release.mjs
+/* 🍞 AI Breadcrumb: @COUPLED scripts/release.mjs, scripts/lifecycle/release.mjs, scripts/lifecycle/release-prune.mjs
+ * @COUPLED tests/release.test.mjs, tests/release-prune.test.mjs; 📖 docs/PM2-SHADOW.md
  * @CONTRACT Validate every CLI action before touching deployment state or invoking PM2.
+ * @CONTRACT deployRoots 只解析部署根目录布局；只关心 releases/current 的动作不引入 shadow 专属的
+ *           config/PM2/端口约束，否则生产根目录（PI_DEV_CONFIG_DIR 在 shared 之外）无法回收。
  */
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { join, resolve, relative, isAbsolute } from "node:path";
 import { absolutePath, validatePort } from "../lib.mjs";
 
-export const ACTIONS = ["check", "--check-pm2", "release", "current", "rollback", "start", "reload", "stop", "delete"];
+export const ACTIONS = ["check", "--check-pm2", "release", "current", "rollback", "start", "reload", "stop", "delete", "prune"];
 export function releaseId(id) {
   if (typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(id) || id === "." || id === "..")
     throw new Error("Invalid release id.");
@@ -27,10 +30,15 @@ export function assertRealDirectoryPath(path) {
     next = parent;
   }
 }
-export function releaseOptions(env = process.env) {
+export function deployRoots(env = process.env) {
   const base = absolutePath(env.PI_DEV_DEPLOY_ROOT || "/srv/pi-dev", "deploy root");
   if (base === "/" || base === "/srv" || base === "/home") throw new Error("Choose a dedicated deployment directory.");
   const shared = join(base, "shared");
+  for (const path of [base, shared, join(base, "releases")]) assertRealDirectoryPath(path);
+  return { base, shared, releases: join(base, "releases"), current: join(base, "current") };
+}
+export function releaseOptions(env = process.env) {
+  const { base, shared, releases, current } = deployRoots(env);
   const configDir = absolutePath(env.PI_DEV_CONFIG_DIR || join(shared, "config"), "shadow config");
   const pm2Home = absolutePath(env.PM2_HOME || join(shared, "pm2"), "PM2 home");
   if (!contained(shared, configDir) || !contained(shared, pm2Home) || configDir === pm2Home)
@@ -39,9 +47,9 @@ export function releaseOptions(env = process.env) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)) throw new Error("Invalid PM2 name.");
   const port = validatePort(Number(env.PI_DEV_SHADOW_PORT ?? 8790));
   if (port === 8788) throw new Error("Shadow must not use the primary port 8788.");
-  for (const path of [base, configDir, pm2Home, join(base, "releases"), join(shared, "logs"),
-    join(shared, "state"), join(shared, "workspace")]) assertRealDirectoryPath(path);
-  return { base, shared, configDir, pm2Home, name, port, releases: join(base, "releases"), current: join(base, "current") };
+  for (const path of [configDir, pm2Home, join(shared, "logs"), join(shared, "state"), join(shared, "workspace")])
+    assertRealDirectoryPath(path);
+  return { base, shared, releases, current, configDir, pm2Home, name, port };
 }
 export function validateAction(action, id, commit) {
   if (!ACTIONS.includes(action)) throw new Error(`Usage: ${ACTIONS.join("|")}; release <id> --commit=<full SHA>`);

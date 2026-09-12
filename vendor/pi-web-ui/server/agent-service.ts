@@ -14,14 +14,25 @@
  * @COUPLED conversation-maintenance.ts / subagent-archive.ts: idle retirement and result restoration.
  * 📖 docs/conversation-lifecycle.md
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { existsSync, readFileSync, rmSync, statSync, mkdirSync, watch } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync, mkdirSync, watch, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve, sep } from "node:path";
 // @ts-expect-error Host runtime module is JavaScript by design.
 import { normalizeUsageEvent, TokenUsageTracker } from "#usage";
+import { PROTOCOL_VERSION } from "./protocol-version.js";
+import { ChannelService } from "./dev-con/channel-service.js";
+import { AccountRegistry } from "./dev-con/channel-accounts.js";
+import type { ChannelRecord, ChannelSelection, RequestBindingSnapshot } from "./dev-con/channel-model.js";
+import type { ChannelServiceHost } from "./dev-con/channel-service.js";
+import { UsageHistoryStore, type UsageHistoryRecord } from "./dev-con/usage-history.js";
+import { collectResources } from "./dev-con/system-resources.js";
+import { setProviderBaseUrlLookup } from "./dev-con/channel-accounts.js";
+import { measureAreas } from "./dev-con/storage-usage.js";
+import { buildDiagnostics, usageSummaryOf } from "./dev-con/ops-diagnostics.js";
+import { evaluateAlerts, markFired, ALERT_COOLDOWN_MS, ALERT_CRITICAL_PERCENT, ALERT_WARN_PERCENT, type OpsAlert } from "./dev-con/ops-alerts.js";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
@@ -44,6 +55,8 @@ import { SUBAGENT_CONCURRENCY } from "./conversation-retention.js";
 import { SubagentArchive, type ArchivedSubagent } from "./subagent-archive.js";
 import { toSubagentSnapshot, subagentRunOutcome } from "./subagent-state.js";
 import { SessionHistoryCache } from "./session-history-cache.js";
+import { startTrace, traceStep, type TimingTrace } from "./timing.js";
+import { historyPage, snapshotWindow, SNAPSHOT_TAIL_MESSAGES } from "./history-window.js";
 import { searchSessionInfos } from "./session-search.js";
 import { BgServerTracker } from "./bg-servers.js";
 import {
@@ -113,6 +126,7 @@ import type {
 	QuestionAnswer,
 	ServerMessage,
 	SessionSummary,
+	UiChannelBindingView,
 	UiMessage,
 	UiQuestion,
 	UiState,
@@ -555,6 +569,12 @@ export interface Conversation {
 	 *  with this still false counts as "opened but not continued" and is
 	 *  dismissed from the list. */
 	promptedSinceActive: boolean;
+	/** 尾部优先历史：本端上次发出的快照里省略了多少条更早消息（客户端据此显示
+	 *  「载入更早」；见 server/history-window.ts）。 */
+	historyOmitted: number;
+	/** 客户端已把本对话完整补全过 → 之后的全量快照不再截断（否则压缩/重同步
+	 *  发出的全量会把用户刚翻出来的历史又收回去）。 */
+	historyExpanded: boolean;
 	/** Last time this conversation became active — set_cwd picks the target
 	 *  project's most recently active conversation. */
 	lastActiveAt: number;
@@ -563,6 +583,15 @@ export interface Conversation {
 	 *  STALL_NOTIFY_MS is probably a half-open API connection. */
 	/** Unified event-level token accounting for current/run/cumulative views. */
 	usageTracker: TokenUsageTracker;
+	/**
+	 * 请求发出时固定的渠道/凭据/模型与绑定版本（§7）：在 Agent.getApiKey 被调用
+	 * （= SDK 每次 provider 请求前）时写入，使晚到的用量结果仍归属到当时的绑定。
+	 */
+	lastRequestBinding: RequestBindingSnapshot | null;
+	/** 最近一条已写入用量历史记录的 id（避免同一记录重复落盘）。 */
+	lastPersistedUsageId: string | null;
+	/** 压缩前的会话统计基线：压缩摘要的 token 用会话统计差值归属为 source=compaction。 */
+	compactionBaseline: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost: number } | null;
 	/** Last time any SDK event arrived for this conversation. */
 	lastSdkEventAt: number;
 	/** Set once the stall notice has been sent for the current silent period;
@@ -1342,6 +1371,8 @@ export class ClientSession {
 		},
 	};
 	private widgetsTimer: ReturnType<typeof setInterval> | null = null;
+	/** P4 运维：资源告警周期定时器（unref；随会话释放）。 */
+	private alertTimer: ReturnType<typeof setInterval> | null = null;
 	/** Model-stall watchdog interval (see startStallTimer). */
 	private stallTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -1366,6 +1397,11 @@ export class ClientSession {
 	private emittedConvId: string | null = null;
 	/** snapRev value at which emittedMessages was captured. */
 	private emittedRev = 0;
+	/** Opt-in phase trace for the connection/switch currently being served
+	 *  (see timing.ts). Set by attach(); snapshot build costs land on it. */
+	timing?: TimingTrace;
+	/** In-flight disk catch-up reload (see syncActiveFromDiskIfStale). */
+	private diskSync: Promise<void> | null = null;
 	/**
 	 * Per-conversation serialization caches (stable message ids, UiMessage
 	 * object cache, message-array signature, queue counts) live inside each
@@ -1499,6 +1535,11 @@ export class ClientSession {
 			lang: () => this.getLang(),
 			// 目标模式总开关（设置面板「目标审查」页）：关 → 目标入口一律拒绝。
 			goalModeEnabled: () => this.settingsSvc.current.goalModeEnabled !== false,
+			// DEV-CON §7：复核/调研用独立 ModelRuntime，用量单独标注来源并归到发起它的对话。
+			recordUsage: (source, usage) => {
+				const conv = this.conv;
+				this.recordUsage(conv, { scope: "final", identity: null, role: "assistant", ...usage }, this.bindingAttribution(conv, source));
+			},
 			activeConvId: () => this.activeId,
 			activeConv: () => this.conv,
 			getConv: (id) => this.convs.get(id),
@@ -1521,12 +1562,32 @@ export class ClientSession {
 		// Prune dead background tasks every 30s (only spawns netstat/lsof while
 		// the list is non-empty). unref: must not keep the process alive.
 		this.bg.start();
+		// P4 运维：资源告警周期检查（60 秒；unref 不阻止退出；开关与冷却见 checkResourceAlerts）。
+		this.alertTimer = setInterval(() => this.checkResourceAlerts(), 60_000);
+		this.alertTimer.unref?.();
+		this.accounts = new AccountRegistry();
+		this.channels = new ChannelService(this.makeChannelHost(agentDir), this.accounts);
+		this.usageHistory = new UsageHistoryStore(join(agentDir, "dev-con", "usage-history.jsonl"));
+		// 模板里的 {baseUrl} 取自运行时模型目录（服务商 baseUrl 由 models.json 拥有）。
+		setProviderBaseUrlLookup((providerId) => {
+			try {
+				return this.runtime.services.modelRuntime.getProviders().find((p) => p.id === providerId)?.baseUrl;
+			} catch {
+				return undefined;
+			}
+		});
 	}
 
-	static async create(clientId: string, cwd: string, stateStore: ClientStateStore): Promise<ClientSession> {
+	static async create(
+		clientId: string,
+		cwd: string,
+		stateStore: ClientStateStore,
+		trace?: TimingTrace,
+	): Promise<ClientSession> {
 		const agentDir = process.env.PI_CODING_AGENT_DIR ?? getAgentDir();
 
 		const cs = new ClientSession(clientId, cwd, agentDir, stateStore);
+		cs.timing = trace;
 		const conversationId = cs.nextConversationId();
 		const terminals = cs.makeTerminalManager(conversationId, cwd);
 		const runtime = await createAgentSessionRuntime(cs.makeRuntimeFactory(terminals, undefined, conversationId), {
@@ -1553,9 +1614,12 @@ export class ClientSession {
 				});
 			}
 		}
-		await cs.bindSession();
-		await cs.restoreProjectProviderKeysForCwd(cwd);
-		await cs.restoreProjectModelForCwd(cwd);
+		// Instrumented phases only (no behaviour change): these four awaits are the
+		// whole cold-start critical path before the first snapshot can be built.
+		trace?.mark("runtime");
+		await traceStep(trace, "bind", () => cs.bindSession());
+		await traceStep(trace, "keys", () => cs.restoreProjectProviderKeysForCwd(cwd));
+		await traceStep(trace, "model", () => cs.restoreProjectModelForCwd(cwd));
 		return cs;
 	}
 
@@ -1777,6 +1841,22 @@ export class ClientSession {
 
 	/** Wrap a fresh runtime as a new conversation record. */
 	private makeConversation(runtime: AgentSessionRuntime, id: string, terminals: TerminalManager): Conversation {
+		// DEV-CON 凭据隔离（P0）：SDK 在每次请求前调用 Agent.getApiKey(provider)
+		// （pi-agent-core agent-loop.js:191），显式返回值优先于 auth.json / runtime
+		// override（pi-ai auth/resolve.js:33）。这里按「对话绑定」返回命名凭据正文，
+		// 从而让两个对话用同一服务商的不同 key 而互不改写全局 auth.json。
+		// 未绑定时返回 undefined → 完全保留原有全局解析行为。
+		runtime.session.agent.getApiKey = (provider: string) => {
+			try {
+				const key = this.channels.credentialFor(id, provider);
+				// §7：请求发出时固定渠道/凭据/模型与绑定版本（晚到的用量按此归属）。
+				const conv = this.convs.get(id);
+				if (conv) conv.lastRequestBinding = this.channels.bindingSnapshotFor(id);
+				return key;
+			} catch {
+				return undefined;
+			}
+		};
 		return {
 			id,
 			title: conversationTitle(runtime.session),
@@ -1790,8 +1870,13 @@ export class ClientSession {
 			listed: false,
 			promptedSinceActive: false,
 			lastActiveAt: Date.now(),
+			historyOmitted: 0,
+			historyExpanded: false,
 			lastSdkEventAt: Date.now(),
 			usageTracker: new TokenUsageTracker(),
+			lastRequestBinding: null,
+			lastPersistedUsageId: null,
+			compactionBaseline: null,
 
 			stallNoticed: false,
 			goal: this.makeGoalStatus(),
@@ -1865,6 +1950,9 @@ export class ClientSession {
 		// Reconnect: push the built-in provider key list (multi-key grouping in the
 		// model picker needs it even before the client asks).
 		this.modelAdmin.listProviderKeys();
+		// Reconnect：推送渠道状态（渠道列表/默认值/本对话绑定），否则重连后
+		// 底栏只能显示快照里的那一个绑定。
+		this.pushChannelState();
 		// PTYs are conversation-owned and survive a socket reconnect.
 		this.pushTerminals();
 	}
@@ -1884,6 +1972,17 @@ export class ClientSession {
 		if (this.disposed) return;
 		// eslint-disable-next-line unicorn/no-useless-spread -- snapshot: handlers may unsubscribe mid-emit
 		for (const sink of [...this.sinks]) sink(msg);
+	}
+
+	/** DEV-CON：实例级广播入口（渠道状态由 AgentService 分发给全部客户端；
+	 *  其他客户端的 ClientSession 收到后推给自己的 sinks）。 */
+	emitExternal(msg: ServerMessage): void {
+		this.emit(msg);
+	}
+
+	/** 某个客户端的 chat 会话已释放（避免对已 dispose 的会话再推）。 */
+	isDisposedSession(): boolean {
+		return this.disposed;
 	}
 
 	/** (Re)attach extension binding + event plumbing to ONE conversation's session.
@@ -1933,13 +2032,26 @@ export class ClientSession {
 	 * 接入 / 回到页面时追平：本端活动会话的磁盘文件若比内存新（离开期间另一端
 	 * 完成了工作，且没有新广播可收），就从磁盘接力重载。
 	 * 覆盖「页面重连但 clientId 未变 → 服务端复用内存 ClientSession」的缺口。
+	 *
+	 * @PERF 重载本身会发一份全量快照；若不等它，hello 那份基线会先把**旧**内容
+	 * 发给客户端，紧接着再来一份重载后的全量——大会话等于多传一次数百 KB，
+	 * 用户还会看到一次“先旧后新”的跳变。`diskSyncPending` 让 hello 把基线排到
+	 * 重载之后（见 index.ts），於是只传一份且内容就是最新的。
 	 */
 	syncActiveFromDiskIfStale(): void {
 		if (this.disposed) return;
 		const conv = this.convs.get(this.activeId);
 		if (!conv || conv.session.isStreaming || conv.reloadInFlight) return;
 		if (!conv.session.sessionFile || !this.diskSigChanged(conv)) return;
-		void this.reloadConversationFromDisk(conv);
+		const running = this.reloadConversationFromDisk(conv).finally(() => {
+			if (this.diskSync === running) this.diskSync = null;
+		});
+		this.diskSync = running;
+	}
+
+	/** 正在进行的磁盘接力重载；hello 用它把首份基线排在重载之后。 */
+	diskSyncPending(): Promise<void> | null {
+		return this.diskSync;
 	}
 
 	/** (Re)attach event plumbing to the ACTIVE conversation's session. */
@@ -2092,15 +2204,438 @@ export class ClientSession {
 		}
 	}
 
+	/**
+	 * 记录用量并落盘到用量历史（唯一入口）。所有 record() 调用点都必须走这里，
+	 * 否则「界面能看到、历史查不到」的缺口会再次出现。
+	 */
+	private recordUsage(conv: Conversation, normalized: unknown, attribution: Record<string, unknown>, now = Date.now()): void {
+		conv.usageTracker.record(normalized, now, attribution);
+		const newest = conv.usageTracker.records()[0] as UsageHistoryRecord | undefined;
+		if (!newest || newest.id === conv.lastPersistedUsageId) return;
+		conv.lastPersistedUsageId = newest.id;
+		this.usageHistory.append(newest);
+	}
+
+	/**
+	 * P4 候选：系统资源快照（只读）。工作区与 Agent 数据目录若在同一文件系统，
+	 * 只保留一行（避免界面出现重复的同一块盘）。
+	 */
+	async listResources(reqId: number): Promise<void> {
+		try {
+			const snapshot = collectResources({
+				disks: [
+					{ path: this.cwd, label: "workspace" },
+					{ path: this.agentDir, label: "agent" },
+				],
+			});
+			const seen = new Set<string>();
+			snapshot.disks = snapshot.disks.filter((disk) => {
+				const key = `${disk.totalBytes}:${disk.freeBytes}`;
+				if (seen.has(key)) return false;
+				seen.add(key);
+				return true;
+			});
+			this.emit({ type: "resources", reqId, ok: true, snapshot });
+		} catch (err) {
+			this.emit({ type: "resources", reqId, ok: false, error: (err as Error).message });
+		}
+	}
+
+	/**
+	 * 待生效渠道选择的落定入口（带有限重试）。
+	 * @WHY 落定依赖「会话真的空闲」：`agent_end` 时 isStreaming 仍可能为 true，
+	 *      而 `agent_settled` 之后工具/排队消息也可能紧接着再来一轮；用有限重试覆盖这两种时序，
+	 *      超过上限就停（下一次事件仍会再试），不做无限轮询。
+	 * @MAGIC 5 次 × 700ms ≈ 3.5s 的窗口。
+	 */
+	private settlePendingChannelSwitch(conv: Conversation, attempt = 0): void {
+		const timer = setTimeout(() => {
+			if (this.disposed) return;
+			void this.channels
+				.onConversationSettled(conv.id)
+				.then(() => {
+					if (this.channels.pendingSelectionFor(conv.id) && attempt < 5) this.settlePendingChannelSwitch(conv, attempt + 1);
+				})
+				.catch(() => undefined);
+		}, attempt === 0 ? 50 : 700);
+		timer.unref?.();
+	}
+
+	/**
+	 * P4 运维：资源告警（磁盘/内存/unit 内存越线提示一次，冷却 1 小时）。
+	 * 由 ClientSession 的周期定时器调用；同一实例的多个客户端共享模块级冷却表，
+	 * 因此不会重复刷通知。读不到的指标不告警（没有数据 ≠ 满了）。
+	 */
+	private static readonly alertLastFired = new Map<string, number>();
+	checkResourceAlerts(): void {
+		if (!this.opsAlertsEnabled()) return;
+		try {
+			const snapshot = collectResources({ disks: [{ path: this.cwd, label: "workspace" }, { path: this.agentDir, label: "agent" }] });
+			const alerts = evaluateAlerts({ resources: snapshot, lastFired: Object.fromEntries(ClientSession.alertLastFired), now: Date.now() });
+			if (alerts.length === 0) return;
+			const now = Date.now();
+			for (const alert of alerts) ClientSession.alertLastFired.set(alert.key, now);
+			this.emit({
+				type: "notice",
+				level: alerts.some((a) => a.level === "critical") ? "error" : "warning",
+				text: alerts.map((a) => this.alertText(a)).join("；"),
+				textEn: alerts.map((a) => this.alertTextEn(a)).join("; "),
+			});
+		} catch {
+			/* 告警检查失败绝不影响服务 */
+		}
+	}
+
+	private alertText(alert: OpsAlert): string {
+		const what = alert.id === "disk" ? `磁盘 ${alert.key.slice(5)}` : alert.id === "memory" ? "内存" : "unit 内存";
+		return `${what}使用率 ${alert.value}%（阈值 ${alert.threshold}%）`;
+	}
+
+	private alertTextEn(alert: OpsAlert): string {
+		const what = alert.id === "disk" ? `Disk ${alert.key.slice(5)}` : alert.id === "memory" ? "Memory" : "unit memory";
+		return `${what} usage ${alert.value}% (threshold ${alert.threshold}%)`;
+	}
+
+	/** 诊断用：本进程所属引擎（AgentService 即 pi 引擎；DSH 由另一个实现回答）。 */
+	private static readonly ENGINE = "pi";
+
+	/** 诊断用：构建与来源信息（读不到就是 null，不编造）。 */
+	private releaseInfo(): { commit: string | null; appVersion: string | null; protocolVersion: number | null; builtAt: string | null; source: string | null } {
+		const distDir = dirname(fileURLToPath(import.meta.url)); // <release>/vendor/pi-web-ui/dist/server
+		const read = (path: string): Record<string, unknown> | null => {
+			try {
+				return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+			} catch {
+				return null;
+			}
+		};
+		const build = read(join(distDir, "..", "build-info.json"));
+		const source = read(join(distDir, "..", "..", "..", "..", "release-source.json"));
+		return {
+			commit: typeof build?.commit === "string" ? build.commit : null,
+			appVersion: typeof build?.appVersion === "string" ? build.appVersion : null,
+			protocolVersion: typeof build?.protocolVersion === "number" ? build.protocolVersion : null,
+			builtAt: typeof build?.builtAt === "string" ? build.builtAt : null,
+			source: typeof source?.commit === "string" ? source.commit : null,
+		};
+	}
+
+	/** 诊断用：实例监听地址（来自应用进程环境；缺失为 null，不从别处推断）。 */
+	private instanceAddress(): { host: string | null; port: number | null } {
+		const port = Number(process.env.PI_WEB_PORT ?? "");
+		return { host: process.env.PI_WEB_HOST ?? null, port: Number.isInteger(port) && port > 0 ? port : null };
+	}
+
+	/** 诊断用：单位状态（只读；systemctl 不可用时如实报 unknown，不抛错）。 */
+	private unitStates(): { unit: string; active: string; enabled: string }[] {
+		return ["pi-dev-pm2.service", "pi-web-ui-dev.service", "pi-web-ui-dev-watchdog.timer"].map((unit) => {
+			const read = (property: "is-active" | "is-enabled"): string => {
+				try {
+					return execFileSync("systemctl", ["--user", property, unit], { encoding: "utf8", timeout: 3_000, stdio: ["ignore", "pipe", "ignore"] }).trim() || "unknown";
+				} catch (err) {
+					return (err as { stdout?: string }).stdout?.trim() || "unknown";
+				}
+			};
+			return { unit, active: read("is-active"), enabled: read("is-enabled") };
+		});
+	}
+
+	/** 告警开关（默认开；持久化在 dev-con/ops-settings.json）。 */
+	private opsSettingsPath(): string {
+		return join(this.agentDir, "dev-con", "ops-settings.json");
+	}
+
+	private opsAlertsEnabled(): boolean {
+		try {
+			const parsed = JSON.parse(readFileSync(this.opsSettingsPath(), "utf8")) as { alertsEnabled?: boolean };
+			return parsed?.alertsEnabled !== false;
+		} catch {
+			return true;
+		}
+	}
+
+	/** P4 运维：开关资源告警。 */
+	setOpsAlerts(enabled: boolean): void {
+		try {
+			mkdirSync(join(this.agentDir, "dev-con"), { recursive: true });
+			writeFileSync(this.opsSettingsPath(), JSON.stringify({ alertsEnabled: enabled === true }, null, 2) + "\n", { mode: 0o600 });
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: enabled ? "已开启资源告警" : "已关闭资源告警",
+				textEn: enabled ? "Resource alerts enabled" : "Resource alerts disabled",
+			});
+		} catch (err) {
+			this.emit({ type: "notice", level: "error", text: `保存告警设置失败：${(err as Error).message}` });
+		}
+		this.flushSnapshot();
+	}
+
+	/** P4 运维：诊断包（只含元数据；密钥值/会话内容/日志正文一律不包含）。 */
+	async listDiagnostics(reqId: number): Promise<void> {
+		try {
+			const addr = this.instanceAddress();
+			const resources = collectResources({ disks: [{ path: this.cwd, label: "workspace" }, { path: this.agentDir, label: "agent" }] });
+			const areas = measureAreas([
+				{ path: join(this.stateStore.dataDir, "uploads"), label: "uploads", note: "uploads-cleanable" },
+				{ path: join(this.agentDir, "sessions"), label: "sessions", note: "sessions-user-data" },
+				{ path: join(this.agentDir, "dev-con"), label: "channel-metadata", note: "channel-metadata-user-data" },
+			]);
+			const usageFull = this.usageHistory.query({ groupBy: "source" });
+			const usageByChannel = this.usageHistory.query({ groupBy: "channel" });
+			const channels = this.channels.stateMessage();
+			const bundle = buildDiagnostics({
+				now: Date.now(),
+				app: { node: process.version, pid: process.pid, uptimeSec: Math.round(process.uptime()), engine: ClientSession.ENGINE, protocolVersion: PROTOCOL_VERSION },
+				release: this.releaseInfo(),
+				instance: {
+					configDir: dirname(this.agentDir),
+					dataDir: this.stateStore.dataDir,
+					agentDir: this.agentDir,
+					workspaceDir: this.cwd,
+					host: addr.host,
+					port: addr.port,
+					profile: process.env.PI_DEV_PROFILE ?? null,
+				},
+				units: this.unitStates(),
+				resources,
+				storage: {
+					at: Date.now(),
+					areas,
+					totalBytes: areas.reduce((sum, area) => sum + area.bytes, 0),
+					retention: { ...this.usageHistory.readSettings(), fileBytes: this.usageHistory.fileBytes(), choices: [0, 7, 30, 90, 365] },
+				},
+				channels: {
+					configRevision: channels.configRevision,
+					count: channels.channels.length,
+					enabledCount: channels.channels.filter((c) => c.enabled).length,
+					bindings: channels.bindings.length,
+					pending: channels.pending.length,
+					accounts: channels.accounts.length,
+					brokenRefs: channels.channels.filter((c) => c.keyMissing || c.providerMissing).length,
+				},
+				usage: { ...usageSummaryOf(usageFull), byChannel: usageSummaryOf(usageByChannel).byChannel },
+				environment: { platform: process.platform, cpuCount: resources.host.cpuCount, totalMemBytes: resources.host.mem.totalBytes },
+				warnings: [...resources.warnings, ...areas.filter((a) => a.truncated).map((a) => `storage:${a.label} 已达遍历上限`)],
+			});
+			this.emit({
+				type: "diagnostics",
+				reqId,
+				ok: true,
+				bundle,
+				alertsEnabled: this.opsAlertsEnabled(),
+				thresholds: { warnPercent: ALERT_WARN_PERCENT, criticalPercent: ALERT_CRITICAL_PERCENT, cooldownMs: ALERT_COOLDOWN_MS },
+			});
+		} catch (err) {
+			this.emit({ type: "diagnostics", reqId, ok: false, error: (err as Error).message });
+		}
+	}
+
+	/**
+	 * P4 运维：存储占用明细 + 用量历史保留策略（只读遍历，有界；不删除任何数据）。
+	 * 区域按「用户数据 / 可清理候选」分组标注，界面据此提示，删除动作仍由操作人在服务器上做。
+	 */
+	async listStorage(reqId: number): Promise<void> {
+		try {
+			const retentionPath = join(this.agentDir, "dev-con", "usage-history.jsonl");
+			const areas = measureAreas([
+				{ path: join(this.stateStore.dataDir, "uploads"), label: "uploads", note: "uploads-cleanable" },
+				{ path: join(this.agentDir, "sessions"), label: "sessions", note: "sessions-user-data" },
+				{ path: join(this.stateStore.dataDir, "subagent-archive"), label: "subagent-archive", note: "sessions-user-data" },
+				{ path: retentionPath, label: "usage-history", note: "usage-history-cleanable" },
+				{ path: join(this.agentDir, "dev-con"), label: "channel-metadata", note: "channel-metadata-user-data" },
+				{ path: join(this.stateStore.dataDir, "plugins"), label: "plugin-data", note: "plugin-data-user-data" },
+			]);
+			const settings = this.usageHistory.readSettings();
+			this.emit({
+				type: "storage",
+				reqId,
+				ok: true,
+				storage: {
+					at: Date.now(),
+					areas,
+					totalBytes: areas.reduce((sum, area) => sum + area.bytes, 0),
+					retention: { maxAgeDays: settings.maxAgeDays, maxBytes: settings.maxBytes, fileBytes: this.usageHistory.fileBytes(), choices: [0, 7, 30, 90, 365] },
+				},
+			});
+		} catch (err) {
+			this.emit({ type: "storage", reqId, ok: false, error: (err as Error).message });
+		}
+	}
+
+	/** P4 运维：设置用量历史保留天数（仅允许 0/7/30/90/365；立即生效）。 */
+	setUsageRetention(maxAgeDays: number): void {
+		const settings = this.usageHistory.writeSettings(maxAgeDays);
+		const pruned = this.usageHistory.pruneByAge();
+		this.emit({
+			type: "notice",
+			level: "info",
+			text: settings.maxAgeDays === 0 ? "用量历史保留：只按大小轮转（不做时间清理）" : `用量历史保留：仅保留最近 ${settings.maxAgeDays} 天（本次清理 ${pruned.removed} 条）`,
+			textEn: settings.maxAgeDays === 0 ? "Usage history retention: size-based rotation only" : `Usage history retention: last ${settings.maxAgeDays} days (removed ${pruned.removed} records)`,
+		});
+		this.flushSnapshot();
+	}
+
+	/** P4：只读用量历史聚合（按渠道/项目/模型/来源/天）。 */
+	async queryUsageHistory(
+		reqId: number,
+		query: { groupBy: "channel" | "project" | "model" | "source" | "day"; from?: number; to?: number },
+	): Promise<void> {
+		try {
+			const result = this.usageHistory.query({ groupBy: query.groupBy, from: query.from, to: query.to });
+			this.emit({
+				type: "usage_history",
+				reqId,
+				ok: true,
+				groupBy: result.groupBy,
+				from: result.from,
+				to: result.to,
+				rows: result.rows,
+				totals: {
+					requests: result.totals.requests,
+					input: result.totals.input,
+					output: result.totals.output,
+					cacheRead: result.totals.cacheRead,
+					cacheWrite: result.totals.cacheWrite,
+					total: result.totals.total,
+					cost: result.totals.cost,
+					unpricedRequests: result.totals.unpricedRequests,
+					unreportedRequests: result.totals.unreportedRequests,
+				},
+				scanned: result.scanned,
+				skipped: result.skipped,
+				truncated: result.truncated,
+			});
+		} catch (err) {
+			this.emit({ type: "usage_history", reqId, ok: false, error: (err as Error).message, groupBy: query.groupBy, from: null, to: null, rows: [], totals: { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, unpricedRequests: 0, unreportedRequests: 0 }, scanned: 0, skipped: 0, truncated: false });
+		}
+	}
+
+	/** 会话统计总量（缺失时为 null）；压缩用量归属的唯一来源。 */
+	private sessionUsageTotals(): { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost: number } | null {
+		try {
+			const s = this.session.getSessionStats();
+			return {
+				input: s.tokens.input,
+				output: s.tokens.output,
+				cacheRead: s.tokens.cacheRead,
+				cacheWrite: s.tokens.cacheWrite,
+				total: s.tokens.total,
+				cost: s.cost,
+			};
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * 把压缩期间的会话统计差值记成一条 source=compaction 的用量。
+	 * 压缩不产生 message 事件，若不这么做，摘要消耗的 token 只会在 SDK 会话统计里
+	 * 出现，无法按来源区分（§7）。差值 <= 0 时不记（避免把别的调用算到压缩头上）。
+	 */
+	private recordCompactionUsage(conv: Conversation): void {
+		const before = conv.compactionBaseline;
+		conv.compactionBaseline = null;
+		if (!before) return;
+		const after = this.sessionUsageTotals();
+		if (!after) return;
+		const delta = {
+			input: after.input - before.input,
+			output: after.output - before.output,
+			cacheRead: after.cacheRead - before.cacheRead,
+			cacheWrite: after.cacheWrite - before.cacheWrite,
+			total: after.total - before.total,
+			cost: Math.max(0, after.cost - before.cost),
+		};
+		if (delta.total <= 0 && delta.cost <= 0) return;
+		this.recordUsage(
+			conv,
+			{
+				scope: "final",
+				identity: null,
+				input: Math.max(0, delta.input),
+				output: Math.max(0, delta.output),
+				cacheRead: Math.max(0, delta.cacheRead),
+				cacheWrite: Math.max(0, delta.cacheWrite),
+				total: Math.max(0, delta.total),
+				cost: delta.cost,
+				role: "assistant",
+			},
+			this.bindingAttribution(conv, "compaction"),
+		);
+	}
+
+	/**
+	 * 由「请求时绑定」生成归属字段。modelId 取裸模型 id（与消息事件里的
+	 * message.model 同名），保证旁路/压缩与普通请求在归属表里同一行可合并。
+	 */
+	private bindingAttribution(conv: Conversation, source: string): Record<string, unknown> {
+		const binding = conv.lastRequestBinding;
+		const ref = binding?.modelId ?? "";
+		const slash = ref.indexOf("/");
+		return {
+			source,
+			conversationId: conv.id,
+			cwd: conv.cwd,
+			channelId: binding?.channelId,
+			credentialKeyName: binding?.credentialKeyName,
+			providerId: binding?.providerId,
+			modelId: slash > 0 ? ref.slice(slash + 1) : ref || undefined,
+			bindingRevision: binding?.bindingRevision,
+			configRevision: binding?.configRevision,
+		};
+	}
+
+	/** 旁路调用（视觉桥）的用量归属：来源标 vision，归属到发起请求的对话（§7）。 */
+	private recordBypassUsage(usage: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		total: number;
+		cost: number;
+		provider: string;
+		modelId: string;
+	}): void {
+		const conv = this.conv;
+		this.recordUsage(conv, { scope: "final", identity: null, ...usage, role: "assistant" }, this.bindingAttribution(conv, "vision"));
+	}
+
+	/** 用量来源标注（§7）：子代理/重试/压缩摘要分别标注，其余为用户请求。 */
+	private usageSource(conv: Conversation): "user" | "retry" | "subagent" | "compaction" {
+		if (conv.isSubagent) return "subagent";
+		if (conv.compactionState) return "compaction";
+		if (conv.retryState) return "retry";
+		return "user";
+	}
+
 	private onEvent(conv: Conversation, event: AgentSessionEvent): void {
 		const usageEvent = normalizeUsageEvent(event);
-		if (usageEvent) conv.usageTracker.record(usageEvent);
+		if (usageEvent) {
+			const binding = conv.lastRequestBinding;
+			this.recordUsage(conv, usageEvent, {
+				source: this.usageSource(conv),
+				conversationId: conv.id,
+				cwd: conv.cwd,
+				channelId: binding?.channelId,
+				credentialKeyName: binding?.credentialKeyName,
+				modelId: binding?.modelId,
+				providerId: binding?.providerId,
+				bindingRevision: binding?.bindingRevision,
+				configRevision: binding?.configRevision,
+			});
+		}
 		// Any SDK event proves the run is alive — feeds the stall watchdog below.
 		conv.lastSdkEventAt = Date.now();
 		conv.stallNoticed = false;
 		switch (event.type) {
 			case "agent_settled":
 				this.maintenance.schedule();
+				// @BUGFIX 2026-09-11（真实验收发现）：agent_end 触发时 `isStreaming` 仍为 true
+				// （SDK 注释：agent 只有在 agent_end 的监听器结束后才真正空闲），于是待生效的渠道
+				// 选择在 onConversationSettled 的 busy 判定里被直接丢弃、永不应用。
+				// agent_settled 是 SDK 真正的空闲边界（`_isAgentRunActive=false` 后才发），在这里落定。
+				void this.settlePendingChannelSwitch(conv);
 				break;
 			case "bash_execution_update": {
 				if (event.id) {
@@ -2233,11 +2768,15 @@ export class ClientSession {
 			case "compaction_start": {
 				conv.compactionState = { reason: event.reason, startedAt: Date.now() };
 				conv.lastCompactionTokens = null;
+				// 压缩摘要走 SDK 内部 completeSimple，不产生 message 事件；用会话统计差值
+				// 把这段 token 归属为 source=compaction（§7：摘要来源必须可区分）。
+				conv.compactionBaseline = this.sessionUsageTotals();
 				this.flushSnapshot();
 				break;
 			}
 			case "compaction_end": {
 				conv.compactionState = null;
+				this.recordCompactionUsage(conv);
 				if (event.errorMessage) {
 					this.emit({
 						type: "notice",
@@ -2305,6 +2844,10 @@ export class ClientSession {
 					// 结束信号丢失等），清掉，否则横幅会卡住不消失。
 					conv.retryState = null;
 				}
+				// DEV-CON 切换时点：本轮真正结束（不会自动重试）才应用待生效选择，
+				// 在途请求与工具已按原绑定跑完（docs/DEV-CON-PROPOSAL.md §5）。
+				// 此时 isStreaming 可能仍为 true，因此这里只做「带重试的尝试」，真正落定靠 agent_settled。
+				if (!event.willRetry) void this.settlePendingChannelSwitch(conv);
 				// 轨迹事件：本轮结束（放最前——aborted 中断路径也会 break，
 				// 轨迹里必须留下「已停止」而不是凭空消失）。
 				try {
@@ -2593,14 +3136,19 @@ export class ClientSession {
 		};
 		try {
 			const s = this.session.getSessionStats();
+			const usage = conv.usageTracker.snapshot();
 			stats = {
 				totalMessages: s.totalMessages,
 				tokens: {
 					...s.tokens,
-					request: conv.usageTracker.snapshot().current,
-					run: conv.usageTracker.snapshot().turn,
+					request: usage.current,
+					run: usage.turn,
 				},
-
+				// §7 归属：来源/渠道/模型维度；只含引用，不含密钥。
+				attribution: conv.usageTracker.attributionList(),
+				runId: conv.usageTracker.runId,
+				// §7 逐请求记录（有界，新→旧）：稳定标识 + 时间 + 计价依据，供详情面板展示。
+				recentRequests: conv.usageTracker.records().slice(0, 50),
 				cost: s.cost,
 				contextUsage: (() => {
 					const cu = s.contextUsage;
@@ -2638,6 +3186,8 @@ export class ClientSession {
 			sessionFile: this.session.sessionFile,
 			conversationId: this.activeId,
 			rev,
+			// 客户端已持有的历史窗口（快照与增量共用同一口径：增量不改这个数）。
+			messagesOmitted: conv.historyOmitted,
 			streamingMessage,
 			isStreaming: this.session.isStreaming,
 			model: model
@@ -2660,6 +3210,8 @@ export class ClientSession {
 			version: ++this.version,
 			piConfigured: this.isPiConfigured(),
 			piAgentInstalled: this.isPiCliInstalled(),
+			// DEV-CON：当前对话的有效/待生效渠道绑定（无渠道时 null）。
+			channelBinding: this.channels.bindingViewMessage(this.activeId),
 			stats,
 		};
 	}
@@ -2705,11 +3257,44 @@ export class ClientSession {
 			this.emittedMessages = cur;
 			this.emittedConvId = this.activeId;
 			this.emittedRev = rev;
+			// 尾部优先：大历史只发最近若干条（@PERF 见 history-window.ts 的 @WHY）。
+			// emittedMessages 仍保留**完整**数组——增量路径靠它做身份遍历。
+			const window = snapshotWindow(cur, this.conv.historyExpanded);
+			this.conv.historyOmitted = window.omitted;
 			this.emit({
 				type: "snapshot",
-				state: { ...this.buildLightState(rev), messages: cur },
+				state: { ...this.buildLightState(rev), messages: window.messages },
 			});
 		}
+		// Build + serialize(JSON.stringify, via the sink) cost of this snapshot.
+		// Only recorded while a trace is attached — see timing.ts.
+		this.timing?.mark(
+			incremental
+				? `snap-delta[${cur.length}]`
+				: `snap-full[${this.conv.historyExpanded ? cur.length : Math.min(cur.length, SNAPSHOT_TAIL_MESSAGES)}+${this.conv.historyOmitted}]`,
+		);
+	}
+
+	/**
+	 * 向上补历史（尾部优先的另一半）：「载入更早」与「搜索/问题导航需要全量」都走它。
+	 * 只读内存里的完整消息数组（当前活动对话），命中不到 before 时返回空页并置 complete
+	 * ——由客户端的下一次全量快照去校正，绝不猜内容（见 history-window.ts）。
+	 */
+	loadHistory(opts: { before?: string; limit?: number; all?: boolean } = {}): void {
+		if (this.disposed) return;
+		const conv = this.conv;
+		const page = historyPage(this.currentMessages(), opts);
+		// complete = 这一页之前没有更早的消息 → 客户端自此持有完整 transcript，
+		// 后续全量快照不再截断（否则刚翻出来的历史会被收回去）。
+		if (page.complete) conv.historyExpanded = true;
+		conv.historyOmitted = page.omittedBefore;
+		this.emit({
+			type: "message_page",
+			conversationId: this.activeId,
+			messages: page.messages,
+			omittedBefore: page.omittedBefore,
+			complete: page.complete,
+		});
 	}
 
 	/** Resolve a browser-bridged dialog (select/confirm/input) for this session. */
@@ -3105,6 +3690,21 @@ export class ClientSession {
 
 	/** 模型/服务商配置管理 —— 自包含模块，见 model-admin.ts。 */
 	private readonly modelAdmin!: ModelAdminService;
+	/**
+	 * DEV-CON 渠道服务（渠道档案 / 对话绑定 / 组合切换 / 账户查询）。
+	 * 见 docs/DEV-CON-PROPOSAL.md §4–§7；宿主能力在构造器里注入，服务本体不碰 fs 细节。
+	 */
+	private readonly channels!: ChannelService;
+	/** 账户查询注册表（有界超时/限频/缓存）；默认适配器见 channel-accounts.ts。 */
+	private readonly accounts!: AccountRegistry;
+	/**
+	 * P4 首个切片：逐请求用量历史的实例私有存储（append-only JSONL）。
+	 * 写入只发生在 recordUsage()；查询是只读聚合，不参与计费、不改写会话。
+	 */
+	private readonly usageHistory!: UsageHistoryStore;
+	/** 渠道状态是实例级事实：由 AgentService 广播给全部客户端（多端看到同一有效绑定）。
+	 *  未设置时退化为单端推送（如纯单机测试）。 */
+	onChannelBroadcast: ((msg: ServerMessage) => void) | undefined = undefined;
 
 	/** Persist an api-key credential for a provider (auth.json). */
 	setProviderApiKey(provider: string, apiKey: string): Promise<void> {
@@ -3127,6 +3727,10 @@ export class ClientSession {
 	}
 	refreshProviderModels(providerId: string, reqId: number): Promise<void> {
 		return this.modelAdmin.refreshProviderModels(providerId, reqId, () => this.getLang());
+	}
+	/** 渠道表单「获取接口清单」：服务端解析 baseUrl + 凭据密钥后探测 /models。 */
+	fetchChannelModels(reqId: number, providerId: string, keyName?: string | null): Promise<void> {
+		return this.modelAdmin.fetchChannelModels(reqId, providerId, keyName, () => this.getLang());
 	}
 	/** Copy a built-in provider into an editable custom-provider draft
 	 *  (clone_provider_result) — lets the user run a second API key without
@@ -3168,7 +3772,10 @@ export class ClientSession {
 	 *  provider that has a saved key for `cwd`, activate it if it differs from
 	 *  the current global active. Silent + self-healing: a saved key deleted
 	 *  elsewhere is dropped without notifying (a noisy error here is what
-	 *  haunted project switches after a key deletion). */
+	 *  haunted project switches after a key deletion).
+	 *
+	 *  @PERF network:false —— 这是 attach / 切项目 / 切会话的同步路径，远端目录刷新
+	 *  放到后台（否则单跳可达数秒，直接变成白屏时间）。 */
 	private async restoreProjectProviderKeysForCwd(cwd: string): Promise<void> {
 		const saved = this.stateStore.getProjectProviderKeys(this.clientId, cwd);
 		if (!saved) return;
@@ -3179,7 +3786,7 @@ export class ClientSession {
 				this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
 				continue;
 			}
-			const ok = await this.modelAdmin.activateProviderKey(provider, keyName, { silent: true });
+			const ok = await this.modelAdmin.activateProviderKey(provider, keyName, { silent: true, network: false });
 			if (!ok) this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
 		}
 	}
@@ -3198,7 +3805,7 @@ export class ClientSession {
 			this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
 			return;
 		}
-		const ok = await this.modelAdmin.activateProviderKey(provider, saved, { silent: true });
+		const ok = await this.modelAdmin.activateProviderKey(provider, saved, { silent: true, network: false });
 		if (!ok) this.stateStore.deleteProjectProviderKey(this.clientId, cwd, provider);
 	}
 
@@ -3225,6 +3832,8 @@ export class ClientSession {
 	 *  project gets the remembered model; an in-progress one keeps what it had and
 	 *  the user switches via the picker. Silent on failure (model no longer in catalog). */
 	private async restoreProjectModelForCwd(cwd: string): Promise<void> {
+		// 有显式渠道绑定的对话以绑定为准，不被旧的“项目默认模型/key”覆盖。
+		if (this.channels.hasConversationBinding(this.activeId)) return;
 		const savedModel = this.stateStore.getProjectModel(this.clientId, cwd);
 		if (!savedModel) return;
 		try {
@@ -3306,6 +3915,8 @@ export class ClientSession {
 		reviewPrompt?: string;
 		reviewDisabledSkills?: string[];
 		disabledPlugins?: string[];
+		/** 内置服务商「删除」= 从管理模型列表隐藏（纯 UI 偏好，不 reload）。 */
+		hiddenBuiltinProviders?: string[];
 		markersEnabled?: boolean;
 		disabledMarkers?: string[];
 		quickPhrases?: string[];
@@ -3550,6 +4161,8 @@ export class ClientSession {
 					session: this.session,
 					// issue #91：附件/视觉桥文案按客户端 UI 语言出中英（英文默认）。
 					getLang: () => this.getLang(),
+					// DEV-CON §7：视觉桥是真实计费的旁路调用，用量单独标注来源。
+					recordUsage: (usage) => this.recordBypassUsage(usage),
 				},
 				attachments,
 			);
@@ -3952,6 +4565,8 @@ export class ClientSession {
 		}
 		// Completed work is an evictable cache, not a reason to reject new chats.
 		this.maintenance.reap();
+		// The carried-over model must keep its channel/credential attribution.
+		const previousConversationId = this.activeId;
 		// The outgoing conversation is left behind — apply the running-list
 		// lifecycle. Removal is deferred until the new chat exists so the active
 		// conversation stays valid during the (async) runtime creation.
@@ -3989,6 +4604,8 @@ export class ClientSession {
 					// model no longer resolvable — keep the default
 				}
 			}
+			// DEV-CON：把上一对话的渠道绑定一并带过去（模型已经带过去了）。
+			this.channels.inheritBinding(previousConversationId, conv.id);
 			this.emitConversations();
 			this.goalSvc.emitGoalStatus();
 			this.pushTerminals();
@@ -4076,7 +4693,22 @@ export class ClientSession {
 
 	/** Switch the ACTIVE conversation without interrupting any other chat. */
 	async switchConversation(id: string): Promise<void> {
-		if (!this.convs.has(id)) await this.maintenance.restore(id);
+		const trace = startTrace(`switch-conv ${this.clientId}`, { conv: "memory" });
+		this.timing = trace;
+		try {
+			await this.switchConversationInner(id, trace);
+		} finally {
+			// Always answer a switch request with a snapshot, even when the id was
+			// unknown or already active: the client has nothing else to synchronise on.
+			this.flushSnapshot();
+			trace?.end();
+			this.timing = undefined;
+		}
+	}
+
+	/** Applies the switch in place; the caller owns the snapshot + trace lifecycle. */
+	private async switchConversationInner(id: string, trace?: TimingTrace): Promise<void> {
+		if (!this.convs.has(id)) await traceStep(trace, "restore", () => this.maintenance.restore(id));
 		if (!this.convs.has(id) || id === this.activeId) return;
 		const displaced = this.displaceActive();
 		this.activeId = id;
@@ -4098,8 +4730,8 @@ export class ClientSession {
 		void this.pushSlashCommands();
 		if (cwdChanged) {
 			this.cwd = newCwd;
-			await this.restoreProjectProviderKeysForCwd(newCwd);
-			await this.restoreProjectModelForCwd(newCwd);
+			await traceStep(trace, "keys", () => this.restoreProjectProviderKeysForCwd(newCwd));
+			await traceStep(trace, "model", () => this.restoreProjectModelForCwd(newCwd));
 			// Mirror set_cwd's project-switch side-effects so the whole UI follows
 			// the new workspace, not just the chat pane.
 			try {
@@ -4115,7 +4747,6 @@ export class ClientSession {
 		}
 		// 当前打开对话变了 → 插件重拉（轨迹视图切会话后即刷新，不等轮询）。
 		this.notifyConversationChanged();
-		this.flushSnapshot();
 	}
 
 	/** Push every running conversation across ALL projects to the client. The
@@ -4170,12 +4801,32 @@ export class ClientSession {
 
 	private readonly sessionHistory = new SessionHistoryCache((cwd) => SessionManager.list(cwd, piSessionsRoot()));
 
+	/** Every-project scan for the project switcher. `listAll` parses EVERY persisted
+	 *  transcript (measured ~0.25s for 9 files / 16 MiB) and used to run uncached on
+	 *  every attach and every cwd change.
+	 *  @PERF TTL 30s：会话增删/改名/跨端完成都会经 invalidateSessionInfos 立即失效，
+	 *  这个窗口只用来吸收同一次交互内的重复请求；值取长是因为列表本身只用于项目切换
+	 *  器（粗粒度），而每次重算都是全量磁盘解析。 */
+	private readonly projectSessions = new SessionHistoryCache(
+		() => SessionManager.listAll(piSessionsRoot()),
+		30_000,
+	);
+
+	/** Fixed key: the all-projects scan ignores cwd (see projectSessions). */
+	private static readonly ALL_PROJECTS_KEY = "*";
+
 	private loadSessionInfos(cwd = this.cwd): Promise<SessionInfo[]> {
 		return this.sessionHistory.get(cwd);
 	}
 
+	private loadAllSessionInfos(): Promise<SessionInfo[]> {
+		return this.projectSessions.get(ClientSession.ALL_PROJECTS_KEY);
+	}
+
 	private invalidateSessionInfos(cwd = this.cwd): void {
 		this.sessionHistory.invalidate(cwd);
+		// The all-projects set is a superset — any per-project change affects it.
+		this.projectSessions.invalidate(ClientSession.ALL_PROJECTS_KEY);
 	}
 
 	/** Push the persisted session list to the client (client-requested). */
@@ -4600,6 +5251,11 @@ export class ClientSession {
 	 */
 	async switchSession(path: string): Promise<void> {
 		if (this.quiesceBlocked()) return;
+		const trace = startTrace(`switch-session ${this.clientId}`, { conv: "disk" });
+		this.timing = trace;
+		/** Set when the target session is already open: that path ends the trace
+		 *  itself (switchConversation owns its own trace + snapshot). */
+		let handedOff = false;
 		let openedRuntime: AgentSessionRuntime | null = null;
 		let openedTerminals: TerminalManager | null = null;
 		try {
@@ -4610,12 +5266,14 @@ export class ClientSession {
 			for (const conv of this.convs.values()) {
 				const sessionFile = conv.session.sessionFile;
 				if (sessionFile && resolve(sessionFile) === targetPath) {
+					handedOff = true;
 					await this.switchConversation(conv.id);
 					return;
 				}
 			}
 
 			const sessionManager = SessionManager.open(targetPath);
+			trace?.mark("open");
 			const targetCwd = sessionManager.getCwd();
 			const conversationId = this.nextConversationId();
 			openedTerminals = this.makeTerminalManager(conversationId, targetCwd);
@@ -4627,6 +5285,7 @@ export class ClientSession {
 					sessionManager,
 				},
 			);
+			trace?.mark("runtime");
 
 			// Only displace the old active conversation after the replacement runtime
 			// is known-good. This keeps a failed history open entirely non-destructive.
@@ -4640,10 +5299,10 @@ export class ClientSession {
 			openedRuntime = null;
 			openedTerminals = null;
 			if (displaced) this.removeConversation(displaced.id);
-			await this.bindSession();
+			await traceStep(trace, "bind", () => this.bindSession());
 			this.cwd = targetCwd;
-			await this.restoreProjectProviderKeysForCwd(targetCwd);
-			await this.restoreProjectModelForCwd(targetCwd);
+			await traceStep(trace, "keys", () => this.restoreProjectProviderKeysForCwd(targetCwd));
+			await traceStep(trace, "model", () => this.restoreProjectModelForCwd(targetCwd));
 			this.conv.lastActiveAt = Date.now();
 			this.webUi.refresh();
 			this.emitConversations();
@@ -4662,8 +5321,16 @@ export class ClientSession {
 				text: `切换会话失败：${(err as Error).message}`,
 				textEn: `Failed to switch session: ${(err as Error).message}`,
 			});
+		} finally {
+			// The trace must be cleared on EVERY exit path: a leaked trace keeps
+			// appending snapshot marks forever.
+			if (!handedOff) {
+				this.timing = trace;
+				this.flushSnapshot();
+			}
+			trace?.end();
+			this.timing = undefined;
 		}
-		this.flushSnapshot();
 	}
 
 	/**
@@ -4785,7 +5452,7 @@ export class ClientSession {
 			const removedProjects = new Set(this.stateStore.getRemovedProjects(this.clientId));
 			const map = new Map<string, number>();
 			for (const p of saved.projects) map.set(p.path, p.lastUsed);
-			const all = await SessionManager.listAll(piSessionsRoot());
+			const all = await this.loadAllSessionInfos();
 			for (const s of all) {
 				if (s.cwd) {
 					const t = s.modified.getTime();
@@ -5115,6 +5782,142 @@ export class ClientSession {
 		this.flushSnapshot();
 	}
 
+	// ---------------------------------------------------------------------------
+	// DEV-CON channels（渠道配置 / 组合切换 / 账户查询）
+	// 唯一基准：docs/DEV-CON-PROPOSAL.md §4（配置所有权/组合命令/回执）、§5（切换场景）
+	// ---------------------------------------------------------------------------
+
+	/** 宿主能力注入：渠道服务不直接依赖 ClientSession 内部结构（同 ModelAdminHost 模式）。 */
+	private makeChannelHost(agentDir: string): ChannelServiceHost {
+		return {
+			agentDir,
+			// 对话 id 只在客户端内唯一（c1/c2…），绑定存储键需要 clientId 防碰撞。
+			clientId: this.clientId,
+			emit: (msg) => this.emit(msg),
+			broadcast: (msg) => (this.onChannelBroadcast ? this.onChannelBroadcast(msg) : this.emit(msg)),
+			flushSnapshot: () => this.flushSnapshot(),
+			hasProvider: (providerId) => {
+				try {
+					return this.runtime.services.modelRuntime.getProviders().some((p) => p.id === providerId);
+				} catch {
+					return false;
+				}
+			},
+			getModel: (providerId, modelId) => {
+				try {
+					const m = this.runtime.services.modelRuntime.getModel(providerId, modelId);
+					return m ? { id: m.id, name: m.name ?? m.id } : null;
+				} catch {
+					return null;
+				}
+			},
+			keyNames: (providerId) => this.modelAdmin.keyNameList(providerId),
+			resolveKeyValue: (providerId, keyName) => this.modelAdmin.resolveProviderKeyValue(providerId, keyName),
+			setConversationModel: (conversationId, modelId) => this.setConversationModel(conversationId, modelId),
+			activeConversationId: () => this.activeId,
+			conversationExists: (id) => this.convs.has(id),
+			isBusy: (id) => this.convs.get(id)?.session.isStreaming ?? false,
+			hasQueue: (id) => {
+				const conv = this.convs.get(id);
+				return !!conv && (conv.queueSteering.length > 0 || conv.queueFollowUp.length > 0);
+			},
+			// 取不到统计时保守地当成「已有消息」，避免默认值静默重绑未知对话。
+			conversationHasMessages: (id) => {
+				try {
+					return (this.convs.get(id)?.session.getSessionStats().totalMessages ?? 0) > 0;
+				} catch {
+					return true;
+				}
+			},
+			cwd: () => this.cwd,
+		};
+	}
+
+	/** 渠道命令的唯一生效点：只改目标对话的 SDK 会话模型，不写全局 auth/models。 */
+	private async setConversationModel(conversationId: string, modelId: string): Promise<void> {
+		const conv = this.convs.get(conversationId);
+		if (!conv) throw new Error("对话不存在");
+		const slash = modelId.indexOf("/");
+		if (slash <= 0 || slash === modelId.length - 1) throw new Error(`无效的模型 ID：${modelId}`);
+		const model = this.runtime.services.modelRuntime.getModel(modelId.slice(0, slash), modelId.slice(slash + 1));
+		if (!model) throw new Error(`模型不存在：${modelId}`);
+		await conv.session.setModel(model);
+	}
+
+	/** 快照里当前对话的绑定视图（读内存，无 IO）。 */
+	channelBindingView(): UiChannelBindingView {
+		return this.channels.bindingViewMessage(this.activeId);
+	}
+
+	/** list_channels：只回本端当前状态（不广播，避免多端刷屏）。先从磁盘对齐，
+	 *  否则另一端/外部修改后本端会一直回旧值且无法从冲突中恢复。 */
+	pushChannelState(): void {
+		this.channels.refresh();
+		this.emit(this.channels.stateMessage());
+	}
+
+	async selectChannel(input: {
+		commandId: string;
+		conversationId?: string;
+		channelId: string;
+		credentialKeyName?: string | null;
+		modelId: string;
+		expectedConfigRevision?: number;
+		expectedBindingRevision?: number;
+	}): Promise<void> {
+		await this.channels.select({
+			commandId: input.commandId,
+			conversationId: input.conversationId,
+			selection: {
+				channelId: input.channelId,
+				credentialKeyName: input.credentialKeyName,
+				modelId: input.modelId,
+			},
+			expectedConfigRevision: input.expectedConfigRevision,
+			expectedBindingRevision: input.expectedBindingRevision,
+		});
+	}
+
+	async clearChannelBinding(commandId: string, conversationId?: string): Promise<void> {
+		await this.channels.clearBinding({ commandId, conversationId });
+	}
+
+	async saveChannelConfig(
+		commandId: string,
+		channel: Partial<ChannelRecord> & { id?: string },
+		expectedConfigRevision?: number,
+	): Promise<void> {
+		await this.channels.saveChannel({ commandId, channel, expectedConfigRevision });
+	}
+
+	async deleteChannelConfig(commandId: string, channelId: string, expectedConfigRevision?: number): Promise<void> {
+		await this.channels.deleteChannel({ commandId, channelId, expectedConfigRevision });
+	}
+
+	async setChannelDefault(input: {
+		commandId: string;
+		scope: "instance" | "project";
+		selection: { channelId: string; credentialKeyName?: string | null; modelId: string } | null;
+		expectedConfigRevision?: number;
+	}): Promise<void> {
+		await this.channels.setDefault({
+			commandId: input.commandId,
+			scope: input.scope,
+			selection: input.selection
+				? {
+						channelId: input.selection.channelId,
+						credentialKeyName: input.selection.credentialKeyName,
+						modelId: input.selection.modelId,
+					}
+				: null,
+			expectedConfigRevision: input.expectedConfigRevision,
+		});
+	}
+
+	async queryChannelAccount(commandId: string, channelId: string): Promise<void> {
+		await this.channels.queryAccount({ commandId, channelId });
+	}
+
 	/** Set the thinking level for future turns. */
 	setThinking(level: string): void {
 		try {
@@ -5323,8 +6126,9 @@ export class AgentService {
 		};
 	}
 
-	/** Get or create the session for a client, racing attach calls safely. */
-	async attach(clientId: string, send: (msg: ServerMessage) => void): Promise<ClientSession> {
+	/** Get or create the session for a client, racing attach calls safely.
+	 *  `trace`（timing.ts，可选）只做观测：记录冷启动各阶段耗时。 */
+	async attach(clientId: string, send: (msg: ServerMessage) => void, trace?: TimingTrace): Promise<ClientSession> {
 		let cs = this.clients.get(clientId);
 		if (!cs) {
 			const inflight = this.pending.get(clientId);
@@ -5350,7 +6154,7 @@ export class AgentService {
 					}
 				}
 				// Sessions use the SDK default per-project dir — no per-client dir.
-				const creating = ClientSession.create(clientId, cwd, this.stateStore).finally(() => {
+				const creating = ClientSession.create(clientId, cwd, this.stateStore, trace).finally(() => {
 					this.pending.delete(clientId);
 				});
 				this.pending.set(clientId, creating);
@@ -5373,8 +6177,13 @@ export class AgentService {
 		// BEFORE attachSink so the notice rides the initial pending-notice flush.
 		cs.notifyInterrupted(this.stateStore.takeInterrupted(clientId));
 		cs.attachSink(send);
+		trace?.mark("attach-sink");
 		// 接入/回到页面时追平：离开期间另一端完成的工作，这里按磁盘新鲜度补上。
 		cs.syncActiveFromDiskIfStale();
+		trace?.mark("sync-disk");
+		// Let emitSnapshotNow record the snapshot's build+serialize cost on the
+		// same trace line (attach/switch wrap their own critical section).
+		cs.timing = trace;
 		// Forward hooks (set once by index.ts) to every session.
 		cs.onQuit = this.onQuit;
 		cs.onToolEvent = this.onToolEvent;
@@ -5389,11 +6198,18 @@ export class AgentService {
 		// 节点完成 → 对方刷新列表 + 若持有同一会话则从磁盘接力重载；
 		// 列表变化（新建/删除/改名）→ 对方只刷新列表。
 		cs.onSessionPersisted = (file, cwd) => this.broadcastSessionPersisted(cs.clientId, file, cwd);
+		// DEV-CON：渠道状态是实例级事实 → 广播给所有客户端（多端看到同一有效绑定）。
+		cs.onChannelBroadcast = (msg) => {
+			for (const other of this.clients.values()) {
+				if (!other.isDisposedSession()) other.emitExternal(msg);
+			}
+		};
 		cs.onSessionsListChanged = (cwd) => this.broadcastSessionsListChanged(cs.clientId, cwd);
 		// 插件宿主工作区跟随：初次接入也同步一次（恢复的 lastCwd 可能≠服务启动目录），
 		// notifyCwd 幂等去重；此后 set_cwd 成功时由 cs.onCwdChanged 继续驱动。
 		cs.onCwdChanged = (abs) => this.onClientCwdChanged?.(abs);
 		this.onClientCwdChanged?.(cs.cwd);
+		trace?.mark("hooks");
 		return cs;
 	}
 

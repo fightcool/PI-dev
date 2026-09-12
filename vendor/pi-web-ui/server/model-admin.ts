@@ -10,6 +10,11 @@
  *
  * 经 ModelAdminHost 与 ClientSession 解耦（同 settings/goal/slash 服务模式）。
  * UI 文案直接中文（服务端 notice 约定）。apiKey/headers 绝不下发浏览器。
+ * 🍞 @COUPLED dev-con/channel-service.ts（keyNameList / resolveProviderKeyValue 供渠道凭据引用）
+ *   @COUPLED server/agent-service.ts（makeChannelHost 注入）、web/src/components/ModelConfigModal.tsx
+ *   📖 docs/DEV-CON-PROPOSAL.md §4
+ *   @BUGFIX 2026-09: listModelsConfig 曾把 models.json 的 apiKey 原样下发浏览器；现只回 hasApiKey，
+ *            保存时空值 = 保留已存密钥（否则用户只改模型列表就会丢 key）。
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -244,6 +249,21 @@ export class ModelAdminService {
 		}
 	}
 
+	/** DEV-CON：命名密钥列表（只名称 + active 标记）。渠道模块用它展示/校验
+	 *  凭据引用，密钥正文永不出服务端。 */
+	keyNameList(provider: string): { keyName: string; active: boolean }[] {
+		const entry = this.readProviderKeys()[provider.trim()];
+		if (!entry) return [];
+		return entry.keys.map((k) => ({ keyName: k.name, active: entry.activeKeyName === k.name }));
+	}
+
+	/** DEV-CON：按名称解析密钥正文（仅服务端内部使用；不写入、不下发）。 */
+	resolveProviderKeyValue(provider: string, keyName: string): string | null {
+		const entry = this.readProviderKeys()[provider.trim()];
+		const key = entry?.keys.find((k) => k.name === keyName.trim());
+		return key?.apiKey ?? null;
+	}
+
 	/** Seed a provider's key list from an EXISTING auth.json credential (legacy
 	 *  configs written before the multi-key store existed) so the store stays
 	 *  authoritative and the UI shows the current active key immediately even
@@ -293,8 +313,13 @@ export class ModelAdminService {
 		return [...ids];
 	}
 
-	/** Persist the ACTIVE key's apiKey into auth.json + runtime override + refresh. */
-	private async applyActiveKey(pid: string, apiKey: string): Promise<void> {
+	/** Persist the ACTIVE key's apiKey into auth.json + runtime override + refresh.
+	 *
+	 *  `network: false` = 自动恢复路径（attach / 切项目 / 切会话）：本地组合先让
+	 *  该 provider 的模型立刻可解析，远端目录刷新（实测 ~0.7s，超时上限 3×4s）
+	 *  放后台——它曾整段挡在首份快照之前，是「打开页面要等几秒」的主因之一。
+	 *  显式切换密钥（用户点击）保持 `network: true`：那是一次可等待的操作。 */
+	private async applyActiveKey(pid: string, apiKey: string, opts: { network?: boolean } = {}): Promise<void> {
 		const authPath = join(this.host.agentDir, "auth.json");
 		mkdirSync(this.host.agentDir, { recursive: true });
 		let data: Record<string, unknown> = {};
@@ -307,8 +332,20 @@ export class ModelAdminService {
 		writeFileSync(authPath, JSON.stringify(data, null, 2) + "\n");
 		const mr = this.host.modelRuntime();
 		await mr.setRuntimeApiKey(pid, apiKey);
-		await mr.refresh({ allowNetwork: true, providers: [pid] });
+		// Cached/local composition first: cheap, and enough for the caller to resolve
+		// the project's remembered model right away.
+		await mr.refresh({ allowNetwork: false, providers: [pid] });
 		this.host.invalidatePiConfig();
+		if (opts.network === false) {
+			void mr
+				.refresh({ allowNetwork: true, providers: [pid] })
+				.then(() => this.host.pushModels())
+				.catch(() => {
+					/* offline / catalog unavailable — the local snapshot stays usable */
+				});
+			return;
+		}
+		await mr.refresh({ allowNetwork: true, providers: [pid] });
 	}
 
 	/** Persist an api-key credential for a provider (auth.json) and apply it now.
@@ -438,7 +475,11 @@ export class ModelAdminService {
 	 *  key is (now) active, false when it doesn't exist or the switch failed.
 	 *  `silent` suppresses all notices — for automatic project restores, which
 	 *  must self-heal stale references without spamming the user. */
-	async activateProviderKey(provider: string, keyName: string, opts?: { silent?: boolean }): Promise<boolean> {
+	async activateProviderKey(
+		provider: string,
+		keyName: string,
+		opts?: { silent?: boolean; network?: boolean },
+	): Promise<boolean> {
 		const pid = provider.trim();
 		const targetName = keyName.trim();
 		const silent = opts?.silent === true;
@@ -469,7 +510,7 @@ export class ModelAdminService {
 			}
 			entry.activeKeyName = targetName;
 			this.writeProviderKeys(data);
-			await this.applyActiveKey(pid, target.apiKey);
+			await this.applyActiveKey(pid, target.apiKey, { network: opts?.network });
 			notice({
 				type: "notice",
 				level: "info",
@@ -851,7 +892,10 @@ export class ModelAdminService {
 				name: p.name as string | undefined,
 				api: p.api as string | undefined,
 				baseUrl: p.baseUrl as string | undefined,
-				apiKey: p.apiKey as string | undefined,
+				// §4 入口安全：密钥正文与掩码片段都不回传浏览器。
+				// 之前这里把 models.json 的 apiKey 原样下发（浏览器再回传），
+				// 使密钥每次列表请求都过一遍 wire；现在只给「是否已保存」。
+				hasApiKey: typeof p.apiKey === "string" && p.apiKey.trim().length > 0,
 				authHeader: p.authHeader as boolean | undefined,
 				// headers are intentionally NOT sent to the browser — they may
 				// contain Authorization / API-key values; kept server-side only.
@@ -946,6 +990,98 @@ export class ModelAdminService {
 			this.host.emit({ type: "fetch_models_result", reqId, ok: true, models });
 		} catch (err) {
 			emitError((err as Error).message);
+		}
+	}
+
+	/**
+	 * 渠道表单的「获取接口清单」：按服务商解析 baseUrl 与凭据密钥，探测 <baseUrl>/models。
+	 * @WHY 与 fetch_models（浏览器传 baseUrl/apiKey）不同，这里让**服务端**自己解析密钥——
+	 *   渠道面板的凭据只是一个名字引用，密钥正文从不下发浏览器；顺带绕开 CORS。
+	 * @CONTRACT 只读探测：不写 models.json、不改运行时（刷新目录是 refresh_provider_models 的事）。
+	 */
+	async fetchChannelModels(
+		reqId: number,
+		providerId: string,
+		keyName?: string | null,
+		lang?: () => ServerLang,
+	): Promise<void> {
+		const l = lang?.() ?? "en";
+		const pid = providerId.trim();
+		const done = (ok: boolean, extra: { models?: UiModelConfigEntry[]; baseUrl?: string; error?: string } = {}) =>
+			this.host.emit({ type: "channel_models_result", reqId, providerId: pid, ok, ...extra });
+		if (!pid) {
+			return done(false, {
+				error: pick(l, "请先选择服务商", "Pick a provider first", "models.fetch.channel.noprovider"),
+			});
+		}
+		let baseUrl = "";
+		/** 认证头口径来自该服务商的模型（Provider 本身不带 api 字段，见 pi-ai 的 Provider）。 */
+		let api: string | undefined;
+		/** 运行时自己解析出的凭据（models.json 内联 key / $ENV 引用 / auth.json / OAuth）——
+		 *  它才是真实请求用的那把，所以「跟随服务商当前密钥」时必须用它兜底。 */
+		let runtimeAuth: { apiKey?: string; baseUrl?: string; headers?: Record<string, string> } | undefined;
+		try {
+			const mr = this.host.modelRuntime();
+			const provider = mr.getProviders().find((x) => x.id === pid);
+			baseUrl = (provider?.baseUrl ?? "").trim();
+			api = provider?.getModels()[0]?.api;
+			const resolved = await mr.getAuth(pid);
+			if (resolved) {
+				runtimeAuth = {
+					apiKey: resolved.auth.apiKey,
+					baseUrl: resolved.auth.baseUrl,
+					headers: resolved.auth.headers as Record<string, string> | undefined,
+				};
+			}
+		} catch {
+			// 运行时未就绪/凭据解析失败 → 下面按「没有 baseUrl / 没有密钥」如实报错
+		}
+		if (!baseUrl) baseUrl = (runtimeAuth?.baseUrl ?? "").replace(/\/+$/, "");
+		if (!baseUrl) {
+			return done(false, {
+				error: pick(
+					l,
+					`服务商 ${pid} 没有可探测的 baseUrl（内置服务商的地址由 pi 提供；自定义服务商请在模型配置里填 baseUrl）`,
+					`Provider ${pid} has no baseUrl to probe (built-ins get theirs from pi; custom providers need one in the model config)`,
+					"models.fetch.channel.nobaseurl",
+					{ pid },
+				),
+			});
+		}
+		// 凭据：指定了名字就必须用那把（解析不到 = 明确报错，不偷偷换密钥）；
+		// 没指定 = 该服务商当前生效的命名密钥，其次回落到运行时解析出的凭据。
+		let apiKey: string | undefined;
+		if (keyName?.trim()) {
+			const named = this.resolveProviderKeyValue(pid, keyName);
+			if (!named) {
+				return done(false, {
+					baseUrl,
+					error: pick(
+						l,
+						`命名凭据「${keyName}」已不存在，请重新选择凭据`,
+						`Named credential “${keyName}” no longer exists; pick another one`,
+						"models.fetch.channel.nokey",
+						{ keyName },
+					),
+				});
+			}
+			apiKey = named;
+		} else {
+			const active = this.keyNameList(pid).find((k) => k.active);
+			apiKey = active ? (this.resolveProviderKeyValue(pid, active.keyName) ?? undefined) : runtimeAuth?.apiKey;
+		}
+		try {
+			const models = await ModelAdminService.probeModelsEndpoint(
+				baseUrl,
+				apiKey,
+				true,
+				api,
+				runtimeAuth?.headers,
+				lang,
+			);
+			done(true, { models, baseUrl });
+		} catch (err) {
+			done(false, { baseUrl, error: (err as Error).message });
 		}
 	}
 
@@ -1208,12 +1344,16 @@ export class ModelAdminService {
 					if (id) prevModels.set(id, entry);
 				}
 			}
+			// apiKey 不在表单里回传（空/缺失 = 保留已保存的值）；它与 headers 不同，必须单独算：
+			// MANAGED_PROVIDER_KEYS 把 apiKey 视作「表单管理的键」，unmanagedEntries 不会替它兜底。
+			const prevApiKey = typeof prev.apiKey === "string" ? prev.apiKey : undefined;
+			const nextApiKey = config.apiKey?.trim() ? config.apiKey.trim() : prevApiKey;
 			providers[pid] = {
 				...unmanagedEntries(prev, MANAGED_PROVIDER_KEYS),
 				...(config.name?.trim() ? { name: config.name.trim() } : {}),
 				...(config.api?.trim() ? { api: config.api.trim() } : {}),
 				...(config.baseUrl?.trim() ? { baseUrl: config.baseUrl.trim() } : {}),
-				...(config.apiKey?.trim() ? { apiKey: config.apiKey.trim() } : {}),
+				...(nextApiKey ? { apiKey: nextApiKey } : {}),
 				...(config.authHeader ? { authHeader: true } : {}),
 				models: models.map((m) => ({ ...unmanagedEntries(prevModels.get(m.id), MANAGED_MODEL_KEYS), ...m })),
 			};

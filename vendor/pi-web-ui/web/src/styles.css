@@ -1,4 +1,12 @@
-/* pi-web-ui — dark theme, pi-flavored */
+/* pi-web-ui — dark theme, pi-flavored
+ * 🍞 @COUPLED web/src/components/ChannelForm.tsx / ChannelModelWhitelist.tsx / ChannelAccountQuery.tsx /
+ *   ChannelUsage.tsx / ChannelSettings.tsx（渠道表单的 .chan-* 类；类名改动要同步这四处）
+ * @GOTCHA 渠道相关样式集中在「设置页：渠道列表 / 表单 / 默认值」区块，新增类请紧随同区块，
+ *   不要把 .chan-* 拆到文件别处（主题覆盖按顺序生效）。
+ * @GOTCHA 桌面放大：设置/模型弹窗的「PC（>640px）放大版式」写在各自的 @media
+ *   (min-width:641px) 追加块里（尺寸靠 clamp(…vw…) 跟随窗口）。新增 set-* / chan-* /
+ *   provider-* 类要在对应区块里补桌面尺寸，否则桌面端会出现「一块大一块小」。移动端
+ *   （≤640px）继续用基类尺寸，不要在基类上直接改字号/内边距。 */
 
 :root {
 	--bg: #0d0e12;
@@ -5904,6 +5912,27 @@ div.chead[role="button"]:focus-visible,
 }
 
 .streaming-wait,
+/* 尾部优先历史：顶部「载入更早」入口（P1-8，见 docs/PERF-SESSION-LOAD.md） */
+.msg-older {
+	display: flex;
+	justify-content: center;
+	padding: 10px 0 4px;
+}
+.msg-older-btn {
+	font: inherit;
+	font-size: 12px;
+	color: var(--muted, #8b949e);
+	background: transparent;
+	border: 1px solid var(--border, #30363d);
+	border-radius: 999px;
+	padding: 4px 12px;
+	cursor: pointer;
+}
+.msg-older-btn:hover {
+	color: var(--fg, #e6edf3);
+	border-color: var(--fg, #e6edf3);
+}
+
 .boot-wait {
 	text-align: center;
 	color: var(--text-faint);
@@ -7456,6 +7485,14 @@ div.chead[role="button"]:focus-visible,
 	padding: 10px 22px 8px;
 	border-bottom: 1px solid var(--border-soft);
 }
+/* 固定提示行右侧的批量动作（删除未配置的内置服务商） */
+.model-modal-hint-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px 14px;
+	flex-wrap: wrap;
+}
 .model-modal-body {
 	flex: 1 1 auto;
 	min-height: 0;
@@ -8363,6 +8400,402 @@ button.source-default-toggle {
 	color: var(--text-dim);
 }
 
+/* ---- 设置弹窗：桌面（>640px）放大版式 ------------------------------------
+ * 痛点：PC 上整个设置面板字号/控件偏小（正文 12–13px、内边距 6–8px、弹窗
+ * 760×720），在 1600px 屏幕上显得又小又挤。这里重排桌面版式：弹窗更大、
+ * 左栏加宽、卡片/输入/按钮整体上调一档，标题与底栏做分区线提升层次。
+ * 配色一律取自主题变量（--bg/--border/--accent/--glow-*），深色/白色/炫彩/
+ * 紫晕/半透明/全透明主题自动同步，不新增主题专属规则。
+ * @GOTCHA 全部规则包在 min-width:641px 内：≤640px 的移动端继续使用上面的
+ *   原始尺寸（移动端明确不改），桌面放大是纯增量覆盖，不动移动端渲染路径。
+ * @GOTCHA 尺寸用 clamp(…vw…) 跟随窗口宽度，窄桌面窗口不会比旧版更挤。
+ * @COUPLED web/src/components/SettingsModal.tsx（.set-* 类）、
+ *   components/ChannelSettings.tsx 等（.chan-* 的桌面覆盖在「设置页：渠道」区块）。 */
+@media (min-width: 641px) {
+	.settings-modal {
+		width: min(1180px, 94vw);
+		max-width: 1180px;
+		height: min(90vh, 920px);
+		/* 基类 .modal 的 max-height:84vh 会盖掉上面的 height（同权重、后写），
+		 * 不显式放开就永远是 84vh，「放大」等于没做大。 */
+		max-height: min(94vh, 960px);
+		border-radius: 16px;
+		padding: 22px 26px;
+		gap: 16px;
+		box-shadow:
+			0 24px 64px rgba(0, 0, 0, 0.55),
+			/* fallback: 半透明/全透明主题没有 --glow-*（缺省时不能让整条 shadow 失效） */
+			inset 0 1px 0 var(--glow-05, transparent);
+	}
+	.settings-modal .modal-head {
+		gap: 12px;
+		padding-bottom: 14px;
+		border-bottom: 1px solid var(--border-soft);
+	}
+	.settings-modal .modal-head-icon {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex: none;
+		width: 38px;
+		height: 38px;
+		border-radius: 11px;
+		font-size: 19px;
+		background: var(--accent-soft);
+		border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
+	}
+	.settings-modal .modal-head h2 {
+		font-size: 19px;
+		font-weight: 650;
+		letter-spacing: 0.01em;
+	}
+	/* 关闭按钮同比例放大（sticky 的负 margin 要同步补偿，否则头部会被顶开）。 */
+	.settings-modal > .modal-close {
+		width: 34px;
+		height: 34px;
+		border-radius: 9px;
+		top: 16px;
+		margin-bottom: -50px;
+	}
+
+	/* 左栏加宽 + 与内容区之间的分隔线 */
+	.settings-layout {
+		gap: 20px;
+		margin-top: 4px;
+	}
+	.settings-rail {
+		/* 下限 200px：左栏带「18/18」这种计数徽章，再窄标题就会被截成「目标审…」 */
+		width: clamp(200px, 15vw, 224px);
+		/* 2px 间距（+7px 行内边距）是「17 个分组在 900px 高的窗口里不滚动」的实测下界 */
+		gap: 2px;
+		padding: 4px 16px 4px 2px;
+		border-right: 1px solid var(--border-soft);
+	}
+	.settings-tab {
+		gap: 10px;
+		border-radius: 10px;
+		font-size: 14.5px;
+		/* 17 个分组要在常见窗口高度（900px）里一屏放下：7px 内边距 + 上面的 90vh 弹窗
+		 * 刚好够（8px 会差 60px，最后一个「子代理模板」要滚动才看得到）。 */
+		padding: 7px 12px;
+	}
+	.settings-tab.active {
+		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+	}
+	.settings-tab-icon {
+		font-size: 15px;
+	}
+	.settings-modal .modal-body {
+		gap: 18px;
+		padding-right: 2px;
+	}
+
+	/* 卡片与标题 */
+	.set-section {
+		gap: 12px;
+		padding: 18px 20px;
+		border-radius: 14px;
+	}
+	.set-section-title {
+		gap: 9px;
+		font-size: 15px;
+	}
+	.set-section-icon {
+		font-size: 17px;
+	}
+	.set-count {
+		font-size: 12px;
+		padding: 2px 10px;
+	}
+	.set-hint {
+		font-size: 13px;
+		line-height: 1.65;
+	}
+	.set-empty {
+		font-size: 13px;
+	}
+	.set-muted {
+		font-size: 13px;
+	}
+	.set-sep {
+		margin: 16px 0;
+	}
+
+	/* 表单控件 */
+	.set-field-label {
+		font-size: 13px;
+	}
+	.set-mode-row {
+		gap: 12px;
+	}
+	.set-select {
+		max-width: 220px;
+		padding: 8px 10px;
+		border-radius: 9px;
+		font-size: 14px;
+	}
+	.set-input {
+		padding: 10px 12px;
+		border-radius: 9px;
+		font-size: 14px;
+	}
+	.set-save-btn {
+		padding: 10px 16px;
+		border-radius: 9px;
+		font-size: 13.5px;
+	}
+	.set-prompt-input {
+		min-height: 180px;
+		padding: 12px 14px;
+		border-radius: 10px;
+		font-size: 14px;
+	}
+	.set-btn {
+		padding: 6px 12px;
+		border-radius: 8px;
+		font-size: 13px;
+	}
+	.set-btn-mini {
+		padding: 3px 10px;
+		border-radius: 7px;
+		font-size: 12px;
+	}
+	.settings-modal .field input,
+	.settings-modal .field select {
+		padding: 10px 12px;
+		border-radius: 9px;
+		font-size: 14px;
+	}
+	.settings-modal .field-label {
+		font-size: 13px;
+	}
+	.settings-modal .field.check {
+		font-size: 13.5px;
+	}
+	.settings-modal .field-hint {
+		font-size: 12.5px;
+	}
+
+	/* 组合模板：token 条 + 各来源覆盖行 */
+	.compose-toolbar {
+		gap: 8px;
+	}
+	.token-chip {
+		padding: 4px 10px;
+		font-size: 12.5px;
+	}
+	.override-row {
+		padding: 12px 14px;
+		border-radius: 10px;
+	}
+	.override-token {
+		font-size: 13px;
+	}
+	.override-input {
+		font-size: 13px;
+	}
+	.override-edit-foot {
+		padding-top: 8px;
+	}
+	.override-seed-btn {
+		padding: 4px 10px;
+		border-radius: 7px;
+		font-size: 12px;
+	}
+	.source-default {
+		padding: 10px 14px;
+		border-radius: 8px;
+	}
+	.source-default-text {
+		font-size: 12.5px;
+		line-height: 1.6;
+	}
+	.source-default-empty {
+		font-size: 12.5px;
+	}
+	.source-default-toggle {
+		font-size: 12px;
+	}
+	.set-view-prompt-btn {
+		font-size: 13px;
+	}
+	.set-prompt-view {
+		padding: 12px 14px;
+		border-radius: 10px;
+	}
+	.set-prompt-view-head {
+		font-size: 13px;
+	}
+	.set-prompt-view-text {
+		font-size: 12.5px;
+		max-height: 380px;
+	}
+
+	/* 列表行 / 开关 / 图标按钮 */
+	.set-list {
+		gap: 8px;
+		max-height: 340px;
+	}
+	.set-row {
+		gap: 12px;
+		padding: 11px 13px;
+		border-radius: 10px;
+	}
+	.set-row-name {
+		font-size: 14.5px;
+	}
+	.set-row-desc {
+		font-size: 12.5px;
+	}
+	.set-row-actions {
+		gap: 8px;
+	}
+	.set-uninstall {
+		padding: 5px 10px;
+		border-radius: 7px;
+		font-size: 12px;
+	}
+	.set-switch {
+		width: 44px;
+		height: 24px;
+	}
+	.set-switch-knob {
+		top: 3px;
+		left: 3px;
+		width: 18px;
+		height: 18px;
+	}
+	.set-switch.on .set-switch-knob {
+		left: 23px;
+	}
+	.set-icon-btn {
+		width: 32px;
+		height: 32px;
+		border-radius: 8px;
+		font-size: 15px;
+	}
+
+	/* 长解释的「？」悬浮提示 */
+	.set-tip {
+		width: 18px;
+		height: 18px;
+		font-size: 11px;
+	}
+	.set-tip-bubble {
+		max-width: min(380px, 72vw);
+		padding: 10px 13px;
+		border-radius: 10px;
+		font-size: 13px;
+	}
+
+	/* 插件市场 / 子代理模板 */
+	.set-catalog-add,
+	.set-catalog-row,
+	.tpl-editor {
+		padding: 14px;
+		border-radius: 12px;
+	}
+	.set-catalog-title {
+		font-size: 14.5px;
+	}
+	.set-catalog-desc {
+		font-size: 13px;
+	}
+	.set-catalog-source {
+		font-size: 12px;
+	}
+	.set-catalog-installed,
+	.set-catalog-custom,
+	.tpl-badge {
+		font-size: 12px;
+		padding: 2px 9px;
+	}
+	.tpl-pick-head {
+		font-size: 13px;
+	}
+	.tpl-chip {
+		padding: 5px 11px;
+		font-size: 13px;
+	}
+
+	/* 壁纸设置 */
+	.wallpaper-slider {
+		font-size: 13px;
+	}
+	.wallpaper-slider output {
+		font-size: 12.5px;
+	}
+	.wallpaper-clear {
+		padding: 5px 12px;
+		border-radius: 8px;
+		font-size: 12.5px;
+	}
+	.wallpaper-preview {
+		width: 78px;
+		height: 48px;
+	}
+
+	/* 底栏：收起成右下角的一个描边按钮（移动端仍是整条「关闭」） */
+	.settings-modal .modal-actions {
+		padding-top: 14px;
+		border-top: 1px solid var(--border-soft);
+	}
+	.settings-modal .modal-actions .dd-refresh {
+		width: auto;
+		margin: 0;
+		padding: 9px 22px;
+		border: 1px solid var(--border);
+		border-radius: 10px;
+		background: var(--bg-elev);
+		color: var(--text-dim);
+		font-size: 13.5px;
+	}
+	.settings-modal .modal-actions .dd-refresh:hover {
+		color: var(--accent);
+		border-color: var(--accent);
+	}
+}
+
+/* 窄桌面窗口（641–1023px）：横向空间不够，字号回退一档（仍大于移动端），
+ * 否则左栏标题会被截断成「输入…」「技…」。与上面的桌面块同属「移动端不改」
+ * 的增量覆盖：≤640px 仍然完全不进这里。 */
+@media (min-width: 641px) and (max-width: 1023px) {
+	.settings-modal {
+		width: min(1180px, 96vw);
+		height: min(94vh, 900px);
+		max-height: min(96vh, 940px);
+		padding: 18px 20px;
+	}
+	.settings-layout {
+		gap: 14px;
+	}
+	.settings-rail {
+		/* 176px 是「标题 + 计数徽章」不被截断的下限（139/147 会把「输入历史」
+		 * 「目标审查」截成「输入…」——比不改还差）。 */
+		width: clamp(176px, 22vw, 200px);
+		padding-right: 12px;
+	}
+	.settings-tab {
+		gap: 8px;
+		font-size: 13.5px;
+		padding: 7px 10px;
+	}
+	.settings-tab-icon {
+		font-size: 14px;
+	}
+	.settings-modal .modal-head-icon {
+		width: 34px;
+		height: 34px;
+		font-size: 17px;
+	}
+	.settings-modal .modal-head h2 {
+		font-size: 17px;
+	}
+	.set-section {
+		padding: 16px;
+	}
+}
+
 .modal-close {
 	/* sticky instead of absolute: the modal itself is the scroll container
 	   (overflow-y: auto), so an absolutely positioned close button scrolls
@@ -8701,6 +9134,24 @@ button.source-default-toggle {
 	flex-shrink: 0;
 }
 
+/* 已删除（隐藏）的内置服务商：底部汇总行 + 展开后的恢复列表 */
+.provider-hidden-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	padding: 8px 12px;
+	border: 1px dashed var(--border-soft);
+	border-radius: 10px;
+}
+.provider-hidden-bar .set-btn-mini {
+	margin-left: 0;
+}
+.provider-hidden-row {
+	opacity: 0.75;
+	background: transparent;
+}
+
 .iconbtn {
 	display: flex;
 	align-items: center;
@@ -8763,6 +9214,159 @@ button.source-default-toggle {
 	font-size: 12px;
 	color: var(--text-dim);
 	white-space: nowrap;
+}
+
+/* ---- 管理模型弹窗：桌面（>640px）放大版式 --------------------------------
+ * 同设置弹窗的桌面放大策略：弹窗更宽（640 → 900px）、供应商行/输入框/按钮
+ * 整体上调一档，方便在长列表里定位和操作。颜色全走主题变量。
+ * @GOTCHA 全部规则包在 min-width:641px（≤640px 移动端保持原尺寸不变）。
+ * @COUPLED web/src/components/ModelConfigModal.tsx（.provider-* / .key-input）、
+ *   web/src/app/app-dialogs.tsx（挂载入口）。 */
+@media (min-width: 641px) {
+	.model-modal {
+		width: min(900px, 94vw);
+		max-width: 900px;
+		height: min(88vh, 880px);
+		/* 同设置弹窗：基类 max-height(86vh) 会盖掉上面的 height */
+		max-height: min(92vh, 940px);
+		border-radius: 16px;
+		box-shadow:
+			0 24px 64px rgba(0, 0, 0, 0.55),
+			/* fallback: 半透明/全透明主题没有 --glow-*（缺省时不能让整条 shadow 失效） */
+			inset 0 1px 0 var(--glow-05, transparent);
+	}
+	.model-modal .modal-head {
+		padding: 22px 26px 0;
+	}
+	.model-modal .modal-head h2 {
+		font-size: 19px;
+		font-weight: 650;
+		letter-spacing: 0.01em;
+	}
+	.model-modal > .modal-close {
+		width: 34px;
+		height: 34px;
+		border-radius: 9px;
+		top: 16px;
+		margin-bottom: -50px;
+	}
+	.model-modal-fixed-hint {
+		padding: 14px 26px 12px;
+	}
+	.model-modal-body {
+		gap: 16px;
+		padding: 16px 26px;
+	}
+	.model-modal .modal-actions {
+		gap: 10px;
+		padding: 14px 26px 18px;
+	}
+	.model-modal .modal-actions .btn,
+	.model-modal .provider-form > .btn {
+		padding: 9px 16px;
+		font-size: 13.5px;
+	}
+	.model-modal .btn.sm {
+		padding: 7px 13px;
+		font-size: 13px;
+	}
+	.model-modal .modal-desc {
+		font-size: 13.5px;
+	}
+	.model-modal .form-section-title {
+		font-size: 13px;
+	}
+	.model-modal .section-hint {
+		font-size: 12.5px;
+	}
+	.model-modal .form-grid {
+		gap: 14px;
+	}
+	.model-modal .field-label {
+		font-size: 13px;
+	}
+	.model-modal .field input,
+	.model-modal .field select {
+		padding: 10px 12px;
+		border-radius: 9px;
+		font-size: 14px;
+	}
+	.model-modal .field.check {
+		font-size: 13.5px;
+	}
+	.model-modal .provider-list {
+		gap: 10px;
+	}
+	.model-modal .provider-row {
+		gap: 14px;
+		padding: 14px 16px;
+		border-radius: 12px;
+	}
+	.model-modal .provider-key-row {
+		gap: 10px;
+	}
+	.model-modal .provider-name {
+		font-size: 15px;
+	}
+	.model-modal .provider-sub {
+		font-size: 12.5px;
+	}
+	.model-modal .provider-keys {
+		gap: 8px;
+	}
+	.model-modal .provider-key-item {
+		gap: 10px;
+		padding: 8px 10px;
+		border-radius: 8px;
+	}
+	.model-modal .provider-key-item .provider-key-label {
+		font-size: 13.5px;
+	}
+	.model-modal .provider-key-empty {
+		font-size: 13px;
+	}
+	.model-modal .provider-add-key {
+		gap: 8px;
+	}
+	.model-modal .provider-add-key .key-input-name {
+		flex: 0 1 190px;
+	}
+	.model-modal .key-input {
+		padding: 8px 10px;
+		border-radius: 8px;
+		font-size: 13.5px;
+	}
+	.model-modal .iconbtn {
+		width: 34px;
+		height: 34px;
+		border-radius: 9px;
+		font-size: 15px;
+	}
+	.model-modal .provider-key-item .iconbtn {
+		width: 28px;
+		height: 28px;
+	}
+	.model-modal .auth-badge {
+		font-size: 12px;
+		padding: 2px 9px;
+	}
+	.model-modal .model-row {
+		gap: 10px;
+		margin-bottom: 10px;
+	}
+	.model-modal .model-row input,
+	.model-modal .model-row select {
+		padding: 8px 10px;
+		border-radius: 8px;
+		font-size: 13.5px;
+	}
+	.model-modal .model-row .check {
+		font-size: 13px;
+	}
+	.model-modal .fetch-msg {
+		font-size: 12.5px;
+		max-width: 320px;
+	}
 }
 
 @media (max-width: 640px) {
@@ -9962,3 +10566,873 @@ button.source-default-toggle {
 }
 
 /* 旧语义 head 类只留 DOM 钩子：布局全部走上面的 .chead 一套。 */
+
+/* ============================ DEV-CON channels ============================
+   渠道选择（模型下拉分组 + 待生效徽标）、底栏渠道/用量明细、设置页渠道分区。
+   颜色统一走主题变量；状态色：ok=green / stale=amber / failed|unsupported=text-faint，
+   失败与「未归属」都不使用绿色或数字 0 伪装正常。 */
+
+/* ---- 模型下拉里的渠道分组 ---- */
+.chan-group {
+	padding: 2px 0 4px;
+}
+.chan-head {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	padding: 5px 8px 3px;
+	font-size: 11.5px;
+	border-bottom: 1px solid var(--border-soft);
+	margin-bottom: 2px;
+}
+.chan-head.disabled {
+	opacity: 0.75;
+}
+.chan-head .chan-name {
+	font-weight: 600;
+	color: var(--text);
+}
+.chan-head .chan-provider {
+	font-size: 10.5px;
+	color: var(--text-faint);
+	font-family: var(--mono);
+}
+.chan-head .chan-reason,
+.chan-warn {
+	margin-left: auto;
+	font-size: 10.5px;
+	color: var(--amber);
+}
+.chan-keys {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+	padding: 2px 8px 4px;
+}
+.chan-keys-label {
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	color: var(--text-faint);
+}
+.chan-key {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	border: 1px solid var(--border);
+	background: var(--bg-elev);
+	color: var(--text-dim);
+	border-radius: 999px;
+	padding: 1px 8px;
+	font-size: 11px;
+	cursor: pointer;
+}
+.chan-key:hover {
+	color: var(--text);
+	border-color: var(--accent-soft);
+}
+.chan-key.active {
+	color: var(--accent);
+	border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+	background: var(--accent-soft);
+}
+.chan-key-dot {
+	font-size: 8px;
+	color: var(--green);
+}
+.chan-pending-tag {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	font-size: 10.5px;
+	color: var(--amber);
+}
+
+/* ---- 选择器旁的有效/待生效/回执 chips ---- */
+.chip-channel-state {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	min-width: 0;
+}
+.chan-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	max-width: 240px;
+	padding: 1px 7px;
+	border-radius: 999px;
+	border: 1px solid var(--border);
+	background: var(--bg-elev);
+	font-size: 10.5px;
+	color: var(--text-dim);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.chan-chip.effective {
+	color: var(--text);
+}
+.chan-chip.pending {
+	color: var(--amber);
+	border-color: color-mix(in srgb, var(--amber) 40%, var(--border));
+}
+.chan-chip.error {
+	color: var(--red);
+	border-color: color-mix(in srgb, var(--red) 40%, var(--border));
+}
+.chan-chip-src {
+	font-size: 10px;
+	color: var(--text-faint);
+	border-left: 1px solid var(--border-soft);
+	padding-left: 5px;
+}
+.chan-refresh {
+	display: inline-flex;
+	align-items: center;
+	border: none;
+	background: transparent;
+	color: inherit;
+	cursor: pointer;
+	padding: 0;
+}
+
+/* ---- 底栏：有效渠道 + 待生效 ---- */
+.status-channel {
+	color: var(--text);
+}
+.status-channel-src {
+	font-size: 10px;
+	color: var(--text-faint);
+}
+.status-channel-pending {
+	color: var(--amber);
+}
+.status-tokens {
+	border: none;
+	background: transparent;
+	font: inherit;
+	font-size: 11px;
+	cursor: pointer;
+	padding: 1px 4px;
+	border-radius: 4px;
+}
+.status-tokens:hover,
+.status-tokens.active {
+	color: var(--accent);
+	background: var(--bg-elev2);
+}
+
+/* ---- 用量明细面板（底栏令牌项点开） ---- */
+.usage-panel {
+	position: fixed;
+	right: 16px;
+	bottom: 40px;
+	z-index: 200;
+	width: min(680px, calc(100vw - 32px));
+	max-height: min(460px, calc(100vh - 120px));
+	overflow: auto;
+	padding: 10px 12px;
+	background: var(--bg-elev2);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.45);
+	font-size: 11.5px;
+	color: var(--text-dim);
+}
+.usage-panel-head {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--text);
+	margin-bottom: 6px;
+}
+.usage-runid {
+	margin-left: auto;
+	font-size: 10.5px;
+	font-weight: 400;
+	color: var(--text-faint);
+	font-family: var(--mono);
+}
+.usage-panel table {
+	width: 100%;
+	border-collapse: collapse;
+	font-variant-numeric: tabular-nums;
+}
+.usage-panel th,
+.usage-panel td {
+	text-align: left;
+	padding: 2px 6px;
+	white-space: nowrap;
+}
+.usage-panel th {
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.4px;
+	color: var(--text-faint);
+	font-weight: 600;
+}
+.usage-scope td:first-child {
+	color: var(--text);
+}
+.usage-cache,
+.usage-cost {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+	margin-top: 6px;
+}
+.usage-cache b,
+.usage-cost b {
+	color: var(--text);
+}
+.usage-cost-note {
+	font-size: 10.5px;
+	color: var(--text-faint);
+}
+.usage-attr-title {
+	margin-top: 10px;
+	padding-top: 6px;
+	border-top: 1px solid var(--border-soft);
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--text);
+}
+.usage-attr td {
+	color: var(--text-dim);
+}
+.usage-empty {
+	padding: 6px 2px;
+	color: var(--text-faint);
+}
+/* 未归属（channelId 缺失）与解析不到的渠道：不猜名字，也不显示成正常渠道。 */
+.usage-unattributed {
+	color: var(--text-faint);
+	font-style: italic;
+}
+.usage-unknown-channel {
+	color: var(--amber);
+	font-family: var(--mono);
+}
+.usage-key {
+	margin-left: 5px;
+	font-size: 10px;
+	color: var(--text-faint);
+}
+
+/* ---- 设置页：渠道列表 / 表单 / 默认值 ---- */
+.chan-settings {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.chan-settings-head {
+	display: flex;
+	gap: 6px;
+}
+.chan-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	border: 1px solid var(--border);
+	background: var(--bg-elev);
+	color: var(--text-dim);
+	border-radius: 7px;
+	padding: 4px 9px;
+	font-size: 12px;
+	cursor: pointer;
+}
+.chan-btn:hover:not(:disabled) {
+	color: var(--text);
+	border-color: var(--accent-soft);
+}
+.chan-btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+.chan-btn.primary {
+	color: var(--accent);
+	border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.chan-btn.danger:hover {
+	color: var(--red);
+	border-color: color-mix(in srgb, var(--red) 45%, var(--border));
+}
+.chan-receipt {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 8px;
+	border-radius: 7px;
+	border: 1px solid color-mix(in srgb, var(--red) 40%, var(--border));
+	background: color-mix(in srgb, var(--red) 10%, transparent);
+	color: var(--red);
+	font-size: 12px;
+}
+.chan-receipt.conflict {
+	border-color: color-mix(in srgb, var(--amber) 40%, var(--border));
+	background: color-mix(in srgb, var(--amber) 10%, transparent);
+	color: var(--amber);
+}
+.chan-receipt .chan-btn {
+	margin-left: auto;
+}
+.chan-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 10px;
+	padding: 8px 10px;
+	border: 1px solid var(--border-soft);
+	border-radius: 9px;
+	background: var(--bg-elev);
+}
+.chan-row.off {
+	opacity: 0.65;
+}
+.chan-row-main {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	min-width: 0;
+	flex: 1 1 220px;
+}
+.chan-row-main .chan-name {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text);
+}
+.chan-meta {
+	font-size: 11px;
+	color: var(--text-faint);
+	font-family: var(--mono);
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.chan-row-actions {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+.chan-enable {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	font-size: 11.5px;
+	color: var(--text-dim);
+}
+.chan-acct {
+	flex: 1 1 100%;
+	font-size: 11px;
+	padding-top: 2px;
+	border-top: 1px dashed var(--border-soft);
+	color: var(--text-faint);
+}
+.chan-acct.ok {
+	color: var(--green);
+}
+.chan-acct.stale {
+	color: var(--amber);
+}
+.chan-acct.failed,
+.chan-acct.unsupported {
+	color: var(--text-faint);
+}
+.chan-form {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 10px;
+	border: 1px solid var(--border);
+	border-radius: 9px;
+	background: var(--bg-elev2);
+}
+.chan-form-title {
+	font-size: 12.5px;
+	font-weight: 600;
+	color: var(--text);
+}
+.chan-form-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 6px;
+}
+.chan-defaults {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 10px;
+	border: 1px solid var(--border-soft);
+	border-radius: 9px;
+}
+.chan-default-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+}
+.chan-default-label {
+	font-size: 12px;
+	color: var(--text);
+	min-width: 88px;
+}
+.chan-default-row select {
+	background: var(--bg-elev);
+	border: 1px solid var(--border);
+	border-radius: 7px;
+	color: var(--text);
+	padding: 4px 7px;
+	font-size: 12px;
+	max-width: 220px;
+}
+
+/* ---- 渠道表单：模型白名单（可搜索勾选，空 = 不限） ---- */
+.chan-models {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 8px;
+	border: 1px solid var(--border-soft);
+	border-radius: 9px;
+}
+.chan-models-head {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+.chan-models-count {
+	font-size: 11px;
+	color: var(--accent);
+}
+.chan-models-search {
+	background: var(--bg-elev);
+	border: 1px solid var(--border);
+	border-radius: 7px;
+	color: var(--text);
+	padding: 5px 8px;
+	font-size: 12px;
+	outline: none;
+}
+.chan-models-list {
+	max-height: 190px;
+	overflow: auto;
+	display: flex;
+	flex-direction: column;
+}
+.chan-model-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 4px;
+	font-size: 12px;
+	color: var(--text-dim);
+	cursor: pointer;
+}
+.chan-model-row:hover {
+	background: var(--bg-elev);
+}
+.chan-model-row.unknown .chan-model-name {
+	font-family: var(--mono);
+	color: var(--amber);
+}
+.chan-model-name {
+	color: var(--text);
+}
+/* 接口（/models 探测）独有的候选：来源不是本地的模型目录，标一下便于判断可信度。 */
+.chan-model-src {
+	flex: none;
+	font-size: 10px;
+	padding: 0 5px;
+	border-radius: 999px;
+	border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+	color: var(--accent);
+}
+/* 「获取接口清单」回执：成功写清探测地址与条数，失败露服务端原文。 */
+.chan-models-fetch {
+	margin: 0;
+	font-size: 11.5px;
+	line-height: 1.5;
+	word-break: break-all;
+}
+.chan-models-fetch.ok {
+	color: var(--green);
+}
+.chan-models-fetch.err {
+	color: var(--red);
+}
+.chan-model-id {
+	margin-left: auto;
+	font-size: 10.5px;
+	font-family: var(--mono);
+	color: var(--text-faint);
+}
+/* 列表行 / 选择器里的白名单摘要（绝不是装饰：模型变少要能解释）。 */
+.chan-models-summary,
+.chan-whitelist {
+	font-size: 10.5px;
+	color: var(--accent);
+	font-family: var(--mono);
+}
+.chan-whitelist {
+	margin-left: auto;
+}
+/* ---- 渠道表单：账户查询模板（JSON 文本框等宽、可纵向拉伸） ---- */
+.chan-account {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 8px;
+	border: 1px solid var(--border-soft);
+	border-radius: 9px;
+}
+.chan-json {
+	background: var(--bg-elev);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	color: var(--text);
+	padding: 6px 8px;
+	font-size: 12px;
+	font-family: var(--mono);
+	line-height: 1.45;
+	outline: none;
+	resize: vertical;
+}
+.chan-json:focus {
+	border-color: var(--accent);
+}
+/* ---- 渠道设置：按渠道用量（只读聚合） ---- */
+.chan-usage {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 10px;
+	border: 1px solid var(--border-soft);
+	border-radius: 9px;
+}
+.chan-usage-controls {
+	display: inline-flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+.chan-usage-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+}
+.chan-usage-table th,
+.chan-usage-table td {
+	text-align: left;
+	padding: 2px 6px;
+	white-space: nowrap;
+}
+.chan-usage-table th {
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.4px;
+	color: var(--text-faint);
+	font-weight: 600;
+}
+.chan-usage-table td {
+	color: var(--text-dim);
+}
+/* 「没有记录」≠ 0：整行淡出并写明原因（见 ChannelUsage.tsx 的 @GOTCHA）。 */
+.chan-usage-empty-row td {
+	color: var(--text-faint);
+}
+/* 成功回执（之前只显示失败，删除/切换看起来像没生效）。 */
+.chan-receipt.ok {
+	border-color: color-mix(in srgb, var(--green) 40%, var(--border));
+	background: color-mix(in srgb, var(--green) 10%, transparent);
+	color: var(--green);
+}
+
+/* ---- 渠道面板：桌面（>640px）放大版式 ------------------------------------
+ * 同「设置弹窗」的桌面放大策略（最小字号 12px → 12.5px 起，控件内边距上调），
+ * 只作用在设置弹窗内（.settings-modal 前缀），颜色全部走主题变量。
+ * @GOTCHA 与上方设置区块一致：≤640px 移动端不受影响。
+ * @COUPLED web/src/components/ChannelSettings.tsx / ChannelRow.tsx / ChannelForm.tsx /
+ *   ChannelModelWhitelist.tsx / ChannelUsage.tsx（.chan-* 类名）。 */
+@media (min-width: 641px) {
+	.settings-modal .chan-settings {
+		gap: 12px;
+	}
+	.settings-modal .chan-settings-head {
+		gap: 8px;
+	}
+	.settings-modal .chan-btn {
+		gap: 7px;
+		padding: 7px 13px;
+		border-radius: 9px;
+		font-size: 13px;
+	}
+	.settings-modal .chan-receipt {
+		gap: 8px;
+		padding: 9px 11px;
+		border-radius: 9px;
+		font-size: 13px;
+	}
+	.settings-modal .chan-row {
+		gap: 10px 14px;
+		padding: 12px 14px;
+		border-radius: 12px;
+	}
+	.settings-modal .chan-row-main {
+		gap: 3px;
+	}
+	.settings-modal .chan-row-main .chan-name {
+		font-size: 14.5px;
+	}
+	.settings-modal .chan-meta {
+		font-size: 12px;
+		line-height: 1.5;
+	}
+	.settings-modal .chan-enable {
+		gap: 6px;
+		font-size: 12.5px;
+	}
+	.settings-modal .chan-acct {
+		font-size: 12.5px;
+		padding-top: 6px;
+	}
+	.settings-modal .chan-form {
+		gap: 12px;
+		padding: 14px;
+		border-radius: 12px;
+	}
+	.settings-modal .chan-form-title {
+		font-size: 14px;
+	}
+	.settings-modal .chan-form-actions {
+		gap: 8px;
+	}
+	.settings-modal .chan-defaults {
+		gap: 10px;
+		padding: 14px;
+		border-radius: 12px;
+	}
+	.settings-modal .chan-default-row {
+		gap: 8px;
+	}
+	.settings-modal .chan-default-label {
+		min-width: 104px;
+		font-size: 13px;
+	}
+	.settings-modal .chan-default-row select {
+		padding: 6px 9px;
+		border-radius: 8px;
+		font-size: 13px;
+		max-width: 260px;
+	}
+	.settings-modal .chan-models {
+		gap: 8px;
+		padding: 12px;
+	}
+	.settings-modal .chan-models-head {
+		gap: 8px;
+	}
+	.settings-modal .chan-models-count {
+		font-size: 12px;
+	}
+	.settings-modal .chan-models-search {
+		padding: 7px 10px;
+		border-radius: 8px;
+		font-size: 13px;
+	}
+	.settings-modal .chan-model-row {
+		padding: 7px 10px;
+	}
+	.settings-modal .chan-model-name {
+		font-size: 13.5px;
+	}
+	.settings-modal .chan-model-id {
+		font-size: 12px;
+	}
+	.settings-modal .chan-model-src {
+		font-size: 11px;
+		padding: 1px 7px;
+	}
+	.settings-modal .chan-models-fetch {
+		font-size: 12.5px;
+	}
+	.settings-modal .chan-usage-table th,
+	.settings-modal .chan-usage-table td {
+		padding: 7px 9px;
+		font-size: 12.5px;
+	}
+}
+
+@media (max-width: 640px) {
+	.chan-chip {
+		max-width: 150px;
+	}
+	.usage-panel {
+		right: 8px;
+		left: 8px;
+		width: auto;
+	}
+	.chan-default-label {
+		min-width: 0;
+	}
+}
+
+/* DEV-CON §7：逐请求用量记录表（有界，新→旧；时间 + 计价依据）。 */
+.usage-recent {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 12px;
+	margin-top: 4px;
+}
+.usage-recent th,
+.usage-recent td {
+	padding: 3px 6px;
+	text-align: right;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 14ch;
+}
+.usage-recent th:first-child,
+.usage-recent td:first-child,
+.usage-recent th:nth-child(2),
+.usage-recent td:nth-child(2),
+.usage-recent th:nth-child(3),
+.usage-recent td:nth-child(3) {
+	text-align: left;
+}
+.usage-recent thead th {
+	color: var(--muted, #8a8f98);
+	font-weight: 500;
+	border-bottom: 1px solid var(--border, #2a2d34);
+}
+.usage-recent tbody tr + tr td {
+	border-top: 1px solid color-mix(in srgb, var(--border, #2a2d34) 45%, transparent);
+}
+.usage-unknown-price {
+	color: var(--warn, #d0a215);
+	cursor: help;
+}
+@media (max-width: 560px) {
+	.usage-recent {
+		font-size: 11px;
+	}
+	.usage-recent th,
+	.usage-recent td {
+		max-width: 9ch;
+	}
+}
+
+/* P4：用量历史（分组切换 + 时间窗 + 聚合表）。 */
+.usage-history {
+	margin-top: 10px;
+	border-top: 1px solid color-mix(in srgb, var(--border, #2a2d34) 60%, transparent);
+	padding-top: 8px;
+}
+.usage-history-controls {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	justify-content: space-between;
+	margin: 4px 0 6px;
+}
+.usage-history-group,
+.usage-history-window {
+	display: inline-flex;
+	gap: 4px;
+	flex-wrap: wrap;
+}
+.usage-history-table {
+	font-size: 12px;
+}
+.usage-history-total td {
+	border-top: 1px solid var(--border, #2a2d34);
+	font-weight: 600;
+}
+@media (max-width: 560px) {
+	.usage-history-controls {
+		flex-direction: column;
+	}
+	.usage-history-table {
+		font-size: 11px;
+	}
+}
+
+/* P4 候选：系统资源面板（只读快照；来源与告警随载荷显示）。 */
+.resources-cards {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+	gap: 10px;
+	margin-bottom: 12px;
+}
+.resource-card {
+	border: 1px solid color-mix(in srgb, var(--border, #2a2d34) 60%, transparent);
+	border-radius: 8px;
+	padding: 10px;
+	background: color-mix(in srgb, var(--panel, #17191d) 60%, transparent);
+}
+.resource-title {
+	font-size: 12px;
+	color: var(--muted, #8a8f98);
+	margin-bottom: 4px;
+}
+.resource-value {
+	font-size: 20px;
+	font-weight: 600;
+	margin-bottom: 6px;
+}
+.resource-meta {
+	font-size: 11px;
+	color: var(--muted, #8a8f98);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.resource-source {
+	font-size: 10px;
+	color: color-mix(in srgb, var(--muted, #8a8f98) 75%, transparent);
+	margin-top: 4px;
+}
+.resource-bar {
+	height: 6px;
+	border-radius: 3px;
+	background: color-mix(in srgb, var(--border, #2a2d34) 70%, transparent);
+	overflow: hidden;
+	margin: 4px 0 6px;
+}
+.resource-bar > span {
+	display: block;
+	height: 100%;
+	background: var(--accent, #4c8dff);
+}
+.resource-bar > span.warn,
+.resource-disk-percent.warn {
+	background: var(--warn, #d0a215);
+	color: var(--warn, #d0a215);
+}
+.resources-disks {
+	display: grid;
+	gap: 10px;
+	margin-bottom: 10px;
+}
+.resource-disk-head {
+	display: flex;
+	justify-content: space-between;
+	font-size: 12px;
+}
+.resource-disk-label {
+	font-weight: 600;
+}
+.resources-warnings {
+	display: grid;
+	gap: 4px;
+	margin-bottom: 8px;
+}
+.resources-actions {
+	display: flex;
+	gap: 6px;
+}

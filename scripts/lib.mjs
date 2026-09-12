@@ -1,6 +1,6 @@
 /* 🍞 AI Breadcrumb: @COUPLED scripts/configure.mjs, scripts/start.mjs, scripts/lifecycle/release.mjs
  * @CONTRACT root is executable code; workspaceDir and private state survive release switches.
- * 📖 docs/DEV-CON-PROPOSAL.md: 8787 forbidden; 8791 reserved for standalone dev-con.
+ * 📖 docs/DEV-CON-PROPOSAL.md: 8787 forbidden; 8791 reserved for future operations tooling.
  */
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -25,7 +25,7 @@ export function absolutePath(value, field) {
 
 export function validatePort(port) {
   if (!Number.isInteger(port) || port < 1024 || port > 65535 || [8787, 8791].includes(port))
-    throw new Error("Choose an unprivileged port; legacy 8787 and dev-con 8791 are reserved.");
+    throw new Error("Choose an unprivileged port; legacy 8787 and reserved 8791 are unavailable.");
   return port;
 }
 

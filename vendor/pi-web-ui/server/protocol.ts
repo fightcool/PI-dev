@@ -2,6 +2,11 @@
  * Wire protocol between the browser client and the pi-web-ui server.
  * Pure JSON over WebSocket. The web frontend mirrors these types in
  * web/src/types.ts (kept in sync by hand — types only, no shared runtime code).
+ * 🍞 @COUPLED dev-con/channel-service.ts (channel_state / channel_command_result 的发出方)
+ *   @COUPLED web/src/use-chat.ts（reducer 消费）、web/src/components/ModelChannelPicker.tsx
+ *   📖 docs/DEV-CON-PROPOSAL.md §4–§7、docs/P0-VERIFICATION.md
+ *   @CONTRACT 本文件必须保持纯类型导出（scripts/check-protocol-sync.mjs 守护）；改动需同步 bump
+ *              server/protocol-version.ts 与 web/src/protocol-version.ts。
  */
 
 // ---------------------------------------------------------------------------
@@ -78,6 +83,149 @@ export interface UiModelInfo {
 	vision: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// DEV-CON channels (渠道配置 / 绑定 / 账户) — 见 docs/DEV-CON-PROPOSAL.md §4–§7
+// ---------------------------------------------------------------------------
+
+/** 渠道里的命名凭据引用（只有名称，没有密钥正文/掩码）。keyName="active" 表示
+ *  跟随该服务商当前 active key。 */
+export interface UiCredentialRef {
+	providerId: string;
+	keyName: string;
+}
+
+/** 一次「渠道 + 端点 + 凭据 + 模型」选择。 */
+export interface UiChannelSelection {
+	channelId: string;
+	endpointId: string;
+	credentialRef: UiCredentialRef | null;
+	/** 完整模型 id（"provider/model"）。 */
+	modelId: string;
+}
+
+/** 渠道档案视图（引用 models.json/runtime 的服务商，不复制模型目录或密钥）。 */
+export interface UiChannelInfo {
+	id: string;
+	displayName: string;
+	providerId: string;
+	endpointId: string;
+	credentialRef: UiCredentialRef | null;
+	accountRef: string | null;
+	/**
+	 * 账户查询配置回显（**不含任何密钥值**）：kind/url/method/apiKeyHeader/apiKeyPrefix/body/
+	 * mapping/items/unit/scale/credentialKeyName。必须完整回显，否则「已存模板无法编辑」。
+	 * body/mapping 里只有 {apiKey} 之类的占位符与字段路径，不含密钥正文。
+	 */
+	account?: Record<string, unknown> | null;
+	enabled: boolean;
+	/** 该渠道限定的模型（provider 内 id）；空数组 = 不限制（列出全部）。 */
+	models: string[];
+	/** 该服务商的命名密钥（仅名称 + 是否 active）。 */
+	keys: { keyName: string; active: boolean }[];
+	/** 引用的命名凭据已不存在（UI 需提示重新选择）。 */
+	keyMissing: boolean;
+	/** 引用的服务商已不在 runtime。 */
+	providerMissing: boolean;
+}
+
+/** 对话绑定（含配置版本与绑定版本，旧回执据此被拒绝）。 */
+export interface UiChannelBinding extends UiChannelSelection {
+	conversationId: string;
+	bindingRevision: number;
+	configRevision: number;
+	lastUsedAt: number;
+	/** 渠道显示名（渠道可能已被删除，此时为 null）。 */
+	channelName?: string | null;
+}
+
+/** 等待本轮结束再生效的选择。 */
+export interface UiChannelPending extends UiChannelSelection {
+	conversationId: string;
+	bindingRevision: number;
+	/** 提交该选择的命令 id（回执对应用）。 */
+	commandId: string;
+}
+
+/** 账户余额/配额状态。status 语义见 DEV-CON §7：
+ *  unsupported=该渠道无可用查询方式；ok=本次成功；failed=本次失败；
+ *  stale=本次失败但保留了上次成功结果（checkedAt 是上次成功时间）。 */
+export interface UiAccountStatus {
+	accountRef: string;
+	kind: string;
+	status: "unsupported" | "ok" | "failed" | "stale";
+	scope?: string;
+	unit?: string;
+	balance?: number;
+	quota?: { used?: number; limit?: number; remaining?: number; unit?: string };
+	checkedAt?: number;
+	staleSince?: number;
+	error?: string;
+	/** 多币种明细（如 DeepSeek 官方可能同时返回 CNY/USD）：逐条展示，不做无依据相加。 */
+	breakdown?: { currency: string; total: number; granted: number; toppedUp: number }[];
+	/** 供应商标注的状态说明（例如 DeepSeek 的 is_available=false = 余额不足以调用）。 */
+	note?: string;
+}
+
+/** 当前对话的绑定视图（有效 + 待生效 + 来源）。 */
+export interface UiChannelBindingView {
+	effective: UiChannelBinding | null;
+	pending: UiChannelBinding | null;
+	/** 有效选择的来源：对话自身 / 项目默认 / 实例默认 / 未设置。 */
+	source: "conversation" | "project" | "instance" | "none";
+}
+
+/** 用量归属桶（§7）：按来源/渠道/模型归组；只含引用，不含密钥。 */
+/** 逐请求用量记录（§7：稳定标识、对话/运行、渠道引用、模型、绑定/配置版本、用量、时间、计价依据）。 */
+export interface UiUsageRecord {
+	/** 稳定请求/事件标识：provider 响应 id，或 role+timestamp，或 run 内序号。 */
+	id: string;
+	/** 该请求归属的时间（ms）。 */
+	at: number;
+	runId: string | null;
+	conversationId: string | null;
+	cwd: string | null;
+	/** 来源：user / retry / subagent / compaction / vision / review / wizard / probe / system。 */
+	source: string;
+	channelId: string | null;
+	credentialKeyName: string | null;
+	providerId: string;
+	modelId: string;
+	bindingRevision: number | null;
+	configRevision: number | null;
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	total: number;
+	cost: number;
+	/** "sdk-model-pricing" = SDK 按请求时的模型价目表算出；"unknown" = 未知价格（不得当作 0）。 */
+	costBasis: "sdk-model-pricing" | "unknown";
+	currency: string | null;
+	/**
+	 * 供应商是否报告了用量。真实链路上存在「响应成功但整条 usage 全 0 / 未带 usage」的情况
+	 * （实测：某网关返回空内容且无 usage）。此时**不能显示成 0 消耗**，应显示「未报告」。
+	 */
+	usageKnown: boolean;
+}
+
+export interface UiUsageAttribution {
+	/** 来源：user / retry / subagent / compaction / vision / review / wizard / probe / system。 */
+	source: string;
+	channelId: string | null;
+	credentialKeyName: string | null;
+	providerId: string;
+	modelId: string;
+	bindingRevision: number | null;
+	configRevision: number | null;
+	requests: number;
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	total: number;
+	cost: number;
+}
+
 export interface UiState {
 	clientId: string;
 	cwd: string;
@@ -90,6 +238,14 @@ export interface UiState {
 	 *  a mismatch means the client missed an update and must get_state resync. */
 	rev: number;
 	messages: UiMessage[];
+	/**
+	 * How many EARLIER messages this snapshot leaves out (0 = the client holds the
+	 * whole transcript). Large histories open tail-first so switching never ships
+	 * hundreds of KB the user is not looking at; `load_history` fills the rest in
+	 * (see server/history-window.ts). A full snapshot always carries the NEWEST
+	 * messages, so appends keep working against a truncated tail.
+	 */
+	messagesOmitted: number;
 	/**
 	 * Live partial assistant message while a run is streaming. The SDK keeps the
 	 * in-progress message in agent.state.streamingMessage — it only enters
@@ -153,6 +309,12 @@ export interface UiState {
 	 * API key form directly; false → offer auto-install first.
 	 */
 	piAgentInstalled: boolean;
+	/**
+	 * DEV-CON 渠道绑定视图（当前对话）：有效选择 + 待生效选择 + 来源。
+	 * 有效值来自服务端认可的绑定；待生效值表示「已受理、等本轮结束后应用」。
+	 * 缺省/undefined = 该实例没有渠道功能（例如未启用或 DSH 引擎）。
+	 */
+	channelBinding?: UiChannelBindingView | null;
 	/** Live session stats for the footer status bar. */
 	stats: {
 		totalMessages: number;
@@ -166,6 +328,12 @@ export interface UiState {
 				request?: { input: number; output: number; total: number };
 				run?: { input: number; output: number; total: number };
 			};
+			/** 按来源/渠道/模型归组的累计用量（§7）。缺省 = 未提供归属。 */
+			attribution?: UiUsageAttribution[];
+			/** 本次 run 的标识（服务端生成；用于把晚到事件归回原运行）。 */
+			runId?: string | null;
+			/** 最近若干条逐请求记录（新→旧，有界；含时间与计价依据）。 */
+			recentRequests?: UiUsageRecord[];
 			cost: number;
 			contextUsage: {
 			tokens: number | null;
@@ -176,6 +344,105 @@ export interface UiState {
 			estimated?: boolean;
 		};
 	};
+}
+
+// ---------------------------------------------------------------------------
+// P4 候选：系统资源（只读快照；来源标签随载荷下发，界面不得把估算值当精确值）
+// ---------------------------------------------------------------------------
+
+/** 一块磁盘的用量（statfs；used = 总量 − 非特权可用，界面上标注为估算）。 */
+export interface UiResourceDisk {
+	path: string;
+	label: string;
+	totalBytes: number;
+	freeBytes: number;
+	usedBytes: number;
+	usedPercent: number;
+}
+
+/** 一次系统资源快照。读不到的字段为 null（不是 0），来源见 sources，异常见 warnings。 */
+export interface UiResourceSnapshot {
+	at: number;
+	host: {
+		hostname: string;
+		platform: string;
+		uptimeSec: number;
+		cpuCount: number;
+		loadAvg: [number, number, number];
+		/** 两次采样之间的整机 CPU 使用率（0–100）；首次采样为 null。 */
+		cpuPercent: number | null;
+		mem: {
+			totalBytes: number;
+			usedBytes: number;
+			availableBytes: number;
+			swapTotalBytes: number;
+			swapUsedBytes: number;
+		};
+	};
+	app: {
+		pid: number;
+		node: string;
+		uptimeSec: number;
+		/** 本进程 RSS（不含 PM2 supervisor）。 */
+		rssBytes: number;
+		heapUsedBytes: number;
+		heapTotalBytes: number;
+		externalBytes: number;
+		/** systemd unit 的 cgroup 内存（含 supervisor 与子进程）；读不到为 null。 */
+		cgroup: { currentBytes: number | null; maxBytes: number | null; highBytes: number | null };
+	};
+	disks: UiResourceDisk[];
+	sources: { cpu: string; mem: string; disk: string; cgroup: string };
+	warnings: string[];
+}
+
+/** P4 运维：一个存储区域的占用（有界遍历；truncated=数字不完整，missing=路径不存在）。 */
+export interface UiStorageArea {
+	path: string;
+	label: string;
+	note?: string;
+	bytes: number;
+	files: number;
+	truncated: boolean;
+	missing: boolean;
+}
+
+/** P4 运维：存储明细 + 用量历史保留策略。 */
+export interface UiStorageSnapshot {
+	at: number;
+	areas: UiStorageArea[];
+	totalBytes: number;
+	retention: {
+		/** 0 = 不按时间清理（只按大小轮转）。 */
+		maxAgeDays: number;
+		maxBytes: number;
+		/** 当前历史文件实际大小。 */
+		fileBytes: number;
+		/** 可选保留天数（界面用）。 */
+		choices: number[];
+	};
+}
+
+/** P4 运维：资源告警阈值默认值（界面只读展示，实际判定在服务端）。 */
+export interface UiOpsThresholds {
+	warnPercent: number;
+	criticalPercent: number;
+	cooldownMs: number;
+}
+
+/** P4 运维：诊断包（只含元数据；绝不含密钥值/会话内容/日志正文）。 */
+export interface UiDiagnostics {
+	generatedAt: number;
+	app: { node: string; pid: number; uptimeSec: number; engine: string; protocolVersion: number };
+	release: { commit: string | null; appVersion: string | null; protocolVersion: number | null; builtAt: string | null; source: string | null };
+	instance: { configDir: string; dataDir: string; agentDir: string; workspaceDir: string; host: string | null; port: number | null; profile: string | null };
+	units: { unit: string; active: string; enabled: string }[];
+	resources: UiResourceSnapshot;
+	storage: UiStorageSnapshot;
+	channels: { configRevision: number; count: number; enabledCount: number; bindings: number; pending: number; accounts: number; brokenRefs: number };
+	usage: { windowDays: number; requests: number; totalTokens: number; cost: number; unpricedRequests: number; bySource: Record<string, number>; byChannel: Record<string, number> };
+	environment: { platform: string; cpuCount: number; totalMemBytes: number };
+	warnings: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -272,6 +539,12 @@ export type ClientMessage =
 	| { type: "set_locale"; locale: string }
 	/** Re-request the slash-command catalog (also pushed on attach / cwd change). */
 	| { type: "get_commands" }
+	/**
+	 * Ask for earlier messages of the ACTIVE conversation (tail-first history).
+	 * `before` = the client's oldest message id; `all: true` (search / question
+	 * navigation) returns everything older in one page regardless of `limit`.
+	 */
+	| { type: "load_history"; before?: string; limit?: number; all?: boolean }
 	| {
 			type: "prompt";
 			text: string;
@@ -443,6 +716,77 @@ export type ClientMessage =
 	 *  active key, the first remaining key becomes active (or the provider
 	 *  returns to unconfigured when no key is left). */
 	| { type: "remove_provider_key"; provider: string; keyName: string }
+	// -- DEV-CON channels (配置 / 组合切换 / 账户查询) --------------------------
+	/** 请求渠道状态（也由服务端在 attach 与每次变更后主动推送）。 */
+	| { type: "list_channels" }
+	/**
+	 * 组合命令：一次提交渠道 + 命名凭据 + 模型。服务端校验版本、按「空闲立即 /
+	 * 正在生成则待生效」应用，并用 channel_command_result 回执确认最终状态。
+	 * credentialKeyName 省略时用渠道档案的默认凭据；null = 跟随服务商 active key。
+	 * expectedConfigRevision / expectedBindingRevision 用于拒绝基于旧状态的提交。
+	 */
+	| {
+			type: "channel_select";
+			commandId: string;
+			conversationId?: string;
+			channelId: string;
+			credentialKeyName?: string | null;
+			modelId: string;
+			expectedConfigRevision?: number;
+			expectedBindingRevision?: number;
+	  }
+	/** 清除当前对话的渠道绑定（回到项目/实例默认或全局 active key）。 */
+	| { type: "channel_binding_clear"; commandId: string; conversationId?: string; expectedBindingRevision?: number }
+	/** 新增/更新渠道档案（引用已注册服务商，不写 models.json / 不传密钥）。 */
+	| {
+			type: "channel_save";
+			commandId: string;
+			channel: {
+				id?: string;
+				displayName: string;
+				providerId: string;
+				endpointId?: string;
+				credentialRef?: UiCredentialRef | null;
+				accountRef?: string | null;
+				/** 该渠道允许的模型（provider 内 id）；空数组 = 不限制。 */
+				models?: string[];
+				enabled?: boolean;
+				extra?: Record<string, unknown>;
+			};
+			expectedConfigRevision?: number;
+	  }
+	/** 删除渠道（同时清理引用它的默认值与绑定）。 */
+	| { type: "channel_delete"; commandId: string; channelId: string; expectedConfigRevision?: number }
+	/** 设置项目/实例默认（只影响尚未发言的对话，不重绑正在运行的对话）。 */
+	| {
+			type: "channel_set_default";
+			commandId: string;
+			scope: "instance" | "project";
+			selection: { channelId: string; credentialKeyName?: string | null; modelId: string } | null;
+			expectedConfigRevision?: number;
+	  }
+	/** 查询渠道账户余额/配额（有界超时、限频、缓存；不支持时明确报 unsupported）。 */
+	| { type: "channel_query_account"; commandId: string; channelId: string }
+	/** P4 候选：请求一次系统资源快照（只读；reqId 回显在 resources 里）。 */
+	| { type: "list_resources"; reqId: number }
+	/** P4 运维：请求一次存储占用明细（只读；有界遍历，reqId 回显在 storage 里）。 */
+	| { type: "list_storage"; reqId: number }
+	/** P4 运维：设置用量历史保留天数（仅允许 0/7/30/90/365；0 = 只按大小轮转）。 */
+	| { type: "set_usage_retention"; maxAgeDays: number }
+	/** P4 运维：请求一份诊断包（只读元数据；reqId 回显在 diagnostics 里）。 */
+	| { type: "list_diagnostics"; reqId: number }
+	/** P4 运维：开关资源告警通知（磁盘/内存/unit 内存越线时提示一次）。 */
+	| { type: "set_ops_alerts"; enabled: boolean }
+	// -- P4 用量历史（跨渠道/项目/时间；只读聚合，不参与计费） ---------------
+	/** 查询实例私有用量历史（逐请求记录的只读聚合）。reqId 回显在 usage_history 里。 */
+	| {
+			type: "usage_history_query";
+			reqId: number;
+			groupBy: "channel" | "project" | "model" | "source" | "day";
+			/** 时间窗（含端点，ms）；省略 = 不限。 */
+			from?: number;
+			to?: number;
+	  }
 	// -- custom model config (agentDir/models.json) ---------------------------
 	| { type: "list_models_config" }
 	/** Upsert one provider (api/baseUrl/apiKey + its models) into models.json. */
@@ -467,6 +811,10 @@ export type ClientMessage =
 	/** Re-probe a SAVED provider's /models endpoint and merge the result into
 	 *  its models.json entry. Credentials stay server-side (the browser never
 	 *  sees apiKey/headers); reqId is echoed in refresh_provider_result. */
+	/** 渠道表单「获取接口清单」：按服务商 + 命名凭据在后端探测 <baseUrl>/models。
+	 *  @WHY 密钥只在服务端解析（浏览器本来就拿不到密钥正文），顺带绕开 CORS；
+	 *  keyName 为空 = 用该服务商当前生效的密钥。 */
+	| { type: "fetch_channel_models"; reqId: number; providerId: string; keyName?: string | null }
 	| { type: "refresh_provider_models"; providerId: string; reqId: number }
 	/** Copy a BUILT-IN provider (baseUrl + current model catalog) into an
 	 *  editable custom-provider draft — the point is running a second API key
@@ -519,6 +867,9 @@ export type ClientMessage =
 			/** Installed UI plugins hidden in the settings panel (UI-only toggle,
 			 *  never triggers a runtime reload). */
 			disabledPlugins?: string[];
+			/** 内置服务商里从「管理模型」列表移除（= 隐藏）的 providerId 集合。
+			 *  纯 UI 偏好：不动运行时、不触发 reload；密钥的清除走 clear_provider_api_key。 */
+			hiddenBuiltinProviders?: string[];
 			/** Persistent-terminal tools on/off (default on). Off → terminal_* tools
 			 *  are removed from the active tool set and the built-in usage guidance
 			 *  disappears from the system prompt. */
@@ -847,7 +1198,13 @@ export interface UiProviderConfig {
 	/** api type: openai-completions / openai-responses / anthropic-messages / google-generative-ai. */
 	api?: string;
 	baseUrl?: string;
+	/**
+	 * 只写字段：浏览器提交新密钥时使用。服务端从不回传密钥正文或掩码（§4），
+	 * 读取请用 hasApiKey；提交时留空表示「保留已保存的密钥」。
+	 */
 	apiKey?: string;
+	/** 服务端是否已保存该服务商的 apiKey（不回传密钥本身）。 */
+	hasApiKey?: boolean;
 	authHeader?: boolean;
 	/** headers are NOT returned to the browser — they can contain Authorization
 	 *  / API-key values; saveModelConfig preserves them server-side. */
@@ -1123,6 +1480,9 @@ export interface UiSettingsState {
 	/** Installed UI plugins the user hid in the settings panel (UI-only:
 	 *  hidden tabs/views; server-side handlers stay reachable). */
 	disabledPlugins: string[];
+	/** 内置服务商里被用户从「管理模型」列表移除（隐藏）的 providerId。
+	 *  pi 运行时的内置注册表无法真删，这里只控制面板是否展示（UI-only）。 */
+	hiddenBuiltinProviders: string[];
 	/** The FULL system prompt actually in effect for the active conversation
 	 *  (compose render: template + per-source overrides + project context +
 	 *  skills + tool guidance). Read-only view source for the settings panel;
@@ -1192,6 +1552,16 @@ export type ServerMessage =
 			tabs?: string[];
 	  }
 	| { type: "snapshot"; state: UiState }
+	| {
+			/** One page of EARLIER messages, answering `load_history`. The client
+			 *  PREPENDS these above what it already holds (deduped by id) and takes
+			 *  `omittedBefore` as its new "还有更早" count. */
+			type: "message_page";
+			conversationId: string;
+			messages: UiMessage[];
+			omittedBefore: number;
+			complete: boolean;
+	  }
 	| {
 			/** Incremental snapshot: everything EXCEPT `messages` travels in
 			 *  `state`, and only messages appended since baseRev ride in
@@ -1345,6 +1715,86 @@ export type ServerMessage =
 	| { type: "providers_status"; providers: ProviderStatus[] }
 	/** All stored API keys per built-in provider (masked). Keyed by providerId. */
 	| { type: "provider_keys"; keys: Record<string, ProviderKeyInfo[]> }
+	/** DEV-CON 渠道状态（服务端权威，attach 时与每次变更后推送；密钥值/掩码不出现）。 */
+	| {
+			type: "channel_state";
+			/** 渠道配置版本（渠道/默认值变更时 +1）。 */
+			configRevision: number;
+			/** 全局绑定版本（任何对话绑定变更时 +1）。 */
+			bindingRevision: number;
+			channels: UiChannelInfo[];
+			instanceDefault: UiChannelSelection | null;
+			/** 当前项目的默认选择（其他项目的默认不下发）。 */
+			projectDefault: UiChannelSelection | null;
+			bindings: UiChannelBinding[];
+			pending: UiChannelPending[];
+			accounts: UiAccountStatus[];
+			/** 账户查询模板预设（一键填充到模板编辑器；用户可继续修改）。 */
+			accountPresets?: { id: string; label: string; description: string; template: Record<string, unknown> }[];
+	  }
+	/** P4 运维：诊断包（只含元数据）+ 当前告警开关与阈值。 */
+	| { type: "diagnostics"; reqId: number; ok: boolean; error?: string; bundle?: UiDiagnostics; alertsEnabled?: boolean; thresholds?: UiOpsThresholds }
+	/** P4 运维：存储占用明细 + 保留策略（ok=false 时 storage 为空并带 error）。 */
+	| { type: "storage"; reqId: number; ok: boolean; error?: string; storage?: UiStorageSnapshot }
+	/** P4 候选：系统资源快照（ok=false 时 snapshot 为空并带 error）。 */
+	| { type: "resources"; reqId: number; ok: boolean; error?: string; snapshot?: UiResourceSnapshot }
+	/** P4 用量历史聚合结果（rows 已按 total 降序；unpricedRequests>0 表示该组含未知价格）。 */
+	| {
+			type: "usage_history";
+			reqId: number;
+			ok: boolean;
+			error?: string;
+			groupBy: "channel" | "project" | "model" | "source" | "day";
+			from: number | null;
+			to: number | null;
+			rows: {
+				/** channelId / cwd / "provider/model" / source / YYYY-MM-DD(UTC)；"unattributed" = 无归属。 */
+				key: string;
+				requests: number;
+				input: number;
+				output: number;
+				cacheRead: number;
+				cacheWrite: number;
+				total: number;
+				cost: number;
+				unpricedRequests: number;
+				/** 该组里供应商未上报用量的请求数（0 token 不等于没消耗）。 */
+				unreportedRequests: number;
+				firstAt: number | null;
+				lastAt: number | null;
+			}[];
+			totals: {
+				requests: number;
+				input: number;
+				output: number;
+				cacheRead: number;
+				cacheWrite: number;
+				total: number;
+				cost: number;
+				unpricedRequests: number;
+				unreportedRequests: number;
+			};
+			scanned: number;
+			skipped: number;
+			/** true = 触到扫描上限，结果不完整（界面需说明）。 */
+			truncated: boolean;
+	  }
+	/** 渠道命令回执：commandId 对应请求，phase 说明最终状态。
+	 *  applied=已生效；pending=已受理待本轮结束；rejected=失败（原绑定保留）；
+	 *  conflict=版本冲突需刷新；superseded=被更新的选择取代。 */
+	| {
+			type: "channel_command_result";
+			commandId: string;
+			ok: boolean;
+			phase: "applied" | "pending" | "rejected" | "conflict" | "superseded";
+			conversationId?: string;
+			channelId?: string;
+			error?: string;
+			errorEn?: string;
+			binding?: UiChannelBinding;
+			configRevision: number;
+			bindingRevision: number;
+	  }
 	/** Result of a fetch_models probe: ok + the advertised models (id plus
 	 *  whatever metadata the endpoint provided — contextWindow / vision input /
 	 *  reasoning / name / maxTokens — same shape as models.json rows), or an
@@ -1354,6 +1804,18 @@ export type ServerMessage =
 			reqId: number;
 			ok: boolean;
 			models?: UiModelConfigEntry[];
+			error?: string;
+	  }
+	/** Result of fetch_channel_models: the endpoint's model entries + the baseUrl
+	 *  actually probed (echoed so the user can verify which address answered). */
+	| {
+			type: "channel_models_result";
+			reqId: number;
+			/** 回显请求的服务商：用户可能在等结果时换了服务商，前端据此丢弃过期结果。 */
+			providerId: string;
+			ok: boolean;
+			models?: UiModelConfigEntry[];
+			baseUrl?: string;
 			error?: string;
 	  }
 	/** Result of refresh_provider_models: merged into the saved entry; added =

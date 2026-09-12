@@ -1,5 +1,14 @@
 // 🍞 @COUPLED server/index.ts / initial-snapshot-gate.ts: pi hello owns the baseline;
 // rev/seq gaps below still request get_state (docs/architecture-core.md).
+// @COUPLED server/protocol.ts (channel_state / channel_command_result / channel_select …),
+// components/ModelThinking.tsx + components/ModelChannelPicker.tsx (channel 选择 UI),
+// components/FooterBar.tsx + components/UsageDetail.tsx (用量归属), components/ChannelSettings.tsx.
+// @CONTRACT channelResults 按 commandId 存回执；channelApi 方法返回 commandId（socket 未开 = null），
+//   并随命令提交当前 configRevision/bindingRevision，服务端冲突时回 phase=conflict。
+// @GOTCHA 协议里的 channel_save 尚未声明 `models`（模型白名单）——服务端 channel-config.ts 已经
+//   读取 input.channel.models，且 channel_state 已下发 UiChannelInfo.models。这里在**前端局部**
+//   补上可选的 models，否则提交白名单会被 TS 的 excess property 检查拒掉。
+//   一旦 server/protocol.ts 的 channel_save 补上该字段，下面的交叉类型即为恒等，可删。
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { randomUuid } from "./uuid";
 import { withToken } from "./auth-token";
@@ -34,6 +43,7 @@ import type {
 import { applyMessageDelta, type MessageDeltaMsg } from "./message-delta";
 import { emitPluginData } from "./plugin-loader";
 import { PROTOCOL_VERSION } from "./protocol-version";
+import { perfMark, perfMarkSwitch } from "./perf-trace";
 
 export type ConnStatus = "connecting" | "open" | "closed";
 
@@ -70,6 +80,82 @@ export interface Notice {
 	level: "info" | "warning" | "error";
 	text: string;
 	textEn?: string;
+}
+
+/** DEV-CON 渠道状态快照（`channel_state`）—— 服务端权威，密钥只以 keyName 出现。 */
+export type ChannelStateMsg = Extract<ServerMessage, { type: "channel_state" }>;
+/** 渠道命令回执（`channel_command_result`）—— 按 commandId 与提交匹配。 */
+export type ChannelCommandResult = Extract<ServerMessage, { type: "channel_command_result" }>;
+export type UsageHistoryMsg = Extract<ServerMessage, { type: "usage_history" }>;
+export type ResourcesMsg = Extract<ServerMessage, { type: "resources" }>;
+export type StorageMsg = Extract<ServerMessage, { type: "storage" }>;
+export type DiagnosticsMsg = Extract<ServerMessage, { type: "diagnostics" }>;
+/** 用量历史的时间窗（今天按 UTC 切分，与聚合口径一致）。 */
+export type UsageHistoryWindow = "all" | "today" | "7d" | "30d";
+const startOfUtcDay = (ms: number) => Date.UTC(new Date(ms).getUTCFullYear(), new Date(ms).getUTCMonth(), new Date(ms).getUTCDate());
+
+
+/** channel_save 的渠道档案 payload（直接从协议派生，避免手工镜像漂移）。 */
+/** 渠道保存载荷：协议 `channel_save.channel` 已包含 models 白名单（协议 v25 起）。 */
+export type ChannelSaveInput = Extract<ClientMessage, { type: "channel_save" }>["channel"];
+
+/**
+ * DEV-CON 渠道命令 API（use-chat 返回值之一）。
+ *
+ * 每个变更方法都返回 commandId（socket 未打开时返回 null）；UI 用它去
+ * `channelResults[commandId]` 取最新回执，从而区分 applied / pending / rejected /
+ * conflict / superseded，而不是靠推测。revision 由 hook 从当前 channelState 读出
+ * 随命令一起提交，服务端据此拒绝基于旧状态的写入（§4）。
+ */
+export interface ChannelApi {
+	/** 请求渠道状态（服务端也会在变更后主动推送）。 */
+	listChannels: () => boolean;
+	/** 组合切换：渠道 + 命名凭据 + 模型一次提交（credentialKeyName=null 跟随服务商 active key）。 */
+	selectChannel: (input: {
+		channelId: string;
+		credentialKeyName: string | null;
+		modelId: string;
+		conversationId?: string;
+	}) => string | null;
+	/** 清除当前对话的渠道绑定（回到项目/实例默认）。 */
+	clearChannelBinding: (conversationId?: string) => string | null;
+	saveChannel: (channel: ChannelSaveInput) => string | null;
+	deleteChannel: (channelId: string) => string | null;
+	setChannelDefault: (
+		scope: "instance" | "project",
+		selection: { channelId: string; credentialKeyName?: string | null; modelId: string } | null,
+	) => string | null;
+	queryChannelAccount: (channelId: string) => string | null;
+	/** P4 首个切片：用量历史查询（只读聚合）。返回 reqId，结果在 state.usageHistory。 */
+	queryUsageHistory: (groupBy: UsageHistoryMsg["groupBy"], window: UsageHistoryWindow) => number;
+	/** P4 候选：请求一次系统资源快照（只读）。返回 reqId，结果在 state.resources。 */
+	listResources: () => number;
+	/** P4 运维：请求存储占用明细（只读、有界遍历）。返回 reqId，结果在 state.storage。 */
+	listStorage: () => number;
+	/** P4 运维：设置用量历史保留天数（0 = 只按大小轮转）。 */
+	setUsageRetention: (maxAgeDays: number) => boolean;
+	/** P4 运维：请求诊断包（只读元数据）。返回 reqId，结果在 state.diagnostics。 */
+	listDiagnostics: () => number;
+	/** P4 运维：开关资源告警通知。 */
+	setOpsAlerts: (enabled: boolean) => boolean;
+}
+
+/** 回执只用于「最近一次命令结果」展示：保留上限，超出丢最旧的（对象键序 = 插入序）。 */
+const MAX_CHANNEL_RESULTS = 20;
+
+function rememberChannelResult(
+	prev: Record<string, ChannelCommandResult>,
+	result: ChannelCommandResult,
+): Record<string, ChannelCommandResult> {
+	const keys = Object.keys(prev);
+	if (!(result.commandId in prev) && keys.length >= MAX_CHANNEL_RESULTS) {
+		const keepFrom = keys.length - MAX_CHANNEL_RESULTS + 1;
+		const next: Record<string, ChannelCommandResult> = {};
+		for (const k of keys.slice(keepFrom)) next[k] = prev[k];
+		next[result.commandId] = result;
+		return next;
+	}
+	return { ...prev, [result.commandId]: result };
 }
 
 /** A terminal tab. The output stream itself lives in the xterm instance
@@ -113,6 +199,11 @@ export interface ChatState {
 	conversations: ConversationSummary[];
 	/** Id of the conversation the current snapshot belongs to. */
 	activeConversationId: string;
+	/** 乐观切换：用户已点开的会话，其首份快照还没到。true 时对话面板显示加载
+	 *  占位而不是上一个会话的内容（否则用户看到的是「点了没反应，然后跳一下」）。
+	 *  结束条件就是「快照里的 conversationId 变了」——switch_conversation 与
+	 *  switch_session（按磁盘文件打开）都适用，无需记住目标 id。 */
+	switching: boolean;
 	/** Recent workspaces this client opened (left panel project picker). */
 	projects: ProjectSummary[];
 	/** Workspace file listing for the right panel. */
@@ -132,6 +223,18 @@ export interface ChatState {
 	providers: ProviderStatus[];
 	/** Stored API keys per built-in provider (masked), for multi-key grouping. */
 	providerKeys: Record<string, ProviderKeyInfo[]>;
+	/** DEV-CON 渠道快照（channel_state）；null = 尚未收到（无渠道功能的实例保持 null）。 */
+	channelState: ChannelStateMsg | null;
+	/** P4 首个切片：最近一次用量历史查询结果（只读聚合）。 */
+	usageHistory: UsageHistoryMsg | null;
+	/** P4 候选：最近一次系统资源快照（只读）。 */
+	resources: ResourcesMsg | null;
+	/** P4 运维：最近一次存储占用明细（只读）。 */
+	storage: StorageMsg | null;
+	/** P4 运维：最近一次诊断包（只读元数据）。 */
+	diagnostics: DiagnosticsMsg | null;
+	/** 渠道命令回执，按 commandId 保留最近一条，供 UI 显示最新一次结果。 */
+	channelResults: Record<string, ChannelCommandResult>;
 	/** Result of the last install_pi_agent run (null while not started/running). */
 	installResult: { ok: boolean; detail: string } | null;
 	/** Path completions for the cwd input. */
@@ -194,6 +297,17 @@ export interface ChatState {
 		models?: UiModelConfigEntry[];
 		error?: string;
 	} | null;
+	/** Last fetch_channel_models probe result (渠道表单的「获取接口清单」)，按 reqId 匹配；
+	 *  baseUrl = 实际探测的地址（密钥在服务端解析，浏览器看不到）。 */
+	channelModelsResult: {
+		reqId: number;
+		/** 回显服务商 id：换服务商后的过期结果不参与合并（见 ChannelForm）。 */
+		providerId: string;
+		ok: boolean;
+		models?: UiModelConfigEntry[];
+		baseUrl?: string;
+		error?: string;
+	} | null;
 	/** Last refresh_provider_models result (saved-provider list refresh). */
 	refreshProviderResult: {
 		reqId: number;
@@ -250,8 +364,10 @@ export interface ChatState {
 
 type Action =
 	| { type: "status"; status: ConnStatus }
+	| { type: "switching"; on: boolean }
 	| { type: "snapshot"; state: UiState }
 	| { type: "snapshot_delta"; msg: Extract<ServerMessage, { type: "snapshot_delta" }> }
+	| { type: "message_page"; msg: Extract<ServerMessage, { type: "message_page" }> }
 	| { type: "protocol_mismatch" }
 	| { type: "tool_delta"; toolCallId: string; toolName: string; delta: string }
 	| { type: "message_delta"; msg: MessageDeltaMsg }
@@ -281,9 +397,26 @@ type Action =
 	| { type: "models_config"; providers: UiProviderConfig[] }
 	| { type: "providers_status"; providers: ProviderStatus[] }
 	| { type: "provider_keys"; keys: Record<string, ProviderKeyInfo[]> }
+	| { type: "channel_state"; channelState: ChannelStateMsg }
+	| { type: "usage_history"; history: UsageHistoryMsg }
+	| { type: "resources"; resources: ResourcesMsg }
+	| { type: "storage"; storage: StorageMsg }
+	| { type: "diagnostics"; diagnostics: DiagnosticsMsg }
+	| { type: "channel_command_result"; result: ChannelCommandResult }
 	| {
 			type: "fetch_models_result";
 			result: { reqId: number; ok: boolean; models?: UiModelConfigEntry[]; error?: string };
+	  }
+	| {
+			type: "channel_models_result";
+			result: {
+				reqId: number;
+				providerId: string;
+				ok: boolean;
+				models?: UiModelConfigEntry[];
+				baseUrl?: string;
+				error?: string;
+			};
 	  }
 	| {
 			type: "refresh_provider_result";
@@ -512,6 +645,8 @@ function pruneToolStatuses(statuses: Map<string, ToolStatus>, state: UiState): M
 
 function reducer(state: ChatState, action: Action): ChatState {
 	switch (action.type) {
+		case "switching":
+			return { ...state, switching: action.on };
 		case "status":
 			return {
 				...state,
@@ -541,6 +676,9 @@ function reducer(state: ChatState, action: Action): ChatState {
 				ready: true,
 				state: action.state,
 				activeConversationId: action.state.conversationId,
+				// 乐观切换的收尾：只有「活动会话真的换了」才算切换完成——这样切换期间
+				// 旧会话的定时快照/后台统计更新不会提前把占位揭掉。
+				switching: action.state.conversationId === state.state?.conversationId && state.switching,
 				liveOutputs: pruneLiveOutputs(state.liveOutputs, action.state),
 				toolStatuses: pruneToolStatuses(state.toolStatuses, action.state),
 			};
@@ -566,6 +704,19 @@ function reducer(state: ChatState, action: Action): ChatState {
 				activeConversationId: merged.conversationId,
 				liveOutputs: pruneLiveOutputs(state.liveOutputs, merged),
 				toolStatuses: pruneToolStatuses(state.toolStatuses, merged),
+			};
+		}
+		case "message_page": {
+			// 尾部优先历史的「更早一页」：前置到现有数组之前（按 id 去重——重连或
+			// 补全后服务端可能重复给出已持有的消息）。omittedBefore 成为新的计数。
+			const ui = state.state;
+			const d = action.msg;
+			if (!ui || ui.conversationId !== d.conversationId) return state;
+			const known = new Set(ui.messages.map((m) => m.id));
+			const older = d.messages.filter((m) => !known.has(m.id));
+			return {
+				...state,
+				state: { ...ui, messages: older.length > 0 ? [...older, ...ui.messages] : ui.messages, messagesOmitted: d.omittedBefore },
 			};
 		}
 		case "tool_delta": {
@@ -601,6 +752,10 @@ function reducer(state: ChatState, action: Action): ChatState {
 				toolStatuses: new Map(state.toolStatuses).set(action.status.toolCallId, action.status),
 			};
 		case "notice":
+			// 切换失败只发 notice（会话不存在/切换抛错），不会再有快照到来：
+			// 立刻揭掉占位，不必等 8s 安全网。
+			if (state.switching && action.notice.level === "error")
+				return { ...state, switching: false, notices: [...state.notices, action.notice] };
 			return { ...state, notices: [...state.notices, action.notice].slice(-6) };
 		case "dismiss_notice":
 			return {
@@ -631,8 +786,22 @@ function reducer(state: ChatState, action: Action): ChatState {
 			return { ...state, providers: action.providers };
 		case "provider_keys":
 			return { ...state, providerKeys: action.keys };
+		case "channel_state":
+			return { ...state, channelState: action.channelState };
+		case "usage_history":
+			return { ...state, usageHistory: action.history };
+		case "resources":
+			return { ...state, resources: action.resources };
+		case "storage":
+			return { ...state, storage: action.storage };
+		case "diagnostics":
+			return { ...state, diagnostics: action.diagnostics };
+		case "channel_command_result":
+			return { ...state, channelResults: rememberChannelResult(state.channelResults, action.result) };
 		case "fetch_models_result":
 			return { ...state, fetchModelsResult: action.result };
+		case "channel_models_result":
+			return { ...state, channelModelsResult: action.result };
 		case "refresh_provider_result":
 			return { ...state, refreshProviderResult: action.result };
 		case "clone_provider_result":
@@ -807,6 +976,7 @@ export function useChat() {
 		sessions: [],
 		conversations: [],
 		activeConversationId: "",
+		switching: false,
 		projects: [],
 		files: null,
 
@@ -817,6 +987,12 @@ export function useChat() {
 		modelsConfig: [],
 		providers: [],
 		providerKeys: {},
+		channelState: null,
+		usageHistory: null,
+		resources: null,
+		storage: null,
+		diagnostics: null,
+		channelResults: {},
 		installResult: null,
 		pathCompletions: [],
 		update: null,
@@ -834,6 +1010,7 @@ export function useChat() {
 		bgServers: [],
 		settings: null,
 		fetchModelsResult: null,
+		channelModelsResult: null,
 		refreshProviderResult: null,
 		cloneProviderResult: null,
 		scmData: null,
@@ -908,6 +1085,17 @@ export function useChat() {
 	const send = useCallback((msg: ClientMessage) => {
 		const ws = wsRef.current;
 		if (ws && ws.readyState === WebSocket.OPEN) {
+			// 会话切换的「点击时刻」——paint 打点会把它配对成端到端延迟。
+			// 同时进入乐观切换态：目标快照未到前，对话面板显示加载占位而不是
+			// 上一个会话（否则用户看到的是「点了没反应，然后整页跳一下」）。
+			// 切到当前已打开/已显示的会话是 no-op，不进占位态。
+			if (msg.type === "switch_conversation") {
+				perfMarkSwitch(msg.type);
+				if (msg.id !== chatApi.current.chat.activeConversationId) dispatch({ type: "switching", on: true });
+			} else if (msg.type === "switch_session") {
+				perfMarkSwitch(msg.type);
+				if (msg.path !== chatApi.current.chat.state?.sessionFile) dispatch({ type: "switching", on: true });
+			}
 			// Forced re-check: drop stale rows immediately so the "checking"
 			// state renders instead of the cached list.
 			if (msg.type === "check_updates_all" && msg.force === true) {
@@ -925,6 +1113,15 @@ export function useChat() {
 		return false;
 	}, []);
 
+	/** 乐观切换的安全网：服务端总会对切换请求回一份快照，但会话不存在/切换失败的
+	 *  分支只会发 notice。超时后揭掉占位，避免占位永远留在屏幕上。
+	 *  @MAGIC 8s —— 比实测最慢的切历史会话（含扩展重建，数秒级）再宽一些。 */
+	useEffect(() => {
+		if (!chat.switching) return;
+		const timer = setTimeout(() => dispatch({ type: "switching", on: false }), 8000);
+		return () => clearTimeout(timer);
+	}, [chat.switching]);
+
 	/** Stable across renders — the reconnect loop lives entirely inside this closure. */
 	const connect = useCallback(() => {
 		if (!aliveRef.current) return;
@@ -934,6 +1131,7 @@ export function useChat() {
 
 		ws.onopen = () => {
 			if (wsRef.current !== ws) return; // stale socket
+			perfMark("ws:open");
 			dispatch({ type: "status", status: "open" });
 			retryRef.current = 0;
 			lastBeatRef.current = Date.now();
@@ -959,6 +1157,7 @@ export function useChat() {
 			}
 			switch (msg.type) {
 				case "ready":
+					perfMark("ws:ready");
 					dispatch({
 						type: "ready",
 						serverVersion: msg.serverVersion,
@@ -989,8 +1188,12 @@ export function useChat() {
 					break;
 				case "snapshot":
 					// Snapshot is authoritative — delta sequence tracking restarts.
+					perfMark("ws:snapshot", `${msg.state.messages.length} msgs rev=${msg.state.rev}`);
 					lastDeltaSeqRef.current = new Map();
 					dispatch({ type: "snapshot", state: msg.state });
+					break;
+				case "message_page":
+					dispatch({ type: "message_page", msg });
 					break;
 				case "snapshot_delta": {
 					// Gap detection BEFORE dispatch: if this incremental checkpoint
@@ -1060,6 +1263,24 @@ export function useChat() {
 				case "provider_keys":
 					dispatch({ type: "provider_keys", keys: msg.keys });
 					break;
+				case "channel_state":
+					dispatch({ type: "channel_state", channelState: msg });
+					break;
+				case "usage_history":
+					dispatch({ type: "usage_history", history: msg });
+					break;
+				case "resources":
+					dispatch({ type: "resources", resources: msg });
+					break;
+				case "storage":
+					dispatch({ type: "storage", storage: msg });
+					break;
+				case "diagnostics":
+					dispatch({ type: "diagnostics", diagnostics: msg });
+					break;
+				case "channel_command_result":
+					dispatch({ type: "channel_command_result", result: msg });
+					break;
 				case "fetch_models_result":
 					dispatch({
 						type: "fetch_models_result",
@@ -1067,6 +1288,19 @@ export function useChat() {
 							reqId: msg.reqId,
 							ok: msg.ok,
 							models: msg.models,
+							error: msg.error,
+						},
+					});
+					break;
+				case "channel_models_result":
+					dispatch({
+						type: "channel_models_result",
+						result: {
+							reqId: msg.reqId,
+							providerId: msg.providerId,
+							ok: msg.ok,
+							models: msg.models,
+							baseUrl: msg.baseUrl,
 							error: msg.error,
 						},
 					});
@@ -1321,11 +1555,124 @@ export function useChat() {
 		[],
 	);
 
+	// -- DEV-CON channels ------------------------------------------------------
+	// Every mutating command carries the revisions the UI currently sees (the
+	// server rejects a stale submit with phase=conflict instead of silently
+	// overwriting an edit made elsewhere), and returns its commandId so the UI can
+	// look the receipt up in channelResults.
+	/** Latest chat state for the command closures — they are created ONCE (stable
+	 *  identity, so memoized consumers keep working) and must read the CURRENT
+	 *  revisions, never the ones captured on the first render. */
+	const channelChatRef = useRef(chat);
+	channelChatRef.current = chat;
+	const channelSendRef = useRef(send);
+	channelSendRef.current = send;
+	const channelApiRef = useRef<ChannelApi | null>(null);
+	const usageReqIdRef = useRef(0);
+	const resourcesReqIdRef = useRef(0);
+	const storageReqIdRef = useRef(0);
+	const diagnosticsReqIdRef = useRef(0);
+	if (!channelApiRef.current) {
+		const command = (build: (commandId: string) => ClientMessage): string | null => {
+			const commandId = randomUuid();
+			return channelSendRef.current(build(commandId)) ? commandId : null;
+		};
+		const targetConversation = (explicit?: string): string =>
+			explicit ?? (channelChatRef.current.activeConversationId || channelChatRef.current.state?.conversationId || "");
+		/** 该对话「已存储」绑定的 bindingRevision；无绑定为 0，状态未到达时 undefined（服务端跳过复核）。 */
+		const bindingRevision = (conversationId: string): number | undefined => {
+			const cs = channelChatRef.current.channelState;
+			if (!cs) return undefined;
+			return cs.bindings.find((b) => b.conversationId === conversationId)?.bindingRevision ?? 0;
+		};
+		channelApiRef.current = {
+			listChannels: () => channelSendRef.current({ type: "list_channels" }),
+			selectChannel: ({ channelId, credentialKeyName, modelId, conversationId: explicit }) => {
+				const conversationId = targetConversation(explicit);
+				return command((commandId) => ({
+					type: "channel_select",
+					commandId,
+					channelId,
+					credentialKeyName,
+					modelId,
+					expectedConfigRevision: channelChatRef.current.channelState?.configRevision,
+					expectedBindingRevision: bindingRevision(conversationId),
+					...(conversationId ? { conversationId } : {}),
+				}));
+			},
+			clearChannelBinding: (explicit) => {
+				const conversationId = targetConversation(explicit);
+				return command((commandId) => ({
+					type: "channel_binding_clear",
+					commandId,
+					expectedBindingRevision: bindingRevision(conversationId),
+					...(conversationId ? { conversationId } : {}),
+				}));
+			},
+			saveChannel: (channel) =>
+				command((commandId) => ({
+					type: "channel_save",
+					commandId,
+					channel,
+					expectedConfigRevision: channelChatRef.current.channelState?.configRevision,
+				})),
+			deleteChannel: (channelId) =>
+				command((commandId) => ({
+					type: "channel_delete",
+					commandId,
+					channelId,
+					expectedConfigRevision: channelChatRef.current.channelState?.configRevision,
+				})),
+			setChannelDefault: (scope, selection) =>
+				command((commandId) => ({
+					type: "channel_set_default",
+					commandId,
+					scope,
+					selection,
+					expectedConfigRevision: channelChatRef.current.channelState?.configRevision,
+				})),
+			queryChannelAccount: (channelId) =>
+				command((commandId) => ({ type: "channel_query_account", commandId, channelId })),
+			// P4 候选：系统资源快照（只读）。reqId 自增，结果按 reqId 匹配。
+			listResources: () => {
+				resourcesReqIdRef.current += 1;
+				channelSendRef.current({ type: "list_resources", reqId: resourcesReqIdRef.current });
+				return resourcesReqIdRef.current;
+			},
+			// P4 运维：存储占用明细（只读，有界遍历；不要放进轮询）。
+			listStorage: () => {
+				storageReqIdRef.current += 1;
+				channelSendRef.current({ type: "list_storage", reqId: storageReqIdRef.current });
+				return storageReqIdRef.current;
+			},
+			// P4 运维：诊断包（只读元数据）。
+			listDiagnostics: () => {
+				diagnosticsReqIdRef.current += 1;
+				channelSendRef.current({ type: "list_diagnostics", reqId: diagnosticsReqIdRef.current });
+				return diagnosticsReqIdRef.current;
+			},
+			// P4 运维：开关资源告警。
+			setOpsAlerts: (enabled) => channelSendRef.current({ type: "set_ops_alerts", enabled }),
+			// P4 运维：设置用量历史保留天数（仅 0/7/30/90/365）。
+			setUsageRetention: (maxAgeDays) => channelSendRef.current({ type: "set_usage_retention", maxAgeDays }),
+			// P4 首个切片：用量历史查询（只读）。reqId 自增，结果按 reqId 匹配。
+			queryUsageHistory: (groupBy, window) => {
+				usageReqIdRef.current += 1;
+				const reqId = usageReqIdRef.current;
+				const now = Date.now();
+				const from = window === "all" ? undefined : window === "today" ? startOfUtcDay(now) : now - (window === "7d" ? 7 : 30) * 86_400_000;
+				channelSendRef.current({ type: "usage_history_query", reqId, groupBy, ...(from === undefined ? {} : { from }) });
+				return reqId;
+			},
+		};
+	}
+
 	const chatApi = useRef({
 		chat,
 		send,
 		pushNotice,
 		dismissNotice,
+		channelApi: channelApiRef.current,
 		terminal: {
 			create: terminalCreate,
 			close: terminalClose,
@@ -1339,6 +1686,7 @@ export function useChat() {
 		send,
 		pushNotice,
 		dismissNotice,
+		channelApi: channelApiRef.current,
 		terminal: {
 			create: terminalCreate,
 			close: terminalClose,

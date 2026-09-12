@@ -2,11 +2,12 @@
 
 <!-- 🍞 AI Breadcrumb — @COUPLED docs/DEV-CON-PROPOSAL.md, docs/STRUCTURE.md, docs/README.md -->
 
-可复现的个人远程 AI 开发环境，以 Pi 为核心，保留 pi-web-ui 现有 Pi/DSH 引擎架构。一个仓库管理工具链、定制工作台、验证和部署；私有配置与会话独立持久化。当前渠道功能的唯一开发范本是 [PI-dev 多渠道开发基准](docs/DEV-CON-PROPOSAL.md)，统一架构、范围、阶段与验收。功能实现仍暂停，`dev-con/` 暂保留为旧只读原型。
+可复现的个人远程 AI 开发环境，以 Pi 为核心，保留 pi-web-ui 现有 Pi/DSH 引擎架构。一个仓库管理工具链、定制工作台、验证和部署；私有配置与会话独立持久化。当前渠道功能的唯一开发范本是 [PI-dev 多渠道开发基准](docs/DEV-CON-PROPOSAL.md)，统一架构、范围、阶段与验收；P0 技术结论见 [P0 技术验证](docs/P0-VERIFICATION.md)。旧 `dev-con/` 只读原型已按决定移除，渠道功能全部实现于现有 Web 应用。
 
 ## 从哪里开始
 
 - [唯一开发基准](docs/DEV-CON-PROPOSAL.md)：Pi多渠道配置、热切换、Token/费用、账户查询的需求、设计约束和验收。
+- [P0 技术验证](docs/P0-VERIFICATION.md)：授权隔离、切换时点、命令/版本、用量身份、存储、账户查询、入口安全的结论与证据。
 - [文档导航](docs/README.md)：区分开发基准、工程规范与历史材料。
 - [领域词汇](CONTEXT.md)：渠道、绑定、热切换、费用与余额的含义。
 - [DEV-CON历史材料](docs/history/dev-con/README.md)：前期评估、架构讨论和暂停原型，均非当前计划。
@@ -35,13 +36,17 @@ npm run dev
 
 bootstrap 下载并校验项目内工具链，使用锁文件安装依赖、构建并生成本机配置。它不会安装系统软件或自动停止在线服务。已经准备好工具链时可用 `npm run setup:dependencies` 和 `npm run build`。
 
-`npm run dev` 使用当前 checkout 的 `.dev/config` 与 `.dev/state`，前端 `http://localhost:5173`，后端 `127.0.0.1:8890`；首次使用需要为这个开发实例单独配置授权。在线8788、候选8790与原型预留8791保持分开。远程开发可用SSH隧道转发5173。
+`npm run dev` 使用当前 checkout 的 `.dev/config` 与 `.dev/state`，前端 `http://localhost:5173`，后端 `127.0.0.1:8890`；首次使用需要为这个开发实例单独配置授权。在线8788、候选8790与运维预留8791保持分开。远程开发可用SSH隧道转发5173。
 
 ```bash
 npm run build             # vendor应用及版本信息
 npm run typecheck         # 服务端、前端及测试类型
-npm test                  # 根工程/配置/服务/发布测试
+npm test                  # 根工程/配置/服务/发布测试（含用量口径单测）
 npm run test:unit         # 应用单元测试
+npm run test:channels:unit # 渠道模型/存储/服务/账户单测
+npm run test:channels     # 端到端：双对话双密钥隔离（需先 build）
+npm run test:channels:multi # 端到端：两个客户端（广播一致/冲突可见可恢复/绑定不互相覆盖）
+npm run test:channels:browser # Chromium：渠道选择器/待生效/用量归属的界面断言
 npm run test:smoke        # 自包含协议冒烟
 npm run test:performance  # Chromium，合成数据，无真实模型调用
 npm run check:publish

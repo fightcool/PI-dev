@@ -1,3 +1,6 @@
+/* 🍞 @COUPLED web/src/components/ChannelSettings.tsx（渠道分区：建/改/删/查 + 白名单 + 按渠道用量）
+ *   web/src/components/ChannelUsage.tsx（复用 chat.usageHistory 的按渠道聚合）
+ *   📖 docs/DEV-CON-PROPOSAL.md §6 */
 import { useEffect, useRef, useState } from "react";
 import {
 	FiArchive,
@@ -10,8 +13,10 @@ import {
 	FiFileText,
 	FiHelpCircle,
 	FiMessageSquare,
+	FiHardDrive,
 	FiPackage,
 	FiPlus,
+	FiRadio,
 	FiRefreshCw,
 	FiSend,
 	FiSettings,
@@ -29,6 +34,9 @@ import { PluginSettingsForm } from "./PluginSettingsForm";
 import type {
 	ClientMessage,
 	CommandDef,
+	ModelInfo,
+	ProviderKeyInfo,
+	ProviderStatus,
 	UiExtensionInfo,
 	UiPluginCatalogEntry,
 	UiPluginInfo,
@@ -36,6 +44,9 @@ import type {
 	UiSkillInfo,
 	UiSubagentTemplate,
 } from "../types";
+import type { ChannelApi, ChannelCommandResult, ChannelStateMsg, DiagnosticsMsg, ResourcesMsg, StorageMsg, UsageHistoryMsg } from "../use-chat";
+import { ChannelSettings, type ChannelModelsResult } from "./ChannelSettings";
+import { SystemResources } from "./SystemResources";
 import {
 	clearPromptHistory,
 	loadPromptHistory,
@@ -89,8 +100,28 @@ interface SettingsModalProps {
 		}[];
 		state?: { cwd: string; conversationId: string } | null;
 		activeConversationId?: string | null;
+		/** DEV-CON 渠道快照（channel_state）+ 回执（按 commandId）。 */
+		channelState: ChannelStateMsg | null;
+		/** P4 候选：最近一次系统资源快照（只读）。 */
+		resources?: ResourcesMsg | null;
+		/** P4 运维：最近一次存储占用明细（只读）。 */
+		storage?: StorageMsg | null;
+		/** P4 运维：最近一次诊断包（只读元数据）。 */
+		diagnostics?: DiagnosticsMsg | null;
+		channelResults: Record<string, ChannelCommandResult>;
+		/** 命名密钥（仅名称 + 是否 active），渠道表单按名称引用。 */
+		providerKeys: Record<string, ProviderKeyInfo[]>;
+		/** 有效模型（选默认模型用）与已注册服务商（派生可选 providerId）。 */
+		models: ModelInfo[];
+		providers: ProviderStatus[];
+		/** P4 用量历史（渠道分区的「按渠道用量」只读复用；与用量面板共享）。 */
+		usageHistory: UsageHistoryMsg | null;
+		/** 渠道表单「获取接口清单」的上一次探测结果（按 reqId/providerId 匹配）。 */
+		channelModelsResult: ChannelModelsResult | null;
 	};
 	send: (msg: ClientMessage) => boolean;
+	/** DEV-CON 渠道命令 API（channel_save / channel_delete / 默认值 / 账户查询）。 */
+	channelApi: ChannelApi;
 	terminal: SettingsTerminalBridge;
 	/** Switch the top-level view to the terminal (uninstall runs there). */
 	onSwitchToTerminal: () => void;
@@ -193,9 +224,11 @@ type SettingsTab =
 	| "review"
 	| "vision"
 	| "presets"
-	| "subagent-templates";
+	| "subagent-templates"
+	| "channels"
+	| "system";
 
-export function SettingsModal({ chat, send, terminal, onSwitchToTerminal, onClose }: SettingsModalProps) {
+export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerminal, onClose }: SettingsModalProps) {
 	const t = useT();
 	const { locale } = useI18n();
 	// {{token}} 元数据文案键是动态的（promptTok_<token>[,_desc]），用 tt 跳过字面量类型。
@@ -349,6 +382,10 @@ export function SettingsModal({ chat, send, terminal, onSwitchToTerminal, onClos
 
 	const skillCount = `${settings.skills.filter((s) => s.enabled).length}/${settings.skills.length}`;
 	const reviewSkillCount = `${settings.reviewSkills.filter((s) => s.enabled).length}/${settings.reviewSkills.length}`;
+	// 渠道表单可选的服务商：已注册服务商 + 有可用模型的服务商（去重排序；空 id 丢弃）。
+	const channelProviderIds = [...new Set([...chat.providers.map((p) => p.id), ...chat.models.map((m) => m.provider)])]
+		.filter((id) => !!id)
+		.sort((a, b) => a.localeCompare(b));
 
 	const tabs: {
 		id: SettingsTab;
@@ -378,6 +415,9 @@ export function SettingsModal({ chat, send, terminal, onSwitchToTerminal, onClos
 		// DSH：无视觉桥概念（真图片直通 vision 模型），隐藏该分区。
 		...(isDsh ? [] : [{ id: "vision" as const, icon: <FiEye />, label: t("settingsVisionBridge") }]),
 		{ id: "presets", icon: <FiSliders />, label: t("settingsPresets"), count: settings.presets.length },
+		// DEV-CON 渠道：没有渠道配置的实例也显示（这是唯一的渠道配置入口）。
+		{ id: "channels", icon: <FiRadio />, label: t("settingsChannels"), count: chat.channelState?.channels.length ?? 0 },
+		{ id: "system", icon: <FiHardDrive />, label: t("settingsSystem") },
 		// DSH：无子代理概念，隐藏该分区。
 		...(isDsh
 			? []
@@ -637,6 +677,7 @@ export function SettingsModal({ chat, send, terminal, onSwitchToTerminal, onClos
 							<button
 								key={tb.id}
 								type="button"
+								data-tab={tb.id}
 								className={`settings-tab${tab === tb.id ? " active" : ""}`}
 								aria-current={tab === tb.id ? "true" : undefined}
 								title={tb.label}
@@ -1176,8 +1217,8 @@ export function SettingsModal({ chat, send, terminal, onSwitchToTerminal, onClos
 								<ToggleRow
 									title={t("toolsWrap")}
 									tip={t("toolsWrapDesc")}
-									enabled={settings.toolsWrap ?? true}
-									onToggle={() => setPartial({ toolsWrap: !(settings.toolsWrap ?? true) })}
+									enabled={settings.toolsWrap ?? false}
+									onToggle={() => setPartial({ toolsWrap: !(settings.toolsWrap ?? false) })}
 								/>
 								<hr className="set-sep" />
 								<ToggleRow
@@ -2314,6 +2355,50 @@ export function SettingsModal({ chat, send, terminal, onSwitchToTerminal, onClos
 										))}
 									</div>
 								)}
+							</div>
+						)}
+
+						{/* ---- DEV-CON channels ------------------------------------------ */}
+						{tab === "channels" && (
+							<div className="set-section">
+								<div className="set-section-title">
+									<FiRadio className="set-section-icon" />
+									{t("settingsChannels")}
+								</div>
+								<p className="set-hint">{t("settingsChannelsDesc")}</p>
+								<ChannelSettings
+									channelState={chat.channelState}
+									channelResults={chat.channelResults}
+									channelApi={channelApi}
+									providerIds={channelProviderIds}
+									providerKeys={chat.providerKeys}
+									models={chat.models}
+									usageHistory={chat.usageHistory}
+									channelModelsResult={chat.channelModelsResult}
+									onFetchChannelModels={(providerId, keyName, reqId) =>
+										send({ type: "fetch_channel_models", reqId, providerId, keyName })
+									}
+								/>
+							</div>
+						)}
+
+						{/* ---- P4 候选：系统资源（只读快照） ----------------------------- */}
+						{tab === "system" && (
+							<div className="set-section">
+								<div className="set-section-title">
+									<FiHardDrive className="set-section-icon" />
+									{t("resourcesTitle")}
+								</div>
+								<SystemResources
+										snapshot={chat.resources?.snapshot ?? null}
+										onRefresh={channelApi.listResources}
+										storage={chat.storage}
+										onLoadStorage={channelApi.listStorage}
+										onSetRetention={channelApi.setUsageRetention}
+										diagnostics={chat.diagnostics}
+										onLoadDiagnostics={channelApi.listDiagnostics}
+										onSetOpsAlerts={channelApi.setOpsAlerts}
+									/>
 							</div>
 						)}
 					</div>
