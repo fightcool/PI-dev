@@ -10825,6 +10825,21 @@ button.source-default-toggle {
 	color: var(--text-faint);
 	line-height: 1.5;
 }
+.usage-account-retry {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	justify-content: space-between;
+	margin-top: 6px;
+	font-size: 11px;
+	color: var(--amber);
+}
+.usage-account-retry .usage-topup {
+	margin-left: 0;
+	border-color: var(--amber);
+	color: var(--amber);
+}
+
 .usage-account-auto {
 	color: var(--text-faint);
 	font-size: 11px;

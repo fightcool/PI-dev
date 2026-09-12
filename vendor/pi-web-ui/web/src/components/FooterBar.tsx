@@ -24,6 +24,8 @@ interface FooterBarProps {
 	chat: ChatState;
 	/** P4：用量历史查询（只读）；未提供时用量详情不显示历史区。 */
 	onQueryUsageHistory?: (groupBy: UsageHistoryMsg["groupBy"], window: UsageHistoryWindow) => number;
+	/** 手动重试该渠道的余额查询（连续失败后自动刷新停止，重试恢复）。 */
+	onRetryAccount?: (channelId: string) => void;
 	/** 用量明细面板开合（提到 App 层：输入框工具条的「渠道余额」chip 也会打开它）。 */
 	usageOpen?: boolean;
 	onUsageOpenChange?: (open: boolean) => void;
@@ -41,7 +43,7 @@ const MACHINE_ROOT = "@root";
  * workspace path — click the path to open a directory picker (browse into
  * folders, go up, create folders, or pick one as the working directory).
  */
-export function FooterBar({ chat, send, onQueryUsageHistory, usageOpen: usageOpenProp, onUsageOpenChange }: FooterBarProps) {
+export function FooterBar({ chat, send, onQueryUsageHistory, usageOpen: usageOpenProp, onUsageOpenChange, onRetryAccount }: FooterBarProps) {
 	const t = useT();
 	const state = chat.state;
 	const [editing, setEditing] = useState(false);
@@ -337,6 +339,7 @@ export function FooterBar({ chat, send, onQueryUsageHistory, usageOpen: usageOpe
 						runId={s.runId}
 						channels={channels}
 						accountView={accountView}
+						onRetryAccount={onRetryAccount}
 					/>
 				</>
 			)}

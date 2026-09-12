@@ -89,36 +89,75 @@ export function topupUrlOf(channel: UiChannelInfo | null | undefined): string | 
 	return /^https?:\/\//i.test(url) ? url : null;
 }
 
-/** 余额自动刷新周期：@MAGIC 与服务端账户缓存 TTL 对齐（channel-accounts.ts 的 CACHE_TTL_MS）。 */
-export const BALANCE_REFRESH_MS = 5 * 60_000;
+/** 余额自动刷新周期（默认值，不做配置项）。@MAGIC 比服务端缓存 TTL 短：先看到新数字，缓存只管兜底。 */
+export const BALANCE_REFRESH_MS = 2 * 60_000;
+
+/** 连续失败达到这个重试次数后**停止自动获取**（首次尝试不算重试）。 */
+export const BALANCE_MAX_RETRIES = 3;
 
 /**
- * 余额自动刷新的调度（抽出来是为了能用假时钟精确单测「多久刷一次」）。
- * @CONTRACT 立即查一次；之后每 intervalMs 一次；后台标签页不查；回到前台时若上次数据
- *   已超过一个周期则补一次。返回停止函数（组件卸载/切换渠道时调用）。
+ * 每个渠道的连续失败次数（模块级：调度器与「重试」按钮都要读写同一份计数）。
+ * @WHY 连续失败（供应商接口挂了/没有查询能力）时不该无限重试打人家接口，也不该永远不恢复 ——
+ *   计数放在这里，用户点一次「重试」就清零，自动刷新随即恢复。
+ */
+const failuresByChannel = new Map<string, number>();
+
+/** 当前连续失败次数（测试与 UI 用）。 */
+export function balanceFailuresOf(channelId: string): number {
+	return failuresByChannel.get(channelId) ?? 0;
+}
+
+/** 手动重试：清零失败计数（自动刷新恢复可用）。 */
+export function resetBalanceFailures(channelId: string): void {
+	failuresByChannel.delete(channelId);
+}
+
+/**
+ * 余额自动刷新的调度（抽出来是为了能用假时钟精确单测「多久刷一次 / 失败几次就停」）。
+ * @CONTRACT
+ *   - 立即查一次；之后每 intervalMs 一次；后台标签页不查；回到前台时若上次数据已超过一个
+ *     周期则补一次。
+ *   - 上一次结果是 failed 就累加失败计数，连续失败超过 {@link BALANCE_MAX_RETRIES} 次后
+ *     **停止发起查询**（定时器还在，但没有请求；用户点「重试」清零即恢复）。
+ *   - 返回停止函数（组件卸载/切换渠道时调用）。
  */
 export function startBalanceRefresh(opts: {
+	/** 该渠道的 id（失败计数按渠道分开记）。 */
+	channelId: string;
 	/** 发一次账户查询（服务端有 10 秒限频 + 5 分钟缓存兜底）。 */
 	query: () => void;
+	/** 上一次查询的状态（来自服务端账户快照）；undefined = 还没有结果。 */
+	statusOf?: () => "ok" | "failed" | "stale" | "unsupported" | undefined;
 	/** 上次成功查询的时间（来自服务端快照 checkedAt）；0 = 还没有数据。 */
 	lastCheckedAt?: () => number;
 	/** 页面是否在后台（默认读 document.hidden）。 */
 	isHidden?: () => boolean;
 	now?: () => number;
 	intervalMs?: number;
+	maxRetries?: number;
 }): () => void {
 	const intervalMs = opts.intervalMs ?? BALANCE_REFRESH_MS;
+	const maxRetries = opts.maxRetries ?? BALANCE_MAX_RETRIES;
 	const isHidden = opts.isHidden ?? (() => typeof document !== "undefined" && document.hidden);
 	const now = opts.now ?? (() => Date.now());
-	opts.query();
+	const attempt = () => {
+		// 先看上一次的结果：失败累加，成功后清零（失败计数只关心「连续」失败）。
+		const status = opts.statusOf?.();
+		if (status === "failed") failuresByChannel.set(opts.channelId, balanceFailuresOf(opts.channelId) + 1);
+		else if (status !== undefined) failuresByChannel.set(opts.channelId, 0);
+		// 连续失败超过上限就不再打供应商接口了（等用户点重试清零）。
+		if (balanceFailuresOf(opts.channelId) > maxRetries) return;
+		opts.query();
+	};
+	attempt();
 	const timer = setInterval(() => {
 		if (isHidden()) return;
-		opts.query();
+		attempt();
 	}, intervalMs);
 	const onVisible = () => {
 		if (isHidden()) return;
 		const last = opts.lastCheckedAt?.() ?? 0;
-		if (now() - last > intervalMs) opts.query();
+		if (now() - last > intervalMs) attempt();
 	};
 	if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisible);
 	return () => {

@@ -6,6 +6,7 @@
 import { useCallback, type CSSProperties } from "react";
 import { TopBar } from "./components/TopBar";
 import { FooterBar } from "./components/FooterBar";
+import { resetBalanceFailures } from "./channel-account";
 import { TemplateProvider } from "./components/PromptTemplates";
 import { useChat } from "./use-chat";
 import { useT } from "./i18n";
@@ -107,6 +108,11 @@ export function App() {
 				onQueryUsageHistory={connection.channelApi.queryUsageHistory}
 				usageOpen={dialogs.usageOpen}
 				onUsageOpenChange={dialogs.setUsageOpen}
+				onRetryAccount={(channelId) => {
+					// 连续失败后自动刷新会停：重试要同时清零计数，否则下一次 tick 还是不发请求。
+					resetBalanceFailures(channelId);
+					connection.channelApi.queryChannelAccount(channelId);
+				}}
 			/>
 			<AppDialogs
 				connection={connection}

@@ -107,12 +107,17 @@ export const ModelThinking = memo(function ModelThinking({
 	const lastCheckedAt = accountStatus?.checkedAt ?? 0;
 	const lastCheckedRef = useRef(lastCheckedAt);
 	lastCheckedRef.current = lastCheckedAt;
+	/** 失败计数用「最近一次结果的状态」判断，放 ref 里避免把状态写进 effect 依赖。 */
+	const statusRef = useRef(accountStatus?.status);
+	statusRef.current = accountStatus?.status;
 	const balanceChannelId = balanceChannel?.id ?? null;
 	useEffect(() => {
 		if (!hasAccountQuery || !balanceChannelId) return;
 		// 调度细节（周期/后台跳过/回前台补一次）在 channel-account.ts，那里有假时钟单测。
 		return startBalanceRefresh({
+			channelId: balanceChannelId,
 			query: () => channelApi.queryChannelAccount(balanceChannelId),
+			statusOf: () => statusRef.current,
 			lastCheckedAt: () => lastCheckedRef.current,
 		});
 	}, [hasAccountQuery, balanceChannelId, channelApi]);

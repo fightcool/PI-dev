@@ -72,6 +72,7 @@ export function UsageDetail({
 	runId,
 	channels,
 	accountView,
+	onRetryAccount,
 }: {
 	tokens: UiState["stats"]["tokens"];
 	cost: number;
@@ -85,6 +86,8 @@ export function UsageDetail({
 	channels: UiChannelInfo[];
 	/** 当前对话对应渠道的账户快照（chip 点开就看这里；主界面只说「余额未知」，细节在这里）。 */
 	accountView?: ChannelAccountView;
+	/** 手动重试余额查询（连续失败后自动刷新会停，重试即恢复）。 */
+	onRetryAccount?: (channelId: string) => void;
 }) {
 	const t = useT();
 	const request = tokens.request ?? tokens;
@@ -118,7 +121,8 @@ export function UsageDetail({
 	 */
 	const accountSection = (() => {
 		const view = accountView;
-		if (!view?.channel) return null;
+		const channel = view?.channel ?? null;
+		if (!view || !channel) return null;
 		const status = view.account;
 		const used = usedTextOf(status);
 		const stateLabel =
@@ -135,7 +139,7 @@ export function UsageDetail({
 			<div className="usage-account">
 				<div className="usage-account-head">
 					{t("channelAccountDetailTitle")}
-					<span className="usage-account-channel">{view.channel.displayName}</span>
+					<span className="usage-account-channel">{channel.displayName}</span>
 					<span className={`chan-acct ${status?.status ?? "unknown"}`}>{stateLabel}</span>
 				</div>
 				<div className="usage-account-rows">
@@ -163,6 +167,16 @@ export function UsageDetail({
 					</div>
 				)}
 				{view.derived && <div className="usage-account-note">{t("channelBalanceDerived")}</div>}
+				{status?.status === "failed" && (
+					<div className="usage-account-retry">
+						<span>{t("channelAccountRetryHint")}</span>
+						{onRetryAccount && (
+							<button type="button" className="usage-topup" onClick={() => onRetryAccount(channel.id)}>
+								{t("channelAccountRetry")}
+							</button>
+						)}
+					</div>
+				)}
 			</div>
 		);
 	})();
