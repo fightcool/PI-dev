@@ -44,8 +44,10 @@ const jsonText = (v: unknown): string => (v && typeof v === "object" ? JSON.stri
 
 /** 预设模板 → 表单补丁（用户可继续修改；kind 固定为 template）。 */
 export function draftFromTemplate(template: Record<string, unknown>): Partial<ChannelDraft> {
+	// 预设可以指向内置适配器（openai-gateway 这类）：它们自带回退逻辑，不能一律压成 template。
+	const kind = typeof template.kind === "string" && template.kind.trim() ? template.kind.trim() : "template";
 	return {
-		accountKind: "template",
+		accountKind: kind,
 		accountUrl: str(template.url),
 		accountMethod: template.method === "POST" ? "POST" : "GET",
 		accountApiKeyHeader: str(template.apiKeyHeader) || DEFAULT_API_KEY_HEADER,
@@ -176,10 +178,14 @@ export function ChannelAccountQuery({
 					{t("channelAccountModeNone")}
 				</option>
 				<option value="template">{t("channelAccountModeTemplate")}</option>
-				{/* 旧配置的 kind 保留可选，避免编辑一次就把兼容适配器改成模板。 */}
-				{draft.accountKind && draft.accountKind !== "template" && (
-					<option value={draft.accountKind}>{t("channelAccountModeLegacy")}</option>
-				)}
+				{/* 内置适配器：自带「控制台令牌失败 → 账单接口」回退，比手写模板更省事。 */}
+				<option value="openai-gateway">{t("channelAccountModeGateway")}</option>
+				{/* 其它旧配置的 kind 保留可选，避免编辑一次就把兼容适配器改成模板。 */}
+				{draft.accountKind &&
+					draft.accountKind !== "template" &&
+					draft.accountKind !== "openai-gateway" && (
+						<option value={draft.accountKind}>{t("channelAccountModeLegacy")}</option>
+					)}
 			</SelectField>
 			{draft.accountKind && (
 				<>

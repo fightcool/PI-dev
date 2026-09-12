@@ -45,6 +45,57 @@ describe("account queries", () => {
 		expect(r.snapshot()[0].status).toBe("unsupported");
 	});
 
+	it("falls back to the OpenAI-compatible billing API when the console token is missing", async () => {
+		// 实测形态（www.cctq.ai）：模型 key 打 /api/user/self 一律 401，但账单接口可用。
+		const base = await stub((url, res) => {
+			if (url.pathname === "/api/user/self") {
+				res.writeHead(401, { "content-type": "application/json" });
+				return res.end(JSON.stringify({ code: "AUTH_UNAUTHORIZED", success: false }));
+			}
+			if (url.pathname === "/v1/dashboard/billing/usage") {
+				expect(url.searchParams.get("start_date")).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+				res.writeHead(200, { "content-type": "application/json" });
+				return res.end(JSON.stringify({ object: "list", total_usage: 3.5 }));
+			}
+			if (url.pathname === "/v1/dashboard/billing/subscription") {
+				res.writeHead(200, { "content-type": "application/json" });
+				return res.end(JSON.stringify({ hard_limit_usd: 100 }));
+			}
+			res.writeHead(404);
+			res.end("{}");
+		});
+		const result = await registry().query(channel(`${base}/v1`), () => "sk-model-key");
+		expect(result).toMatchObject({ status: "ok", unit: "USD" });
+		expect(result.balance).toBeCloseTo(96.5); // 100 - 3.5
+		expect(result.quota).toEqual({ used: 3.5, limit: 100, remaining: 96.5, unit: "USD" });
+		expect(result.note).toContain("账单接口");
+	});
+
+	it("never reports the unlimited placeholder as a balance (reports used instead)", async () => {
+		// new-api 对「不限额度」的 token 返回 1e8 占位值：不能当成余额显示（§7 不猜余额）。
+		const base = await stub((url, res) => {
+			res.writeHead(url.pathname === "/api/user/self" ? 403 : 200, { "content-type": "application/json" });
+			if (url.pathname === "/v1/dashboard/billing/usage") return res.end(JSON.stringify({ total_usage: 0.0558 }));
+			if (url.pathname === "/v1/dashboard/billing/subscription") return res.end(JSON.stringify({ hard_limit_usd: 100000000 }));
+			res.end(JSON.stringify({ success: false }));
+		});
+		const result = await registry().query(channel(base), () => "sk");
+		expect(result.status).toBe("ok");
+		expect(result.balance).toBeUndefined();
+		expect(result.quota).toEqual({ used: 0.0558, unit: "USD" });
+		expect(result.note).toContain("控制台访问令牌");
+	});
+
+	it("keeps the console-token hint when neither the console nor the billing API answers", async () => {
+		const base = await stub((_url, res) => {
+			res.writeHead(401, { "content-type": "application/json" });
+			res.end(JSON.stringify({ success: false }));
+		});
+		const result = await registry().query(channel(base), () => "sk");
+		expect(result.status).toBe("failed");
+		expect(result.error).toContain("控制台访问令牌");
+	});
+
 	it("parses an OpenAI-compatible gateway balance with the configured scale and unit", async () => {
 		const base = await stub((url, res) => {
 			expect(url.pathname).toBe("/api/user/self");

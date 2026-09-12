@@ -88,9 +88,10 @@ describe("built-in presets", () => {
 		const deepseek = ACCOUNT_TEMPLATE_PRESETS[0].template;
 		expect(applyAccountTemplate({ ...deepseek, kind: "template" } as never, { is_available: true, balance_infos: [{ currency: "CNY", total_balance: "1.00" }] }))
 			.toMatchObject({ status: "ok", unit: "CNY", balance: 1 });
+		// 网关预设指向**内置适配器**（不是模板）：模型 key 打不了 /api/user/self 时它会自动退回
+		// OpenAI 兼容账单接口（见 channel-accounts.ts 的 queryOpenAiBilling），模板做不到这一点。
 		const gateway = ACCOUNT_TEMPLATE_PRESETS[1].template;
-		expect(applyAccountTemplate({ ...gateway, kind: "template" } as never, { data: { quota: 1_000_000, used_quota: 0 } }))
-			.toMatchObject({ status: "ok", unit: "USD", balance: 2 });
+		expect(gateway).toMatchObject({ kind: "openai-gateway", url: "{baseUrl}", scale: 500000, unit: "USD" });
 		const openrouter = ACCOUNT_TEMPLATE_PRESETS[2].template;
 		expect(applyAccountTemplate({ ...openrouter, kind: "template" } as never, { data: { total_credits: 20, total_usage: 5 } }))
 			.toMatchObject({ status: "ok", unit: "USD", balance: 20 });
