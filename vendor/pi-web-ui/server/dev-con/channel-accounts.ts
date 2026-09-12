@@ -136,25 +136,99 @@ function num(value: unknown): number | undefined {
 	return typeof n === "number" && Number.isFinite(n) ? n : undefined;
 }
 
+/** @MAGIC new-api/one-api 用「不限额度」占位值（实测 1e8）：大于等于它就不当成真余额。 */
+const UNLIMITED_QUOTA_MIN = 1e7;
+/** @MAGIC 账单接口的用量窗口（OpenAI 兼容 API 用 start_date/end_date 查询，取近 30 天）。 */
+const BILLING_WINDOW_DAYS = 30;
+
+/** 站点根：从用户给的地址里剥掉 /api/user/self、/v1…、尾斜杠，得到 `https://host[:port]`。 */
+function siteRootOf(raw: string): string {
+	return raw
+		.trim()
+		.replace(/\/+$/, "")
+		.replace(/\/api\/user\/self$/i, "")
+		.replace(/\/v\d+[a-z-]*\/.*$/i, "")
+		.replace(/\/v\d+[a-z-]*$/i, "")
+		.replace(/\/+$/, "");
+}
+
+/**
+ * OpenAI 兼容账单接口（new-api / one-api 均实现；**模型 key 就能查**，不需要控制台令牌）：
+ *   GET {origin}/v1/dashboard/billing/subscription → hard_limit_usd（总额度；不限额度时为 1e8 占位）
+ *   GET {origin}/v1/dashboard/billing/usage?start_date&end_date → total_usage（窗口内已用，USD）
+ * @WHY 实测（2026-09-12，www.cctq.ai）：`/api/user/self` 对模型 key 一律 401（需要控制台访问令牌），
+ *   而这两个账单端点用模型 key 返回 200；`subscription` 在「不限额度」的 token 上只给占位值，
+ *   所以**能查就报已用，查不到余额就不假装有余额**（§7：不猜测余额）。
+ * @CONTRACT 返回 null = 该站不支持账单接口（调用方回落原错误 + 控制台令牌提示）。
+ */
+async function queryOpenAiBilling(
+	fetchImpl: typeof fetch,
+	origin: string,
+	apiKey: string,
+	signal: AbortSignal,
+): Promise<Omit<AccountQueryResult, "accountRef" | "kind"> | null> {
+	const headers = { authorization: `Bearer ${apiKey}`, accept: "application/json" };
+	const end = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
+	const start = new Date(Date.now() - BILLING_WINDOW_DAYS * 864e5).toISOString().slice(0, 10);
+	const usage = await fetchJson(
+		fetchImpl,
+		`${origin}/v1/dashboard/billing/usage?start_date=${start}&end_date=${end}`,
+		{ method: "GET", headers },
+		signal,
+	);
+	if (!usage.ok) return null;
+	const used = num(((usage.body ?? {}) as Record<string, unknown>).total_usage);
+	if (used === undefined) return null;
+	const sub = await fetchJson(fetchImpl, `${origin}/v1/dashboard/billing/subscription`, { method: "GET", headers }, signal);
+	const subBody = (sub.ok ? (sub.body ?? {}) : {}) as Record<string, unknown>;
+	const total = num(subBody.hard_limit_usd) ?? num(subBody.soft_limit_usd) ?? num(subBody.system_hard_limit_usd);
+	// 不下断言「近 N 天」的语义：窗口由 start_date/end_date 表达，但网关可能按自身口径返回。
+	const note = "来自网关账单接口";
+	// 真总额度 → 给余额；只是「不限额度」占位值 → 只说已用，不假装余额。
+	if (total !== undefined && total < UNLIMITED_QUOTA_MIN) {
+		const remaining = total - used;
+		return {
+			status: "ok",
+			unit: "USD",
+			balance: remaining,
+			quota: { used, limit: total, remaining, unit: "USD" },
+			scope: "gateway",
+			note: `${note}（总额度 − 报出的已用）`,
+			checkedAt: Date.now(),
+		};
+	}
+	return {
+		status: "ok",
+		unit: "USD",
+		quota: { used, unit: "USD" },
+		scope: "gateway",
+		note: `${note}报出的已用额度；该网关未提供可用余额（/api/user/self 需要控制台访问令牌）`,
+		checkedAt: Date.now(),
+	};
+}
+
 /**
  * OpenAI 兼容自建网关（one-api / new-api 一类）：默认 /api/user/self，
  * 用同一把 key 鉴权（Bearer）。额度字段名各家不同，只读取明确存在的数值字段，
  * 读不到就报失败——不猜。
+ * @CONTRACT 顺序：先 /api/user/self（配了控制台访问令牌时能拿到真余额）→
+ *   401/403（只用模型 key）或该站没有这个接口时，退回 OpenAI 兼容账单接口报「已用」。
  */
 export const openAiGatewayAdapter: AccountAdapter = {
 	kind: "openai-gateway",
 	match: (channel) => accountConfig(channel)?.kind === "openai-gateway",
 	async query({ channel, apiKey, signal }) {
 		const cfg = accountConfig(channel);
-		const configured = (cfg?.url ?? "").replace(/\/+$/, "");
+		// 支持 {baseUrl} 占位（与模板适配器同一口径：取该渠道所属服务商注册的 baseUrl）。
+		const configured = renderTemplateText((cfg?.url ?? "").trim(), { baseUrl: providerBaseUrlOf(channel), apiKey }).replace(/\/+$/, "");
 		if (!configured) return { status: "failed", error: "未配置账户接口地址" };
+		const origin = siteRootOf(configured);
+		if (!/^https?:\/\//i.test(origin)) return { status: "failed", error: `账户接口地址必须是 http(s)：${configured}` };
 		// @BUGFIX 2026-09-11（真实网关验收发现）：one-api/new-api 的账户接口在**站点根**
 		// /api/user/self，而渠道里通常填的是 OpenAI 兼容基址（末尾带 /v1）。直接拼接会得到
 		// /v1/api/user/self → HTTP 404。这里先剥掉 /v1（或 /v1/... 子路径）再拼；若用户已直接
 		// 给出完整 /api/user/self 地址，则原样使用。
-		const url = /\/api\/user\/self$/.test(configured)
-			? configured
-			: `${configured.replace(/\/v1$/i, "").replace(/\/v1\/.*$/i, "")}/api/user/self`;
+		const url = /\/api\/user\/self$/i.test(configured) ? configured : `${origin}/api/user/self`;
 		const res = await fetchJson(
 			fetch,
 			url,
@@ -162,9 +236,12 @@ export const openAiGatewayAdapter: AccountAdapter = {
 			signal,
 		);
 		if (!res.ok) {
+			// 模型 key 打不了控制台接口（401/403）或该站没有 /api/user/self：退回账单接口。
+			const billing = await queryOpenAiBilling(fetch, origin, apiKey, signal);
+			if (billing) return billing;
 			const hint =
 				res.status === 401 || res.status === 403
-					? "（网关账户接口通常需要控制台访问令牌，而不是模型 key：请在账户配置里指定「账户凭据」）"
+					? "（网关账户接口需要控制台访问令牌，而不是模型 key：请在账户配置里指定「账户凭据」；该站的 OpenAI 兼容账单接口也不可用）"
 					: "";
 			return { status: "failed", error: `${res.error}${hint}` };
 		}
@@ -175,7 +252,11 @@ export const openAiGatewayAdapter: AccountAdapter = {
 		const quota = num(data.quota);
 		const used = num(data.used_quota) ?? num(data.usedQuota);
 		const displayName = typeof data.display_name === "string" ? data.display_name : typeof data.username === "string" ? data.username : undefined;
-		if (quota === undefined && used === undefined) return { status: "failed", error: "账户接口未返回可识别的额度字段" };
+		if (quota === undefined && used === undefined) {
+			const billing = await queryOpenAiBilling(fetch, origin, apiKey, signal);
+			if (billing) return billing;
+			return { status: "failed", error: "账户接口未返回可识别的额度字段" };
+		}
 		// balance = 可用余额（有已用量时扣掉），不是总额度。
 		const remaining = quota === undefined ? undefined : (used === undefined ? quota : quota - used) / scale;
 		return {

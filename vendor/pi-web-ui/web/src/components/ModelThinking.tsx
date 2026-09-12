@@ -96,6 +96,7 @@ export const ModelThinking = memo(function ModelThinking({
 		balanceQueried.current.add(balanceChannel.id);
 		channelApi.queryChannelAccount(balanceChannel.id);
 	}, [hasAccountQuery, balanceChannel?.id, channelApi]);
+	/** 有余额显示余额；网关只报得出「已用」时显示已用（不把已用当余额，见 §7）。 */
 	const balanceValue = (() => {
 		const s = accountStatus;
 		if (!s) return null;
@@ -103,6 +104,13 @@ export const ModelThinking = memo(function ModelThinking({
 		if (raw === undefined) return null;
 		const num = Number.isInteger(raw) ? String(raw) : raw.toFixed(2);
 		return s.unit ? `${num} ${s.unit}` : num;
+	})();
+	const usedValue = (() => {
+		if (balanceValue !== null) return null;
+		const used = accountStatus?.quota?.used;
+		if (used === undefined) return null;
+		const num = Number.isInteger(used) ? String(used) : used.toFixed(2);
+		return accountStatus?.unit ? `${num} ${accountStatus.unit}` : num;
 	})();
 	const balanceStateLabel = !accountStatus
 		? t("channelQuerying")
@@ -469,7 +477,8 @@ export const ModelThinking = memo(function ModelThinking({
 				>
 					<span className="chan-balance-dot" />
 					<span className="chip-sub">
-						{t("channelAccountBalance")} <span className="chan-balance-value">{balanceValue ?? "—"}</span>
+						{usedValue !== null ? t("channelAccountUsed") : t("channelAccountBalance")}{" "}
+						<span className="chan-balance-value">{balanceValue ?? usedValue ?? "—"}</span>
 					</span>
 				</button>
 			)}

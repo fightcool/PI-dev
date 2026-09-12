@@ -198,7 +198,8 @@ export const ACCOUNT_TEMPLATE_PRESETS: {
 	id: string;
 	label: string;
 	description: string;
-	template: Omit<AccountTemplate, "kind"> & { kind?: "template" };
+	/** 预设可以指向内置适配器（如 openai-gateway）：那个适配器带「控制台令牌失败 → 账单接口」回退。 */
+	template: Omit<AccountTemplate, "kind"> & { kind: "template" | "openai-gateway" };
 }[] = [
 	{
 		id: "deepseek",
@@ -214,13 +215,14 @@ export const ACCOUNT_TEMPLATE_PRESETS: {
 	},
 	{
 		id: "openai-gateway",
-		label: "OpenAI 兼容网关",
-		description: "GET {baseUrl}/api/user/self（Bearer）→ data.quota / data.used_quota",
+		label: "OpenAI 兼容网关（one-api / new-api）",
+		// @WHY 用内置适配器而不是模板：实测模型 key 打 /api/user/self 一律 401（需要控制台访问令牌），
+		// 适配器会在这时自动退回 OpenAI 兼容账单接口，至少给出「已用」；模板只能打一个地址。
+		description: "先 GET {baseUrl}/api/user/self（Bearer，需要控制台访问令牌）→ 不可用时退回 /v1/dashboard/billing（模型 key 可查「已用」）",
 		template: {
-			kind: "template",
-			url: "{baseUrl}/api/user/self",
+			kind: "openai-gateway",
+			url: "{baseUrl}",
 			method: "GET",
-			mapping: { limit: "data.quota", used: "data.used_quota", remaining: "data.quota", scope: "data.display_name" },
 			scale: 500000,
 			unit: "USD",
 		},

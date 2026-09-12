@@ -1293,6 +1293,8 @@ export const zh = {
 	channelModelsAddPh: "手动填模型 ID（如 claude-opus-5）",
 	customManagedInChannels: "在「设置 → 渠道」管理",
 	customAddInChannels: "新建/修改服务商请到「设置 → 渠道 → 新增渠道 → 服务商连接」：那里会把请求地址、协议、密钥与模型一并写入。",
+	channelAccountModeGateway: "网关适配器（one-api / new-api，失败自动退回账单接口）",
+	channelAccountUsed: "已用",
 } as const;
 
 /* ------------------------------------------------------------------ */
