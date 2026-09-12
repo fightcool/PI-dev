@@ -3727,6 +3727,10 @@ export class ClientSession {
 	refreshProviderModels(providerId: string, reqId: number): Promise<void> {
 		return this.modelAdmin.refreshProviderModels(providerId, reqId, () => this.getLang());
 	}
+	/** 渠道表单「获取接口清单」：服务端解析 baseUrl + 凭据密钥后探测 /models。 */
+	fetchChannelModels(reqId: number, providerId: string, keyName?: string | null): Promise<void> {
+		return this.modelAdmin.fetchChannelModels(reqId, providerId, keyName, () => this.getLang());
+	}
 	/** Copy a built-in provider into an editable custom-provider draft
 	 *  (clone_provider_result) — lets the user run a second API key without
 	 *  overwriting the built-in one. */
@@ -3910,6 +3914,8 @@ export class ClientSession {
 		reviewPrompt?: string;
 		reviewDisabledSkills?: string[];
 		disabledPlugins?: string[];
+		/** 内置服务商「删除」= 从管理模型列表隐藏（纯 UI 偏好，不 reload）。 */
+		hiddenBuiltinProviders?: string[];
 		markersEnabled?: boolean;
 		disabledMarkers?: string[];
 		quickPhrases?: string[];

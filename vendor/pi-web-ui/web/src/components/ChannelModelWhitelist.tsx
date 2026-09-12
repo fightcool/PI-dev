@@ -5,7 +5,9 @@
  *              @PERF=performance @CONTRACT=interface contract 📖=dev doc reference
  *
  * Breadcrumbs (changing this affects):
- *   @COUPLED components/ChannelForm.tsx（唯一挂载点：渠道表单的模型白名单）,
+ *   @COUPLED components/ChannelForm.tsx（唯一挂载点：渠道表单的模型白名单；「获取接口清单」
+ *            的 onFetchModels/fetchModels/fetchState 由它传入 → use-chat 的 channelModelsResult）,
+ *            server/model-admin.ts fetchChannelModels（服务端解析密钥后探测 <baseUrl>/models）,
  *            channel-models.ts（bareModelId 的 provider 前缀口径）,
  *            components/ModelChannelPicker.tsx + ChannelSettings.tsx（白名单的消费端）,
  *            server/dev-con/channel-model.ts（白名单存的是 provider 内部 id）
@@ -17,7 +19,7 @@
  * ──────────────────────────────────────────────────
  */
 import { useMemo, useState } from "react";
-import type { ModelInfo } from "../types";
+import type { ModelInfo, UiModelConfigEntry } from "../types";
 import { useT } from "../i18n";
 import { bareModelId } from "../channel-models";
 
@@ -30,12 +32,22 @@ export function ChannelModelWhitelist({
 	providerId,
 	value,
 	onChange,
+	onFetchModels,
+	fetchModels,
+	fetchState,
 }: {
 	models: ModelInfo[];
 	/** 当前选中的服务商（换服务商时白名单必须由调用方清空，见 ChannelForm）。 */
 	providerId: string;
 	value: string[];
 	onChange: (next: string[]) => void;
+	/** 「获取接口清单」：按服务商探测 <baseUrl>/models（密钥在服务端解析，见 use-chat）。
+	 *  缺省 = 不显示该按钮（DSH 等没有模型目录的引擎）。 */
+	onFetchModels?: () => void;
+	/** 接口（/models）返回的候选模型；与注册表合并展示（接口独有的带「接口」标记）。 */
+	fetchModels?: UiModelConfigEntry[];
+	/** 探测状态（进行中 / 上次结果）。 */
+	fetchState?: { busy: boolean; ok: boolean | null; baseUrl?: string; error?: string };
 }) {
 	const t = useT();
 	const [query, setQuery] = useState("");
@@ -57,8 +69,30 @@ export function ChannelModelWhitelist({
 		const known = new Set(available.map((r) => r.id));
 		return value.filter((id) => !known.has(id));
 	}, [value, available]);
+	/** 接口（/models）返回但注册表里没有的 id：也算候选，标记来源便于判断。
+	 *  @GOTCHA 这里**不能**再套 bareModelId：接口返回的就是「服务商内部 id」口径
+	 *  （聚合网关是 "openrouter/vendor/model"，普通服务商是 "deepseek-chat"），
+	 *  再剥一层前缀会存进一个永远匹配不上目录的 id。注册表侧的 available 已经是
+	 *  剥过前缀的内部 id，两者直接按字符串比对去重。 */
+	const fromApi = useMemo(() => {
+		const known = new Set(available.map((r) => r.id));
+		const seen = new Set<string>();
+		const rows: { id: string; name: string }[] = [];
+		for (const m of fetchModels ?? []) {
+			const id = (m.id ?? "").trim();
+			if (!id || known.has(id) || seen.has(id)) continue;
+			seen.add(id);
+			rows.push({ id, name: m.name ?? "" });
+		}
+		return rows;
+	}, [available, fetchModels]);
+	/** 下拉里总共可勾选的候选 = 注册表 + 接口返回。 */
+	const candidates = useMemo(() => [...available, ...fromApi], [available, fromApi]);
 	const q = query.trim().toLowerCase();
-	const listed = q ? available.filter((r) => r.id.toLowerCase().includes(q) || r.name.toLowerCase().includes(q)) : available;
+	const listed = q
+		? candidates.filter((r) => r.id.toLowerCase().includes(q) || r.name.toLowerCase().includes(q))
+		: candidates;
+	const apiIds = new Set(fromApi.map((r) => r.id));
 	const toggle = (id: string) => onChange(value.includes(id) ? value.filter((v) => v !== id) : [...value, id]);
 
 	return (
@@ -79,7 +113,26 @@ export function ChannelModelWhitelist({
 				<button type="button" className="chan-btn" disabled={value.length === 0} onClick={() => onChange([])}>
 					{t("channelModelsClear")}
 				</button>
+				{onFetchModels && (
+					<button
+						type="button"
+						className="chan-btn primary"
+						title={t("channelModelsFetchTip")}
+						disabled={!providerId || fetchState?.busy}
+						onClick={onFetchModels}
+					>
+						{fetchState?.busy ? t("channelModelsFetching") : t("channelModelsFetch")}
+					</button>
+				)}
 			</div>
+			{/* 接口探测回执：成功要写清「哪个地址」返回了多少个，失败直接露原文（服务端已本地化）。 */}
+			{onFetchModels && fetchState && fetchState.ok !== null && (
+				<p className={`chan-models-fetch ${fetchState.ok ? "ok" : "err"}`}>
+					{fetchState.ok
+						? t("channelModelsFetched", { n: fetchModels?.length ?? 0, baseUrl: fetchState.baseUrl ?? "" })
+						: t("channelModelsFetchFailed", { msg: fetchState.error ?? "" })}
+				</p>
+			)}
 			<input
 				className="chan-models-search"
 				type="text"
@@ -88,11 +141,19 @@ export function ChannelModelWhitelist({
 				onChange={(e) => setQuery(e.target.value)}
 			/>
 			<div className="chan-models-list">
-				{available.length === 0 && unknown.length === 0 && <p className="set-hint">{t("channelModelsNoProvider")}</p>}
+				{candidates.length === 0 && unknown.length === 0 && <p className="set-hint">{t("channelModelsNoProvider")}</p>}
 				{listed.map((row) => (
-					<label key={row.id} className="chan-model-row">
+					<label
+						key={row.id}
+						className="chan-model-row"
+						// 接口独有的 id 不在本地模型目录里：勾了它，除非先在「管理模型」里把该服务商
+						// 补齐，否则该渠道仍选不到这个模型——这一点挂在 tooltip 上，不占版面。
+						title={apiIds.has(row.id) ? `${t("channelModelsFromApi")} · ${t("channelModelsUnknown")}` : undefined}
+					>
 						<input type="checkbox" checked={value.includes(row.id)} onChange={() => toggle(row.id)} />
-						<span className="chan-model-name">{row.name}</span>
+						{/* 接口行常常只有 id（端点不返回 display_name）——名字槽回落成 id，别留空。 */}
+						<span className="chan-model-name">{row.name || (apiIds.has(row.id) ? row.id : "")}</span>
+						{apiIds.has(row.id) && <span className="chan-model-src">{t("channelModelsFromApi")}</span>}
 						<span className="chan-model-id">{row.id}</span>
 					</label>
 				))}
@@ -103,7 +164,7 @@ export function ChannelModelWhitelist({
 						<span className="chan-model-id">{t("channelModelsUnknown")}</span>
 					</label>
 				))}
-				{available.length > 0 && listed.length === 0 && <p className="set-hint">{t("channelModelsNoMatch")}</p>}
+				{candidates.length > 0 && listed.length === 0 && <p className="set-hint">{t("channelModelsNoMatch")}</p>}
 			</div>
 			<p className="set-hint">{t("channelModelsHint")}</p>
 		</div>

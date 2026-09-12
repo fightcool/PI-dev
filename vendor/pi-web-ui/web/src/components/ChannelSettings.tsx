@@ -10,7 +10,8 @@
  *            components/SettingsModal.tsx (挂载为「渠道」分区 + 传 usageHistory),
  *            app/app-dialogs.tsx (channelApi),
  *            use-chat.ts (channelApi.saveChannel/deleteChannel/setChannelDefault/queryChannelAccount),
- *            channel-models.ts (白名单口径), server/dev-con/channel-service.ts + channel-accounts.ts
+ *            channel-models.ts (白名单口径), server/dev-con/channel-service.ts + channel-accounts.ts,
+ *            server/model-admin.ts fetchChannelModels（/models 探测：密钥只在服务端解析）
  *   📖 docs/DEV-CON-PROPOSAL.md §4（渠道档案/默认值/revision 冲突）, §6（设置页）, §7（余额/配额状态）
  *   @CONTRACT 只提交 channel_save / channel_delete / channel_set_default / channel_query_account；
  *             凭据只按 provider-keys.json 的名称引用，密钥正文永不进入本组件。
@@ -25,6 +26,16 @@ import { useEffect, useState } from "react";
 import { FiAlertTriangle, FiCheck, FiPlus, FiRefreshCw } from "react-icons/fi";
 import type { ChannelApi, ChannelCommandResult, ChannelStateMsg, UsageHistoryMsg } from "../use-chat";
 import type { ModelInfo, ProviderKeyInfo, UiChannelInfo } from "../types";
+
+/** 渠道表单「获取接口清单」的结果（use-chat 的 channelModelsResult）。 */
+export interface ChannelModelsResult {
+	reqId: number;
+	providerId: string;
+	ok: boolean;
+	models?: import("../types").UiModelConfigEntry[];
+	baseUrl?: string;
+	error?: string;
+}
 import { useI18n, useT } from "../i18n";
 import { channelAllowsModel } from "../channel-models";
 import { ChannelRow } from "./ChannelRow";
@@ -127,6 +138,8 @@ export function ChannelSettings({
 	providerKeys,
 	models,
 	usageHistory,
+	onFetchChannelModels,
+	channelModelsResult,
 }: {
 	channelState: ChannelStateMsg | null;
 	channelResults: Record<string, ChannelCommandResult>;
@@ -137,6 +150,10 @@ export function ChannelSettings({
 	models: ModelInfo[];
 	/** P4 用量历史（与用量详情面板共享同一份状态；本面板只用按渠道分组）。 */
 	usageHistory: UsageHistoryMsg | null;
+	/** 渠道表单「获取接口清单」：服务端按 baseUrl 探测 /models（密钥不出服务端）。 */
+	onFetchChannelModels?: (providerId: string, keyName: string | null, reqId: number) => void;
+	/** 上一次探测结果（透传给表单，见 use-chat 的 channelModelsResult）。 */
+	channelModelsResult?: ChannelModelsResult | null;
 }) {
 	const t = useT();
 	const { locale } = useI18n();
@@ -241,6 +258,8 @@ export function ChannelSettings({
 					providerKeys={providerKeys}
 					models={models}
 					accountPresets={channelState?.accountPresets}
+					onFetchChannelModels={onFetchChannelModels}
+					channelModelsResult={channelModelsResult}
 					onSave={(payload) => {
 						issue(channelApi.saveChannel(payload), "channelOpSave");
 						setDraft(null);

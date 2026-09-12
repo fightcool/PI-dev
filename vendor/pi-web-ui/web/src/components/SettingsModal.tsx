@@ -45,7 +45,7 @@ import type {
 	UiSubagentTemplate,
 } from "../types";
 import type { ChannelApi, ChannelCommandResult, ChannelStateMsg, DiagnosticsMsg, ResourcesMsg, StorageMsg, UsageHistoryMsg } from "../use-chat";
-import { ChannelSettings } from "./ChannelSettings";
+import { ChannelSettings, type ChannelModelsResult } from "./ChannelSettings";
 import { SystemResources } from "./SystemResources";
 import {
 	clearPromptHistory,
@@ -116,6 +116,8 @@ interface SettingsModalProps {
 		providers: ProviderStatus[];
 		/** P4 用量历史（渠道分区的「按渠道用量」只读复用；与用量面板共享）。 */
 		usageHistory: UsageHistoryMsg | null;
+		/** 渠道表单「获取接口清单」的上一次探测结果（按 reqId/providerId 匹配）。 */
+		channelModelsResult: ChannelModelsResult | null;
 	};
 	send: (msg: ClientMessage) => boolean;
 	/** DEV-CON 渠道命令 API（channel_save / channel_delete / 默认值 / 账户查询）。 */
@@ -2372,6 +2374,10 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 									providerKeys={chat.providerKeys}
 									models={chat.models}
 									usageHistory={chat.usageHistory}
+									channelModelsResult={chat.channelModelsResult}
+									onFetchChannelModels={(providerId, keyName, reqId) =>
+										send({ type: "fetch_channel_models", reqId, providerId, keyName })
+									}
 								/>
 							</div>
 						)}

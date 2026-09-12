@@ -848,6 +848,8 @@ export interface DispatchSession {
 	saveModelConfig(providerId: string, config: unknown): Promise<void>;
 	deleteModelConfig(providerId: string): Promise<void>;
 	listProviders(): Promise<void>;
+	/** 渠道表单「获取接口清单」（服务端解析密钥，不下发浏览器）。 */
+	fetchChannelModels(reqId: number, providerId: string, keyName?: string | null): Promise<void>;
 	listProviderKeys(): void;
 	addProviderKey(provider: string, apiKey: string, name?: string): Promise<void>;
 	activateProviderKey(provider: string, keyName: string): Promise<void>;
@@ -872,6 +874,8 @@ export interface DispatchSession {
 		disabledSkills?: string[];
 		disabledExtensions?: string[];
 		disabledPlugins?: string[];
+		/** 内置服务商「删除」= 从管理模型列表隐藏（纯 UI 偏好，不 reload）。 */
+		hiddenBuiltinProviders?: string[];
 		terminalToolsEnabled?: boolean;
 		terminalBash?: boolean;
 		terminalBashIdleMs?: number;
@@ -1325,6 +1329,9 @@ wss.on("connection", (ws) => {
 			case "refresh_provider_models":
 				void cs.refreshProviderModels(msg.providerId, msg.reqId);
 				break;
+			case "fetch_channel_models":
+				void cs.fetchChannelModels(msg.reqId, msg.providerId, msg.keyName);
+				break;
 			case "clone_provider":
 				void cs.cloneProvider(msg.provider, msg.reqId);
 				break;
@@ -1417,6 +1424,7 @@ wss.on("connection", (ws) => {
 					disabledSkills: msg.disabledSkills,
 					disabledExtensions: msg.disabledExtensions,
 					disabledPlugins: msg.disabledPlugins,
+					hiddenBuiltinProviders: msg.hiddenBuiltinProviders,
 					terminalToolsEnabled: msg.terminalToolsEnabled,
 					terminalBash: msg.terminalBash,
 					terminalBashIdleMs: msg.terminalBashIdleMs,

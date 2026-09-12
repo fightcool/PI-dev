@@ -24,6 +24,6 @@ describe("protocol version guard", () => {
 		expect(
 			{ version: PROTOCOL_VERSION, digest: fingerprint(src) },
 			"protocol.ts 变了：请 bump server/protocol-version.ts 与 web/src/protocol-version.ts，并把本用例记录的指纹换成新值",
-		).toEqual({ version: 25, digest: "b0ee9eda3edf116c" });
+		).toEqual({ version: 27, digest: "5d7ccad37a8e1fa8" });
 	});
 });

@@ -297,6 +297,17 @@ export interface ChatState {
 		models?: UiModelConfigEntry[];
 		error?: string;
 	} | null;
+	/** Last fetch_channel_models probe result (渠道表单的「获取接口清单」)，按 reqId 匹配；
+	 *  baseUrl = 实际探测的地址（密钥在服务端解析，浏览器看不到）。 */
+	channelModelsResult: {
+		reqId: number;
+		/** 回显服务商 id：换服务商后的过期结果不参与合并（见 ChannelForm）。 */
+		providerId: string;
+		ok: boolean;
+		models?: UiModelConfigEntry[];
+		baseUrl?: string;
+		error?: string;
+	} | null;
 	/** Last refresh_provider_models result (saved-provider list refresh). */
 	refreshProviderResult: {
 		reqId: number;
@@ -395,6 +406,17 @@ type Action =
 	| {
 			type: "fetch_models_result";
 			result: { reqId: number; ok: boolean; models?: UiModelConfigEntry[]; error?: string };
+	  }
+	| {
+			type: "channel_models_result";
+			result: {
+				reqId: number;
+				providerId: string;
+				ok: boolean;
+				models?: UiModelConfigEntry[];
+				baseUrl?: string;
+				error?: string;
+			};
 	  }
 	| {
 			type: "refresh_provider_result";
@@ -778,6 +800,8 @@ function reducer(state: ChatState, action: Action): ChatState {
 			return { ...state, channelResults: rememberChannelResult(state.channelResults, action.result) };
 		case "fetch_models_result":
 			return { ...state, fetchModelsResult: action.result };
+		case "channel_models_result":
+			return { ...state, channelModelsResult: action.result };
 		case "refresh_provider_result":
 			return { ...state, refreshProviderResult: action.result };
 		case "clone_provider_result":
@@ -986,6 +1010,7 @@ export function useChat() {
 		bgServers: [],
 		settings: null,
 		fetchModelsResult: null,
+		channelModelsResult: null,
 		refreshProviderResult: null,
 		cloneProviderResult: null,
 		scmData: null,
@@ -1263,6 +1288,19 @@ export function useChat() {
 							reqId: msg.reqId,
 							ok: msg.ok,
 							models: msg.models,
+							error: msg.error,
+						},
+					});
+					break;
+				case "channel_models_result":
+					dispatch({
+						type: "channel_models_result",
+						result: {
+							reqId: msg.reqId,
+							providerId: msg.providerId,
+							ok: msg.ok,
+							models: msg.models,
+							baseUrl: msg.baseUrl,
 							error: msg.error,
 						},
 					});

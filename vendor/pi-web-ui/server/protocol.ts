@@ -811,6 +811,10 @@ export type ClientMessage =
 	/** Re-probe a SAVED provider's /models endpoint and merge the result into
 	 *  its models.json entry. Credentials stay server-side (the browser never
 	 *  sees apiKey/headers); reqId is echoed in refresh_provider_result. */
+	/** 渠道表单「获取接口清单」：按服务商 + 命名凭据在后端探测 <baseUrl>/models。
+	 *  @WHY 密钥只在服务端解析（浏览器本来就拿不到密钥正文），顺带绕开 CORS；
+	 *  keyName 为空 = 用该服务商当前生效的密钥。 */
+	| { type: "fetch_channel_models"; reqId: number; providerId: string; keyName?: string | null }
 	| { type: "refresh_provider_models"; providerId: string; reqId: number }
 	/** Copy a BUILT-IN provider (baseUrl + current model catalog) into an
 	 *  editable custom-provider draft — the point is running a second API key
@@ -863,6 +867,9 @@ export type ClientMessage =
 			/** Installed UI plugins hidden in the settings panel (UI-only toggle,
 			 *  never triggers a runtime reload). */
 			disabledPlugins?: string[];
+			/** 内置服务商里从「管理模型」列表移除（= 隐藏）的 providerId 集合。
+			 *  纯 UI 偏好：不动运行时、不触发 reload；密钥的清除走 clear_provider_api_key。 */
+			hiddenBuiltinProviders?: string[];
 			/** Persistent-terminal tools on/off (default on). Off → terminal_* tools
 			 *  are removed from the active tool set and the built-in usage guidance
 			 *  disappears from the system prompt. */
@@ -1473,6 +1480,9 @@ export interface UiSettingsState {
 	/** Installed UI plugins the user hid in the settings panel (UI-only:
 	 *  hidden tabs/views; server-side handlers stay reachable). */
 	disabledPlugins: string[];
+	/** 内置服务商里被用户从「管理模型」列表移除（隐藏）的 providerId。
+	 *  pi 运行时的内置注册表无法真删，这里只控制面板是否展示（UI-only）。 */
+	hiddenBuiltinProviders: string[];
 	/** The FULL system prompt actually in effect for the active conversation
 	 *  (compose render: template + per-source overrides + project context +
 	 *  skills + tool guidance). Read-only view source for the settings panel;
@@ -1794,6 +1804,18 @@ export type ServerMessage =
 			reqId: number;
 			ok: boolean;
 			models?: UiModelConfigEntry[];
+			error?: string;
+	  }
+	/** Result of fetch_channel_models: the endpoint's model entries + the baseUrl
+	 *  actually probed (echoed so the user can verify which address answered). */
+	| {
+			type: "channel_models_result";
+			reqId: number;
+			/** 回显请求的服务商：用户可能在等结果时换了服务商，前端据此丢弃过期结果。 */
+			providerId: string;
+			ok: boolean;
+			models?: UiModelConfigEntry[];
+			baseUrl?: string;
 			error?: string;
 	  }
 	/** Result of refresh_provider_models: merged into the saved entry; added =
