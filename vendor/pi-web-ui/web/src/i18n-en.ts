@@ -1115,6 +1115,17 @@ export const en: EnDictionary = {
 	usageWindow_30d: "30 days",
 	usageWindow_all: "All",
 	// P4 candidate: system resources (read-only; unreadable fields show "—" with their source).
+	// Model routing rules (editable in the settings panel; factory defaults in server/model-routing.ts / docs/MODEL-ROUTING.md)
+	modelRoutingTitle: "Model routing rules",
+	modelRoutingHint: "Upstream routes come and go; this list can be corrected without touching code or shipping a release.",
+	modelRoutingDesc:
+		"Routes listed here disappear from the model picker (existing sessions and channel bindings still resolve). One id per line: `provider/id` matches that provider only, a bare id matches every provider; write aliases as old=new. Model names/context/pricing/thinking levels live in “Manage models” (agent/models.json).",
+	modelRoutingRetiredLabel: "Retired routes (one id per line)",
+	modelRoutingAliasesLabel: "Route aliases (one old=new per line)",
+	modelRoutingSave: "Save rules",
+	modelRoutingReset: "Restore factory defaults",
+	modelRoutingCustomized: "Current: custom rules",
+	modelRoutingFactory: "Current: factory defaults",
 	resourcesTitle: "System resources",
 	resourcesLoading: "Collecting…",
 	resourcesSampling: "Sampling…",

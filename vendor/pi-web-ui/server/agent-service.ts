@@ -3917,6 +3917,9 @@ export class ClientSession {
 		disabledPlugins?: string[];
 		/** 内置服务商「删除」= 从管理模型列表隐藏（纯 UI 偏好，不 reload）。 */
 		hiddenBuiltinProviders?: string[];
+		/** 模型路由规则：不再出现在选择器里的路由 + 别名映射（纯选择偏好，无需 reload）。 */
+		retiredModelRoutes?: string[];
+		modelRouteAliases?: Record<string, string>;
 		markersEnabled?: boolean;
 		disabledMarkers?: string[];
 		quickPhrases?: string[];
@@ -5685,9 +5688,10 @@ export class ClientSession {
 		try {
 			const mr = this.runtime.services.modelRuntime;
 			const available = await mr.getAvailable();
-			// 退役/退场的 DeepSeek id 不再作为可选路由（历史绑定仍能经 getModel 解析）。
+			// 被「模型路由规则」判为退役的 id 不再作为可选路由（历史绑定仍能经 getModel 解析）。
+			// 规则来自设置面板（settings.retiredModelRoutes / modelRouteAliases），缺省 = 出厂默认；
 			// 见 server/model-routing.ts 与 docs/MODEL-ROUTING.md。
-			const models = filterRoutableModels(available).map((m) => ({
+			const models = filterRoutableModels(available, this.settingsSvc.modelRoutingRules).map((m) => ({
 				id: `${m.provider}/${m.id}`,
 				name: m.name,
 				provider: m.provider,

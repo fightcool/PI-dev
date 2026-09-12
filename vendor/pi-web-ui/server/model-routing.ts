@@ -11,6 +11,10 @@
  *            tests/unit/model-routing.test.ts
  *   📖 docs/MODEL-ROUTING.md（官方对齐记录、核对日期与 agent/models.json 覆盖块）
  *   @CONTRACT 纯逻辑模块：禁止 fs / 网络 / SDK 导入，便于 vitest 单测直接覆盖规格。
+ *   @WHY 下面的常量只是**出厂默认**（官方核对于 verifiedAt）：实际生效的退役列表/别名由设置面板
+ *        「模型路由规则」覆盖（settings.retiredModelRoutes / modelRouteAliases）——官方随时会
+ *        改路由，操作者要能自己修正，不需要改代码重新发版。模型本身的名字/上下文/价格/思考档位
+ *        不在这里，它们在 agent/models.json（「管理模型」面板可改）。
  *   @WHY 官方事实源只有一条 Flash 路由：2026-09-10 起 deepseek-flash = DeepSeek-V4.1-Flash。
  *        V4-Flash 与 V4-Flash-Vision-Exp 已退役（旧 id 仅作兼容转发），V4-Pro 正在退场；
  *        因此本系统只把 deepseek-flash 暴露为可选路由，旧 id 仍可解析（历史会话与既有渠道
@@ -38,6 +42,8 @@ export const DSH_DEEPSEEK_PROVIDER = "deepseek-official";
 
 /**
  * 官方唯一在售 Flash 路由。字段全部来自官方文档（见 OFFICIAL_ALIGNMENT.sources）。
+ * pi 引擎侧的模型定义以 agent/models.json 为准（「管理模型」面板可改）；这里是 **DSH 侧的出厂
+ * 默认值**（DSH 没有 models.json 目录）与 dsh/runtime/override.patch.yml 的一致性来源。
  * @MAGIC 384000 = 官方 MAX OUTPUT 384K；1000000 = 官方 CONTEXT LENGTH 1M。
  */
 export const DEEPSEEK_FLASH = {
@@ -69,10 +75,11 @@ export const DEEPSEEK_FLASH = {
 export const DEEPSEEK_FLASH_REF = `${DEEPSEEK_PROVIDER}/${DEEPSEEK_FLASH.id}`;
 
 /**
- * 退役/退场路由：官方 API 仍接受这些 id，但服务的是 V4.1-Flash（V4-Pro 自 effectiveAt 起）。
- * 本系统不再把它们作为可选路由，仅保留解析能力。
+ * 退役/退场路由（**出厂默认**）：官方 API 仍接受这些 id，但服务的是 V4.1-Flash
+ * （V4-Pro 自 effectiveAt 起）。默认不再把它们作为可选路由，仅保留解析能力。
+ * 改这份列表请优先在设置面板「模型路由规则」里改（落盘进设置，不动代码）。
  */
-export const RETIRED_DEEPSEEK_ROUTES = [
+export const DEFAULT_RETIRED_DEEPSEEK_ROUTES = [
 	{
 		id: "deepseek-v4-flash",
 		replacedBy: DEEPSEEK_FLASH.id,
@@ -124,20 +131,86 @@ export function dshModelChoices(): { id: string; name: string; provider: string;
 	];
 }
 
-/** 该 id 是否属于「仍被官方接受但已退役/退场」的 DeepSeek 路由。 */
-export function isRetiredDeepseekRoute(id: string): boolean {
-	return RETIRED_DEEPSEEK_ROUTES.some((route) => route.id === id);
-}
-
-/** 退役别名 → 官方在售 id；用于恢复历史会话时把旧选择规范化到同一服务模型。 */
-export function canonicalDeepseekRouteId(id: string): string {
-	return isRetiredDeepseekRoute(id) ? DEEPSEEK_FLASH.id : id;
+/** 一条退役路由规则（数据；id 可写 "id" 或 "provider/id"）。 */
+export interface RetiredRouteRule {
+	/** 完整引用 "provider/id"，或省略 provider 的裸 id（那就不分服务商匹配）。 */
+	id: string;
+	replacedBy?: string;
+	effectiveAt?: string;
+	reason?: string;
 }
 
 /**
- * 过滤可选路由：退役/退场 id 不再暴露给选择器（历史绑定仍能通过 getModel 解析）。
- * 只影响 DeepSeek 提供方，其他服务商原样透传。
+ * 生效的路由规则：退役列表 + 别名映射。由设置面板编辑（settings.retiredModelRoutes /
+ * modelRouteAliases），缺省 = 出厂默认。**纯数据**，改它不需要动代码或重新发版。
  */
-export function filterRoutableModels<T extends { provider: string; id: string }>(models: readonly T[]): T[] {
-	return models.filter((m) => m.provider !== DEEPSEEK_PROVIDER || !isRetiredDeepseekRoute(m.id));
+export interface ModelRoutingRules {
+	retired: string[];
+	aliases: Record<string, string>;
+}
+
+/** 出厂默认规则（官方核对日见 OFFICIAL_ALIGNMENT）。 */
+export function defaultModelRoutingRules(): ModelRoutingRules {
+	const retired: string[] = [];
+	const aliases: Record<string, string> = {};
+	for (const route of DEFAULT_RETIRED_DEEPSEEK_ROUTES) {
+		// 默认规则里的 id 属于 deepseek 服务商，这里写成完整引用，避免误伤同名模型。
+		const ref = `${DEEPSEEK_PROVIDER}/${route.id}`;
+		retired.push(ref);
+		if (route.replacedBy) aliases[ref] = `${DEEPSEEK_PROVIDER}/${route.replacedBy}`;
+	}
+	return { retired, aliases };
+}
+
+/**
+ * 归一化用户填写的规则：去空行/去重/去首尾空格，别名只保留「有意义的映射」。
+ * @GOTCHA 空 retired 是**合法且有意义**的（= 不隐藏任何路由），不能用空值兜回默认。
+ */
+export function normalizeModelRoutingRules(input: Partial<ModelRoutingRules> | null | undefined): ModelRoutingRules {
+	const retired: string[] = [];
+	const seen = new Set<string>();
+	for (const raw of Array.isArray(input?.retired) ? input!.retired : []) {
+		const id = String(raw ?? "").trim();
+		if (!id || seen.has(id)) continue;
+		seen.add(id);
+		retired.push(id);
+	}
+	const aliases: Record<string, string> = {};
+	for (const [from, to] of Object.entries(input?.aliases ?? {})) {
+		const k = String(from ?? "").trim();
+		const v = String(to ?? "").trim();
+		if (!k || !v || k === v) continue;
+		aliases[k] = v;
+	}
+	return { retired, aliases };
+}
+
+/** 规则的完整引用口径：裸 id 匹配任意服务商，含 "/" 的按 provider/id 精确匹配。 */
+function matchesRule(ref: string, provider: string, id: string): boolean {
+	return ref.includes("/") ? ref === `${provider}/${id}` : ref === id;
+}
+
+/** 该路由是否被规则判为「退役/隐藏」（历史绑定仍能经 getModel 解析，只是不出现在选择器）。 */
+export function isRetiredRoute(provider: string, id: string, rules: ModelRoutingRules): boolean {
+	return rules.retired.some((ref) => matchesRule(ref, provider, id));
+}
+
+/** 退役别名 → 在售 id；用于恢复历史会话时把旧选择规范化到同一服务模型。 */
+export function canonicalRouteId(provider: string, id: string, rules: ModelRoutingRules): string {
+	const ref = `${provider}/${id}`;
+	const mapped = rules.aliases[ref] ?? rules.aliases[id];
+	if (!mapped) return id;
+	return mapped.includes("/") ? mapped.slice(mapped.indexOf("/") + 1) : mapped;
+}
+
+/**
+ * 过滤可选路由：被规则判为退役的 id 不再暴露给选择器（历史绑定仍能通过 getModel 解析）。
+ * 规则默认取出厂默认（deepseek 官方退役路由）。
+ */
+export function filterRoutableModels<T extends { provider: string; id: string }>(
+	models: readonly T[],
+	rules: ModelRoutingRules = defaultModelRoutingRules(),
+): T[] {
+	if (rules.retired.length === 0) return [...models];
+	return models.filter((m) => !isRetiredRoute(m.provider, m.id, rules));
 }

@@ -7,12 +7,14 @@ import { describe, expect, it } from "vitest";
 import {
 	DEEPSEEK_FLASH,
 	DEEPSEEK_FLASH_REF,
-	RETIRED_DEEPSEEK_ROUTES,
-	canonicalDeepseekRouteId,
+	DEFAULT_RETIRED_DEEPSEEK_ROUTES,
+	canonicalRouteId,
+	defaultModelRoutingRules,
 	dshModelCatalog,
 	dshModelChoices,
 	filterRoutableModels,
-	isRetiredDeepseekRoute,
+	isRetiredRoute,
+	normalizeModelRoutingRules,
 } from "../../server/model-routing.js";
 
 describe("官方 Flash 路由事实", () => {
@@ -53,27 +55,67 @@ describe("官方 Flash 路由事实", () => {
 });
 
 describe("退役路由处理", () => {
-	it("三个旧 id 标记为退役，V4-Pro 的退场时点随官方公告", () => {
-		expect(RETIRED_DEEPSEEK_ROUTES.map((r) => r.id)).toEqual([
+	it("出厂默认把三个旧 id 标记为退役，V4-Pro 的退场时点随官方公告", () => {
+		expect(DEFAULT_RETIRED_DEEPSEEK_ROUTES.map((r) => r.id)).toEqual([
 			"deepseek-v4-flash",
 			"deepseek-v4-flash-vision-exp",
 			"deepseek-v4-pro",
 		]);
-		const pro = RETIRED_DEEPSEEK_ROUTES.find((r) => r.id === "deepseek-v4-pro");
+		const pro = DEFAULT_RETIRED_DEEPSEEK_ROUTES.find((r) => r.id === "deepseek-v4-pro");
 		expect(pro?.effectiveAt).toBe("2026-09-14T04:00:00Z");
 		expect(pro?.replacedBy).toBe("deepseek-flash");
+		// 生效规则由「出厂默认」展开而来（带 provider 前缀，避免误伤同名模型）。
+		const rules = defaultModelRoutingRules();
+		expect(rules.retired).toEqual([
+			"deepseek/deepseek-v4-flash",
+			"deepseek/deepseek-v4-flash-vision-exp",
+			"deepseek/deepseek-v4-pro",
+		]);
+		expect(rules.aliases["deepseek/deepseek-v4-pro"]).toBe("deepseek/deepseek-flash");
 	});
 
 	it("别名规范化到官方 id，未知 id 原样返回", () => {
-		expect(canonicalDeepseekRouteId("deepseek-v4-flash")).toBe("deepseek-flash");
-		expect(canonicalDeepseekRouteId("deepseek-v4-flash-vision-exp")).toBe("deepseek-flash");
-		expect(canonicalDeepseekRouteId("deepseek-v4-pro")).toBe("deepseek-flash");
-		expect(canonicalDeepseekRouteId("deepseek-flash")).toBe("deepseek-flash");
-		expect(canonicalDeepseekRouteId("gpt-5.6-sol")).toBe("gpt-5.6-sol");
-		expect(isRetiredDeepseekRoute("deepseek-flash")).toBe(false);
+		const rules = defaultModelRoutingRules();
+		expect(canonicalRouteId("deepseek", "deepseek-v4-flash", rules)).toBe("deepseek-flash");
+		expect(canonicalRouteId("deepseek", "deepseek-v4-flash-vision-exp", rules)).toBe("deepseek-flash");
+		expect(canonicalRouteId("deepseek", "deepseek-v4-pro", rules)).toBe("deepseek-flash");
+		expect(canonicalRouteId("deepseek", "deepseek-flash", rules)).toBe("deepseek-flash");
+		expect(canonicalRouteId("deepseek", "gpt-5.6-sol", rules)).toBe("gpt-5.6-sol");
+		expect(isRetiredRoute("deepseek", "deepseek-flash", rules)).toBe(false);
 	});
 
-	it("选择器过滤退役 id，其他服务商不受影响", () => {
+	it("规则可自定义：裸 id 匹配任意服务商，provider/id 精确匹配", () => {
+		const models = [
+			{ provider: "deepseek", id: "deepseek-v4-pro" },
+			{ provider: "cctq", id: "deepseek-v4-pro" },
+			{ provider: "cctq", id: "gpt-6-astra" },
+			{ provider: "deepseek", id: "deepseek-flash" },
+		];
+		// 裸 id：两个服务商下的同名模型一起隐藏（操作者显式这么写就该这么生效）。
+		expect(filterRoutableModels(models, { retired: ["deepseek-v4-pro"], aliases: {} })).toEqual([
+			{ provider: "cctq", id: "gpt-6-astra" },
+			{ provider: "deepseek", id: "deepseek-flash" },
+		]);
+		// provider/id：只隐藏指定服务商的那一个。
+		expect(filterRoutableModels(models, { retired: ["deepseek/deepseek-v4-pro"], aliases: {} })).toEqual([
+			{ provider: "cctq", id: "deepseek-v4-pro" },
+			{ provider: "cctq", id: "gpt-6-astra" },
+			{ provider: "deepseek", id: "deepseek-flash" },
+		]);
+		// 空 retired 是合法状态 = 不隐藏任何路由（不能用空值兜回出厂默认）。
+		expect(filterRoutableModels(models, { retired: [], aliases: {} })).toEqual(models);
+	});
+
+	it("规则归一化：去空行/去重/trim，丢掉自映射别名", () => {
+		expect(
+			normalizeModelRoutingRules({
+				retired: [" deepseek/deepseek-v4-pro ", "", "deepseek/deepseek-v4-pro", "  "],
+				aliases: { " deepseek/old ": "deepseek/new", same: "same", "": "x" },
+			}),
+		).toEqual({ retired: ["deepseek/deepseek-v4-pro"], aliases: { "deepseek/old": "deepseek/new" } });
+	});
+
+	it("选择器用出厂默认过滤退役 id，其他服务商不受影响", () => {
 		const models = [
 			{ provider: "deepseek", id: "deepseek-flash" },
 			{ provider: "deepseek", id: "deepseek-v4-flash" },

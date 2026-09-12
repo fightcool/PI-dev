@@ -24,6 +24,7 @@ import {
 	type PromptMode,
 } from "./client-state.js";
 import { findVisionModels, SYSTEM_PROMPT } from "./vision-bridge.js";
+import { defaultModelRoutingRules, normalizeModelRoutingRules, type ModelRoutingRules } from "./model-routing.js";
 import { DEFAULT_TEMPLATES, type SubagentTemplatesStore } from "./subagent-templates.js";
 
 /** ClientSession 提供给本服务的宿主能力（窄接口，便于独立测试）。 */
@@ -79,6 +80,14 @@ export class SettingsService {
 
 	get current(): ClientSettings {
 		return this.settings;
+	}
+
+	/** 当前生效的模型路由规则：设置里填过就用它（空数组 = 真的不隐藏任何路由），
+	 *  没填过（undefined）才回落到出厂默认。 */
+	get modelRoutingRules(): ModelRoutingRules {
+		const stored = this.settings.retiredModelRoutes;
+		if (stored === undefined && this.settings.modelRouteAliases === undefined) return defaultModelRoutingRules();
+		return normalizeModelRoutingRules({ retired: stored ?? [], aliases: this.settings.modelRouteAliases ?? {} });
 	}
 
 	get reviewPrefs(): Pick<ClientSettings, "reviewPrompt" | "reviewDisabledSkills"> {
@@ -249,6 +258,13 @@ export class SettingsService {
 				reviewDisabledSkills: [...this.settings.reviewDisabledSkills],
 				disabledPlugins: [...(this.settings.disabledPlugins ?? [])],
 				hiddenBuiltinProviders: [...(this.settings.hiddenBuiltinProviders ?? [])],
+				// 生效的模型路由规则（空 = 用出厂默认）+ 出厂默认（面板「恢复默认」用）。
+				retiredModelRoutes: [...this.modelRoutingRules.retired],
+				modelRouteAliases: { ...this.modelRoutingRules.aliases },
+				defaultModelRouting: defaultModelRoutingRules(),
+				// 「出厂默认」与「操作者改过」要在面板上区分开，否则用户不知道自己在看哪套规则。
+				modelRoutingCustomized:
+					this.settings.retiredModelRoutes !== undefined || this.settings.modelRouteAliases !== undefined,
 				// The composed system prompt actually in effect (read-only view).
 				effectiveSystemPrompt: promptSnap.full,
 				// 每个来源未覆盖时的默认（自动）内容（「各来源」行预览用）。
@@ -346,6 +362,8 @@ export class SettingsService {
 		reviewDisabledSkills?: string[];
 		disabledPlugins?: string[];
 		hiddenBuiltinProviders?: string[];
+		retiredModelRoutes?: string[] | null;
+		modelRouteAliases?: Record<string, string> | null;
 		subagentDefaultModel?: string | null;
 		retryMaxAttempts?: number;
 		markersEnabled?: boolean;
@@ -391,6 +409,24 @@ export class SettingsService {
 		// 内置服务商隐藏同理：纯 UI 展示偏好，运行时无需重载。
 		if (partial.hiddenBuiltinProviders !== undefined) {
 			this.settings.hiddenBuiltinProviders = partial.hiddenBuiltinProviders;
+		}
+		// 模型路由规则同样是纯选择偏好（只影响选择器里能看到什么），运行时无需重载：
+		// 归一化后落盘（去空行/去重/丢掉自映射别名），下次 listModels 立即生效。
+		// null 是「清除自定义」→ 回到出厂默认（面板的「恢复出厂默认」就是这个语义）。
+		let clearedRouting = false;
+		if (partial.retiredModelRoutes !== undefined || partial.modelRouteAliases !== undefined) {
+			if (partial.retiredModelRoutes === null || partial.modelRouteAliases === null) {
+				delete this.settings.retiredModelRoutes;
+				delete this.settings.modelRouteAliases;
+				clearedRouting = true;
+			} else {
+				const next = normalizeModelRoutingRules({
+					retired: partial.retiredModelRoutes ?? this.settings.retiredModelRoutes ?? [],
+					aliases: partial.modelRouteAliases ?? this.settings.modelRouteAliases ?? {},
+				});
+				this.settings.retiredModelRoutes = next.retired;
+				this.settings.modelRouteAliases = next.aliases;
+			}
 		}
 		if (partial.terminalToolsEnabled !== undefined) {
 			this.settings.terminalToolsEnabled = partial.terminalToolsEnabled;
@@ -458,7 +494,12 @@ export class SettingsService {
 		if (partial.quickPhrasesEnabled !== undefined) {
 			this.settings.quickPhrasesEnabled = partial.quickPhrasesEnabled;
 		}
-		this.host.stateStore.saveSettings(this.host.clientId, this.settings);
+		// 清除路由自定义时必须显式带 null：settings 对象上那个 key 已被删掉，
+		// 而 undefined 在存储层语义是「本次没提供 → 保留现值」，表达不了删除。
+		this.host.stateStore.saveSettings(this.host.clientId, {
+			...this.settings,
+			...(clearedRouting ? { retiredModelRoutes: null, modelRouteAliases: null } : {}),
+		});
 		this.push();
 		if (needsReload) await this.applyRuntime();
 	}
@@ -539,6 +580,9 @@ export class SettingsService {
 			visionBridgeModel: this.settings.visionBridgeModel,
 			visionBridgePromptMode: this.settings.visionBridgePromptMode,
 			visionBridgePrompt: this.settings.visionBridgePrompt,
+			// 模型路由规则也不进预设——保留当前值，否则应用预设会把规则弹回出厂默认。
+			retiredModelRoutes: [...(this.settings.retiredModelRoutes ?? [])],
+			modelRouteAliases: { ...(this.settings.modelRouteAliases ?? {}) },
 			// 子代理默认模型也不进预设——保留当前值。
 			subagentDefaultModel: this.settings.subagentDefaultModel,
 			// 快捷短语是纯 UI 偏好，不进预设——保留当前值。

@@ -75,7 +75,13 @@ import { assessInputBudget, assessToolOutput, DEFAULT_GOVERNANCE } from "#govern
  * 📖 ../../docs/conversation-lifecycle.md
  */
 import { retirementCandidates } from "../conversation-retention.js";
-import { DEEPSEEK_FLASH, DEEPSEEK_PROVIDER as DEEPSEEK_FLASH_PROVIDER, dshModelChoices } from "../model-routing.js";
+import {
+	DEEPSEEK_FLASH,
+	DEEPSEEK_PROVIDER as DEEPSEEK_FLASH_PROVIDER,
+	defaultModelRoutingRules,
+	dshModelChoices,
+	normalizeModelRoutingRules,
+} from "../model-routing.js";
 const SNAPSHOT_INTERVAL_MS = 60;
 const DEFAULT_CONV_TITLE = "新对话";
 const DEFAULT_CONV_TITLE_EN = "New chat";
@@ -170,6 +176,9 @@ interface DshSettings {
 	/** pi 引擎「管理模型」里删除（隐藏）的内置服务商 id：DSH 没有该面板，
 	 *  仅回显保持，切回 pi 引擎时列表不被重置。 */
 	hiddenBuiltinProviders: string[];
+	/** 模型路由规则（设置面板可改）：DSH 只回显保持。 */
+	retiredModelRoutes: string[];
+	modelRouteAliases: Record<string, string>;
 	/** 目标轮次附加指令（DSH 无独立审查者，经 DSH_PERSONA 注入让模型在目标轮次遵守）。 */
 	reviewPrompt: string;
 	/** 输入框上方的快捷短语（点击即发送；纯 UI 偏好）。 */
@@ -218,6 +227,8 @@ const DEFAULT_SETTINGS: DshSettings = {
 	toolsWrap: true,
 	disabledPlugins: [],
 	hiddenBuiltinProviders: [],
+	retiredModelRoutes: [],
+	modelRouteAliases: {},
 	reviewPrompt: "",
 	quickPhrases: [],
 	quickPhrasesEnabled: true,
@@ -362,6 +373,8 @@ export class DshClientSession {
 				toolsWrap: savedSettings.toolsWrap,
 				disabledPlugins: savedSettings.disabledPlugins ?? [],
 				hiddenBuiltinProviders: savedSettings.hiddenBuiltinProviders ?? [],
+				retiredModelRoutes: savedSettings.retiredModelRoutes ?? [],
+				modelRouteAliases: { ...(savedSettings.modelRouteAliases ?? {}) },
 				reviewPrompt: savedSettings.reviewPrompt,
 				quickPhrases: savedSettings.quickPhrases ?? [],
 				quickPhrasesEnabled: savedSettings.quickPhrasesEnabled ?? true,
@@ -2486,6 +2499,11 @@ export class DshClientSession {
 			reviewDisabledSkills: [],
 			disabledPlugins: this.settings.disabledPlugins,
 			hiddenBuiltinProviders: [...this.settings.hiddenBuiltinProviders],
+			retiredModelRoutes: [...this.settings.retiredModelRoutes],
+			modelRouteAliases: { ...this.settings.modelRouteAliases },
+			defaultModelRouting: defaultModelRoutingRules(),
+			modelRoutingCustomized:
+				this.settings.retiredModelRoutes.length > 0 || Object.keys(this.settings.modelRouteAliases).length > 0,
 			promptTemplate: "",
 			promptOverrides: {},
 			effectiveSystemPrompt: this.settings.customSystemPrompt,
@@ -2518,6 +2536,8 @@ export class DshClientSession {
 		disabledSkills?: string[];
 		disabledExtensions?: string[];
 		disabledPlugins?: string[];
+		retiredModelRoutes?: string[];
+		modelRouteAliases?: Record<string, string>;
 		terminalToolsEnabled?: boolean;
 		terminalBash?: boolean;
 		terminalBashIdleMs?: number;
@@ -2552,6 +2572,18 @@ export class DshClientSession {
 		if (partial.thinkingWrap !== undefined) this.settings.thinkingWrap = partial.thinkingWrap;
 		if (partial.toolsWrap !== undefined) this.settings.toolsWrap = partial.toolsWrap;
 		if (partial.disabledPlugins !== undefined) this.settings.disabledPlugins = partial.disabledPlugins;
+		if (partial.retiredModelRoutes !== undefined) {
+			this.settings.retiredModelRoutes = normalizeModelRoutingRules({
+				retired: partial.retiredModelRoutes,
+				aliases: this.settings.modelRouteAliases,
+			}).retired;
+		}
+		if (partial.modelRouteAliases !== undefined) {
+			this.settings.modelRouteAliases = normalizeModelRoutingRules({
+				retired: this.settings.retiredModelRoutes,
+				aliases: partial.modelRouteAliases,
+			}).aliases;
+		}
 		if (partial.reviewPrompt !== undefined) this.settings.reviewPrompt = partial.reviewPrompt;
 		if (partial.quickPhrases !== undefined) {
 			const seen = new Set<string>();

@@ -1092,6 +1092,17 @@ export const zh = {
 	usageWindow_all: "全部",
 	// P4 候选：系统资源（只读；读不到显示「—」并标出来源）。
 	resourcesTitle: "系统资源",
+	// 模型路由规则（设置面板可改；出厂默认见 server/model-routing.ts / docs/MODEL-ROUTING.md）
+	modelRoutingTitle: "模型路由规则",
+	modelRoutingHint: "官方随时会上/下线路由；这份名册不必改代码或重新发版就能修正。",
+	modelRoutingDesc:
+		"列在这里的路由不再出现在模型选择器里（历史会话与已绑定渠道仍能解析）。每行一个 id：`provider/id` 只匹配该服务商，裸 id 匹配所有服务商；别名写成「旧id=新id」。模型本身的名字/上下文/价格/思考档位请在「管理模型」里改（写入 agent/models.json）。",
+	modelRoutingRetiredLabel: "退役路由（每行一个 id）",
+	modelRoutingAliasesLabel: "路由别名（每行 旧id=新id）",
+	modelRoutingSave: "保存规则",
+	modelRoutingReset: "恢复出厂默认",
+	modelRoutingCustomized: "当前：自定义规则",
+	modelRoutingFactory: "当前：出厂默认",
 	resourcesLoading: "正在采集…",
 	resourcesSampling: "采样中…",
 	resourcesCpu: "CPU",

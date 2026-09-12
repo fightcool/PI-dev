@@ -870,6 +870,11 @@ export type ClientMessage =
 			/** 内置服务商里从「管理模型」列表移除（= 隐藏）的 providerId 集合。
 			 *  纯 UI 偏好：不动运行时、不触发 reload；密钥的清除走 clear_provider_api_key。 */
 			hiddenBuiltinProviders?: string[];
+			/** 模型路由规则：不再出现在选择器里的路由（"id" 或 "provider/id"）。
+			 *  三态：缺省 = 保留现值；[] / {} = 自定义（[] 表示真的不隐藏任何路由）；
+			 *  null = 清除自定义，回到出厂默认（defaultModelRouting）。 */
+			retiredModelRoutes?: string[] | null;
+			modelRouteAliases?: Record<string, string> | null;
 			/** Persistent-terminal tools on/off (default on). Off → terminal_* tools
 			 *  are removed from the active tool set and the built-in usage guidance
 			 *  disappears from the system prompt. */
@@ -1483,6 +1488,13 @@ export interface UiSettingsState {
 	/** 内置服务商里被用户从「管理模型」列表移除（隐藏）的 providerId。
 	 *  pi 运行时的内置注册表无法真删，这里只控制面板是否展示（UI-only）。 */
 	hiddenBuiltinProviders: string[];
+	/** 当前生效的模型路由规则（设置面板可改；出厂默认见 defaultModelRouting）。 */
+	retiredModelRoutes: string[];
+	modelRouteAliases: Record<string, string>;
+	/** 出厂默认规则（面板「恢复默认」用；官方核对日见 docs/MODEL-ROUTING.md）。 */
+	defaultModelRouting: { retired: string[]; aliases: Record<string, string> };
+	/** 是否被操作者改过（false = 面板展示的就是出厂默认）。 */
+	modelRoutingCustomized: boolean;
 	/** The FULL system prompt actually in effect for the active conversation
 	 *  (compose render: template + per-source overrides + project context +
 	 *  skills + tool guidance). Read-only view source for the settings panel;

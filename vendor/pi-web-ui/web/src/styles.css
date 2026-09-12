@@ -7693,6 +7693,13 @@ div.chead[role="button"]:focus-visible,
 .set-prompt-input:focus {
 	border-color: var(--accent);
 }
+/* 模型路由规则（列表型输入：等宽、比提示词框矮） */
+.set-routes-input {
+	min-height: 96px;
+	font-family: var(--mono);
+	font-size: 12.5px;
+	line-height: 1.6;
+}
 
 /* 组合模板：token 插入条 / 各来源覆盖行 */
 .compose-toolbar {
@@ -8549,6 +8556,12 @@ button.source-default-toggle {
 		padding: 12px 14px;
 		border-radius: 10px;
 		font-size: 14px;
+	}
+	/* 列表型输入（模型路由规则）不需要提示词框那么高：桌面块的选择器更具体，
+	 * 必须在这里再声明一次，否则会被上面的 180px 盖掉。 */
+	.settings-modal .set-routes-input {
+		min-height: 96px;
+		font-size: 13px;
 	}
 	.set-btn {
 		padding: 6px 12px;

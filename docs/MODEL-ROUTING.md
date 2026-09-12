@@ -49,7 +49,8 @@
 | 入口 | 位置 | 对齐后的行为 |
 | --- | --- | --- |
 | pi 引擎运行时目录 | 内置 pi-ai 目录 + pi.dev 远端覆盖（实例数据目录 `agent/models-store.json`）+ **`agent/models.json` 覆盖层** | 通过覆盖层把 `deepseek/deepseek-flash` 注册进目录，并修正三个旧 id 的元数据 |
-| pi 引擎顶栏模型列表 | `vendor/pi-web-ui/server/agent-service.ts` `listModels()` → `filterRoutableModels()` | 只暴露 `deepseek/deepseek-flash`；旧 id 不再出现 |
+| pi 引擎顶栏模型列表 | `vendor/pi-web-ui/server/agent-service.ts` `listModels()` → `filterRoutableModels(models, rules)` | 只暴露 `deepseek/deepseek-flash`；旧 id 不再出现 |
+| **模型路由规则（可配置）** | 设置面板 → **系统 → 模型路由规则**（存 `settings.retiredModelRoutes` / `modelRouteAliases`） | 退役路由与别名都**不用改代码**：`provider/id` 只匹配该服务商，裸 id 匹配所有服务商；每行一个，别名写 `旧id=新id`。「恢复出厂默认」= 清除自定义（回到 `model-routing.ts` 的 `DEFAULT_RETIRED_DEEPSEEK_ROUTES`） |
 | DSH 引擎本地表与默认模型 | `vendor/pi-web-ui/server/dsh/dsh-agent-service.ts`、`dsh-client.ts` | 本地表只有 `deepseek-flash`（`vision: true`），默认模型即它；成本表用官方高峰价 |
 | DSH adapter 目录 | `vendor/pi-web-ui/server/dsh/runtime/override.patch.yml` 的 `llm-deepseek` 行 | 显式 `models` 列表替换 adapter 默认的三个旧 id |
 | 历史绑定 / 既有渠道 | 不经列表过滤的 `modelRuntime.getModel()` 解析路径 | 旧 id 仍可解析（元数据已对齐到实际服务模型），历史会话与渠道绑定不失效 |
@@ -122,7 +123,30 @@ for (const id of ["deepseek-flash","deepseek-v4-flash","deepseek-v4-pro"])
   console.log(id, JSON.stringify(rt.getModel("deepseek", id)?.name));' --input-type=module
 ```
 
-## 5. 遗留项与后续
+## 5. 可配置规则（操作者入口）
+
+官方随时会上/下线路由，因此**退役列表与别名不是写死的**：设置面板 → 系统 → 「模型路由规则」可以直接改，
+保存后立即对模型选择器生效（历史会话与已绑定渠道仍可解析，不受影响）。
+
+| 存储 | 语义 |
+| --- | --- |
+| 缺省（没保存过） | 用 `server/model-routing.ts` 的出厂默认（官方核对日见第 1 节） |
+| 保存了列表 | 以保存的为准；**空列表是合法状态** = 不隐藏任何路由 |
+| 「恢复出厂默认」 | 清除自定义（存 `null`），回到出厂默认，之后默认值更新会自动跟随 |
+
+模型本身的**名字 / 上下文 / 价格 / 思考档位**不在这里，仍在 `agent/models.json`（设置面板「管理模型」可改）：
+路由规则只管「哪些 id 不出现在选择器里」，两处职责不重叠（避免同一事实出现两份可写来源）。
+
+验证方式：
+
+```bash
+# 规则归一化与过滤（含自定义/裸 id/空列表三态）
+npm --prefix vendor/pi-web-ui exec vitest run tests/unit/model-routing.test.ts
+# 端到端：设置 → list_models 立即生效 → 落盘 → 重连仍在 → null 清除
+npm --prefix vendor/pi-web-ui run test:smoke   # 含 model-routing-rules-test
+```
+
+## 6. 遗留项与后续
 
 1. **pi.dev 远端目录上游未更新**：`https://pi.dev/api/models/providers/deepseek` 与实例缓存 `agent/models-store.json` 仍只有三个旧 id。我们不伪造上游缓存，靠 `models.json` 覆盖层对齐；上游更新后覆盖层仍可保留（同 id 同名合并）。
 2. **思考档位只接了 `high`**：pi 侧目录已支持 `off/low/high/max`（推理档位由目录驱动）；DSH 侧部署固定 `reasoningEffort: high`，`off/low/max` 尚未接线，界面提示已改为如实说明。

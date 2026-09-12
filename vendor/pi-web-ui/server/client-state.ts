@@ -108,7 +108,22 @@ export interface ClientSettings {
 	 *  删除时前端会一并调 clear_provider_api_key 清掉它的密钥——否则残留密钥
 	 *  会让该服务商继续出现在模型选择器/视觉桥里，看起来像「删了还在」。 */
 	hiddenBuiltinProviders?: string[];
+	/** 模型路由规则（退役/隐藏的路由 id，可写 "id" 或 "provider/id"）。纯 UI/选择偏好：
+	 *  不进预设、不需 reload；缺省 = model-routing.ts 的出厂默认。 */
+	retiredModelRoutes?: string[];
+	/** 路由别名（旧引用 → 在售引用），用于把历史会话/绑定规范化到同一服务模型。 */
+	modelRouteAliases?: Record<string, string>;
 }
+
+/**
+ * `saveSettings` 的补丁类型。与 `Partial<ClientSettings>` 的区别只在模型路由规则：
+ * 那两项是三态 —— 缺省 = 保留现值、数组/对象 = 自定义、**null = 清除自定义**（回到出厂默认）。
+ * 用 undefined 表达不了「清除」，因为 undefined 已经被「本次没提供」占用了。
+ */
+export type SettingsPatch = Omit<Partial<ClientSettings>, "retiredModelRoutes" | "modelRouteAliases"> & {
+	retiredModelRoutes?: string[] | null;
+	modelRouteAliases?: Record<string, string> | null;
+};
 
 /** A named combo of prompt + skill/extension toggles the user can re-apply.
  *  Vision-bridge prefs are intentionally NOT part of a preset — they stay
@@ -127,6 +142,8 @@ export interface SettingsPreset extends Omit<
 	| "quickPhrases"
 	| "quickPhrasesEnabled"
 	| "hiddenBuiltinProviders"
+	| "retiredModelRoutes"
+	| "modelRouteAliases"
 > {
 	name: string;
 }
@@ -437,6 +454,9 @@ export class ClientStateStore {
 			quickPhrases: stored?.quickPhrases ?? [],
 			quickPhrasesEnabled: stored?.quickPhrasesEnabled ?? true,
 			hiddenBuiltinProviders: stored?.hiddenBuiltinProviders ?? [],
+			// 三态：缺省（undefined）= 用出厂默认；[] = 显式「不隐藏任何路由」；数组 = 自定义。
+			retiredModelRoutes: stored?.retiredModelRoutes,
+			modelRouteAliases: stored?.modelRouteAliases ? { ...stored.modelRouteAliases } : undefined,
 			reviewPrompt: stored?.reviewPrompt ?? "",
 			reviewDisabledSkills: stored?.reviewDisabledSkills ?? [],
 			disabledPlugins: stored?.disabledPlugins ?? [],
@@ -444,12 +464,12 @@ export class ClientStateStore {
 	}
 
 	/** Persist the settings-panel state (partial merge) — global shared config. */
-	saveSettings(_clientId: string, settings: Partial<ClientSettings>): void {
+	saveSettings(_clientId: string, settings: SettingsPatch): void {
 		const all = this.load();
 		const state = (all[ClientStateStore.GLOBAL_SETTINGS_KEY] ??= { projects: [] });
 		state.uiDefaultsVersion = UI_DEFAULTS_VERSION;
 		const cur = state.settings ?? ({} as ClientSettings);
-		state.settings = {
+		const merged: ClientSettings = {
 			promptMode: settings.promptMode ?? cur.promptMode ?? "append",
 			customSystemPrompt: settings.customSystemPrompt ?? cur.customSystemPrompt ?? "",
 			promptTemplate: settings.promptTemplate ?? cur.promptTemplate ?? "",
@@ -479,6 +499,14 @@ export class ClientStateStore {
 			quickPhrasesEnabled: settings.quickPhrasesEnabled ?? cur.quickPhrasesEnabled ?? true,
 			hiddenBuiltinProviders: settings.hiddenBuiltinProviders ?? cur.hiddenBuiltinProviders ?? [],
 		};
+		// 模型路由规则是三态（见 getSettings）：null = 清除自定义 → 回到出厂默认。
+		const rr = settings.retiredModelRoutes !== undefined ? settings.retiredModelRoutes : cur.retiredModelRoutes;
+		const ra = settings.modelRouteAliases !== undefined ? settings.modelRouteAliases : cur.modelRouteAliases;
+		if (rr === null || rr === undefined) delete merged.retiredModelRoutes;
+		else merged.retiredModelRoutes = rr;
+		if (ra === null || ra === undefined) delete merged.modelRouteAliases;
+		else merged.modelRouteAliases = { ...ra };
+		state.settings = merged;
 		this.save();
 	}
 

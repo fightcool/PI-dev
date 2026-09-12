@@ -9,4 +9,4 @@
  * verifies the two never drift.
  */
 /* 🍞 @COUPLED server/protocol.ts — 协议改动必须同时 bump 两份版本号（scripts/check-protocol-sync.mjs 校验） */
-export const PROTOCOL_VERSION = 27;
+export const PROTOCOL_VERSION = 28;

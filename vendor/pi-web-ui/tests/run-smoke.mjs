@@ -60,6 +60,7 @@ const ALL = [
 	"plugin-cwd-test",
 	"plugin-http-test",
 	"mcp-bridge-test",
+	"model-routing-rules-test",
 	"plugin-settings-test",
 	"plugin-test",
 	"plugin-update-test",
