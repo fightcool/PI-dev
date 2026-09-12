@@ -11002,6 +11002,38 @@ button.source-default-toggle {
 	border-radius: 9px;
 	background: var(--bg-elev2);
 }
+
+/* ---- 「服务商连接」区块（方案 A：渠道表单直接管连接） ---- */
+.chan-conn {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 8px;
+	border: 1px solid var(--border-soft);
+	border-radius: 9px;
+}
+.chan-conn-mode {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 14px;
+	font-size: 12.5px;
+	color: var(--text-dim);
+}
+.chan-conn-mode label {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	cursor: pointer;
+}
+.chan-model-add {
+	display: flex;
+	gap: 6px;
+	align-items: center;
+}
+.chan-model-add input {
+	flex: 1;
+	min-width: 0;
+}
 .chan-form-title {
 	font-size: 12.5px;
 	font-weight: 600;

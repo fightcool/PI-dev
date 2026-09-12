@@ -41,6 +41,7 @@ import type {
 	UiExtensionInfo,
 	UiPluginCatalogEntry,
 	UiPluginInfo,
+	UiProviderConfig,
 	UiSettingsState,
 	UiSkillInfo,
 	UiSubagentTemplate,
@@ -119,6 +120,15 @@ interface SettingsModalProps {
 		usageHistory: UsageHistoryMsg | null;
 		/** 渠道表单「获取接口清单」的上一次探测结果（按 reqId/providerId 匹配）。 */
 		channelModelsResult: ChannelModelsResult | null;
+		/** 自定义服务商配置（models.json）：渠道表单回填「连接」并判定 hasApiKey。 */
+		modelsConfig: UiProviderConfig[];
+		/** 新建服务商时探测接口清单的结果（fetch_models，按 reqId 匹配）。 */
+		fetchModelsResult: {
+			reqId: number;
+			ok: boolean;
+			models?: import("../types").UiModelConfigEntry[];
+			error?: string;
+		} | null;
 	};
 	send: (msg: ClientMessage) => boolean;
 	/** DEV-CON 渠道命令 API（channel_save / channel_delete / 默认值 / 账户查询）。 */
@@ -2410,11 +2420,16 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 									channelApi={channelApi}
 									providerIds={channelProviderIds}
 									providerKeys={chat.providerKeys}
+									providerConfigs={chat.modelsConfig}
 									models={chat.models}
 									usageHistory={chat.usageHistory}
 									channelModelsResult={chat.channelModelsResult}
+									fetchProviderModelsResult={chat.fetchModelsResult}
 									onFetchChannelModels={(providerId, keyName, reqId) =>
 										send({ type: "fetch_channel_models", reqId, providerId, keyName })
+									}
+									onFetchProviderModels={({ reqId, baseUrl, apiKey, authHeader, api }) =>
+										send({ type: "fetch_models", reqId, baseUrl, apiKey, authHeader, api })
 									}
 								/>
 							</div>

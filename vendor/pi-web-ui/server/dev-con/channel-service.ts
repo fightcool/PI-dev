@@ -28,7 +28,7 @@
  *             所有出站消息都经 stateMessage()/receipt()，绝不携带密钥值或掩码片段。
  * ──────────────────────────────────────────────────
  */
-import type { ServerMessage, UiChannelBindingView } from "../protocol.js";
+import type { ChannelProviderInput, ServerMessage, UiChannelBindingView } from "../protocol.js";
 import {
 	checkBindingRevision,
 	checkConfigRevision,
@@ -69,6 +69,12 @@ export interface ChannelServiceHost extends ChannelStateHost {
 	getModel: (providerId: string, modelId: string) => { id: string; name: string } | null;
 	/** 服务商自己配置的密钥（仅账户查询的兜底；密钥正文不出服务端）。 */
 	resolveProviderKey: (providerId: string) => Promise<string | null>;
+	/** 已注册的服务商 id（渠道表单生成不冲突的服务商 id 用）。 */
+	providerIds: () => string[];
+	/** 渠道表单的「服务商连接」写入（models.json + 热加载）；错误以返回值上报。 */
+	upsertProvider: (
+		input: ChannelProviderInput & { providerId: string },
+	) => Promise<{ ok: true } | { ok: false; error: string }>;
 	/** 让某个对话使用该模型（内部调用 SDK session.setModel，会落 model_change）。 */
 	setConversationModel: (conversationId: string, modelId: string) => Promise<void>;
 	activeConversationId: () => string;
@@ -136,13 +142,15 @@ export class ChannelService {
 		});
 	}
 
-	private conflictReceipt(commandId: string, what: "channel" | "binding"): void {
+	private conflictReceipt(commandId: string, what: "channel" | "binding", note?: string): void {
+		const base = what === "channel" ? "渠道配置已被其他端修改，请刷新后重试" : "对话绑定已被其他端修改，请刷新后重试";
+		const baseEn = what === "channel" ? "Channel config changed elsewhere; refresh and retry" : "Conversation binding changed elsewhere; refresh and retry";
 		this.receipt({
 			commandId,
 			ok: false,
 			phase: "conflict",
-			error: what === "channel" ? "渠道配置已被其他端修改，请刷新后重试" : "对话绑定已被其他端修改，请刷新后重试",
-			errorEn: what === "channel" ? "Channel config changed elsewhere; refresh and retry" : "Conversation binding changed elsewhere; refresh and retry",
+			error: note ? `${note}；${base}` : base,
+			errorEn: note ? `${note}; ${baseEn}` : baseEn,
 		});
 		// 冲突后把真实状态推给所有端，避免 UI 停在旧值上无法恢复（A02）。
 		this.pushState();
@@ -158,8 +166,10 @@ export class ChannelService {
 			state: this.state,
 			dropPending: (conversationId) => this.disposeConversation(conversationId),
 			buildSelection: (input) => this.buildSelection(input),
+			providerIds: () => this.host.providerIds(),
+			upsertProvider: (input) => this.host.upsertProvider(input),
 			receipt: (input) => this.receipt(input),
-			conflictReceipt: (commandId, what) => this.conflictReceipt(commandId, what),
+			conflictReceipt: (commandId, what, note) => this.conflictReceipt(commandId, what, note),
 			pushState: () => this.pushState(),
 			accounts: this.accounts,
 		};

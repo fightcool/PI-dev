@@ -809,6 +809,7 @@ export interface DispatchSession {
 	saveChannelConfig(
 		commandId: string,
 		channel: Extract<ClientMessage, { type: "channel_save" }>["channel"],
+		provider: Extract<ClientMessage, { type: "channel_save" }>["provider"],
 		expectedConfigRevision?: number,
 	): Promise<void>;
 	deleteChannelConfig(commandId: string, channelId: string, expectedConfigRevision?: number): Promise<void>;
@@ -1524,7 +1525,7 @@ wss.on("connection", (ws) => {
 				void cs.clearChannelBinding(msg.commandId, msg.conversationId);
 				break;
 			case "channel_save":
-				void cs.saveChannelConfig(msg.commandId, msg.channel, msg.expectedConfigRevision);
+				void cs.saveChannelConfig(msg.commandId, msg.channel, msg.provider, msg.expectedConfigRevision);
 				break;
 			case "channel_delete":
 				void cs.deleteChannelConfig(msg.commandId, msg.channelId, msg.expectedConfigRevision);

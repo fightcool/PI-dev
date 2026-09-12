@@ -21,17 +21,26 @@ export function TextField({
 	ph,
 	onChange,
 	hint,
+	type,
 }: {
 	label: string;
 	value: string;
 	ph?: string;
 	onChange: (v: string) => void;
 	hint?: string;
+	/** 默认 text；密钥类字段传 password（避免肩窥 + 浏览器别记住它）。 */
+	type?: "text" | "password";
 }) {
 	return (
 		<label className="field">
 			<span className="field-label">{label}</span>
-			<input value={value} placeholder={ph} onChange={(e) => onChange(e.target.value)} />
+			<input
+				type={type ?? "text"}
+				value={value}
+				placeholder={ph}
+				autoComplete={type === "password" ? "new-password" : undefined}
+				onChange={(e) => onChange(e.target.value)}
+			/>
 			{hint && <span className="field-hint">{hint}</span>}
 		</label>
 	);

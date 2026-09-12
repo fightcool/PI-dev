@@ -19,7 +19,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { ServerMessage, UiModelConfigEntry, UiProviderConfig, ProviderKeyInfo } from "./protocol.js";
+import type { ChannelProviderInput, ServerMessage, UiModelConfigEntry, UiProviderConfig, ProviderKeyInfo } from "./protocol.js";
 import { pick, type ServerLang } from "./i18n.js";
 
 /** ClientSession 提供给本服务的宿主能力（窄接口）。 */
@@ -1334,14 +1334,53 @@ export class ModelAdminService {
 	/** Upsert one provider into models.json and hot-reload the model runtime. */
 	async saveModelConfig(providerId: string, config: UiProviderConfig): Promise<void> {
 		const pid = providerId.trim();
-		if (!pid || !/^[\w.-]+$/.test(pid)) {
-			this.host.emit({
-				type: "notice",
-				level: "error",
-				text: "服务商 ID 无效（仅字母/数字/._-）",
-				textEn: "Invalid provider ID (letters/digits/._- only)",
-			});
+		const result = await this.writeModelConfig(pid, config);
+		if (!result.ok) {
+			this.host.emit({ type: "notice", level: "error", text: result.error, textEn: result.errorEn ?? result.error });
+			this.host.flushSnapshot();
 			return;
+		}
+		this.host.emit({
+			type: "notice",
+			level: "info",
+			text: `✅ 已保存服务商 ${pid}（${result.count} 个模型）并刷新模型列表`,
+			textEn: `✅ Saved provider ${pid} (${result.count} models) and refreshed the model list`,
+		});
+		this.host.flushSnapshot();
+	}
+
+	/**
+	 * 渠道表单的「服务商连接」入口：与 saveModelConfig 同一套落盘/热加载，但**不发通知**——
+	 * 成功/失败都由渠道命令的回执向上报，避免一次操作两条互相矛盾的提示。
+	 */
+	async upsertProviderFromChannel(
+		input: ChannelProviderInput & { providerId: string },
+	): Promise<{ ok: true } | { ok: false; error: string }> {
+		const pid = input.providerId.trim();
+		const result = await this.writeModelConfig(pid, {
+			providerId: pid,
+			name: input.name,
+			api: input.api,
+			baseUrl: input.baseUrl,
+			apiKey: input.apiKey,
+			authHeader: input.authHeader,
+			models: input.models ?? [],
+		});
+		if (!result.ok) return { ok: false, error: result.error };
+		return { ok: true };
+	}
+
+	/**
+	 * 真正写 models.json + 热加载运行时的单一实现（错误以返回值上报，不静默）。
+	 * @CONTRACT 表单只管理「连接 + 模型 id/名字」这些键，其余键（headers / cost / compat /
+	 *   thinkingLevelMap / modelOverrides）原样保留；apiKey 空 = 保留已存值。
+	 */
+	private async writeModelConfig(
+		pid: string,
+		config: UiProviderConfig,
+	): Promise<{ ok: true; count: number } | { ok: false; error: string; errorEn?: string }> {
+		if (!pid || !/^[\w.-]+$/.test(pid)) {
+			return { ok: false, error: "服务商 ID 无效（仅字母/数字/._-）", errorEn: "Invalid provider ID (letters/digits/._- only)" };
 		}
 		const models = (config.models ?? [])
 			.filter((m) => m.id && m.id.trim())
@@ -1354,13 +1393,21 @@ export class ModelAdminService {
 				...(m.maxTokens ? { maxTokens: Number(m.maxTokens) } : {}),
 			}));
 		if (models.length === 0) {
-			this.host.emit({
-				type: "notice",
-				level: "error",
-				text: "至少需要一个模型",
-				textEn: "At least one model is required",
-			});
-			return;
+			return { ok: false, error: "至少需要一个模型", errorEn: "At least one model is required" };
+		}
+		// @BUGFIX 2026-09-12：新建自定义服务商没填 baseUrl 时，models.json 照样会被写进去，
+		// 但运行时注册不了它（pi 的组合器要求自定义模型必须有 baseUrl）——结果是一条“保存成功、
+		// 渠道却报服务商未注册”的假成功。已注册的服务商不受此限：内置服务商只用 modelOverrides
+		// 改模型元数据（deepseek 就是这种），它不需要再填 baseUrl。
+		const registered = (() => {
+			try {
+				return this.host.modelRuntime().getProviders().some((p) => p.id === pid);
+			} catch {
+				return false;
+			}
+		})();
+		if (!config.baseUrl?.trim() && !registered) {
+			return { ok: false, error: "新建服务商必须填请求地址（baseUrl）", errorEn: "A new provider needs a baseUrl" };
 		}
 		try {
 			const { providers } = this.readModelsConfig();
@@ -1415,21 +1462,10 @@ export class ModelAdminService {
 			this.host.invalidatePiConfig();
 			await this.listModelsConfig();
 			await this.host.pushModels();
-			this.host.emit({
-				type: "notice",
-				level: "info",
-				text: `✅ 已保存服务商 ${pid}（${models.length} 个模型）并刷新模型列表`,
-				textEn: `✅ Saved provider ${pid} (${models.length} models) and refreshed the model list`,
-			});
+			return { ok: true, count: models.length };
 		} catch (err) {
-			this.host.emit({
-				type: "notice",
-				level: "error",
-				text: `保存模型配置失败：${(err as Error).message}`,
-				textEn: `Failed to save model config: ${(err as Error).message}`,
-			});
+			return { ok: false, error: (err as Error).message };
 		}
-		this.host.flushSnapshot();
 	}
 
 	/** Remove a provider from models.json and hot-reload. */

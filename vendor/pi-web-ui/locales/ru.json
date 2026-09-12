@@ -1132,6 +1132,22 @@
     "channelCommandOk": "применено",
     "channelUsageTitle": "Использование по каналам",
     "channelUsageLastUsed": "Последнее использование",
-    "channelUsageNoRecords": "Нет записей в этом окне"
+    "channelUsageNoRecords": "Нет записей в этом окне",
+    "channelConnTitle": "Provider connection",
+    "channelConnModeNew": "New provider",
+    "channelConnModeExisting": "Existing provider",
+    "channelConnHint": "Claude models use anthropic-messages (site root, no /v1); GPT/Codex models use openai-completions or openai-responses (usually with /v1).",
+    "channelConnProviderId": "Provider ID (auto when blank)",
+    "channelConnBaseUrl": "Endpoint URL",
+    "channelConnApi": "Protocol",
+    "channelConnApiKey": "API key",
+    "channelConnApiKeyKeep": "Blank = keep the stored key",
+    "channelConnApiKeyNew": "Required",
+    "channelConnAuthHeader": "Also send Authorization: Bearer (gateways that need it)",
+    "channelConnUpdate": "Also update this provider's connection",
+    "channelConnModelsHint": "Checked models are saved to the provider and used as this channel's model allow-list.",
+    "channelConnNeedsModels": "A new provider needs at least one model: fetch the list or add an ID manually.",
+    "channelModelsAdd": "Add",
+    "channelModelsAddPh": "Type a model ID (e.g. claude-opus-5)"
   }
 }

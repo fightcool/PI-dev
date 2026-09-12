@@ -10,9 +10,11 @@ import {
 	detachChannel,
 	findSecretMaterial,
 	isValidChannelId,
+	isValidProviderId,
 	makeBinding,
 	nextChannelId,
 	normalizeChannelRecord,
+	providerIdFromName,
 	parseModelRef,
 	planSwitch,
 	pruneBindings,
@@ -187,5 +189,27 @@ describe("maintenance", () => {
 		);
 		const pruned = pruneBindings(bindings, 2);
 		expect(Object.keys(pruned).sort()).toEqual(["c3", "c4"]);
+	});
+});
+
+describe("provider id generation (channel form → models.json)", () => {
+	it("slugifies a display name into a provider id", () => {
+		expect(providerIdFromName("CCTQ Claude")).toBe("cctq-claude");
+		expect(providerIdFromName("  My   Gateway / v2  ")).toBe("my-gateway-v2");
+	});
+	it("avoids collisions with existing ids", () => {
+		expect(providerIdFromName("CCTQ Claude", ["cctq-claude"])).toBe("cctq-claude-2");
+		expect(providerIdFromName("CCTQ Claude", ["cctq-claude", "cctq-claude-2"])).toBe("cctq-claude-3");
+	});
+	it("falls back when the name has no usable ascii (中文/emoji) or is empty", () => {
+		expect(providerIdFromName("米醋claude")).toBe("claude");
+		expect(providerIdFromName("")).toBe("provider-1");
+		expect(providerIdFromName("", ["provider-1"])).toBe("provider-2");
+		expect(providerIdFromName("测试")).toBe("provider-1");
+	});
+	it("only accepts safe provider ids", () => {
+		expect(isValidProviderId("cctq-claude_1.x")).toBe(true);
+		expect(isValidProviderId("bad id")).toBe(false);
+		expect(isValidProviderId("")).toBe(false);
 	});
 });

@@ -21,11 +21,14 @@
  * ──────────────────────────────────────────────────
  */
 import type { ServerMessage } from "../protocol.js";
+import type { ChannelProviderInput } from "../protocol.js";
 import {
 	checkConfigRevision,
 	DEFAULT_ENDPOINT_ID,
 	detachChannel,
+	isValidProviderId,
 	nextChannelId,
+	providerIdFromName,
 	validateChannelRecord,
 	type ChannelBinding,
 	type ChannelCatalog,
@@ -69,9 +72,15 @@ export interface ChannelConfigPort {
 	dropPending: (conversationId: string) => void;
 	/** 选择校验（渠道/模型/命名凭据存在性）。 */
 	buildSelection: (input: SelectionInput) => { selection: ChannelSelection } | { error: string; errorEn: string };
+	/** 已注册的服务商 id（用于生成不冲突的服务商 id）。 */
+	providerIds: () => string[];
+	/** 写入/更新一个服务商（models.json + 热加载）；错误以返回值上报，不静默失败。 */
+	upsertProvider: (
+		input: ChannelProviderInput & { providerId: string },
+	) => Promise<{ ok: true } | { ok: false; error: string }>;
 	receipt: (input: ChannelReceiptInput) => void;
 	/** 版本冲突回执（channel=配置冲突，binding=绑定冲突），并推送真实状态。 */
-	conflictReceipt: (commandId: string, what: "channel" | "binding") => void;
+	conflictReceipt: (commandId: string, what: "channel" | "binding", note?: string) => void;
 	pushState: () => void;
 	accounts?: AccountRegistry;
 }
@@ -79,6 +88,8 @@ export interface ChannelConfigPort {
 export interface SaveChannelInput {
 	commandId: string;
 	channel: Partial<ChannelRecord> & { id?: string };
+	/** 与该渠道同帧写入的服务商连接（省略 = 只引用已注册服务商）。 */
+	provider?: ChannelProviderInput;
 	expectedConfigRevision?: number;
 }
 
@@ -100,16 +111,48 @@ export interface QueryAccountInput {
 	channelId: string;
 }
 
-/** 新增/更新渠道档案（不允许暗改；冲突显式回执）。 */
-export function saveChannelCommand(port: ChannelConfigPort, input: SaveChannelInput): void {
+/** 新增/更新渠道档案（不允许暗改；冲突显式回执）。
+ *  @CONTRACT 顺序不可颠倒：先写服务商（models.json）→ 再写渠道（channels.json）。
+ *    服务商写失败 → 不动渠道；渠道写失败（版本冲突）→ 回执明确说出「服务商已写入、渠道未保存」，
+ *    用户重试即幂等（provider upsert 不重复创建）。 */
+export async function saveChannelCommand(port: ChannelConfigPort, input: SaveChannelInput): Promise<void> {
 	if (!checkConfigRevision(port.state.configRevision, input.expectedConfigRevision).ok) {
 		return port.conflictReceipt(input.commandId, "channel");
 	}
 	const existing = port.state.catalog.channels.find((c) => c.id === input.channel.id);
+	let providerId = input.channel.providerId?.trim() || "";
+	/** 是否本帧真的写过服务商（用于部分失败回执的措辞）。 */
+	let providerWritten = false;
+	if (input.provider) {
+		// 「新建服务商」：id 留空时由显示名生成，避开已有 id（models.json + runtime 里的）。
+		const candidate = (input.provider.providerId?.trim() || providerId || "").trim();
+		const pid = candidate || providerIdFromName(input.channel.displayName ?? "", port.providerIds());
+		if (!isValidProviderId(pid)) {
+			return port.receipt({
+				commandId: input.commandId,
+				error: `服务商 ID 无效（仅字母/数字/._-）：${pid}`,
+				errorEn: `Invalid provider ID (letters/digits/._- only): ${pid}`,
+				ok: false,
+				phase: "rejected",
+			});
+		}
+		const written = await port.upsertProvider({ ...input.provider, providerId: pid });
+		if (!written.ok) {
+			return port.receipt({
+				commandId: input.commandId,
+				error: `服务商未写入，渠道未保存：${written.error}`,
+				errorEn: `Provider was not written; channel not saved: ${written.error}`,
+				ok: false,
+				phase: "rejected",
+			});
+		}
+		providerWritten = true;
+		providerId = pid;
+	}
 	const record: ChannelRecord = {
 		id: input.channel.id?.trim() || nextChannelId(port.state.catalog.channels),
 		displayName: input.channel.displayName?.trim() || "",
-		providerId: input.channel.providerId?.trim() || "",
+		providerId,
 		endpointId: input.channel.endpointId?.trim() || DEFAULT_ENDPOINT_ID,
 		credentialRef: input.channel.credentialRef ?? null,
 		accountRef: input.channel.accountRef ?? null,
@@ -118,21 +161,24 @@ export function saveChannelCommand(port: ChannelConfigPort, input: SaveChannelIn
 		enabled: input.channel.enabled !== false,
 		extra: { ...(existing?.extra ?? {}), ...(input.channel.extra ?? {}) },
 	};
+	// 部分失败的统一措辞：服务商已落盘，重试不会重复创建。
+	const partial = providerWritten ? "服务商已保存，但渠道未保存" : "";
+	const partialEn = providerWritten ? "provider saved, channel not saved" : "";
 	if (!port.hasProvider(record.providerId)) {
 		port.receipt({
 			commandId: input.commandId,
 			ok: false,
 			phase: "rejected",
 			channelId: record.id,
-			error: `服务商「${record.providerId}」未在模型中注册`,
-			errorEn: `Provider "${record.providerId}" is not registered`,
+			error: `${partial ? `${partial}；` : ""}服务商「${record.providerId}」未在模型中注册`,
+			errorEn: `${partialEn ? `${partialEn}; ` : ""}Provider "${record.providerId}" is not registered`,
 		});
 		return;
 	}
 	const others = port.state.catalog.channels.filter((c) => c.id !== record.id);
 	const errors = validateChannelRecord(record, others);
 	if (errors.length > 0) {
-		port.receipt({ commandId: input.commandId, ok: false, phase: "rejected", channelId: record.id, error: errors.join("；"), errorEn: errors.join("; ") });
+		port.receipt({ commandId: input.commandId, ok: false, phase: "rejected", channelId: record.id, error: `${partial ? `${partial}；` : ""}${errors.join("；")}`, errorEn: `${partialEn ? `${partialEn}; ` : ""}${errors.join("; ")}` });
 		return;
 	}
 	if (record.credentialRef && !port.keyNames(record.providerId).some((k) => k.keyName === record.credentialRef?.keyName)) {
@@ -141,8 +187,8 @@ export function saveChannelCommand(port: ChannelConfigPort, input: SaveChannelIn
 			ok: false,
 			phase: "rejected",
 			channelId: record.id,
-			error: `命名凭据不存在：${record.credentialRef.keyName}`,
-			errorEn: `Named credential not found: ${record.credentialRef.keyName}`,
+			error: `${partial ? `${partial}；` : ""}命名凭据不存在：${record.credentialRef.keyName}`,
+			errorEn: `${partialEn ? `${partialEn}; ` : ""}Named credential not found: ${record.credentialRef.keyName}`,
 		});
 		return;
 	}
@@ -151,7 +197,13 @@ export function saveChannelCommand(port: ChannelConfigPort, input: SaveChannelIn
 		channels: [...others, record].sort((a, b) => a.id.localeCompare(b.id)),
 		configRevision: port.state.configRevision + 1,
 	};
-	if (!port.state.commitConfig(next)) return port.conflictReceipt(input.commandId, "channel");
+	if (!port.state.commitConfig(next)) {
+		return port.conflictReceipt(
+			input.commandId,
+			"channel",
+			providerWritten ? "服务商已保存，但渠道未保存（配置已被其他端修改，刷新后重试）" : undefined,
+		);
+	}
 	port.receipt({ commandId: input.commandId, ok: true, phase: "applied", channelId: record.id });
 	port.pushState();
 }

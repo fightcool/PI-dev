@@ -737,7 +737,10 @@ export type ClientMessage =
 	  }
 	/** 清除当前对话的渠道绑定（回到项目/实例默认或全局 active key）。 */
 	| { type: "channel_binding_clear"; commandId: string; conversationId?: string; expectedBindingRevision?: number }
-	/** 新增/更新渠道档案（引用已注册服务商，不写 models.json / 不传密钥）。 */
+	/** 新增/更新渠道档案；可选**同帧**upsert 它引用的服务商（models.json）。
+	 *  @CONTRACT 「新建服务商」不再需要先去「管理模型」建一遍：渠道表单把连接字段（baseUrl/
+	 *  协议/密钥/模型）跟渠道一起提交，服务端先写 models.json（失败就不动 channels.json），
+	 *  再写渠道档案。密钥只在这一帧里上行一次，之后只以 hasApiKey 回显，绝不回传。 */
 	| {
 			type: "channel_save";
 			commandId: string;
@@ -753,6 +756,8 @@ export type ClientMessage =
 				enabled?: boolean;
 				extra?: Record<string, unknown>;
 			};
+			/** 与该渠道一起写入的服务商（省略 = 只引用已注册服务商，不碰 models.json）。 */
+			provider?: ChannelProviderInput;
 			expectedConfigRevision?: number;
 	  }
 	/** 删除渠道（同时清理引用它的默认值与绑定）。 */
@@ -1194,6 +1199,25 @@ export interface UiModelConfigEntry {
 	input?: string[];
 	contextWindow?: number;
 	maxTokens?: number;
+}
+
+/**
+ * 渠道表单里的「服务商连接」（channel_save.provider）：写 models.json 所需的最小字段集。
+ * @CONTRACT 不承载模型元数据（cost/contextWindow/thinkingLevelMap 等仍由「模型目录」管理）；
+ *   `apiKey` 只在服务端落盘，永不回传；留空 = 保留已存密钥（只改地址/模型不丢 key）。
+ */
+export interface ChannelProviderInput {
+	/** 服务商 id；省略时服务端由渠道显示名生成（见 channel-model 的 providerIdFromName）。 */
+	providerId?: string;
+	name?: string;
+	/** 协议：anthropic-messages / openai-completions / openai-responses / google-generative-ai。 */
+	api?: string;
+	baseUrl?: string;
+	apiKey?: string;
+	/** true = 另发 Authorization: Bearer（只认该头的网关需要；anthropic 系常见）。 */
+	authHeader?: boolean;
+	/** 服务商模型清单（至少一个 id；空 = 服务端拒绝）。 */
+	models?: UiModelConfigEntry[];
 }
 
 /** A custom provider block in models.json (providers.<id>). */

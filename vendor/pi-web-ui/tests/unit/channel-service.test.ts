@@ -23,13 +23,27 @@ function makeHost(dir: string, clientId = "test-client") {
 	const conversations = new Set(["c1", "c2"]);
 	const models: Record<string, string> = { "main/m1": "Model 1", "main/m2": "Model 2", "other/x": "X" };
 	const applied: { conversationId: string; modelId: string }[] = [];
+	/** 渠道表单写入服务商的调用记录（验证顺序与 payload）。 */
+	const providerWrites: { providerId: string; api?: string; baseUrl?: string; apiKey?: string; models?: { id: string }[] }[] = [];
+	/** 已注册服务商（upsertProvider 成功后会真的“注册”，供 hasProvider 用）。 */
+	const providers = new Set(["main", "other"]);
+	/** 测试钩子：在“写服务商”与“写渠道”之间做外部修改（验证部分失败可辨识）。 */
+	const hooks: { onProviderWrite?: () => void } = {};
 	const host: ChannelServiceHost = {
 		agentDir: dir,
 		clientId,
 		emit: (msg) => emitted.push(msg),
 		broadcast: (msg) => emitted.push(msg),
 		flushSnapshot: () => undefined,
-		hasProvider: (id) => id === "main",
+		hasProvider: (id) => providers.has(id),
+		providerIds: () => [...providers],
+		upsertProvider: async (input) => {
+			providerWrites.push(input);
+			if (input.baseUrl === "boom") return { ok: false, error: "服务商写入失败" };
+			hooks.onProviderWrite?.();
+			providers.add(input.providerId);
+			return { ok: true };
+		},
 		resolveProviderKey: async (providerId) => (providerId === "main" ? "provider-own-key" : null),
 		getModel: (providerId, modelId) => (models[`${providerId}/${modelId}`] ? { id: modelId, name: models[`${providerId}/${modelId}`] } : null),
 		keyNames: (providerId) =>
@@ -58,6 +72,8 @@ function makeHost(dir: string, clientId = "test-client") {
 	return {
 		host,
 		applied,
+		providerWrites,
+		hooks,
 		receipts,
 		lastReceipt,
 		lastState,
@@ -121,6 +137,77 @@ describe("channel service — configuration", () => {
 		const catalog = loadCatalog(dir).catalog;
 		expect(catalog.channels).toEqual([]);
 		expect(catalog.bindings).toEqual({});
+	});
+});
+
+describe("channel service — provider + channel in one command", () => {
+	const providerDraft = {
+		api: "anthropic-messages",
+		baseUrl: "https://www.cctq.ai",
+		apiKey: "sk-new",
+		models: [{ id: "claude-opus-5" }],
+	};
+
+	it("creates the provider (id slugged from the name) and the channel together", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({
+			commandId: "new",
+			channel: { ...channelDraft("ch-claude", null), displayName: "CCTQ Claude", providerId: "" },
+			provider: providerDraft,
+		});
+		expect(h.lastReceipt("new")).toMatchObject({ ok: true, phase: "applied" });
+		// 服务商 id 由显示名 slug 生成，渠道引用它（不再要求先去「管理模型」建一遍）。
+		expect(h.providerWrites).toHaveLength(1);
+		expect(h.providerWrites[0]).toMatchObject({ providerId: "cctq-claude", api: "anthropic-messages", baseUrl: "https://www.cctq.ai", apiKey: "sk-new" });
+		const saved = loadCatalog(dir).catalog.channels;
+		expect(saved.map((c) => c.providerId)).toEqual(["cctq-claude"]);
+	});
+
+	it("keeps the given provider id and whitelist, and does not touch the channel when the provider fails", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({
+			commandId: "id-given",
+			channel: { ...channelDraft("ch-a", null), providerId: "cc1q", models: ["claude-opus-5"] },
+			provider: { ...providerDraft, providerId: "cc1q" },
+		});
+		expect(h.lastReceipt("id-given")?.ok).toBe(true);
+		expect(h.providerWrites[0].providerId).toBe("cc1q");
+		expect(loadCatalog(dir).catalog.channels[0]).toMatchObject({ providerId: "cc1q", models: ["claude-opus-5"] });
+
+		// 服务商写失败 → 渠道不能落盘（先写 models.json，后写 channels.json）。
+		const before = loadCatalog(dir).catalog.channels.length;
+		await svc.saveChannel({
+			commandId: "boom",
+			channel: { ...channelDraft("ch-b", null), providerId: "broken" },
+			provider: { ...providerDraft, baseUrl: "boom", providerId: "broken" },
+		});
+		expect(h.lastReceipt("boom")).toMatchObject({ ok: false, phase: "rejected" });
+		expect(h.lastReceipt("boom")?.error).toContain("服务商未写入，渠道未保存");
+		expect(loadCatalog(dir).catalog.channels).toHaveLength(before);
+	});
+
+	it("names the partial failure when the provider landed but a concurrent edit blocked the channel", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({ commandId: "seed", channel: channelDraft("ch-1", "密钥 1") });
+		// 模拟「写服务商期间别的客户端改了 channels.json」→ commitConfig 检测到外部修改。
+		h.hooks.onProviderWrite = () => {
+			const catalog = loadCatalog(dir);
+			writeFileSync(
+				channelStorePath(dir),
+				JSON.stringify({ ...catalog.catalog, configRevision: 99, channels: [...catalog.catalog.channels] }, null, 2),
+			);
+		};
+		await svc.saveChannel({
+			commandId: "partial",
+			channel: { ...channelDraft("ch-2", null), providerId: "cc1q" },
+			provider: { ...providerDraft, providerId: "cc1q" },
+		});
+		const receipt = h.lastReceipt("partial");
+		expect(receipt).toMatchObject({ ok: false, phase: "conflict" });
+		expect(receipt?.error).toContain("服务商已保存");
 	});
 });
 
