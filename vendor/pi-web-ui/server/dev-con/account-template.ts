@@ -199,7 +199,7 @@ export const ACCOUNT_TEMPLATE_PRESETS: {
 	label: string;
 	description: string;
 	/** 预设可以指向内置适配器（如 openai-gateway）：它会用渠道那把 API token 依次探测账单/额度接口。 */
-	template: Omit<AccountTemplate, "kind"> & { kind: "template" | "openai-gateway" };
+	template: Omit<AccountTemplate, "kind"> & { kind: "template" | "openai-gateway"; topupUrl?: string };
 }[] = [
 	{
 		id: "deepseek",
@@ -208,6 +208,7 @@ export const ACCOUNT_TEMPLATE_PRESETS: {
 		template: {
 			kind: "template",
 			url: "https://api.deepseek.com/user/balance",
+			topupUrl: "https://platform.deepseek.com/top_up",
 			method: "GET",
 			items: { path: "balance_infos", currency: "currency", total: "total_balance", granted: "granted_balance", toppedUp: "topped_up_balance" },
 			mapping: { available: "is_available" },
@@ -225,6 +226,7 @@ export const ACCOUNT_TEMPLATE_PRESETS: {
 			method: "GET",
 			scale: 500000,
 			unit: "USD",
+			topupUrl: "{baseUrl}/console/topup",
 		},
 	},
 	{
@@ -234,6 +236,7 @@ export const ACCOUNT_TEMPLATE_PRESETS: {
 		template: {
 			kind: "template",
 			url: "https://openrouter.ai/api/v1/credits",
+			topupUrl: "https://openrouter.ai/settings/credits",
 			method: "GET",
 			mapping: { limit: "data.total_credits", used: "data.total_usage", remaining: "data.total_credits" },
 			unit: "USD",

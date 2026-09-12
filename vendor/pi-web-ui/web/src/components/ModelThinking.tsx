@@ -5,7 +5,8 @@
  *         没有这行用户只会看到一个空列表。 */
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { FiCpu, FiSearch, FiZap } from "react-icons/fi";
-import type { ModelInfo, ProviderKeyInfo, UiChannelBindingView, UiChannelInfo, UiState } from "../types";
+import type { ModelInfo, ProviderKeyInfo, UiChannelBindingView, UiState } from "../types";
+import { balanceTextOf, channelAccountView } from "../channel-account";
 import { Dropdown, DropdownItem } from "./Dropdown";
 import { ChannelModelList, ChannelStatusChips } from "./ModelChannelPicker";
 import { useT } from "../i18n";
@@ -77,76 +78,51 @@ export const ModelThinking = memo(function ModelThinking({
 	const channelReceipt = lastChannelCommand ? (channelResults[lastChannelCommand] ?? null) : null;
 
 	// -- DEV-CON 余额 chip：直接显示在「思考强度」右侧（PC 与移动端同一处）----------
-	// @WHY 余额原本只在「设置 → 渠道」的行里，用户要一层层翻进去；但它是「这个渠道还能不能跑」
-	//   的第一信号，应该和当前模型/思考强度放在同一行。
-	// @CONTRACT 只在有效渠道确实配了账户查询时出现（channel.account.kind 非空）；值缺失写「—」，
-	//   绝不把缺失当 0（§7）；状态点与设置页账户状态行同义。
-	const effectiveChannelId = channelBinding?.effective?.channelId ?? null;
-	/** 渠道是否配了账户查询（kind 非空）。 */
-	const accountKindOf = (c: UiChannelInfo): string => {
-		const account = c.account as { kind?: unknown } | null | undefined;
-		return account && typeof account.kind === "string" ? account.kind : "";
-	};
-	const boundChannel = effectiveChannelId ? (channels.find((c) => c.id === effectiveChannelId) ?? null) : null;
-	/**
-	 * @WHY 没绑定时也要能显示余额：clientId 存在 sessionStorage（每标签页独立，见 use-chat 的
-	 * getClientId），新标签页/重开浏览器就是新 clientId，而渠道绑定按 clientId 命名空间存 ——
-	 * 于是「对话还在跑同一个模型，但绑定没了」。此时若当前模型的服务商只对应**一个**带账户
-	 * 查询的渠道，就用它（多义时不猜，宁可没有）。
-	 */
-	const modelProvider = state?.model?.provider ?? null;
-	const derivedChannel = useMemo(() => {
-		if (boundChannel || !modelProvider) return null;
-		const candidates = channels.filter((c) => c.providerId === modelProvider && c.enabled && accountKindOf(c) !== "");
-		return candidates.length === 1 ? candidates[0] : null;
-	}, [boundChannel, modelProvider, channels]);
-	const balanceChannel = boundChannel ?? derivedChannel;
-	const hasAccountQuery = !!balanceChannel && accountKindOf(balanceChannel) !== "";
-	const accountStatus = hasAccountQuery
-		? (channelState?.accounts ?? []).find((a) => a.accountRef === ((balanceChannel?.accountRef || balanceChannel?.id) ?? ""))
-		: undefined;
+	// @WHY 余额原本只在「设置 → 渠道」的行里，用户要一层层翻进去；但它是「这个渠道还能不能跑」的
+	//   第一信号，应该和当前模型/思考强度放在同一行。
+	// @CONTRACT 面向用户：主标签只说人话 —— 有余额就给数值，拿不到余额就写「余额未知」；
+	//   接口字段名/报错细节一律不上主界面，点击 chip 打开用量明细看详情（§7 + 产品口径）。
+	const balanceView = useMemo(
+		() =>
+			channelAccountView({
+				channels,
+				accounts: channelState?.accounts ?? [],
+				binding: channelBinding,
+				modelProvider: state?.model?.provider ?? null,
+			}),
+		[channels, channelState?.accounts, channelBinding, state?.model?.provider],
+	);
+	const balanceChannel = balanceView.channel;
+	const accountStatus = balanceView.account;
+	const hasAccountQuery = !!balanceChannel;
 	/** 每个渠道每次会话自动查一次（服务端 5 分钟缓存 + 10 秒限频，重复调用无害）。 */
 	const balanceQueried = useRef<Set<string>>(new Set());
 	useEffect(() => {
-		if (!hasAccountQuery || !balanceChannel || !channelApi) return;
+		if (!hasAccountQuery || !balanceChannel) return;
 		if (balanceQueried.current.has(balanceChannel.id)) return;
 		balanceQueried.current.add(balanceChannel.id);
 		channelApi.queryChannelAccount(balanceChannel.id);
-	}, [hasAccountQuery, balanceChannel?.id, channelApi]);
-	/** 有余额显示余额；网关只报得出「已用」时显示已用（不把已用当余额，见 §7）。 */
-	const balanceValue = (() => {
-		const s = accountStatus;
-		if (!s) return null;
-		const raw = s.balance ?? s.quota?.remaining;
-		if (raw === undefined) return null;
-		const num = Number.isInteger(raw) ? String(raw) : raw.toFixed(2);
-		return s.unit ? `${num} ${s.unit}` : num;
-	})();
-	const usedValue = (() => {
-		if (balanceValue !== null) return null;
-		const used = accountStatus?.quota?.used;
-		if (used === undefined) return null;
-		const num = Number.isInteger(used) ? String(used) : used.toFixed(2);
-		return accountStatus?.unit ? `${num} ${accountStatus.unit}` : num;
-	})();
-	const balanceStateLabel = !accountStatus
-		? t("channelQuerying")
-		: accountStatus.status === "ok"
+	}, [hasAccountQuery, balanceChannel, channelApi]);
+	const balanceText = balanceTextOf(accountStatus, t as (k: string) => string);
+	/** 状态点：ok 绿；失败/过期/其他 用警示色；尚未查过用中性。 */
+	const balanceState = accountStatus?.status ?? "unknown";
+	const balanceStateLabel =
+		balanceState === "ok"
 			? t("channelAccountOk")
-			: accountStatus.status === "stale"
+			: balanceState === "stale"
 				? t("channelAccountStale")
-				: accountStatus.status === "failed"
+				: balanceState === "failed"
 					? t("channelAccountFailed")
-					: t("channelAccountUnsupported");
+					: balanceState === "unknown"
+						? t("channelQuerying")
+						: t("channelAccountUnsupported");
 	const balanceTitle = [
-		balanceChannel ? `${balanceChannel.displayName} · ${balanceChannel.accountRef || balanceChannel.id}` : "",
-		!boundChannel && derivedChannel ? t("channelBalanceDerived") : "",
+		balanceChannel ? balanceChannel.displayName : "",
 		balanceStateLabel,
-		accountStatus?.checkedAt !== undefined
+		balanceView.derived ? t("channelBalanceDerived") : "",
+		typeof accountStatus?.checkedAt === "number"
 			? `${t("channelAccountCheckedAt")} ${new Date(accountStatus.checkedAt).toLocaleString()}`
 			: "",
-		accountStatus?.error ?? "",
-		balanceValue === null && accountStatus && accountStatus.status === "failed" ? t("channelQueryAccount") : "",
 		t("usageDetailTip"),
 	]
 		.filter(Boolean)
@@ -489,14 +465,13 @@ export const ModelThinking = memo(function ModelThinking({
 			{hasAccountQuery && balanceChannel && (
 				<button
 					type="button"
-					className={`chip chan-balance ${accountStatus?.status ?? "unknown"}`}
+					className={`chip chan-balance ${balanceState}`}
 					title={balanceTitle}
 					onClick={onOpenUsage}
 				>
 					<span className="chan-balance-dot" />
 					<span className="chip-sub">
-						{usedValue !== null ? t("channelAccountUsed") : t("channelAccountBalance")}{" "}
-						<span className="chan-balance-value">{balanceValue ?? usedValue ?? "—"}</span>
+						{t("channelAccountBalance")} <span className="chan-balance-value">{balanceText}</span>
 					</span>
 				</button>
 			)}

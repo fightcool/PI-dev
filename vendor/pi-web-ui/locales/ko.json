@@ -1072,7 +1072,7 @@
     "channelAccountCheckedAt": "조회 시각",
     "channelAccountBalance": "잔액",
     "channelAccountQuota": "할당량",
-    "channelAccountKeyQuota": "key 할당량",
+    "channelAccountKeyQuota": "Used",
     "channelInstanceDefault": "인스턴스 기본값",
     "channelProjectDefault": "프로젝트 기본값",
     "channelDefaultNone": "설정 안 함",
@@ -1153,6 +1153,12 @@
     "customAddInChannels": "To add or edit a provider, use Settings → Channels → Add channel → Provider connection: it writes the endpoint, protocol, key and models together.",
     "channelAccountModeGateway": "Gateway adapter (one-api / new-api, falls back to the billing API)",
     "channelAccountUsed": "Used",
-    "channelBalanceDerived": "(no channel bound; matched the unique channel of this model's provider)"
+    "channelBalanceDerived": "(matched from the current model)",
+    "channelAccountUnknownBalance": "Balance unknown",
+    "channelAccountDetailTitle": "Channel account",
+    "channelTopUp": "Top up",
+    "channelAccountTopupUrl": "Top-up link (optional)",
+    "channelAccountTopupUrlPh": "e.g. {baseUrl}/console/topup",
+    "channelAccountTopupHint": "Shown next to the usage-detail title so topping up is one click away."
   }
 }

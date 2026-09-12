@@ -70,6 +70,11 @@ interface AccountConfig {
 	/** 网关配额的换算比例（1 个单位 = scale 个最小单位）。 */
 	scale?: number;
 	/**
+	 * 充值页地址（可选）：展示在「用量详情」标题右侧的直达链接，便于用户随手充值。
+	 * 支持 {baseUrl} 占位；未配置时按 kind 取内置默认（见 TOPUP_DEFAULTS）。
+	 */
+	topupUrl?: string;
+	/**
 	 * 账户查询专用的命名凭据（provider-keys.json 里的密钥名）。
 	 * 说明：少数供应商的账户接口需要用**另一把 API key**（如 OpenRouter 的 provisioning key）；
 	 * 不填则用渠道的模型凭据（DeepSeek 官方这类同一把 key 的供应商适用）。
@@ -189,8 +194,8 @@ async function queryOpenAiBilling(
 	const sub = await fetchJson(fetchImpl, `${origin}/v1/dashboard/billing/subscription`, { method: "GET", headers }, signal);
 	const subBody = (sub.ok ? (sub.body ?? {}) : {}) as Record<string, unknown>;
 	const total = num(subBody.hard_limit_usd) ?? num(subBody.soft_limit_usd) ?? num(subBody.system_hard_limit_usd);
-	// 不下断言「近 N 天」的语义：窗口由 start_date/end_date 表达，但网关可能按自身口径返回。
-	const note = "来自网关账单接口";
+	// 面向用户的一句话（不要放字段名/上限占位值这类开发者语言；技术细节留给失败时的 error）。
+	const note = "来自该渠道的账户接口";
 	// 真总额度 → 给余额；只是「不限额度」占位值 → 只说已用，不假装余额。
 	if (total !== undefined && total < UNLIMITED_QUOTA_MIN) {
 		const remaining = total - used;
@@ -200,7 +205,7 @@ async function queryOpenAiBilling(
 			balance: remaining,
 			quota: { used, limit: total, remaining, unit: "USD" },
 			scope: "gateway",
-			note: `${note}（总额度 − 报出的已用）`,
+			note,
 			checkedAt: Date.now(),
 		};
 	}
@@ -209,7 +214,7 @@ async function queryOpenAiBilling(
 		unit: "USD",
 		quota: { used, unit: "USD" },
 		scope: "gateway",
-		note: `${note}报出的已用额度；该网关的 API 没有余额字段（subscription 只返回「不限额度」占位值）`,
+		note: `${note}：该渠道只返回了用量，没有余额信息`,
 		checkedAt: Date.now(),
 	};
 }
@@ -395,6 +400,31 @@ function providerBaseUrlOf(channel: ChannelRecord): string {
 	} catch {
 		return "";
 	}
+}
+
+/**
+ * 充值页的**内置默认**（按账户查询方式选）。
+ * @WHY 用户配好渠道就该能一键去充值，不该自己去找供应商的控制台地址；网关照旧用 {baseUrl} 占位，
+ *   因此同一个"new-api 网关"配置换个部署也不用改。
+ * @GOTCHA 这是 href，只放行 http(s)（见 topupUrlOf）：javascript:/data: 一律丢弃。
+ */
+const TOPUP_DEFAULTS: Record<string, string> = {
+	deepseek: "https://platform.deepseek.com/top_up",
+	"openai-gateway": "{baseUrl}/console/topup",
+	openrouter: "https://openrouter.ai/settings/credits",
+	template: "",
+};
+
+/** 该渠道的充值页地址（显式配置优先，其次按 kind 的默认值；只返回 http(s)，否则 null）。 */
+export function topupUrlOf(channel: ChannelRecord): string | null {
+	const cfg = accountConfig(channel);
+	const explicit = typeof cfg?.topupUrl === "string" ? cfg.topupUrl.trim() : "";
+	const raw = explicit || (cfg?.kind ? (TOPUP_DEFAULTS[cfg.kind] ?? "") : "");
+	if (!raw) return null;
+	// {baseUrl} 用**站点根**（剥掉 /v1）：网关的控制台页面挂在站点根下，
+	// 供应商的 baseUrl 往往是 `https://host/v1`，直接拼会得到 /v1/console/topup（404）。
+	const rendered = renderTemplateText(raw, { baseUrl: siteRootOf(providerBaseUrlOf(channel)), apiKey: "" }).trim();
+	return /^https?:\/\//i.test(rendered) ? rendered : null;
 }
 
 /** OpenRouter：/api/v1/key 给出该 key 的限额与用量，/api/v1/credits 给出账户余额。 */

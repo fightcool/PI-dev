@@ -4,7 +4,12 @@
  */
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import { AccountRegistry, deepSeekAdapter } from "../../server/dev-con/channel-accounts.js";
+import {
+	AccountRegistry,
+	deepSeekAdapter,
+	topupUrlOf,
+	setProviderBaseUrlLookup,
+} from "../../server/dev-con/channel-accounts.js";
 import type { ChannelRecord } from "../../server/dev-con/channel-model.js";
 
 let servers: Server[] = [];
@@ -90,7 +95,7 @@ describe("account queries", () => {
 		expect(result).toMatchObject({ status: "ok", unit: "USD" });
 		expect(result.balance).toBeCloseTo(96.5); // 100 - 3.5
 		expect(result.quota).toEqual({ used: 3.5, limit: 100, remaining: 96.5, unit: "USD" });
-		expect(result.note).toContain("账单接口");
+		expect(result.note).toContain("账户接口");
 	});
 
 	it("never reports the unlimited placeholder as a balance (reports used instead)", async () => {
@@ -105,7 +110,10 @@ describe("account queries", () => {
 		expect(result.status).toBe("ok");
 		expect(result.balance).toBeUndefined();
 		expect(result.quota).toEqual({ used: 0.0558, unit: "USD" });
-		expect(result.note).toContain("API 没有余额字段");
+		// 面向用户的说法：只说「有没有余额」，不摆字段名。
+		expect(result.note).toContain("没有余额信息");
+		expect(result.note).not.toContain("subscription");
+		expect(result.note).not.toContain("字段");
 	});
 
 	it("says the provider API has no query endpoint when nothing answers", async () => {
@@ -378,5 +386,29 @@ describe("account queries", () => {
 		const snapshot = r.snapshot()[0];
 		expect(snapshot.status).toBe("stale");
 		expect(snapshot.balance).toBe(ok.balance);
+	});
+});
+
+describe("充值直达链接（用量面板标题右侧）", () => {
+	it("显式配置优先，其次按账户查询方式取默认值，{baseUrl} 会被解析", () => {
+		setProviderBaseUrlLookup((id) => (id === "main" ? "https://gw.example/v1" : undefined));
+		// openai-gateway 的默认充值页：站点根 + /console/topup（不能拼到 /v1 后面）
+		expect(topupUrlOf(channel("https://gw.example", { kind: "openai-gateway" }))).toBe("https://gw.example/console/topup");
+		// 显式配置覆盖默认值
+		expect(topupUrlOf(channel("https://gw.example", { kind: "openai-gateway", topupUrl: "https://pay.example/x" }))).toBe(
+			"https://pay.example/x",
+		);
+		// 占位也能用
+		expect(topupUrlOf(channel("https://gw.example", { kind: "template", topupUrl: "{baseUrl}/billing" }))).toBe(
+			"https://gw.example/billing",
+		);
+	});
+	it("非 http(s) 或未配置 → null（绝不把坏地址当 href 渲染）", () => {
+		expect(topupUrlOf(channel("https://gw.example", { kind: "template", topupUrl: "javascript:alert(1)" }))).toBeNull();
+		expect(topupUrlOf(channel("https://gw.example", { kind: "template" }))).toBeNull();
+	});
+	it("deepseek / openrouter 有内置充值页默认值", () => {
+		expect(topupUrlOf(channel("https://api.deepseek.com", { kind: "deepseek" }))).toBe("https://platform.deepseek.com/top_up");
+		expect(topupUrlOf(channel("https://openrouter.ai/api/v1", { kind: "openrouter" }))).toBe("https://openrouter.ai/settings/credits");
 	});
 });

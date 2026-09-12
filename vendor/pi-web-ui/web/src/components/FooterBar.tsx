@@ -18,6 +18,7 @@ import type { ChatState , UsageHistoryMsg, UsageHistoryWindow } from "../use-cha
 import { useT } from "../i18n";
 import { cacheMetrics, estimateStreamTokens, streamRate, trimRateSamples, type RateSample } from "../cache-stats";
 import { UsageDetail, formatTokens } from "./UsageDetail";
+import { channelAccountView } from "../channel-account";
 
 interface FooterBarProps {
 	chat: ChatState;
@@ -146,6 +147,14 @@ export function FooterBar({ chat, send, onQueryUsageHistory, usageOpen: usageOpe
 	const ctxBarClass = ctxPercent === null ? "" : ctxPercent >= 80 ? "warn" : ctxPercent >= 50 ? "mid" : "ok";
 
 	const queueTotal = state.queue.steering.length + state.queue.followUp.length;
+
+	// -- DEV-CON 渠道账户：chip 与用量面板共用同一份派生（见 channel-account.ts）。
+	const accountView = channelAccountView({
+		channels: chat.channelState?.channels ?? [],
+		accounts: chat.channelState?.accounts ?? [],
+		binding: state.channelBinding,
+		modelProvider: state.model?.provider ?? null,
+	});
 
 	// -- DEV-CON 渠道：只显示有效绑定（与待生效标记分开），名字从 channel_state 解析。
 	const channels = chat.channelState?.channels ?? [];
@@ -327,6 +336,7 @@ export function FooterBar({ chat, send, onQueryUsageHistory, usageOpen: usageOpe
 						onQueryUsageHistory={onQueryUsageHistory}
 						runId={s.runId}
 						channels={channels}
+						accountView={accountView}
 					/>
 				</>
 			)}
