@@ -45,6 +45,28 @@ describe("account queries", () => {
 		expect(r.snapshot()[0].status).toBe("unsupported");
 	});
 
+	it("asks the billing API first when no console credential is designated (one request, no pointless 401)", async () => {
+		const paths: string[] = [];
+		const base = await stub((url, res) => {
+			paths.push(url.pathname);
+			if (url.pathname === "/v1/dashboard/billing/usage") {
+				res.writeHead(200, { "content-type": "application/json" });
+				return res.end(JSON.stringify({ total_usage: 1.25 }));
+			}
+			if (url.pathname === "/api/user/self") {
+				res.writeHead(401, { "content-type": "application/json" });
+				return res.end(JSON.stringify({ success: false }));
+			}
+			res.writeHead(404);
+			res.end("{}");
+		});
+		const result = await registry().query(channel(base), () => "sk-model-key");
+		expect(result.status).toBe("ok");
+		expect(result.quota).toEqual({ used: 1.25, unit: "USD" });
+		// 只有账单接口被访问；控制台接口一次都没打（模型 key 打它必然 401）。
+		expect(paths).not.toContain("/api/user/self");
+	});
+
 	it("falls back to the OpenAI-compatible billing API when the console token is missing", async () => {
 		// 实测形态（www.cctq.ai）：模型 key 打 /api/user/self 一律 401，但账单接口可用。
 		const base = await stub((url, res) => {
@@ -97,12 +119,16 @@ describe("account queries", () => {
 	});
 
 	it("parses an OpenAI-compatible gateway balance with the configured scale and unit", async () => {
+		// 指定了「账户凭据」= 控制台访问令牌 → 直接打控制台接口（能给出真余额）。
 		const base = await stub((url, res) => {
 			expect(url.pathname).toBe("/api/user/self");
 			res.writeHead(200, { "content-type": "application/json" });
 			res.end(JSON.stringify({ success: true, data: { quota: 1000, used_quota: 400, display_name: "acct" } }));
 		});
-		const result = await registry().query(channel(base), () => "sk-secret");
+		const result = await registry().query(
+			channel(base, { scale: 2, kind: "openai-gateway", unit: "USD", credentialKeyName: "控制台令牌" }),
+			() => "sk-secret",
+		);
 		expect(result).toMatchObject({ status: "ok", unit: "USD", scope: "acct", balance: 300 });
 		expect(result.quota).toEqual({ used: 200, limit: 500, remaining: 300, unit: "USD" });
 		expect(result.checkedAt).toBeTypeOf("number");
@@ -238,14 +264,21 @@ describe("account queries", () => {
 			res.end(JSON.stringify({ success: true, data: { quota: 500, used_quota: 500, display_name: "gw" } }));
 		});
 		// 渠道里填的是 OpenAI 兼容基址（末尾 /v1）——账户接口必须落在站点根 /api/user/self。
-		const withV1 = { ...channel(`${base}/v1`), extra: { account: { kind: "openai-gateway", url: `${base}/v1`, unit: "CNY", scale: 1 } } };
+		// 指定「账户凭据」= 走控制台接口这条路径（没指定时先打账单接口，见下一条用例）。
+		const withV1 = {
+			...channel(`${base}/v1`),
+			extra: { account: { kind: "openai-gateway", url: `${base}/v1`, unit: "CNY", scale: 1, credentialKeyName: "控制台令牌" } },
+		};
 		const result = await registry().query(withV1, () => "gw-key");
 		expect(seen).toContain("/api/user/self");
 		expect(seen).not.toContain("/v1/api/user/self");
 		expect(result.status).toBe("ok");
 		// 已经给出完整账户路径时原样使用，不做二次拼接。
 		seen.length = 0;
-		const explicit = { ...channel(base), extra: { account: { kind: "openai-gateway", url: `${base}/api/user/self`, scale: 1 } } };
+		const explicit = {
+			...channel(base),
+			extra: { account: { kind: "openai-gateway", url: `${base}/api/user/self`, scale: 1, credentialKeyName: "控制台令牌" } },
+		};
 		await registry().query(explicit, () => "gw-key");
 		expect(seen).toEqual(["/api/user/self"]);
 	});
@@ -310,9 +343,11 @@ describe("account queries", () => {
 		});
 		const clock = { value: 1_000 };
 		const r = registry({ minIntervalMs: 60_000, now: () => clock.value });
-		const first = await r.query(channel(base), () => "sk");
+		// 指定账户凭据 → 单次请求即出结果，calls 才能干净地当作「查询次数」计数。
+		const limited = channel(base, { scale: 1, kind: "openai-gateway", unit: "USD", credentialKeyName: "控制台令牌" });
+		const first = await r.query(limited, () => "sk");
 		expect(first.status).toBe("ok");
-		const second = await r.query(channel(base), () => "sk");
+		const second = await r.query(limited, () => "sk");
 		expect(calls).toBe(1);
 		expect(second.error).toContain("查询过于频繁");
 		expect(second.balance).toBe(first.balance);

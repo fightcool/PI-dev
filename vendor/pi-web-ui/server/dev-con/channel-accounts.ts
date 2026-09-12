@@ -208,11 +208,15 @@ async function queryOpenAiBilling(
 }
 
 /**
- * OpenAI 兼容自建网关（one-api / new-api 一类）：默认 /api/user/self，
- * 用同一把 key 鉴权（Bearer）。额度字段名各家不同，只读取明确存在的数值字段，
- * 读不到就报失败——不猜。
- * @CONTRACT 顺序：先 /api/user/self（配了控制台访问令牌时能拿到真余额）→
- *   401/403（只用模型 key）或该站没有这个接口时，退回 OpenAI 兼容账单接口报「已用」。
+ * OpenAI 兼容自建网关（one-api / new-api 一类）的账户查询。
+ * @CONTRACT 只用**渠道里已经配置好的那把 key**（渠道的命名凭据，或没绑命名凭据时服务商
+ *   自己那把）；本适配器不引入任何额外凭据，也不写盘。
+ * @WHY 顺序按「用户到底配了什么」决定，默认只发**一个**请求：
+ *   - 用户在渠道里指定了「账户凭据」（= 控制台访问令牌）→ 打 /api/user/self（能给出真余额）；
+ *   - 没指定 → 说明手上只有模型 key，直接打 OpenAI 兼容账单接口（模型 key 就能查「已用」），
+ *     不再先吃一个必然 401 的控制台请求；
+ *   - 每一步都有兜底：账单接口不可用时再试一次 /api/user/self（有些网关的模型 key 兼作令牌）。
+ * 读不到就如实报失败 + 下一步提示，不猜（§7）。
  */
 export const openAiGatewayAdapter: AccountAdapter = {
 	kind: "openai-gateway",
@@ -228,45 +232,57 @@ export const openAiGatewayAdapter: AccountAdapter = {
 		// /api/user/self，而渠道里通常填的是 OpenAI 兼容基址（末尾带 /v1）。直接拼接会得到
 		// /v1/api/user/self → HTTP 404。这里先剥掉 /v1（或 /v1/... 子路径）再拼；若用户已直接
 		// 给出完整 /api/user/self 地址，则原样使用。
-		const url = /\/api\/user\/self$/i.test(configured) ? configured : `${origin}/api/user/self`;
-		const res = await fetchJson(
-			fetch,
-			url,
-			{ method: "GET", headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" } },
-			signal,
-		);
-		if (!res.ok) {
-			// 模型 key 打不了控制台接口（401/403）或该站没有 /api/user/self：退回账单接口。
-			const billing = await queryOpenAiBilling(fetch, origin, apiKey, signal);
-			if (billing) return billing;
-			const hint =
-				res.status === 401 || res.status === 403
-					? "（网关账户接口需要控制台访问令牌，而不是模型 key：请在账户配置里指定「账户凭据」；该站的 OpenAI 兼容账单接口也不可用）"
-					: "";
-			return { status: "failed", error: `${res.error}${hint}` };
-		}
-		const body = (res.body ?? {}) as Record<string, unknown>;
-		const data = (body.data ?? body) as Record<string, unknown>;
+		const selfUrl = /\/api\/user\/self$/i.test(configured) ? configured : `${origin}/api/user/self`;
 		const scale = typeof cfg?.scale === "number" && cfg.scale > 0 ? cfg.scale : 1;
 		const unit = cfg?.unit ?? "quota";
-		const quota = num(data.quota);
-		const used = num(data.used_quota) ?? num(data.usedQuota);
-		const displayName = typeof data.display_name === "string" ? data.display_name : typeof data.username === "string" ? data.username : undefined;
-		if (quota === undefined && used === undefined) {
-			const billing = await queryOpenAiBilling(fetch, origin, apiKey, signal);
-			if (billing) return billing;
-			return { status: "failed", error: "账户接口未返回可识别的额度字段" };
-		}
-		// balance = 可用余额（有已用量时扣掉），不是总额度。
-		const remaining = quota === undefined ? undefined : (used === undefined ? quota : quota - used) / scale;
-		return {
-			status: "ok",
-			scope: displayName,
-			unit,
-			balance: remaining,
-			quota: { used: used === undefined ? undefined : used / scale, limit: quota === undefined ? undefined : quota / scale, remaining, unit },
-			checkedAt: Date.now(),
+		/**
+		 * 控制台接口（/api/user/self）：能拿到真余额，但需要控制台访问令牌。
+		 * 保留失败原因（HTTP 500 / 非 JSON / 重定向 / 超限…）：这些是用户该看到的真实诊断。
+		 */
+		const queryConsole = async (): Promise<
+			{ result: Omit<AccountQueryResult, "accountRef" | "kind"> } | { error: string; status?: number }
+		> => {
+			const res = await fetchJson(fetch, selfUrl, { method: "GET", headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" } }, signal);
+			if (!res.ok) return { error: res.error ?? "账户接口请求失败", status: res.status };
+			const body = (res.body ?? {}) as Record<string, unknown>;
+			const data = (body.data ?? body) as Record<string, unknown>;
+			const quota = num(data.quota);
+			const used = num(data.used_quota) ?? num(data.usedQuota);
+			if (quota === undefined && used === undefined) return { error: "账户接口未返回可识别的额度字段" };
+			const displayName = typeof data.display_name === "string" ? data.display_name : typeof data.username === "string" ? data.username : undefined;
+			// balance = 可用余额（有已用量时扣掉），不是总额度。
+			const remaining = quota === undefined ? undefined : (used === undefined ? quota : quota - used) / scale;
+			return {
+				result: {
+					status: "ok",
+					scope: displayName,
+					unit,
+					balance: remaining,
+					quota: { used: used === undefined ? undefined : used / scale, limit: quota === undefined ? undefined : quota / scale, remaining, unit },
+					checkedAt: Date.now(),
+				},
+			};
 		};
+		const consoleDesignated = typeof cfg?.credentialKeyName === "string" && cfg.credentialKeyName.trim() !== "";
+		let consoleAttempt: Awaited<ReturnType<typeof queryConsole>> | null = null;
+		if (consoleDesignated) {
+			consoleAttempt = await queryConsole();
+			if ("result" in consoleAttempt) return consoleAttempt.result;
+		}
+		const billing = await queryOpenAiBilling(fetch, origin, apiKey, signal);
+		if (billing) return billing;
+		if (!consoleDesignated) {
+			// 最后再试一次控制台接口：少数网关的模型 key 也能读 /api/user/self。
+			consoleAttempt = await queryConsole();
+			if ("result" in consoleAttempt) return consoleAttempt.result;
+		}
+		const error = consoleAttempt && "error" in consoleAttempt ? consoleAttempt.error : "账户接口不可用";
+		const status = consoleAttempt && "status" in consoleAttempt ? consoleAttempt.status : undefined;
+		const hint =
+			status === 401 || status === 403
+				? "（该接口需要控制台访问令牌，而不是模型 key：请在渠道的「账户凭据」里指定网关控制台令牌；该站的 OpenAI 兼容账单接口也没有可用字段）"
+				: "";
+		return { status: "failed", error: `${error}${hint}` };
 	},
 };
 
