@@ -13,10 +13,14 @@ npm run format       # prettier 全仓库格式化（.prettierrc.json：tabs + �
 npm run format:check # 只检查不改写（CI 跑这个）
 npm run build        # build:web (vite) + build:server (tsc)
 npm start            # 跑编译产物 dist/server/index.js（生产）
-npm test             # vitest 纯函数单测（tests/unit/，毫秒级零 token）
+npm test             # vitest 纯函数单测（tests/unit/，毫秒级零 token；脚本已钉住 NODE_ENV=test）
 npm run test:smoke   # 零 token 协议冒烟聚合跑器（tests/run-smoke.mjs，17 个自包含测试）
 npm run test:freeze  # 冻结/重连回归测试（Playwright，需要本机 chromium headless）
 ```
+
+> @GOTCHA 单测必须在 `NODE_ENV=test` 下跑。`npm test` / `npm run test:unit` 已用 `cross-env` 钉住；
+> 直接 `npx vitest run` 时若当前 shell 继承了服务进程的 `NODE_ENV=production`（在部署实例的工作区里
+> 开终端、或以 agent 身份执行命令时很常见），React 会加载生产构建，组件类用例会成片假失败。
 
 ## CI
 
