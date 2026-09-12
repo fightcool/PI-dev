@@ -232,7 +232,8 @@ try {
 	const accountBlock = page.locator(".usage-account");
 	check("usage detail shows the channel account block", await accountBlock.isVisible(), await accountBlock.innerText().catch(() => "missing"));
 	const accountText = (await accountBlock.innerText()).replace(/\n/g, " / ");
-	check("the account block says it refreshes automatically", /5 minutes|5 分钟/.test(accountText), accountText);
+	check("the account block says it refreshes automatically", /2 minutes|2 分钟/.test(accountText), accountText);
+	check("a healthy account offers no retry button", (await accountBlock.locator(".usage-account-retry").count()) === 0, accountText);
 	check("the account block states the balance in plain words", /Balance|余额/.test(accountText) && accountText.includes("12.5"), accountText);
 	check("the account block shows the usage when only that is known", accountText.includes("1 USD") || accountText.includes("1.00"), accountText);
 	const topup = page.locator(".usage-panel-head .usage-topup");
@@ -465,19 +466,19 @@ try {
 			const queries = () => clockSent.filter((m) => m.type === "channel_query_account").length;
 			const initial = queries();
 			check("余额进入时先查一次", initial === 1, `queries=${initial}`);
-			await clkPage.clock.runFor("01:00");
+			await clkPage.clock.runFor("00:30");
 			await clkPage.waitForTimeout(200);
-			check("1 分钟内不会重复查询（不是轮询）", queries() === initial, `queries=${queries()}`);
+			check("半个周期内不会重复查询（不是轮询）", queries() === initial, `queries=${queries()}`);
 			const windows = [];
 			for (let i = 0; i < 3; i++) {
-				await clkPage.clock.runFor("05:00");
+				await clkPage.clock.runFor("02:00");
 				await clkPage.waitForTimeout(200);
 				windows.push(queries());
 			}
 			// 周期由 channel-account-refresh.test.ts 用假时钟精确钉死（5 分钟）；这里只证明
 			// 「连续推进时间确实会不断自动刷新」（假时钟会扰乱 WS 心跳导致重连，计数会有抖动）。
 			check(
-				"推进时间会持续自动刷新",
+				"推进时间会持续自动刷新（周期 2 分钟）",
 				windows[2] > windows[0] && windows.every((n, i) => n >= (i === 0 ? initial : windows[i - 1])),
 				`queries=${initial} → ${windows.join(" → ")}`,
 			);

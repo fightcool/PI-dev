@@ -1302,7 +1302,9 @@ export const zh = {
 	channelAccountTopupUrl: "充值链接（可选）",
 	channelAccountTopupUrlPh: "如 {baseUrl}/console/topup",
 	channelAccountTopupHint: "显示在「用量详情」标题右侧，点开余额即可直达充值页。",
-	channelAccountAutoRefresh: "每 5 分钟自动更新",
+	channelAccountAutoRefresh: "每 2 分钟自动更新",
+	channelAccountRetry: "重试",
+	channelAccountRetryHint: "连续 3 次获取失败后已停止自动更新；点「重试」会重新开始自动刷新。",
 } as const;
 
 /* ------------------------------------------------------------------ */
