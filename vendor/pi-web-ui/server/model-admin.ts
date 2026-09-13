@@ -21,6 +21,7 @@ import { join } from "node:path";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ChannelProviderInput, ServerMessage, UiModelConfigEntry, UiProviderConfig, ProviderKeyInfo } from "./protocol.js";
 import { pick, type ServerLang } from "./i18n.js";
+import { backfillModelCapability } from "./dev-con/model-capability.js";
 
 /** ClientSession 提供给本服务的宿主能力（窄接口）。 */
 export interface ModelAdminHost {
@@ -1389,16 +1390,21 @@ export class ModelAdminService {
 		if (!pid || !/^[\w.-]+$/.test(pid)) {
 			return { ok: false, error: "服务商 ID 无效（仅字母/数字/._-）", errorEn: "Invalid provider ID (letters/digits/._- only)" };
 		}
+		// @BUGFIX 2026-09-13：渠道的 /models 只返回 {id, object}（RightCode 实测如此），
+		// 表单拿不到 reasoning / contextWindow。这里先按模型 id 回填已知能力，
+		// 否则下面的重建只落下 {id}，SDK 会把「未知」当成「不支持思考」。
 		const models = (config.models ?? [])
 			.filter((m) => m.id && m.id.trim())
-			.map((m) => ({
-				id: m.id.trim(),
-				...(m.name?.trim() ? { name: m.name.trim() } : {}),
-				...(m.reasoning ? { reasoning: true } : {}),
-				...(m.input?.length ? { input: m.input } : {}),
-				...(m.contextWindow ? { contextWindow: Number(m.contextWindow) } : {}),
-				...(m.maxTokens ? { maxTokens: Number(m.maxTokens) } : {}),
-			}));
+			.map((m) =>
+				backfillModelCapability({
+					id: m.id.trim(),
+					...(m.name?.trim() ? { name: m.name.trim() } : {}),
+					...(m.reasoning !== undefined ? { reasoning: m.reasoning } : {}),
+					...(m.input?.length ? { input: m.input } : {}),
+					...(m.contextWindow ? { contextWindow: Number(m.contextWindow) } : {}),
+					...(m.maxTokens ? { maxTokens: Number(m.maxTokens) } : {}),
+				}),
+			);
 		if (models.length === 0) {
 			return { ok: false, error: "至少需要一个模型", errorEn: "At least one model is required" };
 		}
@@ -1442,11 +1448,17 @@ export class ModelAdminService {
 				...(config.authHeader ? { authHeader: true } : {}),
 				// replace（表单管理全部键，未给 = 清空）vs patch（渠道表单：只覆盖它给到的键，
 				// 其余保留——reasoning/contextWindow/cost 等由模型目录或探测结果拥有）。
+				// @BUGFIX 2026-09-13：渠道的 /models 只返回 {id, object}（RightCode 实测如此）时，
+				// 落盘的条目只有 id —— 没有 reasoning / thinkingLevelMap，SDK 的
+				// getSupportedThinkingLevels() 便只返回 ["off"]，UI 把思考强度三档全禁用。
+				// 写入时按模型 id 回填已知能力（只在字段缺失时补，不覆盖显式值）。
 				models: models.map((m) => {
 					const prevEntry = prevModels.get(m.id);
-					return opts.modelMerge === "patch"
-						? { ...prevEntry, ...m }
-						: { ...unmanagedEntries(prevEntry, MANAGED_MODEL_KEYS), ...m };
+					const merged =
+						opts.modelMerge === "patch"
+							? { ...prevEntry, ...m }
+							: { ...unmanagedEntries(prevEntry, MANAGED_MODEL_KEYS), ...m };
+					return backfillModelCapability(merged);
 				}),
 			};
 			mkdirSync(this.host.agentDir, { recursive: true });
