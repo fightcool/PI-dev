@@ -1264,7 +1264,15 @@ export class ClientSession {
 			for (const name of active) {
 				const def = sess.getToolDefinition(name);
 				if (!def) continue;
-				if (def.promptSnippet && def.promptSnippet.trim()) snippets[name] = def.promptSnippet;
+				// @BUGFIX 2026-09-13：SDK 只把「有 promptSnippet 的工具」写进系统提示的
+				// `Available tools:`（system-prompt.js: visibleTools = tools.filter(name => !!toolSnippets[name])）。
+				// 没有 snippet 的工具因此**在提示词里完全隐形**，而它实际是可调用的——
+				// 结果就是模型真诚地声称「我没有文件系统或终端工具」（实测 gpt-6-astra 在
+				// /home/dev/project/fayu 会话里连着两次这么答，紧接着的下一轮又正常调了
+				// read/read/bash）。这里给缺 snippet 的工具用它的 description 兑底，
+				// 保证「能调用的工具」一定在提示里可见。
+				const snippet = def.promptSnippet?.trim() || def.description?.trim();
+				if (snippet) snippets[name] = snippet;
 				if (def.promptGuidelines) guidelines.push(...def.promptGuidelines);
 				schemaEntries.push({
 					name,
