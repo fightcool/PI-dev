@@ -32,6 +32,7 @@ import { collectResources } from "./dev-con/system-resources.js";
 import { setProviderBaseUrlLookup } from "./dev-con/channel-accounts.js";
 import { measureAreas } from "./dev-con/storage-usage.js";
 import { buildDiagnostics, usageSummaryOf } from "./dev-con/ops-diagnostics.js";
+import { capabilityFixHint, runCapabilityProbe, type CapabilityVerdict } from "./dev-con/endpoint-capability.js";
 import { evaluateAlerts, markFired, ALERT_COOLDOWN_MS, ALERT_CRITICAL_PERCENT, ALERT_WARN_PERCENT, type OpsAlert } from "./dev-con/ops-alerts.js";
 import {
 	createAgentSessionFromServices,
@@ -776,6 +777,19 @@ export class ClientSession {
 	 *  top bar applies to every chat, not just the one that set it. Seeded by
 	 *  the first conversation and reused by later ones. */
 	private sharedModelRuntime: Awaited<ReturnType<typeof createAgentSessionServices>>["modelRuntime"] | undefined;
+
+	// -----------------------------------------------------------------------
+	// 渠道端点工具能力探测（DEV-CON）——见 dev-con/endpoint-capability.ts。
+	// 存在的理由：有一类网关对带 tools 的请求返回 200 却把 tools 丢掉，模型于是
+	// 声称「没有工具」，开发任务静默退化成纯对话。这里在**请求真正发出时**探测一次
+	// 并给出明确告警，让沉默失败变成可见失败。
+	// -----------------------------------------------------------------------
+	/** 按 provider/model/api/baseUrl 缓存结论（配置一变 key 就变，自动失效）。 */
+	private capabilityProbes = new Map<string, { verdict: CapabilityVerdict; at: number }>();
+	/** 正在探测中的 key，避免同一端点并发重复打请求。 */
+	private capabilityProbesInFlight = new Set<string>();
+	/** 成功结论的保鲜期（失败结论不缓存，下次请求会重试）。 */
+	private static readonly CAPABILITY_PROBE_TTL_MS = 30 * 60 * 1000;
 
 	// -----------------------------------------------------------------------
 	// Goal / review / wizard —— 自包含模块，见 goal-service.ts。每个对话有独立
@@ -1860,7 +1874,11 @@ export class ClientSession {
 				const key = this.channels.credentialFor(id, provider);
 				// §7：请求发出时固定渠道/凭据/模型与绑定版本（晚到的用量按此归属）。
 				const conv = this.convs.get(id);
-				if (conv) conv.lastRequestBinding = this.channels.bindingSnapshotFor(id);
+				const binding = this.channels.bindingSnapshotFor(id);
+				if (conv) conv.lastRequestBinding = binding;
+				// 渠道端点工具能力探测：只对**绑定了渠道**的请求做（未绑定 = 走全局 active key，
+				// 不属于渠道管理范围）。后台执行、有界超时、按端点缓存，不阻塞也不抛出。
+				if (binding?.channelId) this.ensureChannelToolCapability(binding.channelId, provider, binding.modelId, key);
 				return key;
 			} catch {
 				return undefined;
@@ -5864,6 +5882,85 @@ export class ClientSession {
 			},
 			cwd: () => this.cwd,
 		};
+	}
+
+	/** 渠道端点工具能力探测的入口（同步返回，实际探测在后台跑完）。
+	 *  credentialKey 必须是**该对话当前解析出的那把**（与真实请求同一把，见 §9 凭据隔离）。 */
+	private ensureChannelToolCapability(
+		channelId: string,
+		providerId: string,
+		modelRef: string,
+		credentialKey: string | undefined,
+	): void {
+		void this.checkChannelToolCapability(channelId, providerId, modelRef, credentialKey).catch(() => {
+			/* 探测链路自身的问题不得影响正常请求 */
+		});
+	}
+
+	/**
+	 * 探测「该渠道 + 该模型」的端点是否真的支持工具调用，不支持就告警一次。
+	 * @CONTRACT 结论按 provider/model/api/baseUrl 缓存 30 分钟（配置一变 key 就变，自然失效）；
+	 *   同一端点并发只探一次；**只有确定的 unsupported 才告警**，unverified（网络/超时/
+	 *   HTTP 错误/HTML）一律保持沉默 —— 探测不确定时宁可不打扰，也不误报渠道不能用。
+	 */
+	private async checkChannelToolCapability(
+		channelId: string,
+		providerId: string,
+		modelRef: string,
+		credentialKey: string | undefined,
+	): Promise<void> {
+		const slash = modelRef.indexOf("/");
+		const modelId = slash > 0 ? modelRef.slice(slash + 1) : modelRef;
+		if (!providerId || !modelId) return;
+		let model: { api?: string; baseUrl?: string } | null | undefined = null;
+		try {
+			model = this.runtime.services.modelRuntime.getModel(providerId, modelId);
+		} catch {
+			return;
+		}
+		const api = model?.api;
+		const baseUrl = model?.baseUrl;
+		if (!api || !baseUrl) return;
+		const key = `${providerId}/${modelId}/${api}/${baseUrl}`;
+		const cached = this.capabilityProbes.get(key);
+		if (cached && Date.now() - cached.at < ClientSession.CAPABILITY_PROBE_TTL_MS) return;
+		if (this.capabilityProbesInFlight.has(key)) return;
+		this.capabilityProbesInFlight.add(key);
+		try {
+			// 认证头与密钥都与真实调用走同一口径：对话绑定优先，没绑定才回落到运行时解析的那把。
+			// @GOTCHA 不能直接用运行时的 active key —— 那是别的密钥的配额，还会破坏对话级凭据隔离。
+			const resolved = credentialKey ? undefined : await this.runtime.services.modelRuntime.getAuth(providerId);
+			const verdict = await runCapabilityProbe({
+				api,
+				baseUrl,
+				model: modelId,
+				apiKey: credentialKey ?? resolved?.auth.apiKey ?? null,
+				headers: resolved?.auth.headers as Record<string, string> | undefined,
+			});
+			this.capabilityProbes.set(key, { verdict, at: Date.now() });
+			if (verdict.kind === "unsupported") this.warnChannelLacksTools(channelId, modelId, api, baseUrl);
+		} finally {
+			this.capabilityProbesInFlight.delete(key);
+		}
+	}
+
+	/** 渠道端点不支持工具调用时的告警文案（沉默失败 → 可见失败）。 */
+	private warnChannelLacksTools(channelId: string, modelId: string, api: string, baseUrl: string): void {
+		let name = channelId;
+		try {
+			name = this.channels.channelDisplayName(channelId) ?? channelId;
+		} catch {
+			/* 渠道目录不可读时用 id 兜底 */
+		}
+		const hint = capabilityFixHint({ api, baseUrl });
+		const remedyZh = hint ? `另外：${hint}。` : "如果网关只支持某一种协议（例如只透传 Codex/Responses），请把服务商协议改成那一种。";
+		const remedyEn = hint ? `Also: ${hint}.` : "If the gateway only supports one protocol (e.g. Codex/Responses), switch the provider to that protocol.";
+		this.emit({
+			type: "notice",
+			level: "warning",
+			text: `渠道「${name}」的模型 ${modelId} 实测不支持工具调用：端点返回 200，但始终没有工具调用（网关很可能丢弃了 tools）。用它做开发任务会退化成纯对话，读写文件、执行命令都不可用。建议换一个渠道。${remedyZh}`,
+			textEn: `Channel “${name}” / ${modelId} does not support tool calls: the endpoint returns 200 but never emits one (the gateway most likely drops “tools”). Dev tasks on it degrade to plain chat — no file or terminal access. Use another channel. ${remedyEn}`,
+		});
 	}
 
 	/** 渠道命令的唯一生效点：只改目标对话的 SDK 会话模型，不写全局 auth/models。 */
