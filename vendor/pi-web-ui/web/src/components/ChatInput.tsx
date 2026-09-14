@@ -1,6 +1,6 @@
 /* 🍞 @COUPLED web/src/components/ModelThinking.tsx, web/src/app/chat-view.tsx — 📖 docs/DEV-CON-PROPOSAL.md §6 */
 import { memo, useEffect, useRef, useState } from "react";
-import { FiSend, FiSquare, FiPaperclip, FiArrowUp, FiGrid } from "react-icons/fi";
+import { FiSend, FiSquare, FiPaperclip, FiArrowUp, FiGrid, FiChevronUp } from "react-icons/fi";
 import type {
 	ClientMessage,
 	ModelInfo,
@@ -18,6 +18,7 @@ import type { ChannelApi, ChannelCommandResult, ChannelStateMsg } from "../use-c
 
 import { ModelThinking } from "./ModelThinking";
 import { useTemplates } from "./PromptTemplates";
+import { useChromeCollapse } from "../app/use-chrome-collapse";
 
 /** True on touch-first devices (phones / coarse-pointer). These have no
  *  physical Shift key, so pressing the keyboard Return must insert a newline
@@ -118,6 +119,12 @@ export const ChatInput = memo(function ChatInput({
 }: ChatInputProps) {
 	const t = useT();
 	const { locale } = useI18n();
+	/**
+	 * 底部控件自动收缩：收起时只留「输入框 + 展开 + 发送」，把工具条/快捷短语让给正文
+	 * （规则见 chrome-collapse.ts；信号由本组件上报聚焦、由 MessageList 上报是否停底）。
+	 */
+	const chromeApi = useChromeCollapse();
+	const chromeCollapsed = chromeApi?.collapsed ?? false;
 	/** 打开模板库（对话中途也可随时取用提示词模板）。 */
 	const { openPicker } = useTemplates();
 	const slashDesc = (c: SlashCommandInfo) =>
@@ -534,6 +541,12 @@ export const ChatInput = memo(function ChatInput({
 	// (ChatInput .composer-tools-right).
 	const renderActions = () => (
 		<div className="inputbox-actions">
+			{/* 收起状态下的出口：底部控件自动收起时只留「展开」（见 chrome-collapse.ts）。 */}
+			{chromeCollapsed && (
+				<button type="button" className="btn chrome-toggle" title={t("chromeExpandTip")} onClick={() => chromeApi?.toggle()}>
+					<FiChevronUp />
+				</button>
+			)}
 			{streaming ? (
 				<>
 					{text.trim() !== "" && (
@@ -561,7 +574,13 @@ export const ChatInput = memo(function ChatInput({
 
 	return (
 		<div
-			className={`inputbar${dragOver ? " drop-active" : ""}`}
+			className={`inputbar${dragOver ? " drop-active" : ""}${chromeCollapsed ? " chrome-collapsed" : ""}`}
+			// 焦点在输入框的**任何地方**（包括工具条里的模型下拉、思考档位）都算「正在交互」：
+			// 这时绝不能收起，否则点开的下拉菜单会被 display:none 一起藏掉。
+			onFocusCapture={() => chromeApi?.setComposerFocused(true)}
+			onBlurCapture={(e) => {
+				if (!e.currentTarget.contains(e.relatedTarget as Node | null)) chromeApi?.setComposerFocused(false);
+			}}
 			onDragOver={(e) => {
 				e.preventDefault();
 				e.stopPropagation();

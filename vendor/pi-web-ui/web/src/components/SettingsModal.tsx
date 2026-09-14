@@ -57,6 +57,7 @@ import {
 } from "../prompt-history";
 import { randomUuid } from "../uuid";
 import { useWideChat, saveChatWidthSettings } from "../chat-width-settings";
+import { useAutoCollapseChrome, saveChromeCollapseSettings } from "../chrome-collapse-settings";
 import { useProjectTitle, saveTitleSettings } from "../title-settings";
 import { sanitizeWallpaperUrl, fileToWallpaperUrl, saveWallpaperSettings, useWallpaperSettings } from "../wallpaper";
 import { useT, useI18n } from "../i18n";
@@ -287,6 +288,7 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 	const [showFullPrompt, setShowFullPrompt] = useState(false);
 	// 宽屏聊天列开关（纯前端 localStorage，见 chat-width-settings.ts）。
 	const wideChat = useWideChat();
+	const autoCollapseChrome = useAutoCollapseChrome();
 	const projectTitle = useProjectTitle();
 	// 聊天背景图（纯前端 localStorage，见 wallpaper.ts）：地址输入框用本地草稿，
 	// 失焦/回车才提交（避免边输边校验）；压暗/模糊滑杆直接提交即时预览。
@@ -1269,6 +1271,12 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 									onToggle={() => setPartial({ toolsWrap: !(settings.toolsWrap ?? false) })}
 								/>
 								<hr className="set-sep" />
+								<ToggleRow
+									title={t("chromeAutoCollapse")}
+									tip={t("chromeAutoCollapseDesc")}
+									enabled={autoCollapseChrome}
+									onToggle={() => saveChromeCollapseSettings({ autoCollapse: !autoCollapseChrome })}
+								/>
 								<ToggleRow
 									title={t("wideChat")}
 									tip={t("wideChatDesc")}

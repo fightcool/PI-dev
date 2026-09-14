@@ -922,6 +922,10 @@ export const en: EnDictionary = {
 	toolsWrap: "Show full tools",
 	toolsWrapDesc:
 		"On: tool calls always expand fully showing arguments and output; Off: collapsed by default, click to expand",
+	chromeAutoCollapse: "Auto-collapse bottom controls",
+	chromeAutoCollapseDesc:
+		"On: while output streams or when you scroll up through the conversation, the goal bar, composer toolbar and status bar collapse so the transcript gets the vertical space (scroll to the very bottom, tap the input, or press ⌃ to restore); Off: keep them as they are",
+	chromeExpandTip: "Expand the composer toolbar and status bar",
 	wideChat: "Wide chat column",
 	wideChatDesc: "On: the center column fills the width (useful on ultrawide monitors); Off: keep the 860px cap",
 	projectTitle: "Show project name in title",
