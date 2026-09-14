@@ -118,13 +118,17 @@ const state = {
 			credentialRef: { providerId: "main", keyName: "密钥 1" }, modelId: "main/m1",
 			bindingRevision: 4, configRevision: 7, lastUsedAt: 1, channelName: "渠道 A" }],
 		pending: [],
-		// P3 状态口径：成功 / 不支持 / 过期（失败但保留上次结果）三种都要能显示。
+		// P3 状态口径：成功 / 不支持 / 过期（失败但保留上次结果）/ 待刷新（数据过了 TTL，渠道没报错）。
+		// @CONTRACT stale 的两种含义必须分得开：staleReason:"failed" 才说「已过期」，
+		//   staleReason:"ttl" 只说「待刷新」（中性色）——否则一个正常服务的渠道会一直被报警。
 		accounts: [
 			{ accountRef: "ch-a", kind: "openai-gateway", status: "ok", unit: "USD", balance: 12.5,
 				quota: { used: 1, limit: 13.5, remaining: 12.5, unit: "USD" }, checkedAt: 1700000000000 },
 			{ accountRef: "ch-b", kind: "unsupported", status: "unsupported", error: "no account endpoint" },
-			{ accountRef: "ch-off", kind: "openrouter", status: "stale", unit: "USD", balance: 3.25,
+			{ accountRef: "ch-off", kind: "openrouter", status: "stale", staleReason: "failed", unit: "USD", balance: 3.25,
 				checkedAt: 1700000000000, staleSince: 1700000000000, error: "HTTP 503" },
+			{ accountRef: "ch-gone", kind: "template", status: "stale", staleReason: "ttl", unit: "USD", balance: 7.75,
+				checkedAt: 1700000000000, staleSince: 1700000000000 },
 		],
 		// 账户查询模板预设（服务端 ACCOUNT_TEMPLATE_PRESETS 形状；一键填充到编辑器）。
 		accountPresets: [
@@ -333,6 +337,18 @@ try {
 		"settings page shows ok / unsupported / stale account states with real numbers",
 		settingsText.includes("OK") && settingsText.includes("Unsupported") && settingsText.includes("Stale") &&
 			settingsText.includes("Balance 12.5 USD") && settingsText.includes("last successful result"),
+	);
+	// TTL 过期的数据不是「渠道报错」：文案说「待刷新」，且说明写的是「上次查询太久了」。
+	check(
+		"an expired-but-healthy account reads as Needs refresh, not Stale",
+		settingsText.includes("Needs refresh") &&
+			settingsText.includes("Last successful query was over 5 minutes ago") &&
+			settingsText.includes("Balance 7.75 USD"),
+		settingsText.slice(0, 400),
+	);
+	check(
+		"the stale TTL row is not painted with the warning colour",
+		(await page.locator(".chan-settings .chan-acct.aging").count()) === 1,
 	);
 	// 查询账户 = 一条 channel_query_account（不改配置）。
 	await page.locator(".chan-settings .chan-row").first().locator("button.chan-btn", { hasText: "Query account" }).click();

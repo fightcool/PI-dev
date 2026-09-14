@@ -1206,6 +1206,9 @@ export const zh = {
 	channelAccountFailed: "查询失败",
 	channelAccountStale: "已过期",
 	channelAccountStaleTip: "本次查询失败，以下是上次成功结果（时间是上次成功时间）",
+	channelAccountStaleTtl: "待刷新",
+	channelAccountStaleTtlTip: "上次成功查询已超过 5 分钟，数字可能不是最新的（渠道本身没有报错）",
+	channelAccountRefresh: "刷新",
 	channelAccountGranted: "赠送",
 	channelAccountToppedUp: "充值",
 	channelAccountCheckedAt: "查询时间",
@@ -1304,7 +1307,7 @@ export const zh = {
 	channelAccountTopupHint: "显示在「用量详情」标题右侧，点开余额即可直达充值页。",
 	channelAccountAutoRefresh: "每 2 分钟自动更新",
 	channelAccountRetry: "重试",
-	channelAccountRetryHint: "连续 3 次获取失败后已停止自动更新；点「重试」会重新开始自动刷新。",
+	channelAccountRetryHint: "连续 3 次获取失败后自动刷新已降级为每 10 分钟一次；点「重试」立即恢复常规刷新。",
 	/* 报错卡：先说哪个渠道·哪个模型失败，认得的失败再给一句人话（原文收进「详情」） */
 	channelErrorQuota: "该渠道的网关账户额度不足（网关报告剩余 {remaining}）。请为这个账户充值，或切换到其他渠道。",
 	channelErrorQuotaNoRemaining: "该渠道的网关账户额度不足。请为这个账户充值，或切换到其他渠道。",

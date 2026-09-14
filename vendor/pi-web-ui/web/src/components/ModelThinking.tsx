@@ -6,7 +6,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { FiCpu, FiSearch, FiZap } from "react-icons/fi";
 import type { ModelInfo, ProviderKeyInfo, UiChannelBindingView, UiState } from "../types";
-import { balanceTextOf, channelAccountView, startBalanceRefresh } from "../channel-account";
+import { accountStateView, balanceTextOf, channelAccountView, isAccountQueryFailed, startBalanceRefresh } from "../channel-account";
 import { Dropdown, DropdownItem } from "./Dropdown";
 import { ChannelModelList, ChannelStatusChips } from "./ModelChannelPicker";
 import { useT } from "../i18n";
@@ -107,7 +107,11 @@ export const ModelThinking = memo(function ModelThinking({
 	const lastCheckedAt = accountStatus?.checkedAt ?? 0;
 	const lastCheckedRef = useRef(lastCheckedAt);
 	lastCheckedRef.current = lastCheckedAt;
-	/** 失败计数用「最近一次结果的状态」判断，放 ref 里避免把状态写进 effect 依赖。 */
+	/** 失败计数用「最近一次结果是不是失败了」判断，放 ref 里避免把状态写进 effect 依赖。
+	 *  @GOTCHA 服务端把「查询失败但保留了上次余额」记成 stale，只判 status==="failed" 会漏掉。 */
+	const failedRef = useRef(isAccountQueryFailed(accountStatus));
+	failedRef.current = isAccountQueryFailed(accountStatus);
+	/** 状态机只关心「上次成功时间」，状态本身仍然从快照取（每个渲染周期刷新到 ref）。 */
 	const statusRef = useRef(accountStatus?.status);
 	statusRef.current = accountStatus?.status;
 	const balanceChannelId = balanceChannel?.id ?? null;
@@ -118,25 +122,19 @@ export const ModelThinking = memo(function ModelThinking({
 			channelId: balanceChannelId,
 			query: () => channelApi.queryChannelAccount(balanceChannelId),
 			statusOf: () => statusRef.current,
+			queryFailedOf: () => failedRef.current,
 			lastCheckedAt: () => lastCheckedRef.current,
 		});
 	}, [hasAccountQuery, balanceChannelId, channelApi]);
 	const balanceText = balanceTextOf(accountStatus, t as (k: string) => string);
-	/** 状态点：ok 绿；失败/过期/其他 用警示色；尚未查过用中性。 */
+	/** 状态点：ok 绿；数据旧了中性；查询失败/不支持 警示；尚未查过中性。 */
 	const balanceState = accountStatus?.status ?? "unknown";
-	const balanceStateLabel =
-		balanceState === "ok"
-			? t("channelAccountOk")
-			: balanceState === "stale"
-				? t("channelAccountStale")
-				: balanceState === "failed"
-					? t("channelAccountFailed")
-					: balanceState === "unknown"
-						? t("channelQuerying")
-						: t("channelAccountUnsupported");
+	const balanceViewState = accountStateView(accountStatus);
+	const balanceStateLabel = t(balanceViewState.labelKey);
 	const balanceTitle = [
 		balanceChannel ? balanceChannel.displayName : "",
 		balanceStateLabel,
+		balanceViewState.tipKey ? t(balanceViewState.tipKey) : "",
 		balanceView.derived ? t("channelBalanceDerived") : "",
 		typeof accountStatus?.checkedAt === "number"
 			? `${t("channelAccountCheckedAt")} ${new Date(accountStatus.checkedAt).toLocaleString()}`
@@ -483,7 +481,7 @@ export const ModelThinking = memo(function ModelThinking({
 			{hasAccountQuery && balanceChannel && (
 				<button
 					type="button"
-					className={`chip chan-balance ${balanceState}`}
+					className={`chip chan-balance ${balanceState}${balanceViewState.tone === "aging" ? " aging" : ""}`}
 					title={balanceTitle}
 					onClick={onOpenUsage}
 				>
