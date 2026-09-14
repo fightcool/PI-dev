@@ -10826,6 +10826,10 @@ button.source-default-toggle {
 .chan-balance.unsupported .chan-balance-dot {
 	background: var(--amber);
 }
+/* 只是数字旧了（TTL 到期）不是报警：中性色，别用警示色追着用户跑。 */
+.chan-balance.stale.aging .chan-balance-dot {
+	background: var(--text-faint);
+}
 .chan-balance .chan-balance-value {
 	font-variant-numeric: tabular-nums;
 }
@@ -11110,6 +11114,11 @@ button.source-default-toggle {
 }
 .chan-acct.stale {
 	color: var(--amber);
+}
+/* TTL 到期（数据旧了，渠道没报错）用中性色；失败保留旧值才用警示色（见 channel-account.ts）。 */
+.chan-acct.stale.ttl,
+.chan-acct.aging {
+	color: var(--text-dim);
 }
 .chan-acct.failed,
 .chan-acct.unsupported {

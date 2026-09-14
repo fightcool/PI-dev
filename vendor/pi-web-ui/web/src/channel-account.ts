@@ -6,8 +6,12 @@
  *
  * Breadcrumbs (changing this affects):
  *   @COUPLED components/ModelThinking.tsx（余额 chip）, components/FooterBar.tsx（用量面板里的渠道账户区）,
+ *            components/ChannelRow.tsx（设置页状态行，同用 accountStateView）,
  *            server/dev-con/channel-state.ts（channel_state.accounts 的快照键 = accountRef || channel.id）
  *   📖 docs/DEV-CON-PROPOSAL.md §7（余额与用量分开、不猜测）
+ *   @BUGFIX 2026-09-14：`stale` 有两种含义（数据超过 TTL 没刷新 / 最近一次查询失败），以前共用
+ *            一个「已过期」标签 —— 渠道明明在正常说话，用户却被一个报警式的红字追着问。现在按
+ *            staleReason 分开：ttl 说「待刷新」（中性色），failed 才说「已过期」（警示色 + 重试）。
  *   @CONTRACT 只读派生：把「当前对话在用哪个渠道」+「该渠道的账户状态」算成一处，供 chip 与详情面板共用，
  *             避免两处各写一遍（口径漂移会让 chip 与详情对不上，用户更懵）。
  *   @WHY 没有绑定时按当前模型的服务商匹配唯一渠道：clientId 在 sessionStorage（每标签页独立），
@@ -92,8 +96,52 @@ export function topupUrlOf(channel: UiChannelInfo | null | undefined): string | 
 /** 余额自动刷新周期（默认值，不做配置项）。@MAGIC 比服务端缓存 TTL 短：先看到新数字，缓存只管兜底。 */
 export const BALANCE_REFRESH_MS = 2 * 60_000;
 
-/** 连续失败达到这个重试次数后**停止自动获取**（首次尝试不算重试）。 */
+/** 连续失败达到这个重试次数后**降级为慢速探测**（首次尝试不算重试）。 */
 export const BALANCE_MAX_RETRIES = 3;
+
+/**
+ * 失败超限后的慢速探测间隔（每 10 分钟还试一次）。
+ * @WHY 以前是「超过上限就彻底不再发请求，直到用户点重试」——但重试按钮只在 failed 时出现，
+ *   一旦快照后来变成 stale，用户就永远卡在「已过期」且无路可走（这也是把一个查询恢复正常的
+ *   渠道长期显示为过期的原因之一）。降级有界重试既不打爆供应商接口，又能自己恢复。
+ */
+export const BALANCE_DEGRADED_MS = 10 * 60_000;
+
+/** 账户状态的呈现口径（标签键 + 语义档位 + 说明键）。 */
+export interface AccountStateView {
+	labelKey: "channelAccountOk" | "channelAccountStale" | "channelAccountStaleTtl" | "channelAccountFailed" | "channelAccountUnsupported" | "channelQuerying";
+	/** ok = 正常；aging = 数据旧了（渠道没报错）；bad = 查询失败/不支持；unknown = 还没查过。 */
+	tone: "ok" | "aging" | "bad" | "unknown";
+	tipKey?: "channelAccountStaleTip" | "channelAccountStaleTtlTip";
+}
+
+/**
+ * 账户快照 → 呈现口径（chip / 用量详情 / 设置页行共用，避免三处文案与颜色各写一遍）。
+ * @CONTRACT
+ *   - `stale + staleReason:"ttl"` = 只是数字旧了（服务端缓存过了 TTL，渠道本身没报错）→「待刷新」；
+ *   - `stale + staleReason:"failed"`（或旧服务端没有 staleReason）= 上次查询失败了 →「已过期」。
+ */
+export function accountStateView(status: UiAccountStatus | undefined): AccountStateView {
+	if (!status) return { labelKey: "channelQuerying", tone: "unknown" };
+	switch (status.status) {
+		case "ok":
+			return { labelKey: "channelAccountOk", tone: "ok" };
+		case "stale":
+			return status.staleReason === "ttl"
+				? { labelKey: "channelAccountStaleTtl", tone: "aging", tipKey: "channelAccountStaleTtlTip" }
+				: { labelKey: "channelAccountStale", tone: "bad", tipKey: "channelAccountStaleTip" };
+		case "failed":
+			return { labelKey: "channelAccountFailed", tone: "bad" };
+		default:
+			return { labelKey: "channelAccountUnsupported", tone: "bad" };
+	}
+}
+
+/** 该快照是不是「最近一次查询失败」（自动刷新的失败计数与重试入口都看它）。 */
+export function isAccountQueryFailed(status: UiAccountStatus | undefined): boolean {
+	if (!status) return false;
+	return status.status === "failed" || (status.status === "stale" && status.staleReason !== "ttl");
+}
 
 /**
  * 每个渠道的连续失败次数（模块级：调度器与「重试」按钮都要读写同一份计数）。
@@ -128,6 +176,8 @@ export function startBalanceRefresh(opts: {
 	query: () => void;
 	/** 上一次查询的状态（来自服务端账户快照）；undefined = 还没有结果。 */
 	statusOf?: () => "ok" | "failed" | "stale" | "unsupported" | undefined;
+	/** 上一次查询是不是「失败了」（stale 里只有 failed 那种才算；服务端 staleReason 口径）。 */
+	queryFailedOf?: () => boolean;
 	/** 上次成功查询的时间（来自服务端快照 checkedAt）；0 = 还没有数据。 */
 	lastCheckedAt?: () => number;
 	/** 页面是否在后台（默认读 document.hidden）。 */
@@ -140,13 +190,20 @@ export function startBalanceRefresh(opts: {
 	const maxRetries = opts.maxRetries ?? BALANCE_MAX_RETRIES;
 	const isHidden = opts.isHidden ?? (() => typeof document !== "undefined" && document.hidden);
 	const now = opts.now ?? (() => Date.now());
+	const lastAttemptAt = { value: 0 };
 	const attempt = () => {
 		// 先看上一次的结果：失败累加，成功后清零（失败计数只关心「连续」失败）。
+		// @GOTCHA 失败在服务端会被记成 stale（保留上次余额），只看 status==="failed" 会漏掉全部
+		//   「有余额的渠道查询失败」——计数永远碰不到上限。所以由调用方给出 queryFailedOf。
+		const failed = opts.queryFailedOf ? opts.queryFailedOf() : opts.statusOf?.() === "failed";
 		const status = opts.statusOf?.();
-		if (status === "failed") failuresByChannel.set(opts.channelId, balanceFailuresOf(opts.channelId) + 1);
+		if (failed) failuresByChannel.set(opts.channelId, balanceFailuresOf(opts.channelId) + 1);
 		else if (status !== undefined) failuresByChannel.set(opts.channelId, 0);
-		// 连续失败超过上限就不再打供应商接口了（等用户点重试清零）。
-		if (balanceFailuresOf(opts.channelId) > maxRetries) return;
+		// 连续失败超过上限 → 降级成慢速探测（不再按周期打接口，但会自己恢复）。
+		if (balanceFailuresOf(opts.channelId) > maxRetries) {
+			if (now() - lastAttemptAt.value < BALANCE_DEGRADED_MS) return;
+		}
+		lastAttemptAt.value = now();
 		opts.query();
 	};
 	attempt();
