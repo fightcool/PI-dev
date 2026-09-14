@@ -20,6 +20,7 @@ import { useAppDialogs } from "./app/use-app-dialogs";
 import { useAppEffects } from "./app/use-app-effects";
 import { useAppViews } from "./app/use-app-views";
 import { useAttachments } from "./app/use-attachments";
+import { ChromeCollapseProvider } from "./app/use-chrome-collapse";
 import { useTerminalViewBridge } from "./app/use-terminal-view-bridge";
 import type { ViewName } from "./app/types";
 export type { PendingAttachment } from "./app/use-attachments";
@@ -57,70 +58,72 @@ export function App() {
 	}, [setView, setDrawer]);
 
 	return (
-		<div className="app" {...uploads.dropHandlers}>
-			{uploads.appDragOver && (
-				<div className="app-drop-overlay" aria-hidden>
-					<span>📎 {t("dropHereToAttach")}</span>
+		<ChromeCollapseProvider streaming={chat.state?.isStreaming ?? false} active={views.view === "chat"}>
+			<div className="app" {...uploads.dropHandlers}>
+				{uploads.appDragOver && (
+					<div className="app-drop-overlay" aria-hidden>
+						<span>📎 {t("dropHereToAttach")}</span>
+					</div>
+				)}
+				<TopBar
+					chat={chat}
+					send={send}
+					terminal={terminal}
+					view={views.view}
+					plugins={views.enabledPlugins}
+					onViewChange={onViewChange}
+					onOpenPanel={setDrawer}
+					onOpenSettings={() => dialogs.setSettingsOpen(true)}
+					onOpenBgTasks={() => dialogs.setBgTasksOpen(true)}
+					onOpenGlobalSearch={() => dialogs.setGlobalSearchOpen(true)}
+					sound={sound}
+					onSoundChange={setSound}
+					onSoundPreview={(kind: SoundKind) => playSound(kind, sound)}
+					themes={themes}
+					theme={theme}
+					onThemeChange={switchTheme}
+				/>
+				{chat.protocolMismatch && <div className="protocol-banner">⚠ {t("protocolMismatch")}</div>}
+				<div className="notices">
+					{chat.notices.map((notice) => (
+						<NoticeToast key={notice.id} notice={notice} onDismiss={dismissNotice} />
+					))}
 				</div>
-			)}
-			<TopBar
-				chat={chat}
-				send={send}
-				terminal={terminal}
-				view={views.view}
-				plugins={views.enabledPlugins}
-				onViewChange={onViewChange}
-				onOpenPanel={setDrawer}
-				onOpenSettings={() => dialogs.setSettingsOpen(true)}
-				onOpenBgTasks={() => dialogs.setBgTasksOpen(true)}
-				onOpenGlobalSearch={() => dialogs.setGlobalSearchOpen(true)}
-				sound={sound}
-				onSoundChange={setSound}
-				onSoundPreview={(kind: SoundKind) => playSound(kind, sound)}
-				themes={themes}
-				theme={theme}
-				onThemeChange={switchTheme}
-			/>
-			{chat.protocolMismatch && <div className="protocol-banner">⚠ {t("protocolMismatch")}</div>}
-			<div className="notices">
-				{chat.notices.map((notice) => (
-					<NoticeToast key={notice.id} notice={notice} onDismiss={dismissNotice} />
-				))}
+				<TemplateProvider send={send}>
+					<div
+						className="layout"
+						style={{ "--left-w": `${panels.leftWidth}px`, "--right-w": `${panels.rightWidth}px` } as CSSProperties}
+					>
+						{panels.drawer && <div className="drawer-backdrop" onClick={() => setDrawer(null)} />}
+						<ChatView connection={connection} view={views.view} panels={panels} dialogs={dialogs} uploads={uploads} />
+						<AppViews
+							connection={connection}
+							views={views}
+							terminalSend={terminalSend}
+							onSwitchToTerminal={onSwitchToTerminal}
+						/>
+					</div>
+				</TemplateProvider>
+				<FooterBar
+					chat={chat}
+					send={send}
+					onQueryUsageHistory={connection.channelApi.queryUsageHistory}
+					usageOpen={dialogs.usageOpen}
+					onUsageOpenChange={dialogs.setUsageOpen}
+					onRetryAccount={(channelId) => {
+						// 连续失败后自动刷新会停：重试要同时清零计数，否则下一次 tick 还是不发请求。
+						resetBalanceFailures(channelId);
+						connection.channelApi.queryChannelAccount(channelId);
+					}}
+				/>
+				<AppDialogs
+					connection={connection}
+					dialogs={dialogs}
+					attach={uploads.attach}
+					onSwitchToTerminal={onSwitchToTerminal}
+					onSwitchToChat={onSwitchToChat}
+				/>
 			</div>
-			<TemplateProvider send={send}>
-				<div
-					className="layout"
-					style={{ "--left-w": `${panels.leftWidth}px`, "--right-w": `${panels.rightWidth}px` } as CSSProperties}
-				>
-					{panels.drawer && <div className="drawer-backdrop" onClick={() => setDrawer(null)} />}
-					<ChatView connection={connection} view={views.view} panels={panels} dialogs={dialogs} uploads={uploads} />
-					<AppViews
-						connection={connection}
-						views={views}
-						terminalSend={terminalSend}
-						onSwitchToTerminal={onSwitchToTerminal}
-					/>
-				</div>
-			</TemplateProvider>
-			<FooterBar
-				chat={chat}
-				send={send}
-				onQueryUsageHistory={connection.channelApi.queryUsageHistory}
-				usageOpen={dialogs.usageOpen}
-				onUsageOpenChange={dialogs.setUsageOpen}
-				onRetryAccount={(channelId) => {
-					// 连续失败后自动刷新会停：重试要同时清零计数，否则下一次 tick 还是不发请求。
-					resetBalanceFailures(channelId);
-					connection.channelApi.queryChannelAccount(channelId);
-				}}
-			/>
-			<AppDialogs
-				connection={connection}
-				dialogs={dialogs}
-				attach={uploads.attach}
-				onSwitchToTerminal={onSwitchToTerminal}
-				onSwitchToChat={onSwitchToChat}
-			/>
-		</div>
+		</ChromeCollapseProvider>
 	);
 }

@@ -19,6 +19,7 @@ import { useT } from "../i18n";
 import { cacheMetrics, estimateStreamTokens, streamRate, trimRateSamples, type RateSample } from "../cache-stats";
 import { UsageDetail, formatTokens } from "./UsageDetail";
 import { channelAccountView } from "../channel-account";
+import { useChromeCollapse } from "../app/use-chrome-collapse";
 
 interface FooterBarProps {
 	chat: ChatState;
@@ -46,6 +47,8 @@ const MACHINE_ROOT = "@root";
 export function FooterBar({ chat, send, onQueryUsageHistory, usageOpen: usageOpenProp, onUsageOpenChange, onRetryAccount }: FooterBarProps) {
 	const t = useT();
 	const state = chat.state;
+	/** 底部控件自动收缩：收起时状态栏压成 0 高度（用量面板是它的子节点，不能整块 display:none）。 */
+	const chromeCollapsed = useChromeCollapse()?.collapsed ?? false;
 	const [editing, setEditing] = useState(false);
 	/** Directory currently shown in the picker (absolute, "/"-separated). */
 	const [browsePath, setBrowsePath] = useState("");
@@ -218,7 +221,7 @@ export function FooterBar({ chat, send, onQueryUsageHistory, usageOpen: usageOpe
 	const upPath = parentOf(browsePath);
 
 	return (
-		<footer className="statusbar">
+		<footer className={`statusbar${chromeCollapsed ? " chrome-collapsed" : ""}`}>
 			<span className={`status-dot ${connClass}`} title={connLabel} />
 			<span className="status-item">{connLabel}</span>
 			<span className="status-sep">·</span>

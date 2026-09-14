@@ -3,6 +3,7 @@ import { FiTarget, FiLock, FiUnlock, FiX, FiChevronUp } from "react-icons/fi";
 import type { GoalStatus, ModelInfo } from "../types";
 import { useT, useI18n } from "../i18n";
 import { Dropdown, DropdownItem } from "./Dropdown";
+import { useChromeCollapse } from "../app/use-chrome-collapse";
 
 /** Messages this component sends. */
 export type GoalBarMsg =
@@ -40,6 +41,9 @@ export const GoalBar = memo(function GoalBar({
 }: Props) {
 	const t = useT();
 	const { locale } = useI18n();
+	// 底部控件自动收缩（见 chrome-collapse.ts）：空闲时的目标条（编辑器/小药丸）让位给正文；
+	// 目标进行中/向导运行中是**实时状态**，不收。
+	const chromeCollapsed = useChromeCollapse()?.collapsed ?? false;
 	const goalDetail = locale !== "zh" && goal.statusEn ? goal.statusEn : goal.status || "";
 	const wizardDetail = locale !== "zh" && goal.wizard?.statusEn ? goal.wizard.statusEn : goal.wizard?.status || "";
 	// DSH：无独立审查模型 —— 隐藏 reviewModel 下拉（轮次上限仍然有效）。
@@ -123,6 +127,9 @@ export const GoalBar = memo(function GoalBar({
 
 	// A wizard running (scoping questions in flight) — show its progress.
 	const wizardActive = (goal.wizard?.active ?? false) && goalBelongsToActiveConversation;
+
+	// 空闲目标条（未设目标/未在调研）：收起时不占竖向空间。
+	if (chromeCollapsed && !active && !wizardActive) return null;
 
 	if (wizardActive) {
 		return (
