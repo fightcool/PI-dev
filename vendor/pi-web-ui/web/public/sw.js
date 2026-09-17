@@ -17,8 +17,22 @@
  * risk serving stale theme/plugin code or caching anything sensitive.
  */
 
-const STATIC_CACHE = "pi-web-ui-static-v1";
-const SHELL_CACHE = "pi-web-ui-shell-v1";
+/*
+ * @BUGFIX 2026-09-17：缓存名以前是写死的 `-v1`，**永不随部署变化**，而 activate 只删
+ *   「不叫 v1」的缓存 —— 等于永远不清自己。上面注释的假设是「Vite 给资源打了 hash，
+ *   命中缓存就一定是对的版本，直到新部署发布新 hash」，但漏了一种情况：导航请求在
+ *   网络抖动/离线时会回落到 **shell 缓存里的旧 index.html**，它引用的是旧 hash，
+ *   而旧 hash 在 static 缓存里永远命中 —— 于是整套旧资源被无期限钉住。
+ *   手机装成 PWA 后尤其明显：用户看到的一直是上一个版本的界面。
+ *   现在缓存名带 BUILD_ID（构建时由 scripts/stamp-sw.mjs 注入），activate 时删掉
+ *   所有**不属于当前 BUILD_ID** 的缓存，新部署即自动汰汰旧资源。
+ * @CONTRACT BUILD_ID 那一行的形状必须保持（等号右边是单引号字符串）：
+ *   替换脚本按正则匹配它，改成模板串/双引号会让注入静默失效。
+ */
+const BUILD_ID = '__PI_WEB_BUILD_ID__';
+
+const STATIC_CACHE = `pi-web-ui-static-${BUILD_ID}`;
+const SHELL_CACHE = `pi-web-ui-shell-${BUILD_ID}`;
 
 // App root within this origin — "/" for root deployments, "/pi/" behind an
 // nginx sub-path reverse proxy. All path checks below are relative to it, so

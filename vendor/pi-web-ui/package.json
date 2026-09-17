@@ -58,7 +58,7 @@
 		"dev:server": "cross-env PI_WEB_PORT=8788 PI_WEB_ALLOW_ORIGINS=http://localhost:5173,http://127.0.0.1:5173 node --watch --import tsx server/index.ts",
 		"dev:web": "vite --config web/vite.config.ts",
 		"build": "npm run build:web && npm run build:server && npm run build:dsh-runtime && npm run build:mermaid-vendor && npm run build:runtrace-vendor",
-		"build:web": "vite build --config web/vite.config.ts",
+		"build:web": "vite build --config web/vite.config.ts && node scripts/stamp-sw.mjs",
 		"build:server": "tsc -p tsconfig.server.json",
 		"build:dsh-runtime": "node scripts/copy-dsh-runtime.mjs",
 		"build:mermaid-vendor": "node scripts/build-mermaid-vendor.mjs",

@@ -137,64 +137,92 @@ for (let i = 0; i < 100; i++) {
 
 const browser = await chromium.launch({ executablePath: CHROME });
 try {
-	const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-	await page.addInitScript(() => {
-		try {
-			localStorage.setItem("pi-web-ui:lang", "zh");
-		} catch {
-			/* storage unavailable */
-		}
-	});
-	await page.goto(`${APP_URL}/?token=${TOKEN}`);
-	await page.waitForSelector("button.chip", { timeout: 30000 });
+	// 桌面与手机两个视口都要验。
+	// @WHY 事故教训：只在桌面视口验过就报「做完了」，用户在手机上看到的还是旧样子。
+	//   手机端 ≤420px 会把 chip 的文字标签收成纯图标（styles.css 的 .composer-tools 规则），
+	//   定位方式跟桌面不同 —— 不实际跑一遍手机视口，等于没验。
+	for (const vp of [
+		{ name: "桌面", width: 1280, height: 900, touch: false },
+		{ name: "手机", width: 390, height: 844, touch: true },
+	]) {
+		console.log(`\n--- ${vp.name} ${vp.width}×${vp.height}`);
+		const ctx = await browser.newContext({
+			viewport: { width: vp.width, height: vp.height },
+			hasTouch: vp.touch,
+		});
+		const page = await ctx.newPage();
+		await page.addInitScript(() => {
+			try {
+				localStorage.setItem("pi-web-ui:lang", "zh");
+			} catch {
+				/* storage unavailable */
+			}
+		});
+		await page.goto(`${APP_URL}/?token=${TOKEN}`);
+		// @GOTCHA 不能等 "button.chip" 可见：手机端顶栏那批 chip 是隐藏的，
+		//   首个匹配永远不可见，会白等 30 秒。等输入区工具条才两个视口通用。
+		await page.waitForSelector(".composer-tools", { timeout: 30000 });
 
-	// 打开模型下拉（有渠道 → 走 ChannelModelList 的渠道分组）。
-	const openPicker = async () => {
-		await page
-			.locator("button.chip", { has: page.locator(".chip-model") })
-			.first()
-			.click();
-		await page.waitForSelector(".chan-group", { timeout: 15000 });
-	};
-	await openPicker();
-
-	const groups = await page.locator(".chan-group").count();
-	check("渠道按分组渲染", groups === 2, `groups=${groups}`);
-
-	// ③ 余额那一格的口径：配了账户查询但没查过 → 「余额未查询」；没配 → 不出现。
-	const second = page.locator(".chan-group", { hasText: "RightCode" }).first();
-	const first = page.locator(".chan-group", { hasText: "UU apiClaude" }).first();
-	const secondAcct = await second.locator(".chan-head-acct").count();
-	const secondText = secondAcct > 0 ? await second.locator(".chan-head-acct").first().innerText() : "";
-	check("配了账户查询、未查过 → 如实写「未查询」", secondAcct === 1 && secondText.includes("未查询"), secondText);
-	check("没配账户查询 → 余额那一格不出现（不拿 0 冒充）", (await first.locator(".chan-head-acct").count()) === 0);
-
-	// 选中第二个渠道下的一个模型 → 它成为当前生效渠道。
-	await second.locator(".dd-item").first().click();
-	await sleep(800);
-
-	// ① 整组高亮 + 「正在使用」文字标记；② 置顶。
-	await openPicker();
-	const state = await page.evaluate(() => {
-		const groups = [...document.querySelectorAll(".chan-group")];
-		return {
-			order: groups.map((g) => g.querySelector(".chan-name")?.textContent ?? ""),
-			currentIndex: groups.findIndex((g) => g.classList.contains("current")),
-			currentCount: groups.filter((g) => g.classList.contains("current")).length,
-			markerText: document.querySelector(".chan-group.current .chan-head-current")?.textContent ?? "",
-			// 高亮必须真的落在样式上（不是只加了个类名却没规则）
-			hasBg: (() => {
-				const el = document.querySelector(".chan-group.current");
-				if (!el) return false;
-				const cs = getComputedStyle(el);
-				return cs.borderLeftWidth !== "0px" || cs.backgroundColor !== "rgba(0, 0, 0, 0)";
-			})(),
+		// 打开模型下拉（有渠道 → 走 ChannelModelList 的渠道分组）。
+		// @GOTCHA 手机端 .chip-model 文字被 display:none 收起，但按钮和 span 都在 DOM 里，
+		//   所以按「输入区里含 .chip-model 的 chip」定位，桌面/手机同一条路径。
+		const openPicker = async () => {
+			await page
+				.locator(".composer-tools button.chip", { has: page.locator(".chip-model") })
+				.first()
+				.click();
+			await page.waitForSelector(".chan-group", { timeout: 15000 });
 		};
-	});
-	check("恰有一个渠道被标为当前", state.currentCount === 1, `count=${state.currentCount}`);
-	check("当前渠道排在第一个", state.currentIndex === 0, `order=${JSON.stringify(state.order)}`);
-	check("当前渠道带「正在使用」文字标记（不只靠颜色）", state.markerText.includes("正在使用"), state.markerText);
-	check("高亮样式真的生效（.chan-group.current 有边/底色）", state.hasBg);
+		await openPicker();
+
+		const groups = await page.locator(".chan-group").count();
+		check(`[${vp.name}] 渠道按分组渲染`, groups === 2, `groups=${groups}`);
+
+		// ③ 余额那一格的口径：配了账户查询但没查过 → 「余额未查询」；没配 → 不出现。
+		const second = page.locator(".chan-group", { hasText: "RightCode" }).first();
+		const first = page.locator(".chan-group", { hasText: "UU apiClaude" }).first();
+		const secondAcct = await second.locator(".chan-head-acct").count();
+		const secondText = secondAcct > 0 ? await second.locator(".chan-head-acct").first().innerText() : "";
+		check(`[${vp.name}] 配了账户查询、未查过 → 如实写「未查询」`, secondAcct === 1 && secondText.includes("未查询"), secondText);
+		check(`[${vp.name}] 没配账户查询 → 余额那一格不出现（不拿 0 冒充）`, (await first.locator(".chan-head-acct").count()) === 0);
+
+		// 选中第二个渠道下的一个模型 → 它成为当前生效渠道。
+		await second.locator(".dd-item").first().click();
+		await sleep(800);
+
+		// ① 整组高亮 + 「正在使用」文字标记；② 置顶。
+		await openPicker();
+		const state = await page.evaluate(() => {
+			const groups = [...document.querySelectorAll(".chan-group")];
+			return {
+				order: groups.map((g) => g.querySelector(".chan-name")?.textContent ?? ""),
+				currentIndex: groups.findIndex((g) => g.classList.contains("current")),
+				currentCount: groups.filter((g) => g.classList.contains("current")).length,
+				markerText: document.querySelector(".chan-group.current .chan-head-current")?.textContent ?? "",
+				// 高亮必须真的落在样式上（不是只加了个类名却没规则）
+				hasBg: (() => {
+					const el = document.querySelector(".chan-group.current");
+					if (!el) return false;
+					const cs = getComputedStyle(el);
+					return cs.borderLeftWidth !== "0px" || cs.backgroundColor !== "rgba(0, 0, 0, 0)";
+				})(),
+				// 手机端窄屏尤其容易溢出：渠道头不许横向撑破下拉容器。
+				overflowX: (() => {
+					const el = document.querySelector(".chan-group.current");
+					const menu = el?.closest(".dd-menu");
+					if (!el || !menu) return 0;
+					return Math.round(el.scrollWidth - menu.clientWidth);
+				})(),
+			};
+		});
+		check(`[${vp.name}] 恰有一个渠道被标为当前`, state.currentCount === 1, `count=${state.currentCount}`);
+		check(`[${vp.name}] 当前渠道排在第一个`, state.currentIndex === 0, `order=${JSON.stringify(state.order)}`);
+		check(`[${vp.name}] 当前渠道带「正在使用」文字标记（不只靠颜色）`, state.markerText.includes("正在使用"), state.markerText);
+		check(`[${vp.name}] 高亮样式真的生效（.chan-group.current 有边/底色）`, state.hasBg);
+		check(`[${vp.name}] 渠道头没有横向撑破下拉容器`, state.overflowX <= 1, `overflowX=${state.overflowX}px`);
+
+		await ctx.close();
+	}
 
 	console.log("\nALL PASS");
 	server.kill("SIGTERM");
