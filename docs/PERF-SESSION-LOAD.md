@@ -256,3 +256,56 @@ remark/rehype 栈本身（不是语法表）；再削要换 markdown 栈，收�
 - `lowlight.highlightAuto`（无标注围栏的语言嗅探，本机实测）：40 行块 37 种语法 53.0 ms → 限定 20 种 16.7 ms；短块 6.2 ms → 1.6 ms。
 - 浏览器 harness（`npm run test:performance`，基线 dist vs 当前 dist 各跑一遍）：4 个场景全过、DOM 预算未劣化；1000 条会话 `searchOld` 长任务 451 ms → 292 ms、`jumpOld` 426 ms → 317 ms。注意：harness 的合成消息没有代码围栏、且显式传 `toolsWrap: true`，所以 P0-3/P0-4 的收益不体现在它里。
 - 验收用 `__piPerf()`：在真实实例控制台可以看到 `ws:ready → ws:snapshot → paint` 与 `switch:… → paint` 两段墙钟。
+
+---
+
+## 7. 2026-09-16 复核：上下文规模与列表扫描（本轮修复）
+
+用户报告「开发执行过程中长时间卡顿」。同机只读实测后确认：**主因不在宿主机配置，而在每轮请求的上下文规模**；列表扫描是次要成因。以下数字均为 2026-09-16 在本机（4 vCPU / 7.9GB / 无 swap）实测。
+
+### 7.1 实测
+
+| 项 | 实测 | 说明 |
+| --- | --- | --- |
+| 空载 | shell 页 5–9 ms、API 3 ms、CPU 0.5–1.5% | 服务端本身很快 |
+| 同机跑 vitest 全量 + typecheck | CPU **95–100% 持续 25 s**，内存可用 6.7→5.5 GB | **线上实例仍 5–9 ms**（仅启动瞬间一次 622 ms 尖峰） |
+| 会话数据 | 25 个 jsonl / **75.2 MB**（单项目 16 个 / 35.6 MB，最大 9.1 MB） | §2 基线是 8 个 / 14.3 MiB —— 数据涨了约 5 倍 |
+| `SessionManager.list(cwd)` | **540 ms**（§2 基线 212–242 ms） | 逐行 `JSON.parse`，主线程 |
+| `SessionManager.listAll()` | **960 ms**（§2 基线 225–292 ms） | 同上，跨 4 个项目 |
+| 全量逐行 `JSON.parse` | 1054 ms / 19524 行 | 与上面同源，纯 CPU |
+| **单次请求 prompt** | **中位 26–32 万 token、p90 70–86 万、峰值 106 万** | 7150 条真实请求记录（`<agentDir>/dev-con/usage-history.jsonl`）；**66.6% 的请求 > 20 万** |
+| 单对话轨迹 | 首轮 7k → 第 10 轮 27k → 中位 268k → 峰值 980k | 1981 次请求的对话；22% 的轮次 > 50 万 |
+| 缓存命中 | 97–99% | 只压住了成本，压不住按上下文长度恶化的首字/解码延迟 |
+| 会话内容构成 | 最大 PI-dev 会话 7.70 MB 中 `toolResult` 占 **5.71 MB（74%）** | 上下文膨胀的量体来自工具输出 |
+
+### 7.2 本轮落地的修复
+
+| # | 问题 | 修复 | 落点 |
+| --- | --- | --- | --- |
+| 1 | 模型窗口配成 100–105 万，而 `compaction.reserveTokens` 是全局 16384 → 压缩阈值 ≈ 98.4 万，实际几乎不压缩 | **压缩阈值改为整窗口的 86%**，按当前活跃模型的窗口实时换算（`reserveTokens = 窗口 - floor(窗口×86%)`）；模型未知时回退 `settings.json` 的值 | `server/compaction-policy.ts`（新）、`server/agent-service.ts` `makeRuntimeFactory` |
+| 2 | `pi-context-prune` 把工具结果换成摘要，但上下文仍涨到 30–100 万，且它本身会打断前缀缓存 | **移除**：`lean` profile 不再加载任何托管扩展；线上/开发实例 `settings.json` 的 `packages` 已清空（各留 `.bak`） | `package.json`、`scripts/lib.mjs` PROFILES、`upstream/compatibility.json`、实例 settings |
+| 3 | 列表刷新恒为全量磁盘解析；运行期每条消息都失效缓存 → 每 800 ms 防抖推送都付一次 540 ms | **签名 gate**：`(mtimeMs:size)` 未变则直接复用缓存（不受 TTL 限制）；**运行中会话豁免**：本端正在写的会话文件不触发重扫，改由每轮结束的 `broadcastPersistedNode()` 统一刷新一次 | `server/session-signature.ts`（新）、`server/session-history-cache.ts`、`server/agent-service.ts`（`message_end`/`entry_appended` 改为标记而不失效） |
+| 4 | `deploy/releases` 累积 12 个版本 / 7.0 GB（磁盘 69%） | 用仓库脚本清到「当前 + 回滚目标」两个版本 | `node scripts/release.mjs prune --apply`（已执行：移除 `f1c607278519`、`004d9f3444ec`，磁盘 69%→62%） |
+
+**新增单测**：`tests/unit/compaction-policy.test.ts`（5）、`tests/unit/session-signature.test.ts`（4）、`tests/unit/session-history-cache.test.ts` 签名/豁免用例（+6）。
+
+### 7.3 未做项（需要操作者或有独立前提）
+
+| 项 | 状态 | 原因 / 前提 |
+| --- | --- | --- |
+| nginx 开 HTTP/2 | **待操作者执行** | `no new privileges` 容器里无 sudo；命令见 [DEV-HOST-TUNING.md](DEV-HOST-TUNING.md) |
+| 加 2–4 GB swap | **待操作者执行** | 同上；8 GB / 无 swap 下 Chromium + 构建 + 2 GB node heap 没有余量 |
+| 重活加 `nice` | 已做 | `test:smoke` / `test:performance` / `test:channels:browser` 三个最重的脚本已加 `nice -n 10` |
+| **UI 与 agent 共用一个事件循环** | **另立提案** | 结构性问题，见 [EVENT-LOOP-SPLIT-PROPOSAL.md](EVENT-LOOP-SPLIT-PROPOSAL.md) |
+| 绝对上下文降到 20–26 万 | 未做 | 属性价比取舍（窗口配置在渠道/模型目录里），需用户决定；本轮的 86% 阈值是通用规则 |
+
+### 7.4 怎么复测
+
+```bash
+# 服务端分段（attach / 切换 / snapshot 构建与 wire 字节）
+PI_WEB_TIMING=1 npm run dev
+# 浏览器端到端时间线（控制台）
+__piPerf()
+# 列表扫描：签名 gate 命中时的期望是亚毫秒；未命中才是 540/960 ms
+SAMPLE_SECONDS=20 node /tmp/perf-probe/sample-load.mjs   # 一次性探针，非仓库产物
+```
