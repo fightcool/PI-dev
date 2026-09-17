@@ -3167,6 +3167,7 @@ export class ClientSession {
 		const conv = this.conv;
 		const state = conv.session.agent.state;
 		const model = state.model;
+		const loadContextPolicy = this.contextPolicyLoader();
 		let stats: UiState["stats"] = {
 			totalMessages: 0,
 			tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
@@ -3192,19 +3193,24 @@ export class ClientSession {
 				contextUsage: (() => {
 					const cu = s.contextUsage;
 					if (!cu) return stats.contextUsage;
+					// 分母用**策略的有效预算**（= 触发点），而不是模型的物理窗口：这样进度条涨满就
+					// 等于即将压缩，与 Codex 的显示口径一致（它的分母是 272k 而不是 872k）。
+					// 物理窗口仍由 models.json 拥有；此处只影响展示（FooterBar 的 tokens / N 与百分比）。
+					const budget = resolveContextBudget(model?.contextWindow, loadContextPolicy(), modelKeyOf(model));
+					const denominator = budget?.triggerTokens ?? cu.contextWindow;
 					// 压缩刚结束、下轮响应未到：SDK 报 null，用压缩结果回填约数。
-					if (cu.tokens == null && conv.lastCompactionTokens != null && cu.contextWindow > 0) {
+					if (cu.tokens == null && conv.lastCompactionTokens != null && denominator > 0) {
 						return {
 							tokens: conv.lastCompactionTokens,
-							contextWindow: cu.contextWindow,
-							percent: (conv.lastCompactionTokens / cu.contextWindow) * 100,
+							contextWindow: denominator,
+							percent: (conv.lastCompactionTokens / denominator) * 100,
 							estimated: true,
 						};
 					}
 					return {
 						tokens: cu.tokens,
-						contextWindow: cu.contextWindow,
-						percent: cu.percent,
+						contextWindow: denominator,
+						percent: cu.tokens == null || denominator <= 0 ? null : (cu.tokens / denominator) * 100,
 					};
 				})(),
 			};
