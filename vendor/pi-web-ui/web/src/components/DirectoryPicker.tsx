@@ -75,7 +75,8 @@ interface DirectoryPickerProps {
 	/** 服务端 path_completions 的最新结果（目录与文件混合，内部只用目录）。 */
 	completions: PathCompletion[];
 	send: (
-		msg: { type: "complete_path"; path: string } | { type: "set_cwd"; path: string } | { type: "make_dir"; path: string },
+		msg:
+			{ type: "complete_path"; path: string } | { type: "set_cwd"; path: string } | { type: "make_dir"; path: string },
 	) => boolean;
 	onClose: () => void;
 	/** "footer"：底栏上方的浮层（默认，保持底栏原样）；"modal"：居中弹窗（新建项目入口）。 */
