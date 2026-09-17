@@ -13,7 +13,7 @@
 
 | 热点 | 量级 | 位置 |
 | --- | --- | --- |
-| `SessionManager.list(cwd)` / `listAll()` 逐行 `JSON.parse` 每个 transcript | 540 ms / 960 ms（25 文件 / 75 MB） | SDK `core/session-manager.js:442-571`，经 `server/agent-service.ts:4827/4836` |
+| `SessionManager.list(cwd)` / `listAll()` 逐行 `JSON.parse` 每个 transcript | wall 540 ms / 960 ms（25 文件 / 75 MB）；**实测最长单次阻塞仅 28 ms、平均延迟比噪声底高 3.5 ms**（见下） | SDK `core/session-manager.js:442-571`，经 `server/agent-service.ts:4827/4836` |
 | 会话快照序列化 `JSON.stringify` | 随会话长度增长（多标签页用 WeakMap 去重，仍是主线程） | `server/index.ts:1067-1074` |
 | 子代理归档列表（同步 `readdirSync` + 逐文件 `readFileSync`+`parse`） | 未测，同源 | `server/subagent-archive.ts:76-95` |
 | 存储占用遍历 / 系统资源采集 | 有上限（2000 ms / 50000 文件） | `server/dev-con/storage-usage.ts:16,21`、`system-resources.ts:20` |
@@ -22,6 +22,23 @@
 | **插件代码本身同进程动态 import** | 插件可任意阻塞同一循环 | `server/plugins.ts:1256`（`handleMessage` 只隔离抛错，不隔离 CPU） |
 
 **已核实**：全仓无 `worker_threads` / `new Worker(`；`scripts/start.mjs` 单入口；`deploy/ecosystem.config.cjs` 为 PM2 单实例 fork；systemd unit 共享 cgroup（`MemoryHigh=3G` / `MemoryMax=4G` / `TasksMax=512`）；`server/index.ts:1781` 的 `shutdown()` 是 `process.exit(0)`。
+
+### 1.1 先量清楚：扫描到底阻塞了多少（2026-09-17 实测）
+
+用一个独立进程（真实 75 MB 数据）同时跑 SDK 扫描与阻塞探针：
+
+```
+SessionManager.list(PI-dev)   wall=551ms   事件循环最长阻塞=28ms   mean=23.7ms
+SessionManager.listAll()      wall=1104ms  事件循环最长阻塞=32ms   mean=23.5ms
+空闲 1 秒对照                  wall=1000ms  事件循环最长阻塞=20ms   mean=20.2ms
+```
+
+**结论修正**：SDK 用 `createReadStream` + `readline` 流式解析，每读一段就让出事件循环，所以它**不是**一次 0.5–1.1s 的冻结，而是**同样时长的主线程 CPU 占用**：最长单次阻塞 28 ms，平均延迟只比噪声底高 ~3.5 ms。这改变优先级判断：
+
+- 「列表刷新卡住所有客户端」这个说法**不准确**（原先按 wall 时间推断，已被实测推翻）；
+- 真正的代价是**主进程持续抢 CPU**（每 800 ms 防抖刷新一次、`listAll` 高达 1.1 s），与 agent 运行、WS 推送争同一个事件循环；
+- 因此 A1 的收益应表述为「把这份 CPU 从主线程拿走」，而非「消灭秒级冻结」；
+- 真正会冻结的是**同步**工作（`readdirSync`/`statSync`/`execFileSync`/`JSON.stringify` 大对象/插件同步代码），见上表其余行。
 
 **为什么不能直接上 PM2 cluster**：会话、PTY、WS 状态不是多进程共享的（[STRUCTURE.md](STRUCTURE.md)）；排空判定 `activeConversations`/`pendingMessages` 是单进程聚合（`server/agent-service.ts:6155`），而部署脚本把它当作切版前提（`scripts/maintenance/switch-production-release.mjs:174-184`）。
 
@@ -80,7 +97,8 @@
 
 | # | 指标 | 方法 | 通过线 |
 | --- | --- | --- | --- |
-| 1 | 事件循环阻塞 | 隔离实例 + 心跳客户端，触发 `list_sessions`/`list_projects`，`perf_hooks.monitorEventLoopDelay` 或心跳抖动 | 扫描期间最大 delay 从「≈扫描耗时」降到 **< 50 ms** |
+| 1 | **主线程 CPU**（首要） | 同进程跑扫描 + 采样 `process.cpuUsage()`，对比扫描前后 | 扫描期间主线程 CPU 占比从 ~100% 降到噪声底（扫描工作移出主线程） |
+| 1b | 事件循环延迟 | `PI_WEB_LOOP_PROBE=1`（已实现）或心跳抖动 | 扫描期间 mean/max 不高于噪声底（实测 before：max 28 ms、mean 23.7 ms / 噪声底 20.2 ms） |
 | 2 | 服务端分段 | `tests/performance/server-timing.mjs` | attach / switch 分段不劣化；`list_projects` 冷/热均不劣于基线 |
 | 3 | 功能契约 | `node tests/run-smoke.mjs snapshot-delta-test switch-session-background-test multi-device-session-sync-test quiesce-test` | 全绿；`npm run check:protocol` 不变（`PROTOCOL_VERSION` 不动） |
 | 4 | 资源 | PM2 RSS / cgroup 上限 / `TasksMax` | 不越界；worker 显式 `resourceLimits` |
@@ -104,5 +122,5 @@
 1. `RpcClient` / `--mode rpc` 是否支持**多并发会话**（决定 B 是「进程池」还是「1:1」）。
 2. worker 首次 `import` SDK 的冷启动耗时（决定是否必须池化/预热）。
 3. A3（快照序列化搬 worker）的 structured-clone 成本是否小于收益 —— 必须先测量。
-4. 线上进程的真实 loop delay 基线（需要新探针；当前只有 `PI_WEB_TIMING=1` 的分段日志）。
+4. 线上进程的真实 loop delay 基线（需要新探针；当前只有 `PI_WEB_TIMING=1` 的分段日志）。**已部分回答**：独立进程用真实数据实测见 §1.1（max 28 ms、mean +3.5 ms），线上实例可通过 `PI_WEB_LOOP_PROBE=1` 复核。
 5. `plugin-facilities.ts` 的 `spawnSync` 与 `agent-service.ts:2356` 的 `execFileSync` 在同机上的实际耗时（可能是第二个秒级阻塞点）。
