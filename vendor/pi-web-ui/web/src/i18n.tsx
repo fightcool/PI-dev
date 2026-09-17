@@ -100,6 +100,10 @@ export const zh = {
 	cwdNewFolder: "新建文件夹",
 	cwdNewName: "文件夹名称",
 	cwdCreate: "创建",
+	cwdCreateAndOpen: "创建并打开",
+	cwdCreateFailed: "没能创建该文件夹（服务端提示里有原因）。",
+	cwdExistsHint: "该名字已存在，将直接打开它。",
+	cwdOpenExisting: "打开",
 	cwdCancel: "取消",
 	cacheHit: "缓存命中",
 	cacheHitTip: "缓存读取 {read} · 缓存写入 {write} · 未命中 {miss}（共 {input} 输入 token）",
@@ -181,6 +185,11 @@ export const zh = {
 
 	/* left panel */
 	recentProjects: "最近项目",
+	newProject: "新建项目",
+	newProjectTip: "新建项目：选择父目录 → 输入项目名 → 创建并打开（也可直接选择已有目录）",
+	newProjectHint:
+		"项目就是一个工作目录：先浏览到要放项目的父目录，输入项目名后「创建并打开」；已有目录直接点「选择」。",
+	noProjects: "还没有项目",
 	runningConversations: "运行的对话",
 	subagentBadge: "子代理",
 	convErrorBadge: "子代理运行报错：{error}",

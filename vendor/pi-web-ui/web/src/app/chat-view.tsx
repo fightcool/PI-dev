@@ -56,7 +56,7 @@ export function ChatView({
 		isMobile,
 		panelSend,
 	} = panels;
-	const { setPreviewFile, searchJump, onJumpDone, openUsage } = dialogs;
+	const { setPreviewFile, searchJump, onJumpDone, openUsage, openNewProject } = dialogs;
 	const {
 		attachments,
 		attach,
@@ -145,6 +145,7 @@ export function ChatView({
 					sessions={chat.sessions}
 					projects={chat.projects}
 					activeConversationId={chat.activeConversationId}
+					onNewProject={openNewProject}
 				/>
 			</div>
 			{!isMobile && <ResizeHandle side="left" width={leftWidth} onResize={resizeLeft} />}

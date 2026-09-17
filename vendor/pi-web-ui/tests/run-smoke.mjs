@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-/* 🍞 AI Breadcrumb — @COUPLED conversation-lifecycle-test.mjs, channel-isolation-test.mjs
+/* 🍞 AI Breadcrumb — @COUPLED conversation-lifecycle-test.mjs, channel-isolation-test.mjs,
+ *   lib/build.mjs（跑批前统一构建一次 + PI_SMOKE_DIST_READY 信号）
  * 📖 ../docs/conversation-lifecycle.md, ../../docs/P0-VERIFICATION.md
  */
 /**
@@ -14,8 +15,12 @@
  *   - 真模型 live：goal-review-loop、live-test（需已运行 server）、update-test。
  *
  * 用法：node tests/run-smoke.mjs [name1 name2 …]   # 无参 = 全量
+ *
+ * 跑批前统一 `npm run build` 一次（置 PI_SMOKE_DIST_READY=1，用例经 lib/build.mjs 复用）。
+ * @WHY 原先 6 个自起 server 的用例各跑一次构建，并发时同时写同一个 dist/ —— CI 上复现过
+ *   「✗ conv-cwd-test — build failed」这种资源竞争型 flake。构建失败则整个跑批不开始。
  */
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { createWriteStream, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,10 +34,12 @@ const here = dirname(fileURLToPath(import.meta.url));
 //     win\\async.c 断言崩溃（退出码 127），属 libuv 关闭时序问题。
 const WIN32_KNOWN_ENV_FAIL = new Set(["terminal-smoke-test", "restart-handoff-test"]);
 
-/** 子进程环境：清掉会改变隔离实例行为的鉴权/托管变量（不影响其它环境值）。 */
+/** 子进程环境：清掉会改变隔离实例行为的鉴权/托管变量（不影响其它环境值）。
+ *  同时告知用例「跑器已构建」，它们不再各自 `npm run build`（见 tests/lib/build.mjs 的 @WHY）。 */
 function smokeEnv() {
 	const env = { ...process.env };
 	for (const key of ["PI_WEB_TOKEN", "PI_WEB_MANAGED"]) delete env[key];
+	env.PI_SMOKE_DIST_READY = "1";
 	return env;
 }
 
@@ -151,6 +158,26 @@ async function runOne(name) {
 }
 
 const startedAll = Date.now();
+// 跑批前统一构建一次：《先构建，再并发跑》——原先 6 个自起 server 的用例各跑一次
+// `npm run build`，并发时会同时写同一个 dist/（CI 上是资源竞争型 flake，见
+// tests/lib/build.mjs 的 @WHY）。这里构建失败就直接停，并把构建输出尾部打出来。
+{
+	const buildStarted = Date.now();
+	try {
+		execFileSync("npm", ["run", "build"], {
+			cwd: join(here, ".."),
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+			maxBuffer: 64 * 1024 * 1024,
+		});
+		console.log(`构建完成 ${((Date.now() - buildStarted) / 1000).toFixed(1)}s\n`);
+	} catch (error) {
+		console.error("✗ 构建失败，冒烟未执行");
+		console.error(`${error.stdout ?? ""}${error.stderr ?? ""}`.trim().split("\n").slice(-40).join("\n"));
+		console.error(`--- ${error.message ?? "unknown error"} ---`);
+		process.exit(1);
+	}
+}
 const parallel = selected.filter((n) => !SERIAL.has(n));
 const serial = selected.filter((n) => SERIAL.has(n));
 if (JOBS > 1 && parallel.length > 1) console.log(`并发 ${JOBS}（独占运行：${serial.join(", ") || "无"}）`);

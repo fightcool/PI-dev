@@ -4,12 +4,19 @@
  * (Without a background run the running list stays hidden — new chats are
  * only listed once displaced while streaming — so the layout asserts the
  * section stays absent and the history structure stays intact.)
+ *
+ * @GOTCHA PasskeyGate 是纯客户端门：隔离实例下页面也先渲染登录卡，不种 localStorage token
+ *   就永远等不到 `.panel-left`（与布局无关的假失败）。
+ * @GOTCHA 鉴权环境必须隔离（与 run-smoke.mjs 的 smokeEnv 同一口径）：宿主带着 PI_WEB_TOKEN 时，
+ *   本用例起的隔离 server 会要求口令，匠名 WS 401，快照相关的断言全部假失败。
  */
 import { CHROME_PATH } from "./lib/chrome.mjs";
 import { portUp, freePort } from "./lib/port-utils.mjs";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
-import { execSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
+import { ensureBuild } from "./lib/build.mjs";
+import { isolatedEnv, seedToken } from "./lib/isolated-env.mjs";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,26 +36,21 @@ const check = (name, ok, extra = "") => {
 	console.log(`${ok ? "✓" : "✗"} ${name}${extra ? " — " + extra : ""}`);
 	if (!ok) failures++;
 };
-
-try {
-	execSync("npm run build", { cwd: PROJ, stdio: "ignore" });
-} catch {
-	console.error("build failed");
-	process.exit(1);
-}
+ensureBuild({ cwd: PROJ, label: "panel-layout-test" });
 try {
 	await freePort(PORT);
 } catch {}
 await sleep(400);
 const server = spawn("node", ["dist/server/index.js"], {
 	cwd: PROJ,
-	env: { ...process.env, PI_WEB_PORT: String(PORT), PI_WEB_CWD: WS },
+	env: { ...isolatedEnv(), PI_WEB_PORT: String(PORT), PI_WEB_CWD: WS },
 	stdio: "ignore",
 });
 for (let i = 0; i < 40 && !(await portUp(PORT)); i++) await sleep(250);
 
 const browser = await chromium.launch({ executablePath: HEADLESS });
 const page = await browser.newPage();
+await seedToken(page);
 await page.goto(URL);
 await page.waitForSelector(".panel-left .panel-sessions", { timeout: 15000 });
 await sleep(800);

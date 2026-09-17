@@ -83,12 +83,17 @@ class Client {
 		for (const m of this.received) if (m.type === "provider_keys") keys = m.keys;
 		return keys;
 	}
-	// Poll until provider_keys for `provider` has `n` entries (or timeout).
-	async waitProviderKeys(provider, n, timeout = 25000) {
+	// Poll until provider_keys for `provider` has `n` entries AND `predicate` holds (or timeout).
+	// @GOTCHA 只等「长度 = n」会命中**变更前**就已经满足的旧推送（读的是最后一条消息）：
+	//   切换激活密钥后长度不变（还是 2 条），于是立刻返回旧状态，后面那条 active===true
+	//   的断言随机挂（CI 上确实出现过「✗ FAIL key B active now」）。带谓词等才等得到新状态。
+	async waitProviderKeys(provider, n, timeout = 25000, predicate = () => true) {
 		const start = Date.now();
 		while (Date.now() - start < timeout) {
 			const keys = this.lastProviderKeys();
-			if (keys && Array.isArray(keys[provider]) && keys[provider].length === n) return keys[provider];
+			if (keys && Array.isArray(keys[provider]) && keys[provider].length === n && predicate(keys[provider])) {
+				return keys[provider];
+			}
 			await sleep(50);
 		}
 		throw new Error(`timeout waiting for provider_keys[${provider}] length ${n}`);
@@ -200,7 +205,7 @@ try {
 	c.send({ type: "activate_provider_key", provider: "deepseek", keyName: keyBName });
 	await c.waitForNotice("已切换", 30000);
 	check("auth.json now sk-B", readAuth().deepseek?.key === "sk-B");
-	ks = await c.waitProviderKeys("deepseek", 2);
+	ks = await c.waitProviderKeys("deepseek", 2, 25000, (list) => list.some((k) => k.name === keyBName && k.active === true));
 	check("key B active now", ks.find((k) => k.name === keyBName)?.active === true);
 
 	// 4) remove the ACTIVE key by name → falls back to the remaining (sk-A)

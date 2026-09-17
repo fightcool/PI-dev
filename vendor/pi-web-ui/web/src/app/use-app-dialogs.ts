@@ -18,6 +18,9 @@ export function useAppDialogs() {
 	const [bgTasksOpen, setBgTasksOpen] = useState(false);
 	// Global search panel (sessions / projects / workspace files).
 	const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+	// 新建项目：左栏「＋」打开的目录选择器（浏览 → 新建文件夹 → 建完即打开）。
+	// @WHY 状态在 App 层：选择器要用 chat.pathCompletions，而它属于连接，不在左栏里。
+	const [newProjectOpen, setNewProjectOpen] = useState(false);
 	/** 全局搜索「会话」结果点击后的跳转目标：切到该会话并定位到命中消息。
 	 *  由 MessageList 消费（消息载入即跳转+高亮），跳完后置空。 */
 	const [searchJump, setSearchJump] = useState<{
@@ -45,6 +48,7 @@ export function useAppDialogs() {
 	}, []);
 
 	const openUsage = useCallback(() => setUsageOpen(true), []);
+	const openNewProject = useCallback(() => setNewProjectOpen(true), []);
 	const onJumpDone = useCallback(() => setSearchJump(null), []);
 	const [searchVisited, setSearchVisited] = useState(false);
 	useEffect(() => {
@@ -66,6 +70,9 @@ export function useAppDialogs() {
 		setBgTasksOpen,
 		globalSearchOpen,
 		setGlobalSearchOpen,
+		newProjectOpen,
+		setNewProjectOpen,
+		openNewProject,
 		searchJump,
 		setSearchJump,
 		onJumpDone,

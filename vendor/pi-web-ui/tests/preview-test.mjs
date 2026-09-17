@@ -5,7 +5,8 @@
 import { portUp, freePort } from "./lib/port-utils.mjs";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
-import { execSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
+import { ensureBuild } from "./lib/build.mjs";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +15,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 // fileURLToPath: URL.pathname 在 Windows 下是 /E:/... 形式，直接当 cwd 会失败
 const REPO_ROOT = fileURLToPath(new globalThis.URL("../", import.meta.url));
 
-const PORT = 8898;
+const PORT = 8919;
 const PROJ = REPO_ROOT;
 const WS = mkdtempSync(join(tmpdir(), "pi-prev-"));
 writeFileSync(join(WS, "notes.weird"), "hello from an unknown extension\nline2\n");
@@ -36,12 +37,7 @@ const check = (name, ok, extra = "") => {
 	if (!ok) failures++;
 };
 
-try {
-	execSync("npm run build", { cwd: PROJ, stdio: "ignore" });
-} catch {
-	console.error("build failed");
-	process.exit(1);
-}
+ensureBuild({ cwd: PROJ, label: "preview-test" });
 try {
 	await freePort(PORT);
 } catch {}

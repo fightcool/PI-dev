@@ -8,7 +8,8 @@
  * Run:  node slash-commands-test.mjs
  */
 import { portUp, freePort } from "./lib/port-utils.mjs";
-import { execSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
+import { ensureBuild } from "./lib/build.mjs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,7 +18,7 @@ import { WebSocket } from "ws";
 // fileURLToPath: URL.pathname 在 Windows 下是 /E:/... 形式，直接当 cwd 会失败
 const REPO_ROOT = fileURLToPath(new globalThis.URL("../", import.meta.url));
 
-const PORT = 8793;
+const PORT = 8949;
 const WS_URL = `ws://localhost:${PORT}/ws`;
 // Unique per run — a persisted lastCwd from a previous run would restore /tmp
 // on attach and change the /cwd assertions.
@@ -76,12 +77,7 @@ function connect() {
 
 async function main() {
 	// Build + boot the server on a dedicated port.
-	try {
-		execSync("npm run build", { cwd: PROJ, stdio: "ignore" });
-	} catch {
-		console.error("build failed");
-		process.exit(1);
-	}
+	ensureBuild({ cwd: PROJ, label: "slash-commands-test" });
 	try {
 		await freePort(PORT);
 	} catch {

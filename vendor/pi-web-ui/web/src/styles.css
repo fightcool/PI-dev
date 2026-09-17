@@ -586,6 +586,13 @@ body.lp-resizing .lp-sash.dragging::after {
 .lp-panel .panel-collapse-btn + .lp-section .lp-section-title {
 	padding-right: 36px;
 }
+/* 项目区块的标题行右侧还有「＋」按钮，不能跟面板折叠按钮（absolute top/right）重叠。 */
+.lp-panel .panel-collapse-btn + .lp-section .lp-section-head-row {
+	padding-right: 34px;
+}
+.lp-panel .panel-collapse-btn + .lp-section .lp-section-head-row > .lp-section-title {
+	padding-right: 0;
+}
 
 /* Section body: 展开时唯一的滚动容器，折叠时 JS 已移除 DOM */
 .lp-section-body {
@@ -871,6 +878,56 @@ body.lp-resizing .lp-sash.dragging::after {
 /* 最近项目标题占位不悬浮：只有项目列表内部滚动，滚动条不会出现在标题右侧 */
 .panel-projects .panel-section-title {
 	flex-shrink: 0;
+}
+
+/* 标题行：区块标题 + 右侧「＋ 新建项目」。
+   @COUPLED components/LeftPanelProjects.tsx
+   @WHY 入口放在标题行而不是列表里 —— 列表为空时它必须仍然可见（原来 0 个项目整块不渲染）。 */
+.lp-projects-new,
+.lp-section-head-row {
+	flex-shrink: 0;
+}
+.lp-section-head-row {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	padding-right: 6px;
+}
+.lp-section-head-row > .lp-section-title {
+	flex: 1;
+	min-width: 0;
+}
+.lp-projects-new {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	border: 1px solid var(--border);
+	border-radius: 5px;
+	background: var(--bg-elev);
+	color: var(--text-dim);
+	font-size: 13px;
+	cursor: pointer;
+}
+.lp-projects-new:hover {
+	color: var(--accent);
+	border-color: var(--accent);
+}
+.lp-projects-new:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+
+/* 空态：文案 + 再来一次新建入口（新用户第一眼就能开始） */
+.lp-projects-empty {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 4px 0 2px;
+}
+.lp-projects-empty .panel-empty {
+	margin: 0;
 }
 
 .projects-scroll {
@@ -2911,6 +2968,46 @@ body.lp-resizing .lp-sash.dragging::after {
 	font-size: 11px;
 	padding: 3px 7px;
 	outline: none;
+}
+
+/* ---- 新建项目：同一个选择器的居中弹窗形态 ---------------------------------
+   @COUPLED components/DirectoryPicker.tsx（placement="modal"）
+   底栏形态是贴着状态栏的浮层（position:fixed + right/bottom），弹窗形态要撤掉这个定位，
+   否则会飘到屏幕角上；.modal-backdrop 已负责居中。 */
+.cwd-picker-backdrop {
+	z-index: 300;
+}
+.cwd-picker.cwd-picker-modal {
+	position: relative;
+	right: auto;
+	bottom: auto;
+	width: min(560px, calc(100vw - 32px));
+	height: min(460px, calc(100vh - 96px));
+	padding: 14px 16px;
+	box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+}
+.cwd-picker-modal-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.cwd-picker-modal-title {
+	flex: 1;
+	min-width: 0;
+	font-size: 14px;
+	font-weight: 650;
+	color: var(--text);
+}
+.cwd-picker-hint {
+	margin: 0;
+	font-size: 11.5px;
+	line-height: 1.5;
+	color: var(--text-faint);
+}
+/* 新建输入行下的就地提示（名字已存在 / 创建失败）——比 transient notice 更难错过。 */
+.cwd-hint-warn {
+	margin-top: 4px;
+	color: var(--amber);
 }
 
 .status-queue {

@@ -95,6 +95,10 @@ export const en: EnDictionary = {
 	cwdNewFolder: "New folder",
 	cwdNewName: "Folder name",
 	cwdCreate: "Create",
+	cwdCreateAndOpen: "Create and open",
+	cwdCreateFailed: "Could not create the folder (the server notice explains why).",
+	cwdExistsHint: "That name already exists — it will just be opened.",
+	cwdOpenExisting: "Open",
 	cwdCancel: "Cancel",
 	cacheHit: "Cache hit",
 	cacheHitTip: "read {read} · write {write} · miss {miss} (of {input} input tokens)",
@@ -180,6 +184,12 @@ export const en: EnDictionary = {
 
 	/* left panel */
 	recentProjects: "Recent projects",
+	newProject: "New project",
+	newProjectTip:
+		"New project: browse to a parent folder → type a project name → create and open (or just select an existing folder)",
+	newProjectHint:
+		"A project is a working directory: browse to the parent folder, type a name and choose “Create and open”. For an existing folder just click “Select”.",
+	noProjects: "No projects yet",
 	runningConversations: "Running chats",
 	subagentBadge: "Subagent",
 	convErrorBadge: "Subagent failed: {error}",
