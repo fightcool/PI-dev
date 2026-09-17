@@ -182,7 +182,8 @@ export const en: EnDictionary = {
 	/* left panel */
 	recentProjects: "Recent projects",
 	newProject: "New project",
-	newProjectTip: "New project: browse to a parent folder → type a project name → create and open (or just select an existing folder)",
+	newProjectTip:
+		"New project: browse to a parent folder → type a project name → create and open (or just select an existing folder)",
 	newProjectHint:
 		"A project is a working directory: browse to the parent folder, type a name and choose “Create and open”. For an existing folder just click “Select”.",
 	noProjects: "No projects yet",

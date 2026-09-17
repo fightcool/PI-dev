@@ -184,7 +184,8 @@ export const zh = {
 	recentProjects: "最近项目",
 	newProject: "新建项目",
 	newProjectTip: "新建项目：选择父目录 → 输入项目名 → 创建并打开（也可直接选择已有目录）",
-	newProjectHint: "项目就是一个工作目录：先浏览到要放项目的父目录，输入项目名后「创建并打开」；已有目录直接点「选择」。",
+	newProjectHint:
+		"项目就是一个工作目录：先浏览到要放项目的父目录，输入项目名后「创建并打开」；已有目录直接点「选择」。",
 	noProjects: "还没有项目",
 	runningConversations: "运行的对话",
 	subagentBadge: "子代理",
