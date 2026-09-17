@@ -282,7 +282,7 @@ remark/rehype 栈本身（不是语法表）；再削要换 markdown 栈，收�
 
 | # | 问题 | 修复 | 落点 |
 | --- | --- | --- | --- |
-| 1 | 模型窗口配成 100–105 万，而 `compaction.reserveTokens` 是全局 16384 → 压缩阈值 ≈ 98.4 万，实际几乎不压缩 | **压缩阈值改为整窗口的 86%**，按当前活跃模型的窗口实时换算（`reserveTokens = 窗口 - floor(窗口×86%)`）；模型未知时回退 `settings.json` 的值 | `server/compaction-policy.ts`（新）、`server/agent-service.ts` `makeRuntimeFactory` |
+| 1 | 模型窗口配成 100–105 万，而 `compaction.reserveTokens` 是全局 16384 → 压缩阈值 ≈ 98.4 万，实际几乎不压缩 | **改为系统级上下文策略**：`有效窗口 = 真实窗口 × 95%`（默认，同 Codex），可用 `autoCompactTokenLimit` 一处收口到业界实跑预算（258400）；模型窗口保持真实值不改 | `server/context-policy.ts`（新）、`config/context-policy.example.json`、[CONTEXT-POLICY.md](CONTEXT-POLICY.md)、`server/agent-service.ts` `makeRuntimeFactory` |
 | 2 | `pi-context-prune` 把工具结果换成摘要，但上下文仍涨到 30–100 万，且它本身会打断前缀缓存 | **移除**：`lean` profile 不再加载任何托管扩展；线上/开发实例 `settings.json` 的 `packages` 已清空（各留 `.bak`） | `package.json`、`scripts/lib.mjs` PROFILES、`upstream/compatibility.json`、实例 settings |
 | 3 | 列表刷新恒为全量磁盘解析；运行期每条消息都失效缓存 → 每 800 ms 防抖推送都付一次 540 ms 的主线程 CPU（**修正：不是 540 ms 冻结**——实测最长单次阻塞 28 ms，平均延迟比噪声底高 3.5 ms；代价是抢 CPU 与功耗） | **签名 gate**：`(mtimeMs:size)` 未变则直接复用缓存（不受 TTL 限制）；**运行中会话豁免**：本端正在写的会话文件不触发重扫，改由每轮结束的 `broadcastPersistedNode()` 统一刷新一次 | `server/session-signature.ts`（新）、`server/session-history-cache.ts`、`server/agent-service.ts`（`message_end`/`entry_appended` 改为标记而不失效） |
 | 4 | `deploy/releases` 累积 12 个版本 / 7.0 GB（磁盘 69%） | 用仓库脚本清到「当前 + 回滚目标」两个版本 | `node scripts/release.mjs prune --apply`（已执行：移除 `f1c607278519`、`004d9f3444ec`，磁盘 69%→62%） |
@@ -297,7 +297,7 @@ remark/rehype 栈本身（不是语法表）；再削要换 markdown 栈，收�
 | 加 4 GB swap | **待操作者执行（只完成了一半）** | 2026-09-17 实测：`/swapfile` 已建 4 GB 但**未启用**（`swapon --show` 为空、`free` 的 Swap 为 0、权限 0644、`/etc/fstab` 无条目）；`vm.swappiness=10` 已生效。补齐或回退见 [DEV-HOST-TUNING.md](DEV-HOST-TUNING.md) §2 |
 | 重活加 `nice` | 已做 | `test:smoke` / `test:performance` / `test:channels:browser` 三个最重的脚本已加 `nice -n 10` |
 | **UI 与 agent 共用一个事件循环** | **另立提案** | 结构性问题，见 [EVENT-LOOP-SPLIT-PROPOSAL.md](EVENT-LOOP-SPLIT-PROPOSAL.md) |
-| 绝对上下文降到 20–26 万 | 未做 | 属性价比取舍（窗口配置在渠道/模型目录里），需用户决定；本轮的 86% 阈值是通用规则 |
+| 绝对上下文收口 | 机制已就绪，**值待装** | 策略层已实现（[CONTEXT-POLICY.md](CONTEXT-POLICY.md)）；把 `config/context-policy.example.json` 复制成 `<agentDir>/context-policy.json` 即生效（Codex 同族模型的实跑值 = 258400） |
 
 ### 7.4 怎么复测
 

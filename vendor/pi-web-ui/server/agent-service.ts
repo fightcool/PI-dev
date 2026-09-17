@@ -75,7 +75,7 @@ import type {
 } from "./plugins.js";
 import { syncPluginToolsIntoSession } from "./plugins.js";
 import { SettingsService } from "./settings-service.js";
-import { reserveTokensForContextWindow } from "./compaction-policy.js";
+import { makeContextPolicyLoader, resolveContextBudget, type ContextPolicy } from "./context-policy.js";
 import { scanSessionStamps, sessionsRootDir } from "./session-signature.js";
 import { GoalService } from "./goal-service.js";
 import { MarkerService } from "./marker-service.js";
@@ -754,6 +754,12 @@ function conversationTitle(session: AgentSession): string {
  */
 export function piSessionsRoot(): string | undefined {
 	return process.env.PI_CODING_AGENT_SESSION_DIR || undefined;
+}
+
+/** 活模型的标识（`provider/id`），供系统级上下文策略的 exemptModels 匹配；模型未就绪时 undefined。 */
+function modelKeyOf(model: { provider?: string; id?: string } | undefined): string | undefined {
+	if (!model?.id) return undefined;
+	return model.provider ? `${model.provider}/${model.id}` : model.id;
 }
 
 export class ClientSession {
@@ -1649,13 +1655,15 @@ export class ClientSession {
 		ownerId?: string,
 	): CreateAgentSessionRuntimeFactory {
 		return async ({ cwd: effectiveCwd, sessionManager }) => {
-			// 自动压缩阈值 = 整窗口的 86%（见 compaction-policy.ts）。SDK 的判据是
-			// contextTokens > contextWindow - reserveTokens，而 settings.json 里只有一份
-			// 全局 reserveTokens；本进程跨渠道/模型（窗口 20 万 ~ 105 万），必须按「当前
-			// 活跃模型」实时换算，否则 100 万窗口的会话要涨到 98.4 万才压缩。
+			// 自动压缩阈值走系统级策略（见 context-policy.ts，形状与默认值对齐 Codex）：
+			// SDK 判据是 contextTokens > contextWindow - reserveTokens，而 settings.json 里只有
+			// 一份全局 reserveTokens；本进程跨渠道/模型（窗口 20 万 ~ 105 万），必须按「当前
+			// 活跃模型」实时换算。默认无绝对上限 → 有效窗口 = 窗口 × 95%；想复现业界实跑预算
+			// 就在 <agentDir>/context-policy.json 写 autoCompactTokenLimit（Codex 同族模型 = 258400）。
 			// liveContextWindow 在下面 session 建好后指向该 session 的活 model——渠道热切换
 			// 换模型后无需重建 runtime，阈值自动跟着新窗口走。
-			let liveContextWindow: () => number | undefined = () => undefined;
+			let liveModel: () => { provider?: string; id?: string; contextWindow?: number } | undefined = () => undefined;
+			const loadContextPolicy = this.contextPolicyLoader();
 			const services = await createAgentSessionServices({
 				cwd: effectiveCwd,
 				modelRuntime: this.sharedModelRuntime,
@@ -1792,8 +1800,14 @@ export class ClientSession {
 				},
 			});
 			const baseReserveTokens = services.settingsManager.getCompactionReserveTokens.bind(services.settingsManager);
+			const baseKeepRecentTokens = services.settingsManager.getCompactionKeepRecentTokens.bind(services.settingsManager);
+			// 每次调用都重新让策略加载器取一次（内部按 mtime 缓存）——改 context-policy.json
+			// 无需重启，下一个请求就生效。
 			services.settingsManager.getCompactionReserveTokens = () =>
-				reserveTokensForContextWindow(liveContextWindow()) ?? baseReserveTokens();
+				resolveContextBudget(liveModel()?.contextWindow, loadContextPolicy(), modelKeyOf(liveModel()))?.reserveTokens ??
+				baseReserveTokens();
+			// 策略可选地接管「压缩后保留最近原文」的 token 预算（null = 跟随 settings.json）。
+			services.settingsManager.getCompactionKeepRecentTokens = () => loadContextPolicy().keepRecentTokens ?? baseKeepRecentTokens();
 			const created = await createAgentSessionFromServices({
 				services,
 				sessionManager,
@@ -1840,7 +1854,7 @@ export class ClientSession {
 				],
 			});
 			// 会话已建好：把阈值数据源接到这个 session 的活模型上（setModel 后读到的就是新窗口）。
-			liveContextWindow = () => created.session.model?.contextWindow;
+			liveModel = () => created.session.model;
 			// 终端工具开关从创建起就生效（工具始终注册进注册表，只调活跃集）。
 			this.applyToolGating(created.session);
 			return {
@@ -4840,6 +4854,14 @@ export class ClientSession {
 	 *  broadcastPersistedNode() → invalidateSessionInfos() 在每轮结束时统一刷新。
 	 *  @PERF 没有这道豁免时，运行期每 800ms 防抖推送都会触发一次 540ms 全量重扫。 */
 	private readonly liveSessionFiles = new Set<string>();
+
+	/** 系统级上下文策略（<agentDir>/context-policy.json，按 mtime 热生效）。
+	 *  懒建：agentDir 在构造函数里赋值，而字段初始化早于构造体，因此不能在字段里直接建。 */
+	private policyLoader?: () => ContextPolicy;
+	private contextPolicyLoader(): () => ContextPolicy {
+		this.policyLoader ??= makeContextPolicyLoader(this.agentDir);
+		return this.policyLoader;
+	}
 
 	/** 会话列表缓存：签名 gate（磁盘没变就不重新解析 jsonl）+ 运行中会话豁免。 */
 	private makeSessionCache(
