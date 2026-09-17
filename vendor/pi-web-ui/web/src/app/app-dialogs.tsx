@@ -1,6 +1,8 @@
 /* 🍞 @COUPLED web/src/components/SettingsModal.tsx, web/src/components/ModelConfigModal.tsx
  *   （内置服务商删除 = settings.hiddenBuiltinProviders 传入；
  *    自定义服务商的连接/密钥不再由这里下发 —— 见 ModelConfigModal 的 @WHY）
+ *   @WHY 2026-09-17：ModelConfigModal 的入口从模型下拉页脚改成「设置 → 渠道 → 内置服务商与密钥」：
+ *        渠道面板是服务商/密钥/模型的唯一入口，不再两处交叉。
  *   — 📖 docs/DEV-CON-PROPOSAL.md §6/§4 */
 import { lazy, Suspense } from "react";
 import type { AppConnection } from "./types";
@@ -72,14 +74,21 @@ export function AppDialogs({
 				/>
 			)}
 			{manageModelsOpen && (
-				<ModelConfigModal
-					send={send}
-					providers={chat.modelsConfig}
-					providerStatus={chat.providers}
-					providerKeys={chat.providerKeys}
-					hiddenProviders={chat.settings?.hiddenBuiltinProviders ?? []}
-					onClose={() => setManageModelsOpen(false)}
-				/>
+				/* 内置服务商与密钥（原「管理模型」）。
+				   @BUGFIX 2026-09-17：它现在由「设置 → 渠道」打开，而本节点在 JSX 里排在
+				   SettingsModal **之前**：两者的 .modal-backdrop 同为 z-index:300，同层级下后渲染的
+				   设置弹窗会盖在上面，把本弹窗的点击全部吃掉（看起来就是「点了没反应」）。
+				   不靠调整 JSX 顺序解决：它是「后开的弹窗在上」这个语义，显式抬高层级才可预测。 */
+				<div className="modal-layer-top">
+					<ModelConfigModal
+						send={send}
+						providers={chat.modelsConfig}
+						providerStatus={chat.providers}
+						providerKeys={chat.providerKeys}
+						hiddenProviders={chat.settings?.hiddenBuiltinProviders ?? []}
+						onClose={() => setManageModelsOpen(false)}
+					/>
+				</div>
 			)}
 			{settingsOpen && (
 				<SettingsModal
@@ -88,6 +97,7 @@ export function AppDialogs({
 					channelApi={channelApi}
 					terminal={terminal}
 					onSwitchToTerminal={onSwitchToTerminal}
+					onOpenProviderKeys={() => setManageModelsOpen(true)}
 					onClose={() => setSettingsOpen(false)}
 				/>
 			)}

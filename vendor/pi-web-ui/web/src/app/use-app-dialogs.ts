@@ -5,7 +5,9 @@ export function useAppDialogs() {
 	const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null);
 	// Setup modal: one-time prompt when the pi agent config is missing.
 	const [setupDismissed, setSetupDismissed] = useState(false);
-	// Custom model config panel (model dropdown → 管理模型).
+	// 内置服务商与密钥面板（原模型下拉页脚的「管理模型」）。
+	// @WHY 2026-09-17 模型下拉里的入口已撤除（两处改同一批东西）；现在只由
+	// 「设置 → 渠道 → 内置服务商与密钥」打开，所以不再导出 openManageModels。
 	const [manageModelsOpen, setManageModelsOpen] = useState(false);
 	// 用量明细面板：底栏令牌项和「渠道余额」chip 都能打开（状态提到 App 层，
 	// 否则输入框工具条里的 chip 无法触发底栏那张面板）。
@@ -42,7 +44,6 @@ export function useAppDialogs() {
 		return () => window.removeEventListener("keydown", onKey);
 	}, []);
 
-	const openManageModels = useCallback(() => setManageModelsOpen(true), []);
 	const openUsage = useCallback(() => setUsageOpen(true), []);
 	const onJumpDone = useCallback(() => setSearchJump(null), []);
 	const [searchVisited, setSearchVisited] = useState(false);
@@ -67,7 +68,6 @@ export function useAppDialogs() {
 		setGlobalSearchOpen,
 		searchJump,
 		setSearchJump,
-		openManageModels,
 		onJumpDone,
 		searchVisited,
 	};

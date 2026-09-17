@@ -72,8 +72,6 @@ interface ChatInputProps {
 	onNotice: (level: "info" | "warning" | "error", text: string) => void;
 	/** Called after a prompt is successfully sent — clears pending attachments. */
 	onSent: () => void;
-	/** Opens the custom-model config modal (mobile input row). */
-	onManageModels: () => void;
 	/** 打开用量明细面板（渠道余额 chip 点击；面板本体在 App 层底栏）。 */
 	onOpenUsage?: () => void;
 	/** Stored API keys per built-in provider (masked) — drives the picker's
@@ -107,7 +105,6 @@ export const ChatInput = memo(function ChatInput({
 	onAddLocalFiles,
 	onNotice,
 	onSent,
-	onManageModels,
 	onOpenUsage,
 	providerKeys,
 	channelState,
@@ -769,7 +766,6 @@ export const ChatInput = memo(function ChatInput({
 							models={models}
 							modelsLoading={modelsLoading}
 							send={send}
-							onManageModels={onManageModels}
 							onOpenUsage={onOpenUsage}
 							providerKeys={providerKeys}
 							channelState={channelState}

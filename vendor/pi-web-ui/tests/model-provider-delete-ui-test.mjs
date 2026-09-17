@@ -102,12 +102,14 @@ async function run() {
 		await page.waitForSelector("button.chip", { timeout: 30000 });
 		await page.waitForSelector(".chip-model", { timeout: 30000 });
 
-		// 模型下拉 → 管理模型
-		await page
-			.locator("button.chip", { has: page.locator(".chip-model") })
-			.first()
-			.click();
-		const manage = page.locator(".dd-footer button", { hasText: "管理模型" }).first();
+		// 设置 → 渠道 → 内置服务商与密钥
+		// @BUGFIX 2026-09-17：入口从模型下拉页脚的「⚙ 管理模型」改到了这里。
+		// 那个入口被撤除的原因：渠道/服务商/模型信息已全在「设置 → 渠道」，
+		// 两处改同一批东西是交叉管理的根源（见 ModelThinking.tsx 的 @WHY）。
+		await page.locator('[title*="设置"]').first().click();
+		await page.waitForSelector(".settings-modal", { timeout: 10000 });
+		await page.locator(".settings-tab", { hasText: "渠道" }).first().click();
+		const manage = page.locator(".chan-settings-head button", { hasText: "内置服务商与密钥" }).first();
 		await manage.waitFor({ timeout: 8000 });
 		await manage.click();
 		await page.waitForSelector(".model-modal", { timeout: 10000 });

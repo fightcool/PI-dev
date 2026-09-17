@@ -1179,6 +1179,17 @@ export const zh = {
 	settingsChannelsDesc:
 		"渠道 = 服务商 + 协议端点 + 命名凭据 + 账户引用的具名档案；在编码界面用它一次选定渠道/凭据/模型，密钥只在服务端解析。",
 	channelListEmpty: "尚未配置渠道（没有渠道时模型下拉保持原样）",
+	/* 内置服务商密钥：入口从模型下拉页脚搬到渠道面板（避免两处交叉管理）。 */
+	channelProviderKeysEntry: "内置服务商与密钥",
+	/* 模型信息（原「管理模型」唯一不可替代的能力）。 */
+	channelModelMetaTitle: "模型信息",
+	channelModelMetaHint:
+		"改的是模型目录（models.json）：显示名、上下文窗口、最大输出、是否支持推理/识图。价格与思考档位映射等手工字段不会被本表单覆盖。",
+	channelModelMetaEmpty: "该服务商在模型目录里没有模型（先在渠道里获取/添加模型）。",
+	channelModelMetaName: "显示名",
+	channelModelMetaContext: "上下文窗口",
+	channelModelMetaMaxTokens: "最大输出",
+	channelModelMetaUnset: "不设定",
 	channelAdd: "新增渠道",
 	channelEdit: "编辑",
 	channelEditTitle: "编辑渠道",
@@ -1298,6 +1309,11 @@ export const zh = {
 	channelAccountUsed: "已用",
 	channelBalanceDerived: "(matched from the current model)",
 	channelAccountUnknownBalance: "余额未知",
+	/* 模型选择器的渠道头：当前正在使用的渠道要能一眼看出（会话界面看不出用的是哪个渠道）。 */
+	channelInUse: "正在使用",
+	channelInUseTip: "当前对话正在使用这个渠道",
+	/* 配了账户查询但还没查过：如实说「未查询」，不要拿 0 或空白冒充余额。 */
+	channelAccountNotQueried: "余额未查询",
 	channelAccountDetailTitle: "渠道账户",
 	channelTopUp: "去充值",
 	channelAccountAutoRefresh: "每 2 分钟自动更新",

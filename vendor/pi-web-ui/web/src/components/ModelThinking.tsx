@@ -31,8 +31,6 @@ interface Props {
 	models: ModelInfo[];
 	modelsLoading: boolean;
 	send: (msg: ModelThinkingMsg) => boolean;
-	/** Opens the custom-model config modal (App-level state). */
-	onManageModels: () => void;
 	/** Stored API keys per built-in provider (masked) — a provider with several
 	 *  keys renders its model list once per key so clicking a model under a key
 	 *  switches the active key on the fly (no static model-list copy). */
@@ -59,7 +57,6 @@ export const ModelThinking = memo(function ModelThinking({
 	models,
 	modelsLoading,
 	send,
-	onManageModels,
 	providerKeys,
 	channelState,
 	channelBinding,
@@ -365,6 +362,7 @@ export const ModelThinking = memo(function ModelThinking({
 								models={sortedModels}
 								filter={modelFilter}
 								binding={channelBinding}
+								accounts={channelState?.accounts ?? []}
 								onSelect={(channelId, credentialKeyName, modelId) => {
 									const commandId = channelApi.selectChannel({ channelId, credentialKeyName, modelId });
 									if (commandId) setLastChannelCommand(commandId);
@@ -418,20 +416,13 @@ export const ModelThinking = memo(function ModelThinking({
 							})}
 					</div>
 				</div>
-				{/* Fixed footer — refresh / manage never scroll away. */}
+				{/* Fixed footer — refresh never scrolls away.
+				    @WHY 2026-09-17 撑掉了「⚙ 管理模型」：渠道/服务商/模型信息已经全在「设置 → 渠道」，
+				    这里再给一个入口就是两处改同一批东西（交叉管理的根源）。模型元数据的编辑
+				    已搬到渠道行的「模型信息」（ChannelModelMeta.tsx）。 */}
 				<div className="dd-footer">
 					<button type="button" className="dd-refresh" onClick={() => send({ type: "list_models" })}>
 						{t("refreshModels")}
-					</button>
-					<button
-						type="button"
-						className="dd-refresh"
-						onClick={() => {
-							setModelOpen(false);
-							onManageModels();
-						}}
-					>
-						{t("manageModels")}
 					</button>
 				</div>
 			</Dropdown>

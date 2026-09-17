@@ -7,6 +7,7 @@
  * Breadcrumbs (changing this affects):
  *   @COUPLED components/ModelThinking.tsx（余额 chip）, components/FooterBar.tsx（用量面板里的渠道账户区）,
  *            components/ChannelRow.tsx（设置页状态行，同用 accountStateView）,
+ *            components/ModelChannelPicker.tsx（模型选择器的渠道头：channelBalanceBrief）,
  *            server/dev-con/channel-state.ts（channel_state.accounts 的快照键 = accountRef || channel.id）
  *   📖 docs/DEV-CON-PROPOSAL.md §7（余额与用量分开、不猜测）
  *   @BUGFIX 2026-09-14：`stale` 有两种含义（数据超过 TTL 没刷新 / 最近一次查询失败），以前共用
@@ -189,6 +190,52 @@ export function accountStateView(status: UiAccountStatus | undefined): AccountSt
 		default:
 			return { labelKey: "channelAccountUnsupported", tone: "bad" };
 	}
+}
+
+/**
+ * 模型选择器里「一个渠道一行」的余额/用量摘要（渠道分组头用）。
+ * @CONTRACT
+ *   - **不发起任何查询**：只读已有快照。选择器一次要显示所有渠道，若在这里触发查询，
+ *     打开下拉就会同时打多个供应商接口（服务端还有 10 秒限频），所以未查询过就如实说「未查询」。
+ *   - 金额全部走 {@link formatAmount}，与余额 chip / 设置页渠道行是同一个数字（不再各写一遍）。
+ *   - 没配账户查询方式（{@link accountKindOf} 为空）→ `configured:false`，调用方应当什么都不显示，
+ *     **绝不能**把「没配」显示成余额 0（那会被读成「没钱了」）。
+ * @WHY 选择模型时「这个渠道还有多少钱、已经用了多少」是关键参考，原来要翻进设置页逐个看。
+ */
+export interface ChannelBalanceBrief {
+	/** 该渠道配了账户查询方式；false = 调用方不显示任何余额信息。 */
+	configured: boolean;
+	/** 查询过并拿到了数字（用于决定是显示数值还是「未查询」）。 */
+	queried: boolean;
+	/** 余额文本（已过 formatAmount；取不到时为空串）。 */
+	balance: string;
+	/** 已用文本（只认 quota.used；取不到为空串）。 */
+	used: string;
+	/** 状态档位（决定颜色）：ok / aging / bad / unknown。 */
+	tone: AccountStateView["tone"];
+	/** 状态标签的 i18n key（「正常 / 待刷新 / 已过期 / 不支持 / 查询中」）。 */
+	labelKey: AccountStateView["labelKey"];
+}
+
+export function channelBalanceBrief(
+	channel: UiChannelInfo,
+	accounts: UiAccountStatus[],
+): ChannelBalanceBrief {
+	if (accountKindOf(channel) === "")
+		return { configured: false, queried: false, balance: "", used: "", tone: "unknown", labelKey: "channelQuerying" };
+	// 服务端账户快照以 `accountRef || channel.id` 为键（channel-accounts.ts），此处同样回退。
+	const status = accounts.find((a) => a.accountRef === (channel.accountRef || channel.id));
+	const view = accountStateView(status);
+	const balance = formatAmount(status?.balance ?? status?.quota?.remaining, status?.unit);
+	const quota = status?.quota;
+	return {
+		configured: true,
+		queried: !!status,
+		balance,
+		used: formatAmount(quota?.used, quota?.unit || status?.unit),
+		tone: view.tone,
+		labelKey: view.labelKey,
+	};
 }
 
 /** 该快照是不是「最近一次查询失败」（自动刷新的失败计数与重试入口都看它）。 */

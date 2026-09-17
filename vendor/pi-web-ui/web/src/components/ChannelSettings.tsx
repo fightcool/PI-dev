@@ -7,6 +7,7 @@
  * Breadcrumbs (changing this affects):
  *   @COUPLED components/ChannelRow.tsx (列表行 + 账户状态), components/ChannelForm.tsx (新建/编辑表单),
  *            components/ChannelAccountModal.tsx (账户查询设置弹窗：列表行入口),
+ *            components/ChannelModelMeta.tsx (模型信息弹窗：原「管理模型」的能力，走 save_model_config),
  *            components/ChannelUsage.tsx (按渠道用量),
  *            components/SettingsModal.tsx (挂载为「渠道」分区 + 传 usageHistory),
  *            app/app-dialogs.tsx (channelApi),
@@ -24,7 +25,7 @@
  * ──────────────────────────────────────────────────
  */
 import { useEffect, useState } from "react";
-import { FiAlertTriangle, FiCheck, FiPlus, FiRefreshCw } from "react-icons/fi";
+import { FiAlertTriangle, FiCheck, FiKey, FiPlus, FiRefreshCw } from "react-icons/fi";
 import type { ChannelApi, ChannelCommandResult, ChannelStateMsg, UsageHistoryMsg } from "../use-chat";
 import type { ModelInfo, ProviderKeyInfo, UiChannelInfo, UiProviderConfig } from "../types";
 
@@ -42,6 +43,7 @@ import { channelAllowsModel } from "../channel-models";
 import { ChannelRow } from "./ChannelRow";
 import { ChannelAccountModal, formatAccountJson } from "./ChannelAccountModal";
 import { ChannelForm, channelDraftOf, type ChannelDraft } from "./ChannelForm";
+import { ChannelModelMeta } from "./ChannelModelMeta";
 import { ChannelUsage } from "./ChannelUsage";
 
 /** 回执对应的用户动作（回执协议本身不带 op 字段，由提交方记住）。 */
@@ -143,6 +145,8 @@ export function ChannelSettings({
 	usageHistory,
 	onFetchChannelModels,
 	onFetchProviderModels,
+	onSaveModelConfig,
+	onOpenProviderKeys,
 	channelModelsResult,
 	fetchProviderModelsResult,
 }: {
@@ -167,6 +171,10 @@ export function ChannelSettings({
 		authHeader?: boolean;
 		api?: string;
 	}) => void;
+	/** 保存模型信息（save_model_config）；缺省 = 不提供「模型信息」入口。 */
+	onSaveModelConfig?: (config: UiProviderConfig) => void;
+	/** 打开「内置服务商密钥」面板（原模型下拉页脚的入口）；缺省 = 不显示该按钮。 */
+	onOpenProviderKeys?: () => void;
 	/** 上一次探测结果（透传给表单，见 use-chat 的 channelModelsResult）。 */
 	channelModelsResult?: ChannelModelsResult | null;
 	/** 上一次 fetch_models 结果（新建服务商的候选模型）。 */
@@ -185,6 +193,8 @@ export function ChannelSettings({
 	const [draft, setDraft] = useState<ChannelDraft | null>(null);
 	/** 正在配账户查询的渠道（列表行入口）；null = 弹窗关着。 */
 	const [accountEditing, setAccountEditing] = useState<UiChannelInfo | null>(null);
+	/** 正在改模型信息的服务商配置（原「管理模型」的能力）；null = 弹窗关着。 */
+	const [metaEditing, setMetaEditing] = useState<UiProviderConfig | null>(null);
 	const [querying, setQuerying] = useState<{ commandId: string; channelId: string } | null>(null);
 	/** 本面板发起的最近一条命令：只展示它的回执（冲突时给刷新入口）。 */
 	const [lastCommand, setLastCommand] = useState<{ id: string; op: OpKey | null } | null>(null);
@@ -243,6 +253,13 @@ export function ChannelSettings({
 				<button type="button" className="chan-btn" onClick={() => channelApi.listChannels()}>
 					<FiRefreshCw /> {t("bgTaskRefresh")}
 				</button>
+				{/* 内置服务商的多密钥管理：原本只能从模型下拉页脚的「管理模型」进去。
+				    那个入口撑掉了（交叉管理），入口改挂在这里 —— 渠道就是服务商与密钥的唯一入口。 */}
+				{onOpenProviderKeys && (
+					<button type="button" className="chan-btn" onClick={onOpenProviderKeys}>
+						<FiKey /> {t("channelProviderKeysEntry")}
+					</button>
+				)}
 			</div>
 			{receipt && !receipt.ok && (
 				<div className={`chan-receipt${receipt.phase === "conflict" ? " conflict" : ""}`}>
@@ -265,27 +282,45 @@ export function ChannelSettings({
 				</div>
 			)}
 			{channels.length === 0 && <p className="set-hint">{t("channelListEmpty")}</p>}
-			{channels.map((c) => (
-				<ChannelRow
-					key={c.id}
-					channel={c}
-					account={accountFor(c)}
-					querying={querying?.channelId === c.id}
-					onToggle={() => issue(channelApi.saveChannel({ channel: saveInputOf(c, { enabled: !c.enabled }) }), "channelOpToggle")}
-					onQuery={() => {
-						const commandId = channelApi.queryChannelAccount(c.id);
-						if (commandId) setQuerying({ commandId, channelId: c.id });
-						// 账户结果由 AccountStatusLine 呈现，这里不覆盖成功回执（只展示失败原因）。
-						issue(commandId);
+			{channels.map((c) => {
+				// 模型信息只对 models.json 里的服务商有意义（内置服务商的目录由 pi 运行时拥有）。
+				const providerConfig = providerConfigs?.find((p) => p.providerId === c.providerId) ?? null;
+				return (
+					<ChannelRow
+						key={c.id}
+						channel={c}
+						account={accountFor(c)}
+						querying={querying?.channelId === c.id}
+						onToggle={() => issue(channelApi.saveChannel({ channel: saveInputOf(c, { enabled: !c.enabled }) }), "channelOpToggle")}
+						onQuery={() => {
+							const commandId = channelApi.queryChannelAccount(c.id);
+							if (commandId) setQuerying({ commandId, channelId: c.id });
+							// 账户结果由 AccountStatusLine 呈现，这里不覆盖成功回执（只展示失败原因）。
+							issue(commandId);
+						}}
+						onEdit={() => setDraft(channelDraftOf(c, c.providerId, providerConfig))}
+						onConfigureAccount={() => setAccountEditing(c)}
+						onEditModelMeta={providerConfig ? () => setMetaEditing(providerConfig) : null}
+						onDelete={() => {
+							if (!window.confirm(t("channelDeleteConfirm", { name: c.displayName }))) return;
+							issue(channelApi.deleteChannel(c.id), "channelOpDelete");
+						}}
+					/>
+				);
+			})}
+			{/* 模型信息（显示名/上下文/最大输出/推理/识图）：走 save_model_config，
+			    未管理的键（cost/thinkingLevelMap/headers）由服务端原样保留。 */}
+			{metaEditing && (
+				<ChannelModelMeta
+					key={metaEditing.providerId}
+					provider={metaEditing}
+					onSave={(config) => {
+						onSaveModelConfig?.(config);
+						setMetaEditing(null);
 					}}
-					onEdit={() => setDraft(channelDraftOf(c, c.providerId, providerConfigs?.find((p) => p.providerId === c.providerId) ?? null))}
-					onConfigureAccount={() => setAccountEditing(c)}
-					onDelete={() => {
-						if (!window.confirm(t("channelDeleteConfirm", { name: c.displayName }))) return;
-						issue(channelApi.deleteChannel(c.id), "channelOpDelete");
-					}}
+					onClose={() => setMetaEditing(null)}
 				/>
-			))}
+			)}
 			{/* 账户查询设置：列表行直入，保存就走同一条 channel_save（带全字段，见 @GOTCHA）。 */}
 			{accountEditing && (
 				<ChannelAccountModal

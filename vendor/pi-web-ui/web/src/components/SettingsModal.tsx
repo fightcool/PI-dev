@@ -137,6 +137,8 @@ interface SettingsModalProps {
 	terminal: SettingsTerminalBridge;
 	/** Switch the top-level view to the terminal (uninstall runs there). */
 	onSwitchToTerminal: () => void;
+	/** 打开「内置服务商与密钥」面板（原模型下拉页脚的「管理模型」，已改挂到渠道分区）。 */
+	onOpenProviderKeys: () => void;
 	onClose: () => void;
 }
 
@@ -240,7 +242,7 @@ type SettingsTab =
 	| "channels"
 	| "system";
 
-export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerminal, onClose }: SettingsModalProps) {
+export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerminal, onOpenProviderKeys, onClose }: SettingsModalProps) {
 	const t = useT();
 	const { locale } = useI18n();
 	// {{token}} 元数据文案键是动态的（promptTok_<token>[,_desc]），用 tt 跳过字面量类型。
@@ -2439,6 +2441,11 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 									onFetchProviderModels={({ reqId, baseUrl, apiKey, authHeader, api }) =>
 										send({ type: "fetch_models", reqId, baseUrl, apiKey, authHeader, api })
 									}
+									// 模型信息（原「管理模型」的能力）：服务端保留 cost/thinkingLevelMap 等未管理键。
+									onSaveModelConfig={(config) =>
+										send({ type: "save_model_config", providerId: config.providerId, config })
+									}
+									onOpenProviderKeys={onOpenProviderKeys}
 								/>
 							</div>
 						)}

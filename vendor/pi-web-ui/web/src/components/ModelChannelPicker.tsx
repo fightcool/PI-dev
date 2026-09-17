@@ -18,15 +18,38 @@
  *             匹配口径见 channel-models.ts（只剥第一个 provider 前缀）。
  *   @GOTCHA 渠道/凭据都由服务端按名称回传；本组件永不接收也不渲染密钥正文或掩码。
  *   @GOTCHA 老快照/夹具可能没有 models 字段：一律按「不限」处理，绝不因缺字段把模型全藏起来。
+ *   @CONTRACT 当前生效的渠道必须**整组高亮 + 置顶**：会话界面看不出在用哪个渠道，
+ *             而这里原本只在模型行上打 active，几个渠道头长得一模一样。
+ *   @CONTRACT 余额/已用只读已有快照（channelBalanceBrief），**打开下拉不触发任何查询**：
+ *             否则一次就把所有供应商接口都打一遍（服务端 10 秒限频会直接挡掉）。
+ *             未查询过就如实写「未查询」，没配账户查询的渠道那一格不显示——绝不拿 0 冒充。
  * ──────────────────────────────────────────────────
  */
 import { useState } from "react";
-import { FiRefreshCw, FiAlertTriangle, FiClock } from "react-icons/fi";
-import type { ModelInfo, UiChannelBinding, UiChannelBindingView, UiChannelInfo } from "../types";
+import { FiRefreshCw, FiAlertTriangle, FiClock, FiCheckCircle } from "react-icons/fi";
+import type { ModelInfo, UiAccountStatus, UiChannelBinding, UiChannelBindingView, UiChannelInfo } from "../types";
 import { useI18n, useT } from "../i18n";
 import { channelModels, hasModelWhitelist } from "../channel-models";
+import { channelBalanceBrief } from "../channel-account";
 import { DropdownItem } from "./Dropdown";
 import type { ChannelCommandResult } from "../use-chat";
+
+/**
+ * 渠道头上的余额/已用一行。
+ * @CONTRACT 只读快照（不发查询）；没配账户查询 → 什么都不渲染；配了但未查过 → 写「未查询」。
+ */
+function ChannelBalanceBits({ channel, accounts }: { channel: UiChannelInfo; accounts: UiAccountStatus[] }) {
+	const t = useT();
+	const brief = channelBalanceBrief(channel, accounts);
+	if (!brief.configured) return null;
+	if (!brief.queried) return <span className="chan-head-acct unknown">{t("channelAccountNotQueried")}</span>;
+	return (
+		<span className={`chan-head-acct ${brief.tone}`} title={t(brief.labelKey)}>
+			{brief.balance ? `${t("channelAccountBalance")} ${brief.balance}` : t("channelAccountUnknownBalance")}
+			{brief.used && ` · ${t("channelAccountKeyQuota")} ${brief.used}`}
+		</span>
+	);
+}
 
 /** 一个渠道的模型行（渠道分组 → 该渠道服务商下的模型）。 */
 function ChannelGroup({
@@ -36,6 +59,7 @@ function ChannelGroup({
 	effective,
 	pending,
 	keyName,
+	accounts,
 	onKeyChange,
 	onPick,
 }: {
@@ -45,6 +69,8 @@ function ChannelGroup({
 	effective: UiChannelBinding | null;
 	pending: UiChannelBinding | null;
 	keyName: string | null;
+	/** 账户快照（只读）：渠道头的余额/已用摘要。 */
+	accounts: UiAccountStatus[];
 	onKeyChange: (keyName: string | null) => void;
 	onPick: (credentialKeyName: string | null, model: ModelInfo) => void;
 }) {
@@ -59,16 +85,27 @@ function ChannelGroup({
 				: null;
 	// 白名单过滤在这里发生（空白名单 = 该服务商全部模型，行为与加白名单之前一致）。
 	const rows = channelModels(models, channel, filter);
+	// 当前正在使用的渠道：整组高亮（会话界面看不出用的是哪个渠道，见 @CONTRACT）。
+	const isCurrent = effective?.channelId === channel.id;
+	const isPendingChannel = !isCurrent && pending?.channelId === channel.id;
 	// 命名凭据子组：每个 key 一个 chip + 「跟随服务商当前密钥」(= credentialKeyName null)。
 	const keyOptions: { value: string | null; label: string; active?: boolean }[] = [
 		...channel.keys.map((k) => ({ value: k.keyName as string | null, label: k.keyName, active: k.active })),
 		{ value: null, label: t("channelFollowActiveKey") },
 	];
 	return (
-		<div className="chan-group">
-			<div className={`chan-head${reason ? " disabled" : ""}`}>
+		<div className={`chan-group${isCurrent ? " current" : ""}${isPendingChannel ? " pending" : ""}`}>
+			<div className={`chan-head${reason ? " disabled" : ""}${isCurrent ? " current" : ""}`}>
+				{/* 选中标记放在渠道名前：不依赖颜色就能分辨（无障碍）。 */}
+				{isCurrent && (
+					<span className="chan-head-current" title={t("channelInUseTip")}>
+						<FiCheckCircle /> {t("channelInUse")}
+					</span>
+				)}
 				<span className="chan-name">{channel.displayName}</span>
 				<span className="chan-provider">{channel.providerId}</span>
+				{/* 余额/已用：选模型时的重要参考（只读快照，不发查询）。 */}
+				{!reason && <ChannelBalanceBits channel={channel} accounts={accounts} />}
 				{/* 白名单生效时给出提示：否则用户会把「模型变少」当成加载失败（见 @CONTRACT）。 */}
 				{!reason && hasModelWhitelist(channel) && (
 					<span className="chan-whitelist">{t("channelModelsLimited", { n: (channel.models ?? []).length })}</span>
@@ -131,24 +168,32 @@ function ChannelGroup({
 /**
  * 渠道分组模型列表（放在 .dd-model-scroll 内）。
  * 凭据子组选择保存在本组件：渠道+key+模型一次提交，不存在「UI 已换、实际未换」。
+ * @CONTRACT 当前生效的渠道置顶（其余保持传入顺序，不重排）：渠道多了以后，「正在用哪个」
+ *   不应该需要滴到列表中间去找。
  */
 export function ChannelModelList({
 	channels,
 	models,
 	filter,
 	binding,
+	accounts = [],
 	onSelect,
 }: {
 	channels: UiChannelInfo[];
 	models: ModelInfo[];
 	filter: string;
 	binding: UiChannelBindingView | null | undefined;
+	/** 账户快照（channel_state.accounts）；缺省空数组 = 渠道头不显示余额。 */
+	accounts?: UiAccountStatus[];
 	onSelect: (channelId: string, credentialKeyName: string | null, modelId: string) => void;
 }) {
 	const [keySel, setKeySel] = useState<Record<string, string | null>>({});
+	const currentId = binding?.effective?.channelId ?? null;
+	// 只把当前渠道提到最前，其余顺序原样保留（稳定排序，不让列表每次打开都变样）。
+	const ordered = currentId ? [...channels].sort((a, b) => Number(b.id === currentId) - Number(a.id === currentId)) : channels;
 	return (
 		<>
-			{channels.map((c) => {
+			{ordered.map((c) => {
 				// 默认凭据 = 渠道档案里已配置的命名凭据；否则跟随服务商 active key。
 				const keyName = c.id in keySel ? keySel[c.id] : (c.credentialRef?.keyName ?? null);
 				return (
@@ -160,6 +205,7 @@ export function ChannelModelList({
 						effective={binding?.effective ?? null}
 						pending={binding?.pending ?? null}
 						keyName={keyName}
+						accounts={accounts}
 						onKeyChange={(next) => setKeySel((prev) => ({ ...prev, [c.id]: next }))}
 						onPick={(credentialKeyName, m) => onSelect(c.id, credentialKeyName, m.id)}
 					/>

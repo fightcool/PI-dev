@@ -7,6 +7,7 @@
  * Breadcrumbs (changing this affects):
  *   @COUPLED components/ChannelSettings.tsx（唯一挂载点：渠道列表行 + 账户弹窗挂载）,
  *            components/ChannelForm.tsx（编辑草稿）, components/ChannelAccountModal.tsx（账户查询设置弹窗）,
+ *            components/ChannelModelMeta.tsx（模型信息弹窗：原「管理模型」的能力）,
  *            channel-models.ts（白名单摘要口径）,
  *            server/dev-con/channel-accounts.ts（账户状态语义）, server/protocol.ts（UiAccountStatus）
  *   📖 docs/DEV-CON-PROPOSAL.md §6（设置页列表）, §7（余额/配额状态）
@@ -64,6 +65,7 @@ export function ChannelRow({
 	onToggle,
 	onQuery,
 	onConfigureAccount,
+	onEditModelMeta,
 	onEdit,
 	onDelete,
 }: {
@@ -74,6 +76,8 @@ export function ChannelRow({
 	onQuery: () => void;
 	/** 打开「账户查询设置」弹窗（由 ChannelSettings 挂载）。 */
 	onConfigureAccount: () => void;
+	/** 打开「模型信息」弹窗（显示名/上下文/推理/识图）；null = 该服务商不在 models.json 里，不给入口。 */
+	onEditModelMeta: (() => void) | null;
 	onEdit: () => void;
 	onDelete: () => void;
 }) {
@@ -108,6 +112,12 @@ export function ChannelRow({
 				<button type="button" className="chan-btn" onClick={onConfigureAccount}>
 					{t("channelAccountSectionTitle")}
 				</button>
+				{/* 模型信息（原「管理模型」的能力）：服务商不在 models.json 里时不给此入口。 */}
+				{onEditModelMeta && (
+					<button type="button" className="chan-btn" onClick={onEditModelMeta}>
+						{t("channelModelMetaTitle")}
+					</button>
+				)}
 				<button type="button" className="chan-btn" title={t("channelEdit")} onClick={onEdit}>
 					<FiEdit3 />
 				</button>

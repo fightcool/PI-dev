@@ -7557,6 +7557,13 @@ div.chead[role="button"]:focus-visible,
 	backdrop-filter: blur(3px);
 	padding: 24px;
 }
+/* 堆在其他弹窗之上的一层（弹窗里又打开弹窗）。
+   @WHY 同为 z-index:300 的两个 .modal-backdrop 只能靠 DOM 顺序定胜负，而 JSX 里的顺序
+   不一定等于「后打开」：设置弹窗里点开的面板会被设置弹窗盖住，点击全被拦下（看上去
+   就是「点了没反应」）。显式抬层才可预测。 */
+.modal-layer-top > .modal-backdrop {
+	z-index: 320;
+}
 
 .modal {
 	position: relative;
@@ -10738,6 +10745,18 @@ button.source-default-toggle {
 .chan-group {
 	padding: 2px 0 4px;
 }
+/* 当前正在使用的渠道：整组高亮 + 左侧竖条。
+   @WHY 之前只有模型行有 active 态，几个渠道头长得一模一样，会话界面也看不出在用哪个渠道。
+   @CONTRACT 不只依赖颜色：渠道名前还有「正在使用」文字标记（无障碍）。 */
+.chan-group.current {
+	background: color-mix(in srgb, var(--accent) 8%, transparent);
+	border-left: 2px solid var(--accent);
+	border-radius: 0 7px 7px 0;
+}
+/* 待生效（已受理但还没换过去）：中性提示，别和「正在使用」同色。 */
+.chan-group.pending {
+	border-left: 2px solid var(--border);
+}
 .chan-head {
 	display: flex;
 	align-items: baseline;
@@ -10746,6 +10765,44 @@ button.source-default-toggle {
 	font-size: 11.5px;
 	border-bottom: 1px solid var(--border-soft);
 	margin-bottom: 2px;
+}
+.chan-head.current {
+	border-bottom-color: color-mix(in srgb, var(--accent) 45%, var(--border-soft));
+}
+/* 「正在使用」标记：图标 + 文字，跟随强调色。 */
+.chan-head-current {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	flex: none;
+	font-size: 10.5px;
+	font-weight: 600;
+	color: var(--accent);
+}
+/* 渠道头上的余额/已用摘要：靠右，与白名单提示并排。
+   状态色沿用账户状态档位（ok/aging/bad/unknown），不自造第二套语义。 */
+.chan-head-acct {
+	margin-left: auto;
+	flex: none;
+	font-size: 10.5px;
+	font-family: var(--mono);
+	color: var(--text-dim);
+}
+.chan-head-acct.ok {
+	color: var(--green);
+}
+.chan-head-acct.aging {
+	color: var(--text-dim);
+}
+.chan-head-acct.bad {
+	color: var(--amber);
+}
+.chan-head-acct.unknown {
+	color: var(--text-faint);
+}
+/* 余额占了 margin-left:auto 时，白名单提示不再抢占右侧（否则两者会打架）。 */
+.chan-head-acct ~ .chan-whitelist {
+	margin-left: 0;
 }
 .chan-head.disabled {
 	opacity: 0.75;
@@ -11093,6 +11150,9 @@ button.source-default-toggle {
 .chan-settings-head {
 	display: flex;
 	gap: 6px;
+	/* @BUGFIX 2026-09-17：这一行现在有三个按钮（新增渠道 / 刷新 / 内置服务商与密钥）。
+	   没有 flex-wrap 时窄容器里会横向溢出，最后一个按钮被上方标题遮住、点不到。 */
+	flex-wrap: wrap;
 }
 .chan-btn {
 	display: inline-flex;
@@ -11386,6 +11446,34 @@ button.source-default-toggle {
 .chan-whitelist {
 	margin-left: auto;
 }
+/* ---- 渠道：模型信息编辑（ChannelModelMeta，原「管理模型」的能力）----
+   一个模型一张卡：id 只读在顶，下面是显示名 / 两个数值 / 两个开关。 */
+.chan-meta-row {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 10px;
+	border: 1px solid var(--border-soft);
+	border-radius: 9px;
+}
+.chan-meta-id {
+	font-family: var(--mono);
+	font-size: 11.5px;
+	color: var(--text-dim);
+	word-break: break-all;
+}
+/* 上下文/最大输出并排；窄屏自动换行。 */
+.chan-meta-nums {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+	gap: 8px;
+}
+.chan-meta-flags {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+}
+
 /* ---- 渠道：统一弹窗壳（ChannelDialog）+ 可折叠分区（ChannelSection） ----
    @WHY 渠道编辑原来是内联长列：点列表最上面那行的「编辑」，表单出现在**所有行的下方**，
    还要滚到底才找得到保存。改成弹窗后与账户查询设置同一种交互（ESC/遮罩/焦点圈/固定页脚）。 */
@@ -11494,6 +11582,35 @@ button.source-default-toggle {
 	gap: 10px;
 	padding: 10px;
 }
+/* ---- 渠道：模型信息（ChannelModelMeta）—— 一个模型一张卡片 ----
+   @WHY 原「管理模型」的能力搬过来，挂在渠道行上；一行平铺五个字段会挤成一团，
+   改成「id 在上、名字一行、两个数值并排、开关在底」的卡片。 */
+.chan-meta-row {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 10px;
+	border: 1px solid var(--border-soft);
+	border-radius: 9px;
+}
+.chan-meta-id {
+	font-family: var(--mono);
+	font-size: 11.5px;
+	color: var(--text-dim);
+	word-break: break-all;
+}
+/* 上下文窗口 / 最大输出：并排两列，窄屏自动折成一列。 */
+.chan-meta-nums {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+	gap: 8px;
+}
+.chan-meta-flags {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+}
+
 /* ---- 渠道：账户查询设置（独立弹窗 + 一份声明式 JSON） ---- */
 /* 复用 .modal-backdrop / .modal 壳，只放宽宽度：一份完整模板要能不折行看完。 */
 .chan-account-modal {
