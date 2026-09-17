@@ -120,6 +120,7 @@ vendor/pi-web-ui/web/src/perf-trace.ts, tests/performance/README.md -->
 | 2026-09-11 11:26 | `79525237ee6c` → **`91c6e5809f06`**（PR #23/#24/#25 合并提交，protocol 22） | 成功，同样走 `switch-production-release.mjs`；中断约 6 秒；候选内实跑 root 174/174、vitest 668/668、smoke 41/41、check:publish PASS、typecheck ✓；回滚目标 `79525237ee6c` 保留 |
 | 2026-09-11 12:21 | `91c6e5809f06` → **`d803f7e8d45c`**（PR #26/#27，protocol 22） | 成功；候选内实跑 root 174/174、vitest 673/673、smoke 41/41、provenance 与线上版本结构逐项一致；中断约 6 秒；回滚目标 `91c6e5809f06` 保留 |
 | 2026-09-11 11:33 | 工具卡默认折叠的线上生效验证 | 读线上存档确认：存量 `__settings__.settings.toolsWrap=true`（旧默认被整对象落盘盖进去的）在 `UI_DEFAULTS_VERSION` 迁移下被忽略，**有效值 = false**；`uiDefaultsVersion` 缺失即为待迁移记录 |
+| 2026-09-17 04:55 | `e60b9541ed30` → **`97b5e7c66c25`**（PR #50，10 提交，protocol 30） | 成功。候选内实跑：冒烟 **44/44**（244s）、渠道 e2e 全通过（channel isolation: all checks passed）、`check:publish` PASS、产物内含 `dist/server/context-policy.js` 且 `build-info` 提交与 `release-source` 一致。切换日志：`drained (active=0)` → 停 PM2 → 原子换 current → 启动 → `DEPLOYED pid=1792519`。验收：新 PID 出现且旧 PID 1539514 已退出（PM2→PM2 的关键判据）、`current` = `build-info` = `release-source`、公网 ALPN `h2` + `/` 200 + 入口 js 200、匿名 `/api/file` 与匿名 `/ws` 均 **401**、swap 4G 与 nginx 1.18 仍在。**上下文策略已在新进程内读盘生效**（用线上产物代码 + 线上配置 + 真实 models.json 复算：触发点 258400，reserve 741600）。中断约 4 秒；回滚目标 `e60b9541ed30` 保留（prune 删 0 个）。前端入口 hash 未变（本批无 `web/src` 改动） |
 
 ### P1-8 落地后的实测（隔离探针，含契约断言）
 
