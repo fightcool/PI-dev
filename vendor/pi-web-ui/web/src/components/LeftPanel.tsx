@@ -514,7 +514,8 @@ export const LeftPanel = memo(function LeftPanel({
 											)}
 											{renaming === s.path ? null : (
 												<span className="session-sub">
-													{active ? t("current") : t("messageCount", { n: s.messageCount })}
+													{/* 高亮已经表示「当前」，这里统一显示消息数，不再用「当前」占位 */}
+													{t("messageCount", { n: s.messageCount })}
 													{s.source === "tui" && (
 														<span className="session-src" title={t("tuiTip")}>
 															TUI
