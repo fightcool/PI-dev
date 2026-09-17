@@ -7,7 +7,6 @@
   "resolvedExtensions": {
     "piWebUi": "0.70.0",
     "piLens": "4.1.5",
-    "piContextPrune": "1.4.0",
     "piMcpAdapter": "2.32.1",
     "piSubagents": "0.66.0",
     "piCodexConversion": "3.0.31",

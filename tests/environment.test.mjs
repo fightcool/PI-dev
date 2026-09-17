@@ -32,7 +32,9 @@ const config = () => ({
 
 test("defaults use a dedicated project, service port and lean profile", () => {
   assert.equal(validateConfig(config()).root, ROOT);
-  assert.deepEqual(PROFILES.lean, ["pi-context-prune"]);
+  // lean 不再加载任何托管扩展（pi-context-prune 已移除，见 docs/PERF-SESSION-LOAD.md）。
+  assert.deepEqual(PROFILES.lean, []);
+  assert.ok(!PROFILES.full.includes("pi-context-prune"));
   assert.ok(PROFILES.full.includes("pi-lens"));
 });
 for (const invalid of [

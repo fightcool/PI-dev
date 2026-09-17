@@ -1,0 +1,7 @@
+{
+  "autoCompactTokenLimit": 258400,
+  "effectiveWindowPercent": 95,
+  "keepRecentTokens": null,
+  "exemptModels": [],
+  "note": "对齐 Codex 对同族模型的实跑预算（272000 x 95%）；见 docs/CONTEXT-POLICY.md"
+}

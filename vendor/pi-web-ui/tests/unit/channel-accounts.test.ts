@@ -407,9 +407,58 @@ describe("account queries", () => {
 		expect(failed.status).toBe("stale");
 		expect(failed.balance).toBe(ok.balance);
 		expect(failed.staleSince).toBe(ok.checkedAt);
+		// stale 的两种含义必须分得开：这里最近一次查询真的失败了。
+		expect(failed.staleReason).toBe("failed");
 		const snapshot = r.snapshot()[0];
 		expect(snapshot.status).toBe("stale");
 		expect(snapshot.balance).toBe(ok.balance);
+		expect(snapshot.staleReason).toBe("failed");
+		expect(snapshot.staleSince).toBe(ok.checkedAt);
+	});
+
+	it("marks an expired cache entry as ttl-stale (no error) instead of a failure", async () => {
+		const base = await stub((_url, res) => {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ data: { quota: 100 } }));
+		});
+		const clock = { value: 1_000 };
+		const r = registry({ cacheTtlMs: 60_000, now: () => clock.value });
+		const ok = await r.query(channel(base), () => "sk");
+		expect(ok.status).toBe("ok");
+		// TTL 内：还是 ok，没有 stale 标记（checkedAt 是适配器给的真实时间，用绝对刻度对齐）。
+		clock.value = (ok.checkedAt ?? 0) + 30_000;
+		expect(r.snapshot()[0]).toMatchObject({ status: "ok", staleReason: undefined, staleSince: undefined });
+		// 超过 TTL：数据旧了 —— staleReason 必须是 ttl，而不是「查询失败」。
+		clock.value = (ok.checkedAt ?? 0) + 61_000;
+		const stale = r.snapshot()[0];
+		expect(stale.status).toBe("stale");
+		expect(stale.staleReason).toBe("ttl");
+		expect(stale.staleSince).toBe(ok.checkedAt);
+		expect(stale.error).toBeUndefined();
+		expect(stale.balance).toBe(ok.balance);
+	});
+
+	it("keeps the original success time when failures repeat", async () => {
+		let healthy = true;
+		const base = await stub((_url, res) => {
+			if (!healthy) {
+				res.writeHead(503);
+				res.end("nope");
+				return;
+			}
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ data: { quota: 500 } }));
+		});
+		const clock = { value: 1_000 };
+		const r = registry({ now: () => clock.value });
+		const ok = await r.query(channel(base), () => "sk");
+		healthy = false;
+		for (let i = 0; i < 3; i++) {
+			clock.value += 1_000;
+			await r.query(channel(base), () => "sk");
+		}
+		// staleSince 不能被后一次失败往前推：它表示「这份余额是什么时候拿到的」。
+		expect(r.snapshot()[0].staleSince).toBe(ok.checkedAt);
 	});
 });
 

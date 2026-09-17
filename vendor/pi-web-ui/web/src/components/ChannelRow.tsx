@@ -19,19 +19,16 @@
 import { FiEdit3, FiTrash2 } from "react-icons/fi";
 import type { UiAccountStatus, UiChannelInfo } from "../types";
 import { useT } from "../i18n";
+import { accountStateView } from "../channel-account";
 
-/** 账户状态行：failed/stale 明确标注，绝不把缺失值当成 0。 */
+/** 账户状态行：failed/stale 明确标注，绝不把缺失值当成 0。
+ * @CONTRACT stale 也分两种：ttl（数据旧了，渠道没报错）与 failed（上次查询失败），
+ *   标签与说明由 accountStateView 统一给（与余额 chip / 用量详情同口径）。 */
 export function AccountStatusLine({ status }: { status: UiAccountStatus | undefined }) {
 	const t = useT();
 	if (!status) return null;
-	const label =
-		status.status === "ok"
-			? t("channelAccountOk")
-			: status.status === "stale"
-				? t("channelAccountStale")
-				: status.status === "failed"
-					? t("channelAccountFailed")
-					: t("channelAccountUnsupported");
+	const state = accountStateView(status);
+	const label = t(state.labelKey);
 	const bits: string[] = [];
 	if (status.balance !== undefined)
 		bits.push(`${t("channelAccountBalance")} ${status.balance}${status.unit ? ` ${status.unit}` : ""}`);
@@ -40,11 +37,11 @@ export function AccountStatusLine({ status }: { status: UiAccountStatus | undefi
 		bits.push(`${t("channelAccountKeyQuota")} ${q.remaining ?? q.limit ?? q.used ?? "—"}${q.unit ? ` ${q.unit}` : ""}`);
 	if (status.checkedAt !== undefined)
 		bits.push(`${t("channelAccountCheckedAt")} ${new Date(status.checkedAt).toLocaleString()}`);
-	if (status.status === "stale") bits.push(t("channelAccountStaleTip"));
+	if (state.tipKey) bits.push(t(state.tipKey));
 	// 多币种明细（如 DeepSeek 官方可能同时给 CNY/USD）：逐条展示，不做无依据相加。
 	const breakdown = status.breakdown ?? [];
 	return (
-		<span className={`chan-acct ${status.status}`} title={status.error}>
+		<span className={`chan-acct ${status.status} ${state.tone}`} title={status.error}>
 			{label}
 			{bits.length > 0 && ` · ${bits.join(" · ")}`}
 			{breakdown.length > 1 &&

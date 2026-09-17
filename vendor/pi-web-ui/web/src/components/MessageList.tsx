@@ -17,6 +17,7 @@ import { CollapsedMessage } from "./CollapsedMessage";
 import { SearchBar } from "./SearchBar";
 import { EmptyTemplateCards } from "./PromptTemplates";
 import { useT } from "../i18n";
+import { useChromeCollapse } from "../app/use-chrome-collapse";
 import { useRowWindow } from "./message-list/useRowWindow";
 import { useBottomScroll } from "./message-list/useBottomScroll";
 import { MessageListStatus } from "./message-list/MessageListStatus";
@@ -81,6 +82,15 @@ export function MessageList({
 	const t = useT();
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const bottom = useBottomScroll(scrollRef);
+	/**
+	 * 把「是否停在最底部」上报给 App（底部控件自动收缩要用：往上翻历史 → 收起底栏/工具条；
+	 * 滑回最底部 → 展开）。上报是幂等的，重复上报不会重置用户的一次性手动展开。
+	 */
+	const chrome = useChromeCollapse();
+	const reportAtBottom = chrome?.setAtBottom;
+	useEffect(() => {
+		reportAtBottom?.(bottom.stickBottom);
+	}, [reportAtBottom, bottom.stickBottom]);
 	const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 	const [searchOpen, setSearchOpen] = useState(false);
 	const messages = useMemo(

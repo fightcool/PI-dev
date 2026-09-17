@@ -159,6 +159,14 @@ export interface UiAccountStatus {
 	quota?: { used?: number; limit?: number; remaining?: number; unit?: string };
 	checkedAt?: number;
 	staleSince?: number;
+	/**
+	 * `status === "stale"` 的原因，界面据此说实话：
+	 *   - `ttl`    = 缓存里的数据超过 TTL 没更新（渠道本身没有报错，只是数字旧了）；
+	 *   - `failed` = 最近一次查询失败，下面是上次成功的结果。
+	 * @WHY 两者以前共用同一个 stale：用户看到「已过期」无法判断是不是渠道坏了，
+	 *   而「只是没刷新」和「查询失败」该给的引导（刷新 vs 重试）完全不同。
+	 */
+	staleReason?: "ttl" | "failed";
 	error?: string;
 	/** 多币种明细（如 DeepSeek 官方可能同时返回 CNY/USD）：逐条展示，不做无依据相加。 */
 	breakdown?: { currency: string; total: number; granted: number; toppedUp: number }[];

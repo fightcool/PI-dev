@@ -6736,6 +6736,62 @@ div.chead[role="button"]:focus-visible,
 	padding-bottom: 2px;
 }
 
+/* ---- 底部控件自动收敛（chrome-collapse.ts / app/use-chrome-collapse.tsx）--------
+ * 输出流式刷屏或用户在翻历史时，把「非对话内容」压到最小：目标条 / 输入工具条
+ * （附件·模板·模型·思考强度）/ 快捷短语 / 状态栏全部收起，只留一行的输入框 + 展开 + 发送。
+ * 展开的触发：滑到会话最底部、聚焦输入框、或点输入框里的⌃展开。
+ * PC 与移动端同一套规则（用户要求多端一致）。 */
+.statusbar.chrome-collapsed {
+	height: 0;
+	min-height: 0;
+	padding: 0;
+	border-top: 0;
+}
+/* @GOTCHA 不能对 .statusbar 用 display:none：用量详情面板是它的子节点（position:fixed），
+ *   整块隐藏会把面板一起藏掉。只收起内部的状态项，浮层保持可见。 */
+.statusbar.chrome-collapsed > *:not(.usage-panel):not(.status-cwd-backdrop):not(.cwd-picker) {
+	display: none;
+}
+.inputbar.chrome-collapsed {
+	padding-top: 6px;
+	padding-bottom: 8px;
+}
+.inputbar.chrome-collapsed .inputbox {
+	padding: 6px 8px;
+	gap: 4px;
+	/* 收起时输入框压成**一行**：输入区与「展开 + 发送」同行（移动端能从 ~112px 收到 ~62px）。
+	 * @GOTCHA textarea 默认 flex:none（JS 用 inline height 做自适应高度，flex-basis:0% 会让它长不高）；
+	 *   这里只给它 flex:1 1 auto（basis 仍为 auto）+ min-width:0，自适应高度不受影响。 */
+	flex-direction: row;
+	align-items: flex-end;
+}
+.inputbar.chrome-collapsed .inputbox textarea {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+.inputbar.chrome-collapsed .composer-tools {
+	padding-top: 0;
+	border-top: 0;
+	justify-content: flex-end;
+}
+.inputbar.chrome-collapsed .composer-tools-left,
+.inputbar.chrome-collapsed .quick-row {
+	display: none;
+}
+.inputbar.chrome-collapsed .attach-row {
+	margin-bottom: 2px;
+}
+/* 收起时的出口按钮：比普通圆形按钮更瘦，不抢发送键的位置。 */
+.inputbox .btn.chrome-toggle {
+	width: 30px;
+	height: 30px;
+	border-radius: 999px;
+	color: var(--text-dim);
+}
+.inputbox .btn.chrome-toggle:hover {
+	color: var(--text);
+}
+
 /* Base button — shared by dialogs / modals / preview. */
 .btn {
 	display: inline-flex;
@@ -10826,6 +10882,10 @@ button.source-default-toggle {
 .chan-balance.unsupported .chan-balance-dot {
 	background: var(--amber);
 }
+/* 只是数字旧了（TTL 到期）不是报警：中性色，别用警示色追着用户跑。 */
+.chan-balance.stale.aging .chan-balance-dot {
+	background: var(--text-faint);
+}
 .chan-balance .chan-balance-value {
 	font-variant-numeric: tabular-nums;
 }
@@ -11110,6 +11170,11 @@ button.source-default-toggle {
 }
 .chan-acct.stale {
 	color: var(--amber);
+}
+/* TTL 到期（数据旧了，渠道没报错）用中性色；失败保留旧值才用警示色（见 channel-account.ts）。 */
+.chan-acct.stale.ttl,
+.chan-acct.aging {
+	color: var(--text-dim);
 }
 .chan-acct.failed,
 .chan-acct.unsupported {

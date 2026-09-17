@@ -13,6 +13,9 @@
  *             openai-gateway 账单接口。其他未配置渠道返回 unsupported，绝不用 Token 反推余额。
  *   @BUGFIX 2026-09-12: CCQTCC/cctq 旧渠道没有 extra.account，导致同一 CCTQ 服务无法查询；
  *             fix: 按 provider baseUrl 统一派生内存配置，且不改写持久化渠道。
+ *   @BUGFIX 2026-09-14: stale 以前把「数据过了缓存 TTL」与「最近一次查询失败」混为一谈，
+ *             界面只能统一显示「已过期」——渠道一直在正常说话也被报警。现在快照带
+ *             staleReason（ttl/failed），失败保留的旧值 staleSince 保留**最早那次成功**时间。
  *   @WHY 账户查询是外部网络 IO：必须同时具备有界超时、响应体上限、禁止重定向、
  *        限频与缓存；任一缺失都会让「查询故障不阻塞编码」变成空话（§4/§9）。
  *   @GOTCHA fetch 的 redirect 默认 follow 会把 Authorization 带到别的来源；
@@ -48,6 +51,8 @@ export interface AccountQueryResult {
 	checkedAt?: number;
 	/** 上次成功时间（失败时用于显示「旧值」）。 */
 	staleSince?: number;
+	/** `status="stale"` 的原因（ttl = 数据旧了；failed = 最近一次查询失败）。 */
+	staleReason?: "ttl" | "failed";
 	error?: string;
 	/** 多币种明细（供应商可能返回多个币种）：逐条展示，不做无依据相加。 */
 	breakdown?: { currency: string; total: number; granted: number; toppedUp: number }[];
@@ -510,23 +515,33 @@ export class AccountRegistry {
 		this.fetchImpl = opts.fetchImpl ?? fetch;
 	}
 
-	/** 缓存快照（UI 只读；失败保留旧值并标 stale）。 */
+	/** 缓存快照（UI 只读）。
+	 * @CONTRACT 两种 stale 必须分得开（见 protocol.UiAccountStatus.staleReason）：
+	 *   - 缓存里的成功结果超过 TTL → `ttl`（渠道没有报错，只是数字旧了）；
+	 *   - 缓存里本身就是「失败保留的旧值」→ `failed`（带上失败原因）。
+	 *   `staleSince` 两种都给：界面要能算出「这份数据是多久以前的」。
+	 */
 	snapshot(): UiAccountStatus[] {
 		const now = this.now();
-		return [...this.cache.values()].map((entry) => ({
-			accountRef: entry.accountRef,
-			kind: entry.kind,
-			status: entry.status === "ok" && entry.checkedAt !== undefined && now - entry.checkedAt > this.cacheTtlMs ? "stale" : entry.status,
-			scope: entry.scope,
-			unit: entry.unit,
-			balance: entry.balance,
-			quota: entry.quota,
-			checkedAt: entry.checkedAt,
-			staleSince: entry.status === "failed" ? entry.staleSince : undefined,
-			error: entry.error,
-			breakdown: entry.breakdown,
-			note: entry.note,
-		}));
+		return [...this.cache.values()].map((entry) => {
+			const ttlExpired = entry.checkedAt !== undefined && now - entry.checkedAt > this.cacheTtlMs;
+			const stale = entry.status === "ok" ? (ttlExpired ? ("ttl" as const) : undefined) : entry.staleReason;
+			return {
+				accountRef: entry.accountRef,
+				kind: entry.kind,
+				status: stale ? "stale" : entry.status,
+				scope: entry.scope,
+				unit: entry.unit,
+				balance: entry.balance,
+				quota: entry.quota,
+				checkedAt: entry.checkedAt,
+				staleSince: stale ? (entry.staleSince ?? entry.checkedAt) : undefined,
+				staleReason: stale,
+				error: entry.error,
+				breakdown: entry.breakdown,
+				note: entry.note,
+			};
+		});
 	}
 
 	/** 查询某渠道的账户状态；resolveKey 由服务层提供（密钥不出服务端）。
@@ -589,7 +604,14 @@ export class AccountRegistry {
 			};
 			if (merged.status !== "ok" && previous?.balance !== undefined) {
 				// 失败保留上次结果与旧时间，绝不显示为 0。
-				return this.remember({ ...previous, status: "stale", staleSince: previous.checkedAt, error: merged.error ?? "查询失败" });
+				// staleSince 要保留**最早那次成功**的时间（连续失败时不能被后面的失败往前推）。
+				return this.remember({
+					...previous,
+					status: "stale",
+					staleReason: "failed",
+					staleSince: previous.staleSince ?? previous.checkedAt,
+					error: merged.error ?? "查询失败",
+				});
 			}
 			return this.remember(merged);
 		} finally {

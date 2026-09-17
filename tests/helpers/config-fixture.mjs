@@ -13,8 +13,8 @@ import { spawnSync } from "node:child_process";
 const sourceRoot = fileURLToPath(new URL("../../", import.meta.url));
 export const SYNTHETIC_TOKEN = "0123456789abcdef".repeat(4);
 export const MANAGED = {
-  lean: ["pi-context-prune"],
-  full: ["pi-context-prune", "pi-lens", "pi-subagents", "pi-mcp-adapter",
+  lean: [],
+  full: ["pi-lens", "pi-subagents", "pi-mcp-adapter",
     "@howaboua/pi-codex-conversion", "@narumitw/pi-goal"],
 };
 export const managedPackages = (root, profile = "lean") =>

@@ -922,6 +922,10 @@ export const en: EnDictionary = {
 	toolsWrap: "Show full tools",
 	toolsWrapDesc:
 		"On: tool calls always expand fully showing arguments and output; Off: collapsed by default, click to expand",
+	chromeAutoCollapse: "Auto-collapse bottom controls",
+	chromeAutoCollapseDesc:
+		"On: while output streams or when you scroll up through the conversation, the goal bar, composer toolbar and status bar collapse so the transcript gets the vertical space (scroll to the very bottom, tap the input, or press ⌃ to restore); Off: keep them as they are",
+	chromeExpandTip: "Expand the composer toolbar and status bar",
 	wideChat: "Wide chat column",
 	wideChatDesc: "On: the center column fills the width (useful on ultrawide monitors); Off: keep the 860px cap",
 	projectTitle: "Show project name in title",
@@ -1232,6 +1236,9 @@ export const en: EnDictionary = {
 	channelAccountFailed: "Query failed",
 	channelAccountStale: "Stale",
 	channelAccountStaleTip: "The latest query failed; below is the last successful result (time = last success)",
+	channelAccountStaleTtl: "Needs refresh",
+	channelAccountStaleTtlTip: "Last successful query was over 5 minutes ago, so the number may be out of date (the channel itself reported no error)",
+	channelAccountRefresh: "Refresh",
 	channelAccountGranted: "granted",
 	channelAccountToppedUp: "topped up",
 	channelAccountCheckedAt: "Checked at",
@@ -1336,7 +1343,7 @@ export const en: EnDictionary = {
 	channelAccountTopupHint: "Shown next to the usage-detail title so topping up is one click away.",
 	channelAccountAutoRefresh: "Refreshes every 2 minutes",
 	channelAccountRetry: "Retry",
-	channelAccountRetryHint: "Auto-refresh stopped after 3 failed attempts; press Retry to resume.",
+	channelAccountRetryHint: "After 3 failed attempts auto-refresh drops to once every 10 minutes; press Retry to resume the normal cadence.",
 	channelErrorQuota:
 		"This channel's gateway account is out of credit (gateway reports {remaining} left). Top up that account or switch to another channel.",
 	channelErrorQuotaNoRemaining:

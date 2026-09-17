@@ -80,6 +80,6 @@ npm run pm2 -- restart
 
 根 [Dockerfile](Dockerfile) 与 [compose.yaml](compose.yaml) 复用相同应用构建，显式持久化配置、Web数据、Agent数据和工作区。`docker compose up -d --build` 是创建/更新实例的部署动作，应在确认端口及数据目录后由操作者执行。容器的Python为Debian工具链，不承诺与宿主机uv虚拟环境相同；需要项目专用运行时的workspace应单独配置镜像。
 
-默认 `lean` 只加载pi-context-prune；`full` 增加已锁定扩展。切换profile用 `node scripts/configure.mjs --profile=full`，然后在维护窗口重启所管理的实例。Claude Code、Codex CLI 等外部原生 Agent 的配置与资源管理不在项目集成范围内。
+默认 `lean` 不加载任何额外 Pi 扩展（仅 SDK 自带能力）；`full` 增加已锁定扩展。切换profile用 `node scripts/configure.mjs --profile=full`，然后在维护窗口重启所管理的实例。Claude Code、Codex CLI 等外部原生 Agent 的配置与资源管理不在项目集成范围内。
 
 本仓库公开。Pi能执行运行用户权限下的命令，workspace选择不是安全沙箱；公开入口须有认证及正确的WebSocket反代。依赖安装执行第三方生命周期脚本，版本升级需要锁文件差异与回归验证。Python3.10的后续迁移应独立安排。

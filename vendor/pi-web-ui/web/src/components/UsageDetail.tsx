@@ -13,11 +13,12 @@
  *   @GOTCHA 缓存读写只来自 SDK 的真实字段；为 0 时整行不渲染（不显示误导性的 0）。
  * ──────────────────────────────────────────────────
  */
+import { useEffect, useRef } from "react";
 import type { UiChannelInfo, UiState, UiUsageAttribution,
 	UiUsageRecord } from "../types";
 import { useT, type Translate } from "../i18n";
 import type { UsageHistoryMsg, UsageHistoryWindow } from "../use-chat";
-import { balanceTextOf, type ChannelAccountView, topupUrlOf, usedTextOf } from "../channel-account";
+import { accountStateView, BALANCE_REFRESH_MS, balanceTextOf, isAccountQueryFailed, type ChannelAccountView, topupUrlOf, usedTextOf } from "../channel-account";
 import { UsageHistory } from "./UsageHistory";
 
 /** 令牌数的人类可读格式（FooterBar 与明细表共用）。 */
@@ -86,10 +87,23 @@ export function UsageDetail({
 	channels: UiChannelInfo[];
 	/** 当前对话对应渠道的账户快照（chip 点开就看这里；主界面只说「余额未知」，细节在这里）。 */
 	accountView?: ChannelAccountView;
-	/** 手动重试余额查询（连续失败后自动刷新会停，重试即恢复）。 */
+	/** 手动重试余额查询（连续失败后自动刷新会降级成慢速探测，点一下立即恢复）。 */
 	onRetryAccount?: (channelId: string) => void;
 }) {
 	const t = useT();
+	// 面板一打开就补一次（手机后台会把定时器挂起，回到前台不一定有 visibilitychange）。
+	// @CONTRACT 只在「打开这一刻」查一次：快照后面再变也不会反复打接口（服务端另有 10 秒限频）。
+	const accountChannel = accountView?.channel ?? null;
+	const accountStatus = accountView?.account;
+	const accountFreshRef = useRef(false);
+	accountFreshRef.current =
+		accountStatus?.status === "ok" && Date.now() - (accountStatus.checkedAt ?? 0) < BALANCE_REFRESH_MS;
+	const queryAccountRef = useRef(onRetryAccount);
+	queryAccountRef.current = onRetryAccount;
+	useEffect(() => {
+		if (!accountChannel || accountFreshRef.current) return;
+		queryAccountRef.current?.(accountChannel.id);
+	}, [accountChannel]);
 	const request = tokens.request ?? tokens;
 	const run = tokens.run ?? tokens;
 	const rows = attribution ?? [];
@@ -118,6 +132,7 @@ export function UsageDetail({
 	/**
 	 * 渠道账户区：主界面只说「余额未知」，一切细节（余额/已用/查询时间/说明/原始报错）在这里。
 	 * @CONTRACT 面向用户：标签用人话，说明用一句话；技术原因只在失败时附在后面。
+	 *   stale 要分出两种：数据只是旧了（中性，给「刷新」）vs 上次查询失败（警示，给「重试」）。
 	 */
 	const accountSection = (() => {
 		const view = accountView;
@@ -125,22 +140,13 @@ export function UsageDetail({
 		if (!view || !channel) return null;
 		const status = view.account;
 		const used = usedTextOf(status);
-		const stateLabel =
-			status?.status === "ok"
-				? t("channelAccountOk")
-				: status?.status === "stale"
-					? t("channelAccountStale")
-					: status?.status === "failed"
-						? t("channelAccountFailed")
-						: status?.status === "unsupported"
-							? t("channelAccountUnsupported")
-							: t("channelQuerying");
-		return (
+		const state = accountStateView(status);
+		const failed = isAccountQueryFailed(status);		return (
 			<div className="usage-account">
 				<div className="usage-account-head">
 					{t("channelAccountDetailTitle")}
 					<span className="usage-account-channel">{channel.displayName}</span>
-					<span className={`chan-acct ${status?.status ?? "unknown"}`}>{stateLabel}</span>
+					<span className={`chan-acct ${status?.status ?? "unknown"} ${state.tone}`}>{t(state.labelKey)}</span>
 				</div>
 				<div className="usage-account-rows">
 					<span>
@@ -159,6 +165,7 @@ export function UsageDetail({
 					{/* 让用户知道这是自动更新的，不用自己反复点。 */}
 					<span className="usage-account-auto">{t("channelAccountAutoRefresh")}</span>
 				</div>
+				{state.tipKey && <div className="usage-account-note">{t(state.tipKey)}</div>}
 				{(status?.note || status?.error) && (
 					<div className="usage-account-note">
 						{status?.note}
@@ -167,14 +174,14 @@ export function UsageDetail({
 					</div>
 				)}
 				{view.derived && <div className="usage-account-note">{t("channelBalanceDerived")}</div>}
-				{status?.status === "failed" && (
+				{/* 手动入口：失败时叫「重试」（自动刷新已降级），成功/数据旧时叫「刷新」——
+				   不给用户一个「只能等自动刷新」的死角。 */}
+				{(failed || state.tone === "aging" || state.tone === "unknown") && onRetryAccount && (
 					<div className="usage-account-retry">
-						<span>{t("channelAccountRetryHint")}</span>
-						{onRetryAccount && (
-							<button type="button" className="usage-topup" onClick={() => onRetryAccount(channel.id)}>
-								{t("channelAccountRetry")}
-							</button>
-						)}
+						{failed && <span>{t("channelAccountRetryHint")}</span>}
+						<button type="button" className="usage-topup" onClick={() => onRetryAccount(channel.id)}>
+							{failed ? t("channelAccountRetry") : t("channelAccountRefresh")}
+						</button>
 					</div>
 				)}
 			</div>
