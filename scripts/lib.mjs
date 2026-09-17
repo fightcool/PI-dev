@@ -12,8 +12,11 @@ export const CONFIG_DIR = resolve(process.env.PI_DEV_CONFIG_DIR || join(homedir(
 export const CONFIG_FILE = join(CONFIG_DIR, "runtime.json");
 export const SERVICE = "pi-web-ui-dev.service";
 export const PROFILES = {
-  lean: ["pi-context-prune"],
-  full: ["pi-context-prune", "pi-lens", "pi-subagents", "pi-mcp-adapter",
+  // lean（默认）：不加载任何额外 Pi 扩展，只用 SDK 自带能力。pi-context-prune 已在
+  // 2026-09-16 移除——它把工具结果换成摘要，但实测上下文仍涨到中位 30 万 / 峰值 106 万
+  // token，收益不抵「前缀缓存被打断 + 摘要本身进上下文」的代价，见 docs/PERF-SESSION-LOAD.md。
+  lean: [],
+  full: ["pi-lens", "pi-subagents", "pi-mcp-adapter",
     "@howaboua/pi-codex-conversion", "@narumitw/pi-goal"],
 };
 

@@ -121,3 +121,81 @@ describe("SessionHistoryCache", () => {
 		expect(load).toHaveBeenCalledTimes(1);
 	});
 });
+
+describe("SessionHistoryCache signature gate", () => {
+	const stamps = (entries: Record<string, string>) => new Map(Object.entries(entries));
+
+	it("磁盘签名未变时不受 TTL 限制：一次解析后只付 stat 的钱", async () => {
+		const load = vi.fn().mockResolvedValue(infos("a"));
+		const signature = vi.fn().mockResolvedValue(stamps({ "/s/a.jsonl": "1:10" }));
+		// TTL = 0：没有签名 gate 时每次 get 都会重扫
+		const cache = new SessionHistoryCache(load, 0, Date.now, 8, { signature });
+		expect(await cache.get("/a")).toEqual(infos("a"));
+		await cache.get("/a");
+		await cache.get("/a");
+		expect(load).toHaveBeenCalledTimes(1);
+		expect(signature.mock.calls.length).toBeGreaterThanOrEqual(3);
+	});
+
+	it("非本端文件的签名变化会重扫", async () => {
+		let current = stamps({ "/s/a.jsonl": "1:10" });
+		const load = vi.fn().mockResolvedValue(infos("a"));
+		const cache = new SessionHistoryCache(load, 0, Date.now, 8, { signature: async () => current });
+		await cache.get("/a");
+		current = stamps({ "/s/a.jsonl": "2:20" });
+		await cache.get("/a");
+		expect(load).toHaveBeenCalledTimes(2);
+	});
+
+	it("本端正在写的会话（adopted）签名变化不触发重扫", async () => {
+		let current = stamps({ "/s/a.jsonl": "1:10", "/s/b.jsonl": "1:10" });
+		const load = vi.fn().mockResolvedValue(infos("a"));
+		const cache = new SessionHistoryCache(load, 0, Date.now, 8, {
+			signature: async () => current,
+			adopted: (path) => path === "/s/a.jsonl",
+		});
+		await cache.get("/a");
+		// 流式对话追加字节：签名变了，但它是本端在写
+		current = stamps({ "/s/a.jsonl": "2:999", "/s/b.jsonl": "1:10" });
+		await cache.get("/a");
+		await cache.get("/a");
+		expect(load).toHaveBeenCalledTimes(1);
+	});
+
+	it("本端文件之外的变化仍然重扫（adopted 不能屏蔽别人的改动）", async () => {
+		let current = stamps({ "/s/a.jsonl": "1:10", "/s/b.jsonl": "1:10" });
+		const load = vi.fn().mockResolvedValue(infos("a"));
+		const cache = new SessionHistoryCache(load, 0, Date.now, 8, {
+			signature: async () => current,
+			adopted: (path) => path === "/s/a.jsonl",
+		});
+		await cache.get("/a");
+		current = stamps({ "/s/a.jsonl": "2:999", "/s/b.jsonl": "5:50" });
+		await cache.get("/a");
+		expect(load).toHaveBeenCalledTimes(2);
+	});
+
+	it("新增或删除会话文件都触发重扫", async () => {
+		let current = stamps({ "/s/a.jsonl": "1:10" });
+		const load = vi.fn().mockResolvedValue(infos("a"));
+		const cache = new SessionHistoryCache(load, 0, Date.now, 8, { signature: async () => current });
+		await cache.get("/a");
+		current = stamps({ "/s/a.jsonl": "1:10", "/s/new.jsonl": "1:1" });
+		await cache.get("/a");
+		current = stamps({});
+		await cache.get("/a");
+		expect(load).toHaveBeenCalledTimes(3);
+	});
+
+	it("签名抛错不能影响列表（回退到 TTL 新鲜度）", async () => {
+		const load = vi.fn().mockResolvedValue(infos("a"));
+		const cache = new SessionHistoryCache(load, 3000, Date.now, 8, {
+			signature: async () => {
+				throw new Error("readdir failed");
+			},
+		});
+		expect(await cache.get("/a")).toEqual(infos("a"));
+		expect(await cache.get("/a")).toEqual(infos("a"));
+		expect(load).toHaveBeenCalledTimes(1);
+	});
+});

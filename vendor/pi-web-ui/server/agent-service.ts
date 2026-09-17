@@ -75,6 +75,8 @@ import type {
 } from "./plugins.js";
 import { syncPluginToolsIntoSession } from "./plugins.js";
 import { SettingsService } from "./settings-service.js";
+import { reserveTokensForContextWindow } from "./compaction-policy.js";
+import { scanSessionStamps, sessionsRootDir } from "./session-signature.js";
 import { GoalService } from "./goal-service.js";
 import { MarkerService } from "./marker-service.js";
 import { SlashCommandsService, parseSlash } from "./slash-commands.js";
@@ -1647,6 +1649,13 @@ export class ClientSession {
 		ownerId?: string,
 	): CreateAgentSessionRuntimeFactory {
 		return async ({ cwd: effectiveCwd, sessionManager }) => {
+			// 自动压缩阈值 = 整窗口的 86%（见 compaction-policy.ts）。SDK 的判据是
+			// contextTokens > contextWindow - reserveTokens，而 settings.json 里只有一份
+			// 全局 reserveTokens；本进程跨渠道/模型（窗口 20 万 ~ 105 万），必须按「当前
+			// 活跃模型」实时换算，否则 100 万窗口的会话要涨到 98.4 万才压缩。
+			// liveContextWindow 在下面 session 建好后指向该 session 的活 model——渠道热切换
+			// 换模型后无需重建 runtime，阈值自动跟着新窗口走。
+			let liveContextWindow: () => number | undefined = () => undefined;
 			const services = await createAgentSessionServices({
 				cwd: effectiveCwd,
 				modelRuntime: this.sharedModelRuntime,
@@ -1782,6 +1791,9 @@ export class ClientSession {
 					],
 				},
 			});
+			const baseReserveTokens = services.settingsManager.getCompactionReserveTokens.bind(services.settingsManager);
+			services.settingsManager.getCompactionReserveTokens = () =>
+				reserveTokensForContextWindow(liveContextWindow()) ?? baseReserveTokens();
 			const created = await createAgentSessionFromServices({
 				services,
 				sessionManager,
@@ -1827,6 +1839,8 @@ export class ClientSession {
 					makeAskUserQuestionTool(this),
 				],
 			});
+			// 会话已建好：把阈值数据源接到这个 session 的活模型上（setModel 后读到的就是新窗口）。
+			liveContextWindow = () => created.session.model?.contextWindow;
 			// 终端工具开关从创建起就生效（工具始终注册进注册表，只调活跃集）。
 			this.applyToolGating(created.session);
 			return {
@@ -2927,7 +2941,8 @@ export class ClientSession {
 				break;
 			}
 			case "entry_appended": {
-				this.invalidateSessionInfos(conv.cwd);
+				// 本端自己的写入：标记后不重扫列表（agent_end 统一刷新）。
+				this.markLiveSessionFile(conv);
 				// SDK 仅在扩展 appendEntry 时发 entry_appended（entry 恒为 custom），
 				// assistant 消息不会走这里——气泡级解析见 case "message_end"。
 				this.scheduleSessionsRefresh();
@@ -2935,7 +2950,8 @@ export class ClientSession {
 				break;
 			}
 			case "message_end": {
-				this.invalidateSessionInfos(conv.cwd);
+				// 同上：流式期间每条消息都失效缓存会让列表刷新反复付 540ms 全量解析。
+				this.markLiveSessionFile(conv);
 				// 轨迹事件：一条消息定稿（user/assistant 都收；custom display:false
 				// 的 serializeMessage 返回 null 时跳过）。
 				try {
@@ -4811,18 +4827,43 @@ export class ClientSession {
 	 *  client that never opened the panel never pays the disk scan. */
 	private sessionsRequested = false;
 
-	private readonly sessionHistory = new SessionHistoryCache((cwd) => SessionManager.list(cwd, piSessionsRoot()));
+	private readonly sessionHistory = this.makeSessionCache((cwd) => SessionManager.list(cwd, piSessionsRoot()));
 
 	/** Every-project scan for the project switcher. `listAll` parses EVERY persisted
-	 *  transcript (measured ~0.25s for 9 files / 16 MiB) and used to run uncached on
-	 *  every attach and every cwd change.
-	 *  @PERF TTL 30s：会话增删/改名/跨端完成都会经 invalidateSessionInfos 立即失效，
-	 *  这个窗口只用来吸收同一次交互内的重复请求；值取长是因为列表本身只用于项目切换
-	 *  器（粗粒度），而每次重算都是全量磁盘解析。 */
-	private readonly projectSessions = new SessionHistoryCache(
-		() => SessionManager.listAll(piSessionsRoot()),
-		30_000,
-	);
+	 *  transcript (measured 2026-09-16: 960ms across 25 files / 75MB) and used to run
+	 *  uncached on every attach, every cwd change and every list invalidation.
+	 *  @PERF TTL 30s 只作为签名不可用时的兜底；正常情况下由签名 gate 决定是否重扫。 */
+	private readonly projectSessions = this.makeSessionCache(() => SessionManager.listAll(piSessionsRoot()), 30_000);
+
+	/** 本进程正在写入的会话文件（运行中的对话）。签名 gate 对它们豁免：这些写入的
+	 *  事实源就是内存里的会话本身，没必要为它们重扫整份磁盘；由 agent_end 的
+	 *  broadcastPersistedNode() → invalidateSessionInfos() 在每轮结束时统一刷新。
+	 *  @PERF 没有这道豁免时，运行期每 800ms 防抖推送都会触发一次 540ms 全量重扫。 */
+	private readonly liveSessionFiles = new Set<string>();
+
+	/** 会话列表缓存：签名 gate（磁盘没变就不重新解析 jsonl）+ 运行中会话豁免。 */
+	private makeSessionCache(
+		load: (cwd: string) => Promise<SessionInfo[]>,
+		ttlMs?: number,
+	): SessionHistoryCache {
+		return new SessionHistoryCache(load, ttlMs, undefined, undefined, {
+			signature: () => scanSessionStamps(sessionsRootDir(this.agentDir)),
+			adopted: (path) => this.liveSessionFiles.has(path),
+		});
+	}
+
+	/** 记住「这个会话文件是本端在写」；其磁盘签名变化不再触发列表重扫。 */
+	private markLiveSessionFile(conv: Conversation): void {
+		const file = conv.session.sessionFile;
+		if (file) this.liveSessionFiles.add(file);
+	}
+
+	/** 本轮结束：文件不再是「本端正在写」，让下一次列表刷新真正重扫一次（拿到最新
+	 *  messageCount / modified）。 */
+	private endLiveSessionFile(conv: Conversation): void {
+		const file = conv.session.sessionFile;
+		if (file) this.liveSessionFiles.delete(file);
+	}
 
 	/** Fixed key: the all-projects scan ignores cwd (see projectSessions). */
 	private static readonly ALL_PROJECTS_KEY = "*";
@@ -4891,6 +4932,8 @@ export class ClientSession {
 		try {
 			const file = conv.session.sessionFile;
 			if (!file) return;
+			// 本轮已结束：撤销「本端在写」豁免，让随后的列表刷新真正重扫一次。
+			this.endLiveSessionFile(conv);
 			this.invalidateSessionInfos(conv.cwd);
 			// 记下自己刚写入的签名，避免下次接入时把自己的写当作「其他端的更新」重载。
 			this.updateDiskSig(conv);
