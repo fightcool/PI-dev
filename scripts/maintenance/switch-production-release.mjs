@@ -37,6 +37,15 @@ const PM2_UNIT = "pi-dev-pm2.service";
 const NEW_ID = process.argv[2];
 if (!NEW_ID || !/^[a-f0-9]{12}$/.test(NEW_ID)) throw new Error("Usage: switch-production-release.mjs <releaseId(12hex)>");
 const WAIT_MIN = Number(process.env.SWITCH_WAIT_MINUTES ?? 45);
+/**
+ * 排空时容许的「剩余活跃对话/待处理消息」条数（默认 0 = 必须全部排空）。
+ * @WHY Agent 自己发起切换时必然死锁：切换等对话结束，而**那个对话就是正在跑切换的这一轮**，
+ *   它要等切换返回才能结束 → 互等到 45 分钟超时。设为 1 表示「容许发起这次切换的那一轮
+ *   自己还在跑」，其余对话仍照常等待排空。
+ * @GOTCHA 这是**有代价的**：被容许的那一轮会在进程重启时断开（前端重连后继续，但该轮的
+ *   流式输出会中断）。所以默认 0，只有 Agent 自助部署这种明知代价的场景才显式传 1。
+ */
+const DRAIN_TOLERATE = Number(process.env.SWITCH_DRAIN_TOLERATE ?? 0);
 /** @MAGIC 切换成功后默认额外保留 2 个已构建版本（除 current 与显式保护的 OLD_ID 之外）。
  *  之前没有任何回收环节，12 次上线就堆了 19 GiB；保留 2 个既够应急回退，也有界。 */
 const KEEP_RELEASES = Number(process.env.PI_DEV_SWITCH_KEEP ?? 2);
@@ -180,12 +189,12 @@ try {
 	for (; quiesced; ) {
 		const s = await status();
 		if (!s?.ok) throw new Error("instance became unavailable while draining");
-		if (s.activeConversations === 0 && s.pendingMessages === 0) break;
+		if (s.activeConversations <= DRAIN_TOLERATE && s.pendingMessages <= DRAIN_TOLERATE) break;
 		// （循环条件见上：quiesced=false 时直接跳过排空）
 		if (Date.now() > deadline) throw new Error(`active work did not drain within ${WAIT_MIN} minutes`);
 		await delay(2_000);
 	}
-	log("drained (active=0 pending=0)");
+	log(`drained (active<=${DRAIN_TOLERATE} pending<=${DRAIN_TOLERATE})`);
 	phase("drained", { from: OLD_ID });
 
 	// 退役旧入口：先停，再 disable（否则任何 daemon-reload 都会把它拉回来）。
