@@ -302,6 +302,11 @@ export class ChannelService {
 		return this.enqueue(() => queryAccountCommand(this.configPort(), input));
 	}
 
+	/** 渠道展示名（告警文案用）；渠道不存在时返回 null。只读内存态，无 IO。 */
+	channelDisplayName(channelId: string): string | null {
+		return this.state.catalog.channels.find((c) => c.id === channelId)?.displayName ?? null;
+	}
+
 	// -- validation ------------------------------------------------------------
 
 	/** 一次选择是否与渠道档案自洽（渠道/端点/模型服务商/命名凭据存在性）。 */
