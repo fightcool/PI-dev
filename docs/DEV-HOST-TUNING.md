@@ -6,7 +6,16 @@
 
 宿主机参考配置：4 vCPU / 7.9 GB / 40 GB / **无 swap**（`C202609091757997`）。
 
-> ⚠️ **先读第 3 节**：这两项在本机都踩过坑（nginx 1.18 不支持 `http2 on;`、`sed -i` 会把 symlink 换成普通文件、多行粘贴只执行了一部分导致 `/swapfile` 建出来但没启用）。照第 3 节的「逐步执行 + 每步验证」走。
+> ⚠️ **推荐直接用脚本**（幂等、默认 dry-run、每步自带验证，避免手工粘贴只执行一半）：
+>
+> ```bash
+> cd /home/dev/PI-dev
+> bash scripts/maintenance/tune-dev-host.sh            # dry-run：只打印将做什么 + 改动 diff
+> sudo bash scripts/maintenance/tune-dev-host.sh --apply   # 应用（改 nginx 配置 + 加 swap）
+> sudo bash scripts/maintenance/tune-dev-host.sh --undo-swap  # 只想收回那 4GB swap 文件
+> ```
+>
+> 下面 §1/§2 是它的逐步解释版（脚本就是按这个实现的）；第 3 节是本机实测踩过的坑。
 
 ---
 
