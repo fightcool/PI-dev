@@ -1115,9 +1115,6 @@ export const en: EnDictionary = {
 	usageHistoryUnpriced: "({n} unpriced)",
 	usageHistoryWindowNote: "Windows are cut in UTC; costs are estimates (not the provider's charge) and unpriced requests add no cost",
 	usageHistoryTruncated: "Too many records; the result is incomplete",
-	usageHistoryFailed: "({n} failed)",
-	usageFailedTip:
-		"These requests billed input but produced no usable answer (gateway/transport drop, e.g. a stream that ended early): about {tokens} input tokens wasted. Requests you cancelled yourself are not counted.",
 	usageHistorySkipped: "Skipped {n} damaged records",
 	usageGroup_channel: "By channel",
 	usageGroup_project: "By project",
@@ -1209,9 +1206,6 @@ export const en: EnDictionary = {
 	usageColInput: "Input",
 	usageColOutput: "Output",
 	usageColTotal: "Total",
-	usageColCacheHitRate: "Cache hit rate",
-	usageCacheHitRateTip:
-		"Share of input tokens served from the prompt cache in this window (token-weighted): cacheRead ÷ (miss + cacheRead + cache write). Shows “—” when there are no tokens to compute over, never 0%.",
 	usageColCost: "Cost",
 	settingsChannels: "Channels",
 	settingsChannelsDesc:

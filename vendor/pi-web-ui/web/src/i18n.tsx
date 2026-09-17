@@ -1090,9 +1090,6 @@ export const zh = {
 	usageHistoryUnpriced: "（{n} 条未知价格）",
 	usageHistoryWindowNote: "按 UTC 切分时间窗；金额为估算（非供应商扣费），未知价格不计入费用",
 	usageHistoryTruncated: "记录过多，结果不完整",
-	usageHistoryFailed: "（{n} 条失败）",
-	usageFailedTip:
-		"这些请求已计费输入却没能产出可用回答（网关/传输中断，例如 stream 半途断开），合计白烧约 {tokens} 输入 token；用户主动中止不计入。",
 	usageHistorySkipped: "跳过 {n} 条损坏记录",
 	usageGroup_channel: "按渠道",
 	usageGroup_project: "按项目",
@@ -1183,9 +1180,6 @@ export const zh = {
 	usageColInput: "输入",
 	usageColOutput: "输出",
 	usageColTotal: "合计",
-	usageColCacheHitRate: "缓存命中率",
-	usageCacheHitRateTip:
-		"时间窗内命中缓存的输入 token 占比（token 加权）：cacheRead ÷（未命中 + cacheRead + 新建缓存）。没有 token 可算时显示「—」，不按 0% 计。",
 	usageColCost: "费用",
 	settingsChannels: "渠道",
 	settingsChannelsDesc:
