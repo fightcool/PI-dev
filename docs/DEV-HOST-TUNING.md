@@ -53,9 +53,10 @@ sudo /usr/sbin/nginx -t
 # 4) 通过后热加载（不中断连接）
 sudo systemctl reload nginx
 
-# 5) 验证：必须是 HTTP/2
+# 5) 验证：必须是 HTTP/2（curl < 8 在 HTTPS 下默认不提供 h2 ALPN，**不加 --http2 会得到假阴性**）
 curl -skI --http2 https://127.0.0.1/ -H 'Host: dev.ftai.cc' | head -1   # 期望 HTTP/2 200
-curl -s -o /dev/null -w '%{http_version}\n' https://dev.ftai.cc/         # 期望 2
+curl -s -o /dev/null -w '%{http_version}\n' --http2 https://dev.ftai.cc/  # 期望 2
+curl -skv --http2 https://127.0.0.1/ -H 'Host: dev.ftai.cc' -o /dev/null 2>&1 | grep -i 'ALPN, server accepted'  # 期望 h2
 ```
 
 回退：`sudo cp /root/pi-dev-nginx-<日期>.bak /etc/nginx/sites-available/pi-dev-dev.ftai.cc && sudo nginx -t && sudo systemctl reload nginx`。
@@ -110,6 +111,7 @@ sudo sysctl --system      # 完成后 cat /proc/sys/vm/swappiness 应为 10
 | `/swapfile` 存在但 `swapon --show` 为空 | 多行粘贴只执行了第一行（`fallocate` 成功、后面没跑） | 逐行执行 + 每步验证（§2 的注释即验收点） |
 | `nginx -t` 以普通用户跑报 `Permission denied`（证书/日志） | `dev` 无 sudo，读不到 `/etc/letsencrypt` 与 `/var/log/nginx` | 只用 root 跑 `nginx -t`；非 root 验证走 `curl` 与版本号 |
 | reload 没生效但站点仍可用 | `nginx -t && systemctl reload` 里 `-t` 失败会短路，旧配置继续服务 | 这正是 `-t` 的价值：失败时**没有**切换，改好后重跑即可 |
+| 脚本报 `HTTP/2 未生效`，实际已生效 | **curl < 8 在 HTTPS 下默认不提供 h2 ALPN**（本机 curl 7.81），不加 `--http2` 量到的是 1.1 | 验证一律带 `--http2`（脚本已修）；也可看 `ALPN, server accepted to use h2` |
 
 ---
 

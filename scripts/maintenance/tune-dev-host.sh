@@ -139,7 +139,8 @@ fi
 # ── 3. 验收 ────────────────────────────────────────────────────────────────
 step "验收"
 
-http_version=$(curl -s -o /dev/null -w '%{http_version}' --max-time 8 https://dev.ftai.cc/ 2>/dev/null || echo '?')
+# curl < 8 在 HTTPS 下默认不提供 h2 ALPN，必须显式 --http2，否则量到的是 1.1（假阴性）
+http_version=$(curl -s -o /dev/null -w '%{http_version}' --http2 --max-time 8 https://dev.ftai.cc/ 2>/dev/null || echo '?')
 say "  公网 HTTP 版本：${http_version}（期望 2）"
 [ "$http_version" = "2" ] || { [ "$APPLY" = 1 ] && noteable "HTTP/2 未生效" || true; }
 

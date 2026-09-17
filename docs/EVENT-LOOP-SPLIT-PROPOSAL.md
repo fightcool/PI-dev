@@ -40,6 +40,19 @@ SessionManager.listAll()      wall=1104ms  事件循环最长阻塞=32ms   mean=
 - 因此 A1 的收益应表述为「把这份 CPU 从主线程拿走」，而非「消灭秒级冻结」；
 - 真正会冻结的是**同步**工作（`readdirSync`/`statSync`/`execFileSync`/`JSON.stringify` 大对象/插件同步代码），见上表其余行。
 
+### 1.2 真正会冻结主线程的调用（2026-09-17 逐个实测）
+
+| 调用 | 单次主线程占用 | 触发时机 | 状态 |
+| --- | --- | --- | --- |
+| `subagentArchive.list()`——67 个归档 / 32 MB（**97.8% 体积在 `entries` 上**，而 list 只要 `snapshot`） | **412–582 ms** | 模型调 `subagent_list` / `subagent_result`（`subagents.ts:347/426`），以及面板刷新 | ✅ **已修**：派生索引 `<id>.snapshot.json`（可丢弃/自愈），实测 **412 ms → 11 ms** |
+| `measureAreas`（存储占用 / 诊断包） | 6–35 ms（真实区域都很小） | 用户主动打开面板 | 无需处理 |
+| `execFileSync("systemctl", …)` | 10–11 ms | 60 s 定时器 | 无需处理 |
+| `JSON.stringify`（模拟 1400 条消息快照） | 3.4 ms | 快照推送 | 无需处理 |
+| 会话扫描（SDK，`createReadStream`+`readline` 异步流式） | max 28 ms | 列表刷新（每 800 ms 防抖） | 已加签名 gate + 运行中会话豁免 |
+| 插件 `import()` 的同进程代码 | 不可预估 | 插件自己的时机 | ⚠️ 无隔离，只能靠插件自律 |
+
+> 更正一份我自己的错：审计脚本里曾出现「递归遍历工作区 758 ms」——核对调用方后确认**没有任何真实调用点**会遍历工作区（`listStorage`/`listDiagnostics` 只列具体目录，磁盘用量走 `statfsSync`），那行是审计脚本自造的假象，不作为问题。教训与 §1.1 相同：**先看调用方，再拿 wall 时间当结论**。
+
 **为什么不能直接上 PM2 cluster**：会话、PTY、WS 状态不是多进程共享的（[STRUCTURE.md](STRUCTURE.md)）；排空判定 `activeConversations`/`pendingMessages` 是单进程聚合（`server/agent-service.ts:6155`），而部署脚本把它当作切版前提（`scripts/maintenance/switch-production-release.mjs:174-184`）。
 
 ---
