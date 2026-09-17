@@ -8879,25 +8879,6 @@ button.source-default-toggle {
 		border-color: var(--accent);
 	}
 
-	/* 渠道弹窗（编辑渠道 / 账户查询设置）：窄屏铺满，头脚仍固定、只有中间滚。 */
-	.chan-dialog,
-	.chan-form-dialog,
-	.chan-account-modal {
-		max-width: none;
-		width: 100%;
-		max-height: 92vh;
-	}
-	.chan-dialog-head,
-	.chan-dialog-body,
-	.chan-dialog-foot {
-		padding-left: 14px;
-		padding-right: 14px;
-	}
-	/* 窄屏上取消/保存各占一半，别挤成两个小按钮。 */
-	.chan-dialog-foot .chan-btn {
-		flex: 1 1 40%;
-		justify-content: center;
-	}
 }
 
 /* 窄桌面窗口（641–1023px）：横向空间不够，字号回退一档（仍大于移动端），
@@ -9514,6 +9495,33 @@ button.source-default-toggle {
 }
 
 @media (max-width: 640px) {
+	/* 渠道弹窗（编辑渠道 / 账户查询设置）：窄屏铺满，头脚仍固定、只有中间滚。
+	   @BUGFIX 这段原来错写在 `@media (min-width: 641px)`（桌面）块里：桌面上
+	   `.chan-dialog,.chan-form-dialog,.chan-account-modal` 三类选择器（特异性 0,3,0）
+	   压过了 `.chan-dialog`（0,1,0），把 max-height 换成 92vh 且**没带 overflow:hidden**，
+	   于是 .modal 的 `overflow-y:auto` 复活、弹窗整体变成滚动容器 —— body 的
+	   `flex:1 1 auto; min-height:0` 失去夹持，内容不滚、头部被内容顶穿。
+	   这里只改内边距与按钮排布，尺寸相关的一律显式重申，绝不留半套。 */
+	.chan-dialog,
+	.chan-form-dialog,
+	.chan-account-modal {
+		max-width: none;
+		width: 100%;
+		max-height: 92vh;
+		/* 与桌面同一口径：外层不滚，只有 .chan-dialog-body 滚。 */
+		overflow: hidden;
+	}
+	.chan-dialog-head,
+	.chan-dialog-body,
+	.chan-dialog-foot {
+		padding-left: 14px;
+		padding-right: 14px;
+	}
+	/* 窄屏上取消/保存各占一半，别挤成两个小按钮。 */
+	.chan-dialog-foot .chan-btn {
+		flex: 1 1 40%;
+		justify-content: center;
+	}
 	.form-grid,
 	.model-row {
 		grid-template-columns: 1fr;
@@ -11408,9 +11416,16 @@ button.source-default-toggle {
 	font-family: var(--mono);
 	font-size: 11px;
 }
+/* @BUGFIX 全局 .modal-close 是「sticky + margin-bottom:-42px」的负边距方案（它假设
+   弹窗自身就是滚动容器）。本弹窗是「头/体/脚三段，只有 body 滚」，那个负边距会把
+   body 往上拽 42px 压到头部底下 —— 截图里「基本信息」被标题栏切掉一半就是它。
+   这里把整套 sticky 定位与负边距都归零，×按钮回到头部行内正常参与布局。 */
 .chan-dialog-head .modal-close {
 	margin-left: auto;
+	margin-bottom: 0;
 	position: static;
+	top: auto;
+	align-self: center;
 }
 .chan-dialog-body {
 	display: flex;

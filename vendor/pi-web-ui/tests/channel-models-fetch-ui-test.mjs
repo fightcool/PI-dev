@@ -122,16 +122,20 @@ async function run() {
 		await page.waitForSelector("button.chip", { timeout: 30000 });
 
 		// 设置 → 渠道 → 新增渠道
+		// @GOTCHA 渠道表单已从内联 .chan-form 改成弹窗 .chan-form-dialog（ChannelDialog 壳），
+		// 保存按钮在固定页脚 .chan-dialog-foot 里（不再是 .chan-form-actions）。
 		await page.locator('[title*="设置"]').first().click();
 		await page.waitForSelector(".settings-modal", { timeout: 10000 });
 		await page.locator(".settings-tab", { hasText: "渠道" }).first().click();
 		await page.locator(".chan-settings-head button", { hasText: "新增渠道" }).first().click();
-		await page.waitForSelector(".chan-form", { timeout: 8000 });
+		await page.waitForSelector(".chan-form-dialog", { timeout: 8000 });
 
-		// 服务商 = cc1q（第 1 个 select），显示名必填
-		await page.locator(".chan-form .field input").first().fill("测试渠道");
-		const selects = page.locator(".chan-form select");
-		await selects.nth(0).selectOption("cc1q");
+		// 显示名必填；服务商要先切到「使用已有服务商」才有那个下拉
+		// @GOTCHA 新增渠道默认是「新建服务商」模式（一个表单填完即用），那时第一个 select 是**协议**，
+		// 不是服务商。按 nth(0) 取会选错控件（旧用例就是这么挂的）。
+		await page.locator(".chan-form-dialog .field input").first().fill("测试渠道");
+		await page.locator(".chan-conn-mode label", { hasText: "使用已有服务商" }).first().click();
+		await page.locator(".chan-conn select").first().selectOption("cc1q");
 
 		// 目录里的候选（来自 models.json）：1 条，且没有「接口」标记
 		const rowsBefore = await page.locator(".chan-models-list .chan-model-row").count();
@@ -163,7 +167,7 @@ async function run() {
 		check("checking an endpoint model counts toward the whitelist", /1/.test(count), count);
 
 		// 保存 → 列表行显示白名单摘要
-		await page.locator(".chan-form-actions button", { hasText: "保存" }).first().click();
+		await page.locator(".chan-dialog-foot button", { hasText: "保存" }).first().click();
 		await page.waitForSelector(".chan-row", { timeout: 15000 });
 		const rowText = await page.locator(".chan-row").first().innerText();
 		check("saved channel carries the whitelist", /1/.test(rowText), rowText.replace(/\n/g, " "));
