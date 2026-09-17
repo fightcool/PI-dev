@@ -8,6 +8,7 @@ import {
 	AccountRegistry,
 	accountQueryConfig,
 	deepSeekAdapter,
+	templateAdapter,
 	topupUrlOf,
 	setProviderBaseUrlLookup,
 } from "../../server/dev-con/channel-accounts.js";
@@ -29,7 +30,10 @@ async function stub(handler: (url: URL, res: import("node:http").ServerResponse)
 	return `http://127.0.0.1:${address.port}`;
 }
 
-const channel = (url: string, extra: Record<string, unknown> = { scale: 2, kind: "openai-gateway", unit: "USD" }): ChannelRecord => ({
+const channel = (
+	url: string,
+	extra: Record<string, unknown> = { scale: 2, kind: "openai-gateway", unit: "USD" },
+): ChannelRecord => ({
 	id: "ch-1",
 	displayName: "渠道",
 	providerId: "main",
@@ -127,7 +131,8 @@ describe("account queries", () => {
 		const base = await stub((url, res) => {
 			res.writeHead(url.pathname === "/api/user/self" ? 403 : 200, { "content-type": "application/json" });
 			if (url.pathname === "/v1/dashboard/billing/usage") return res.end(JSON.stringify({ total_usage: 0.0558 }));
-			if (url.pathname === "/v1/dashboard/billing/subscription") return res.end(JSON.stringify({ hard_limit_usd: 100000000 }));
+			if (url.pathname === "/v1/dashboard/billing/subscription")
+				return res.end(JSON.stringify({ hard_limit_usd: 100000000 }));
 			res.end(JSON.stringify({ success: false }));
 		});
 		const result = await registry().query(channel(base), () => "sk");
@@ -240,7 +245,14 @@ describe("account queries", () => {
 			seenUrl = url.pathname;
 			seenAuth = String((res.req?.headers.authorization ?? "").toString());
 			res.writeHead(200, { "content-type": "application/json" });
-			res.end(JSON.stringify({ is_available: true, balance_infos: [{ currency: "CNY", total_balance: "110.00", granted_balance: "10.00", topped_up_balance: "100.00" }] }));
+			res.end(
+				JSON.stringify({
+					is_available: true,
+					balance_infos: [
+						{ currency: "CNY", total_balance: "110.00", granted_balance: "10.00", topped_up_balance: "100.00" },
+					],
+				}),
+			);
 		});
 		const channelWithDeepSeek = { ...channel(base), extra: { account: { kind: "deepseek", url: base } } };
 		const result = await registry().query(channelWithDeepSeek, () => "ds-key");
@@ -286,7 +298,10 @@ describe("account queries", () => {
 			res.writeHead(200, { "content-type": "application/json" });
 			res.end(JSON.stringify({ is_available: true, balance_infos: [{ currency: "CNY", topped_up_balance: "1.00" }] }));
 		});
-		const partialResult = await registry().query({ ...channel(partial), extra: { account: { kind: "deepseek", url: partial } } }, () => "ds-key");
+		const partialResult = await registry().query(
+			{ ...channel(partial), extra: { account: { kind: "deepseek", url: partial } } },
+			() => "ds-key",
+		);
 		expect(partialResult.status).toBe("failed");
 	});
 
@@ -299,14 +314,20 @@ describe("account queries", () => {
 		});
 		// 渠道里填的是 OpenAI 兼容基址（末尾 /v1）——额度接口必须落在站点根 /api/user/self，
 		// 不能拼成 /v1/api/user/self。
-		const withV1 = { ...channel(`${base}/v1`), extra: { account: { kind: "openai-gateway", url: `${base}/v1`, unit: "CNY", scale: 1 } } };
+		const withV1 = {
+			...channel(`${base}/v1`),
+			extra: { account: { kind: "openai-gateway", url: `${base}/v1`, unit: "CNY", scale: 1 } },
+		};
 		const result = await registry().query(withV1, () => "gw-key");
 		expect(seen).toContain("/api/user/self");
 		expect(seen).not.toContain("/v1/api/user/self");
 		expect(result.status).toBe("ok");
 		// 已经给出完整账户路径时原样使用，不做二次拼接。
 		seen.length = 0;
-		const explicit = { ...channel(base), extra: { account: { kind: "openai-gateway", url: `${base}/api/user/self`, scale: 1 } } };
+		const explicit = {
+			...channel(base),
+			extra: { account: { kind: "openai-gateway", url: `${base}/api/user/self`, scale: 1 } },
+		};
 		await registry().query(explicit, () => "gw-key");
 		expect(seen).toContain("/api/user/self");
 		expect(seen).not.toContain("/v1/api/user/self");
@@ -335,14 +356,20 @@ describe("account queries", () => {
 			res.writeHead(200, { "content-type": "application/json" });
 			res.end(JSON.stringify({ data: { quota: 10, used_quota: 0 } }));
 		});
-		const gateway = { ...channel(`${base}/v1`), extra: { account: { kind: "openai-gateway", url: `${base}/v1`, scale: 1, credentialKeyName: "控制台令牌" } } };
+		const gateway = {
+			...channel(`${base}/v1`),
+			extra: { account: { kind: "openai-gateway", url: `${base}/v1`, scale: 1, credentialKeyName: "控制台令牌" } },
+		};
 		const resolve = (name: string | null) => (name === "控制台令牌" ? "console-token" : "model-key");
 		const result = await registry().query(gateway, resolve);
 		expect(result.status).toBe("ok");
 		expect(seenAuth).toBe("Bearer console-token");
 		// 没配置账户凭据时回落到渠道的模型凭据（DeepSeek 官方这类）。
 		seenAuth = "";
-		await registry().query({ ...gateway, extra: { account: { kind: "openai-gateway", url: `${base}/v1`, scale: 1 } } }, resolve);
+		await registry().query(
+			{ ...gateway, extra: { account: { kind: "openai-gateway", url: `${base}/v1`, scale: 1 } } },
+			resolve,
+		);
 		expect(seenAuth).toBe("Bearer model-key");
 	});
 
@@ -351,7 +378,10 @@ describe("account queries", () => {
 			res.writeHead(401, { "content-type": "application/json" });
 			res.end(JSON.stringify({ success: false, message: "unauthorized" }));
 		});
-		const gateway = { ...channel(`${base}/v1`), extra: { account: { kind: "openai-gateway", url: `${base}/v1`, scale: 1 } } };
+		const gateway = {
+			...channel(`${base}/v1`),
+			extra: { account: { kind: "openai-gateway", url: `${base}/v1`, scale: 1 } },
+		};
 		const result = await registry().query(gateway, () => "model-key");
 		expect(result.status).toBe("failed");
 		// 如实说「这个 API 没有可用的查询接口」，并列出探测过的地址；不引导控制台令牌（设计决定）。
@@ -362,8 +392,12 @@ describe("account queries", () => {
 
 	it("exposes the DeepSeek adapter with its documented kind", () => {
 		expect(deepSeekAdapter.kind).toBe("deepseek");
-		expect(deepSeekAdapter.match({ ...channel("https://api.deepseek.com"), extra: { account: { kind: "deepseek" } } })).toBe(true);
-		expect(deepSeekAdapter.match({ ...channel("https://x"), extra: { account: { kind: "openai-gateway" } } })).toBe(false);
+		expect(
+			deepSeekAdapter.match({ ...channel("https://api.deepseek.com"), extra: { account: { kind: "deepseek" } } }),
+		).toBe(true);
+		expect(deepSeekAdapter.match({ ...channel("https://x"), extra: { account: { kind: "openai-gateway" } } })).toBe(
+			false,
+		);
 	});
 
 	it("rate-limits repeated queries and keeps the previous result", async () => {
@@ -462,15 +496,158 @@ describe("account queries", () => {
 	});
 });
 
+describe("模板适配器（声明式单份 JSON）", () => {
+	it("发请求时合并 request.headers（显式头优先，默认带 Bearer 与 accept）", async () => {
+		let seen: Record<string, string | string[] | undefined> = {};
+		const base = await stub((_url, res) => {
+			seen = res.req.headers as Record<string, string | string[] | undefined>;
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ balance: 3 }));
+		});
+		const withHeaders = {
+			...channel(base),
+			extra: {
+				account: {
+					kind: "template",
+					request: { url: base, method: "GET", headers: { "X-Api-Key": "{apiKey}", Accept: "application/vnd+json" } },
+					map: { remaining: "balance" },
+					unit: "USD",
+				},
+			},
+		};
+		const result = await registry().query(withHeaders, () => "sk-secret");
+		expect(result).toMatchObject({ status: "ok", kind: "template", unit: "USD", balance: 3 });
+		expect(seen["x-api-key"]).toBe("sk-secret");
+		expect(seen.accept).toBe("application/vnd+json");
+		// 显式头不影响鉴权头默认值。
+		expect(seen.authorization).toBe("Bearer sk-secret");
+	});
+
+	it("POST 模板带 content-type 与渲染后的请求体", async () => {
+		let body = "";
+		let contentType = "";
+		const base = await stub((_url, res) => {
+			contentType = String(res.req.headers["content-type"] ?? "");
+			const chunks: Buffer[] = [];
+			res.req.on("data", (c: Buffer) => chunks.push(c));
+			res.req.on("end", () => {
+				body = Buffer.concat(chunks).toString("utf8");
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end(JSON.stringify({ data: { left: 8 } }));
+			});
+		});
+		const post = {
+			...channel(base),
+			extra: {
+				account: {
+					kind: "template",
+					request: { url: base, method: "POST", body: '{"key":"{apiKey}"}' },
+					map: { remaining: "data.left" },
+				},
+			},
+		};
+		expect(await registry().query(post, () => "sk-1")).toMatchObject({ status: "ok", balance: 8 });
+		expect(contentType).toBe("application/json");
+		expect(body).toBe('{"key":"sk-1"}');
+	});
+
+	it("双花括号占位符的 URL 失败时把「单花括号」提示附到 error 里", async () => {
+		setProviderBaseUrlLookup(() => "https://uuapi.io");
+		// 用户照拄 cc-switch 的 {{baseUrl}}：渲染出 `{https://uuapi.io}/usage`，光说 http(s) 校验失败看不懂。
+		const broken = {
+			...channel(""),
+			extra: {
+				account: {
+					kind: "template",
+					url: "{{baseUrl}}/usage",
+					apiKeyHeader: "authorization",
+					apiKeyPrefix: "Bearer ",
+					unit: "USD",
+					mapping: { balance: "balance" },
+				},
+			},
+		};
+		const result = await registry().query(broken, () => "sk");
+		expect(result.status).toBe("failed");
+		expect(result.error).toContain("http(s)");
+		expect(result.error).toContain("占位符请用单花括号 {baseUrl}");
+	});
+
+	it("磁盘上的老平铺配置经迁移后仍能查出余额（行为等价）", async () => {
+		let seenAuth = "";
+		const base = await stub((_url, res) => {
+			seenAuth = String(res.req.headers.authorization ?? "");
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ data: { total_credits: 20, total_usage: 5 } }));
+		});
+		const legacy = {
+			...channel(base),
+			extra: {
+				account: {
+					kind: "template",
+					url: base,
+					method: "GET",
+					apiKeyHeader: "authorization",
+					apiKeyPrefix: "Bearer ",
+					mapping: { limit: "data.total_credits", used: "data.total_usage", remaining: "data.total_credits" },
+					unit: "USD",
+				},
+			},
+		};
+		const result = await registry().query(legacy, () => "or-key");
+		expect(seenAuth).toBe("Bearer or-key");
+		expect(result).toMatchObject({ status: "ok", kind: "template", unit: "USD", balance: 20 });
+		expect(result.quota).toEqual({ used: 5, limit: 20, remaining: 20, unit: "USD" });
+	});
+
+	it("invalidWhen 命中时直接报密钥无效（不把 200 当成余额）", async () => {
+		const base = await stub((_url, res) => {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ code: "invalid_api_key", message: "API key 无效" }));
+		});
+		const uu = {
+			...channel(base),
+			extra: {
+				account: {
+					kind: "template",
+					request: { url: base },
+					map: { remaining: "remaining ?? balance" },
+					invalidWhen: { path: "code", exists: true, messagePath: "message" },
+				},
+			},
+		};
+		expect(await registry().query(uu, () => "sk")).toMatchObject({ status: "failed", error: "API key 无效" });
+	});
+
+	it("模板适配器只接模板型配置（内置 kind 交给各自适配器）", () => {
+		expect(templateAdapter.kind).toBe("template");
+		expect(
+			templateAdapter.match({
+				...channel("https://x"),
+				extra: { account: { kind: "template", request: { url: "https://x" }, map: { remaining: "b" } } },
+			}),
+		).toBe(true);
+		expect(templateAdapter.match({ ...channel("https://x"), extra: { account: { kind: "deepseek" } } })).toBe(false);
+		expect(
+			templateAdapter.match({
+				...channel("https://x"),
+				extra: { account: { kind: "openai-gateway", url: "https://x" } },
+			}),
+		).toBe(false);
+	});
+});
+
 describe("充值直达链接（用量面板标题右侧）", () => {
 	it("显式配置优先，其次按账户查询方式取默认值，{baseUrl} 会被解析", () => {
 		setProviderBaseUrlLookup((id) => (id === "main" ? "https://gw.example/v1" : undefined));
 		// openai-gateway 的默认充值页：站点根 + /console/topup（不能拼到 /v1 后面）
-		expect(topupUrlOf(channel("https://gw.example", { kind: "openai-gateway" }))).toBe("https://gw.example/console/topup");
-		// 显式配置覆盖默认值
-		expect(topupUrlOf(channel("https://gw.example", { kind: "openai-gateway", topupUrl: "https://pay.example/x" }))).toBe(
-			"https://pay.example/x",
+		expect(topupUrlOf(channel("https://gw.example", { kind: "openai-gateway" }))).toBe(
+			"https://gw.example/console/topup",
 		);
+		// 显式配置覆盖默认值
+		expect(
+			topupUrlOf(channel("https://gw.example", { kind: "openai-gateway", topupUrl: "https://pay.example/x" })),
+		).toBe("https://pay.example/x");
 		// 占位也能用
 		expect(topupUrlOf(channel("https://gw.example", { kind: "template", topupUrl: "{baseUrl}/billing" }))).toBe(
 			"https://gw.example/billing",
@@ -481,7 +658,11 @@ describe("充值直达链接（用量面板标题右侧）", () => {
 		expect(topupUrlOf(channel("https://gw.example", { kind: "template" }))).toBeNull();
 	});
 	it("deepseek / openrouter 有内置充值页默认值", () => {
-		expect(topupUrlOf(channel("https://api.deepseek.com", { kind: "deepseek" }))).toBe("https://platform.deepseek.com/top_up");
-		expect(topupUrlOf(channel("https://openrouter.ai/api/v1", { kind: "openrouter" }))).toBe("https://openrouter.ai/settings/credits");
+		expect(topupUrlOf(channel("https://api.deepseek.com", { kind: "deepseek" }))).toBe(
+			"https://platform.deepseek.com/top_up",
+		);
+		expect(topupUrlOf(channel("https://openrouter.ai/api/v1", { kind: "openrouter" }))).toBe(
+			"https://openrouter.ai/settings/credits",
+		);
 	});
 });

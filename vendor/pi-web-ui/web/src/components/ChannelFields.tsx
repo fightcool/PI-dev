@@ -5,14 +5,14 @@
  *              @PERF=performance @CONTRACT=interface contract 📖=dev doc reference
  *
  * Breadcrumbs (changing this affects):
- *   @COUPLED components/ChannelForm.tsx（渠道表单）, components/ChannelAccountQuery.tsx（模板编辑器）
+ *   @COUPLED components/ChannelForm.tsx（渠道表单）, components/ChannelAccountModal.tsx（账户查询弹窗）
  *   📖 docs/DEV-CON-PROPOSAL.md §6（渠道设置页）
  *   @CONTRACT 纯受控字段：只回传字符串，不认识渠道/协议类型，也不发任何命令。
  *   @WHY 从 ChannelForm 抽出：表单字段被模板编辑器复用，留在一起会让 ChannelForm 超过 300 行。
  *   @GOTCHA 下拉框的空值一律是「disabled 占位项」，否则浏览器会默认选中第一项并静默改配置。
  * ──────────────────────────────────────────────────
  */
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
 
 /** 单行文本字段（受控；值原样回传，不做 trim —— 前缀里的空格有意义）。 */
 export function TextField({
@@ -78,17 +78,27 @@ export function TextAreaField({
 	ph,
 	onChange,
 	rows = 4,
+	areaRef,
 }: {
 	label: string;
 	value: string;
 	ph?: string;
 	onChange: (v: string) => void;
 	rows?: number;
+	/** 可选 ref：调用方需要聚焦文本框时用（如弹窗打开即落焦）。 */
+	areaRef?: RefObject<HTMLTextAreaElement>;
 }) {
 	return (
 		<label className="field">
 			<span className="field-label">{label}</span>
-			<textarea className="chan-json" rows={rows} value={value} placeholder={ph} onChange={(e) => onChange(e.target.value)} />
+			<textarea
+				ref={areaRef}
+				className="chan-json"
+				rows={rows}
+				value={value}
+				placeholder={ph}
+				onChange={(e) => onChange(e.target.value)}
+			/>
 		</label>
 	);
 }

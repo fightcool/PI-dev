@@ -12,6 +12,11 @@
  *   @BUGFIX 2026-09-14：`stale` 有两种含义（数据超过 TTL 没刷新 / 最近一次查询失败），以前共用
  *            一个「已过期」标签 —— 渠道明明在正常说话，用户却被一个报警式的红字追着问。现在按
  *            staleReason 分开：ttl 说「待刷新」（中性色），failed 才说「已过期」（警示色 + 重试）。
+ *   @BUGFIX 2026-09-17：设置页渠道行把 `status.balance` / `q.remaining` 原始数字直接插进字符串，
+ *            而 chip 与用量详情走 balanceTextOf/usedTextOf（两位小数）—— 同一个数字出现两套精度
+ *            （`45.43301698` vs `45.43`）。现在**全局只有 {@link formatAmount} 一个金额口径**，
+ *            三处都从它出数。同一次修复：那一行的「Used」标签实际显示的是 `remaining ?? limit ?? used`
+ *            （标签说已用、值给剩余，还会和余额显示成同一个数）—— 已用与剩余现在各占一格，取不到就不显示。
  *   @CONTRACT 只读派生：把「当前对话在用哪个渠道」+「该渠道的账户状态」算成一处，供 chip 与详情面板共用，
  *             避免两处各写一遍（口径漂移会让 chip 与详情对不上，用户更懵）。
  *   @WHY 没有绑定时按当前模型的服务商匹配唯一渠道：clientId 在 sessionStorage（每标签页独立），
@@ -64,22 +69,71 @@ export function channelAccountView(input: {
 }
 
 /**
- * 余额的「人话」表达：有余额就给数值；拿不到余额就说「未知」——**绝不把接口字段名、HTTP 状态、
- * 控制台令牌这些开发者语言摆到用户面前**（那些放点击后的详情里）。
+ * **全局唯一的金额口径**：余额 chip、设置页渠道行、用量详情三处的每一个金额都必须过这里。
+ * @CONTRACT
+ *   - 取不到值（undefined / 非有限数）→ 返回空串，**由调用方决定说「未知」还是这一格不显示**
+ *     （这个函数不认识文案，也不该替调用方编「0」出来）；
+ *   - 整数不带小数点（`47` → `47`，账户接口给整数额度时别写成 `47.00`）；
+ *   - 其余保留 2 位（`45.43301698` → `45.43`）；
+ *   - 绝对值落在 (0, 0.005) 的极小值不写成 `0.00`：正数给 `<0.01`，负数给 `>-0.01`。
+ *     @WHY `0.00` 会被读成「没钱了 / 没用量」，而 `-0.00` 更是既不像零也不像欠费；说清「比一分钱还小」
+ *     才是实话。负数本身（欠费、网关记账倒挂）照常显示（`-12.35`），不做绝对值抹平。
+ *   - 给了 unit 就拼 `值 单位`；值为空时 unit 也不出现。
+ * @MAGIC 0.005 = 2 位小数的进位边界：≥ 它 toFixed(2) 就不再是 0.00。
  */
-export function balanceTextOf(account: UiAccountStatus | undefined, t: (k: string) => string): string {
-	const raw = account?.balance ?? account?.quota?.remaining;
-	if (raw === undefined) return t("channelAccountUnknownBalance");
-	const num = Number.isInteger(raw) ? String(raw) : raw.toFixed(2);
-	return account?.unit ? `${num} ${account.unit}` : num;
+export function formatAmount(value: number | undefined, unit?: string): string {
+	if (value === undefined || !Number.isFinite(value)) return "";
+	const num = Number.isInteger(value)
+		? String(value)
+		: value > 0 && value < 0.005
+			? "<0.01"
+			: value < 0 && value > -0.005
+				? ">-0.01"
+				: value.toFixed(2);
+	return unit ? `${num} ${unit}` : num;
 }
 
-/** 该账户快照给得出「已用」时的可读文本（没有则 null）。 */
+/**
+ * 余额的「人话」表达：有余额就给数值；拿不到余额就说「未知」——**绝不把接口字段名、HTTP 状态、
+ * 控制台令牌这些开发者语言摆到用户面前**（那些放点击后的详情里）。
+ * @CONTRACT 数字口径复用 {@link formatAmount}（chip 与设置页行必须是同一个数字）。
+ */
+export function balanceTextOf(account: UiAccountStatus | undefined, t: (k: string) => string): string {
+	const text = formatAmount(account?.balance ?? account?.quota?.remaining, account?.unit);
+	return text || t("channelAccountUnknownBalance");
+}
+
+/** 该账户快照给得出「已用」时的可读文本（没有则 null）。数字口径同 {@link formatAmount}。 */
 export function usedTextOf(account: UiAccountStatus | undefined): string | null {
-	const used = account?.quota?.used;
-	if (used === undefined) return null;
-	const num = Number.isInteger(used) ? String(used) : used.toFixed(2);
-	return account?.unit ? `${num} ${account.unit}` : num;
+	const quota = account?.quota;
+	return formatAmount(quota?.used, quota?.unit || account?.unit) || null;
+}
+
+/**
+ * 设置页渠道行的「格」文本（顺序即显示顺序；空数组 = 只显示状态标签）。
+ * @CONTRACT
+ *   - 抽成纯函数是为了能在 node 环境单测这一行的口径（组件只负责把它们用 ` · ` 串起来）；
+ *   - 每一格的数字都走 {@link formatAmount}；
+ *   - **已用与剩余是两格**：已用只认 `quota.used`，剩余只认 `quota.remaining`，
+ *     取不到就不显示那一格 —— 绝不用 `limit` 或另一个字段顶替（旧代码写成
+ *     `remaining ?? limit ?? used`，结果标签写「Used」显示的却是剩余，还和余额撞成同一个数）。
+ */
+export function accountStatusBits(status: UiAccountStatus | undefined, t: (k: string) => string): string[] {
+	if (!status) return [];
+	const bits: string[] = [];
+	const balance = formatAmount(status.balance, status.unit);
+	if (balance) bits.push(`${t("channelAccountBalance")} ${balance}`);
+	// 配额自带单位时优先用它（额度与余额可能不同币种/不同计量），否则退回账户单位。
+	const quota = status.quota;
+	const quotaUnit = quota?.unit || status.unit;
+	const used = formatAmount(quota?.used, quotaUnit);
+	if (used) bits.push(`${t("channelAccountKeyQuota")} ${used}`);
+	const remaining = formatAmount(quota?.remaining, quotaUnit);
+	if (remaining) bits.push(`${t("channelAccountRemaining")} ${remaining}`);
+	if (status.checkedAt !== undefined) bits.push(`${t("channelAccountCheckedAt")} ${new Date(status.checkedAt).toLocaleString()}`);
+	const tipKey = accountStateView(status).tipKey;
+	if (tipKey) bits.push(t(tipKey));
+	return bits;
 }
 
 /**

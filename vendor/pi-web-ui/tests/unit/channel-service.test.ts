@@ -24,7 +24,13 @@ function makeHost(dir: string, clientId = "test-client") {
 	const models: Record<string, string> = { "main/m1": "Model 1", "main/m2": "Model 2", "other/x": "X" };
 	const applied: { conversationId: string; modelId: string }[] = [];
 	/** 渠道表单写入服务商的调用记录（验证顺序与 payload）。 */
-	const providerWrites: { providerId: string; api?: string; baseUrl?: string; apiKey?: string; models?: { id: string }[] }[] = [];
+	const providerWrites: {
+		providerId: string;
+		api?: string;
+		baseUrl?: string;
+		apiKey?: string;
+		models?: { id: string }[];
+	}[] = [];
 	/** 已注册服务商（upsertProvider 成功后会真的“注册”，供 hasProvider 用）。 */
 	const providers = new Set(["main", "other"]);
 	/** 测试钩子：在“写服务商”与“写渠道”之间做外部修改（验证部分失败可辨识）。 */
@@ -45,7 +51,8 @@ function makeHost(dir: string, clientId = "test-client") {
 			return { ok: true };
 		},
 		resolveProviderKey: async (providerId) => (providerId === "main" ? "provider-own-key" : null),
-		getModel: (providerId, modelId) => (models[`${providerId}/${modelId}`] ? { id: modelId, name: models[`${providerId}/${modelId}`] } : null),
+		getModel: (providerId, modelId) =>
+			models[`${providerId}/${modelId}`] ? { id: modelId, name: models[`${providerId}/${modelId}`] } : null,
 		keyNames: (providerId) =>
 			providerId === "main"
 				? [
@@ -53,7 +60,8 @@ function makeHost(dir: string, clientId = "test-client") {
 						{ keyName: "密钥 2", active: false },
 					]
 				: [],
-		resolveKeyValue: (providerId, keyName) => (providerId === "main" ? { "密钥 1": "sk-one", "密钥 2": "sk-two" }[keyName] ?? null : null),
+		resolveKeyValue: (providerId, keyName) =>
+			providerId === "main" ? ({ "密钥 1": "sk-one", "密钥 2": "sk-two" }[keyName] ?? null) : null,
 		setConversationModel: async (conversationId, modelId) => {
 			if (!conversations.has(conversationId)) throw new Error("对话不存在");
 			if (!models[modelId]) throw new Error(`模型不存在：${modelId}`);
@@ -67,7 +75,10 @@ function makeHost(dir: string, clientId = "test-client") {
 		cwd: () => "/proj",
 	};
 	const receipts = () => emitted.filter((m): m is Receipt => m.type === "channel_command_result");
-	const lastReceipt = (commandId: string) => receipts().filter((r) => r.commandId === commandId).at(-1);
+	const lastReceipt = (commandId: string) =>
+		receipts()
+			.filter((r) => r.commandId === commandId)
+			.at(-1);
 	const lastState = () => emitted.filter((m): m is State => m.type === "channel_state").at(-1);
 	return {
 		host,
@@ -100,6 +111,41 @@ beforeEach(() => {
 });
 
 describe("channel service — configuration", () => {
+	it("rejects a broken account template with a Chinese message and accepts a valid one", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		// 照拄 cc-switch 的双花括号：保存时就要点出“单花括号”，而不是等查询时报一叢看不懂的错。
+		await svc.saveChannel({
+			commandId: "bad-tpl",
+			channel: {
+				...channelDraft("ch-t", "密钥 1"),
+				extra: { account: { kind: "template", url: "{{baseUrl}}/usage", mapping: { balance: "balance" } } },
+			},
+		});
+		expect(h.lastReceipt("bad-tpl")).toMatchObject({ ok: false, phase: "rejected" });
+		expect(h.lastReceipt("bad-tpl")?.error).toContain("占位符请用单花括号 {baseUrl}");
+		expect(loadCatalog(dir).catalog.channels).toHaveLength(0);
+
+		// 声明式新结构（含 request.headers）要能落盘：findSecretMaterial 对占位符请求头有窄豁免。
+		await svc.saveChannel({
+			commandId: "good-tpl",
+			channel: {
+				...channelDraft("ch-t", "密钥 1"),
+				extra: {
+					account: {
+						kind: "template",
+						request: { url: "{baseUrl}/v1/usage", method: "GET", headers: { authorization: "Bearer {apiKey}" } },
+						map: { remaining: "remaining ?? balance", used: "usage.total.actual_cost" },
+					},
+				},
+			},
+		});
+		expect(h.lastReceipt("good-tpl")?.ok).toBe(true);
+		expect(loadCatalog(dir).catalog.channels[0].extra?.account).toMatchObject({
+			request: { headers: { authorization: "Bearer {apiKey}" } },
+		});
+	});
+
 	it("saves a channel, persists it and rejects a stale config revision", async () => {
 		const h = makeHost(dir);
 		const svc = new ChannelService(h.host);
@@ -159,7 +205,12 @@ describe("channel service — provider + channel in one command", () => {
 		expect(h.lastReceipt("new")).toMatchObject({ ok: true, phase: "applied" });
 		// 服务商 id 由显示名 slug 生成，渠道引用它（不再要求先去「管理模型」建一遍）。
 		expect(h.providerWrites).toHaveLength(1);
-		expect(h.providerWrites[0]).toMatchObject({ providerId: "cctq-claude", api: "anthropic-messages", baseUrl: "https://www.cctq.ai", apiKey: "sk-new" });
+		expect(h.providerWrites[0]).toMatchObject({
+			providerId: "cctq-claude",
+			api: "anthropic-messages",
+			baseUrl: "https://www.cctq.ai",
+			apiKey: "sk-new",
+		});
 		const saved = loadCatalog(dir).catalog.channels;
 		expect(saved.map((c) => c.providerId)).toEqual(["cctq-claude"]);
 	});
@@ -219,7 +270,11 @@ describe("channel service — combined selection", () => {
 		await svc.select({ commandId: "sel", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m1" } });
 		const receipt = h.lastReceipt("sel");
 		expect(receipt).toMatchObject({ ok: true, phase: "applied", conversationId: "c1", channelId: "ch-1" });
-		expect(receipt?.binding).toMatchObject({ modelId: "main/m1", credentialRef: { providerId: "main", keyName: "密钥 1" }, bindingRevision: 1 });
+		expect(receipt?.binding).toMatchObject({
+			modelId: "main/m1",
+			credentialRef: { providerId: "main", keyName: "密钥 1" },
+			bindingRevision: 1,
+		});
 		expect(h.applied).toEqual([{ conversationId: "c1", modelId: "main/m1" }]);
 		expect(svc.bindingViewMessage("c1").effective?.channelName).toBe("渠道 ch-1");
 	});
@@ -245,9 +300,17 @@ describe("channel service — combined selection", () => {
 		const h = makeHost(dir);
 		const svc = new ChannelService(h.host);
 		await svc.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
-		await svc.select({ commandId: "first", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m1" } });
+		await svc.select({
+			commandId: "first",
+			conversationId: "c1",
+			selection: { channelId: "ch-1", modelId: "main/m1" },
+		});
 		h.setBusy("c1", true);
-		await svc.select({ commandId: "second", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m2" } });
+		await svc.select({
+			commandId: "second",
+			conversationId: "c1",
+			selection: { channelId: "ch-1", modelId: "main/m2" },
+		});
 		const pendingReceipt = h.lastReceipt("second");
 		expect(pendingReceipt).toMatchObject({ ok: true, phase: "pending" });
 		// A03：在途请求/工具仍按原绑定；有效值不变，待生效值可见。
@@ -288,7 +351,11 @@ describe("channel service — combined selection", () => {
 		await svc.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
 		await svc.select({ commandId: "ok", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m1" } });
 		h.setMessages("c1", 3);
-		await svc.select({ commandId: "bad", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/missing" } });
+		await svc.select({
+			commandId: "bad",
+			conversationId: "c1",
+			selection: { channelId: "ch-1", modelId: "main/missing" },
+		});
 		expect(h.lastReceipt("bad")).toMatchObject({ ok: false, phase: "rejected", conversationId: "c1" });
 		expect(h.lastReceipt("bad")?.error).toContain("模型不存在");
 		expect(svc.bindingViewMessage("c1").effective?.modelId).toBe("main/m1");
@@ -299,7 +366,12 @@ describe("channel service — combined selection", () => {
 		const svc = new ChannelService(h.host);
 		await svc.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
 		await svc.select({ commandId: "a", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m1" } });
-		await svc.select({ commandId: "b", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m2" }, expectedBindingRevision: 0 });
+		await svc.select({
+			commandId: "b",
+			conversationId: "c1",
+			selection: { channelId: "ch-1", modelId: "main/m2" },
+			expectedBindingRevision: 0,
+		});
 		expect(h.lastReceipt("b")).toMatchObject({ ok: false, phase: "conflict" });
 		await svc.select({ commandId: "c", conversationId: "c1", selection: { channelId: "ch-1", modelId: "other/x" } });
 		expect(h.lastReceipt("c")?.error).toContain("不属于该渠道的服务商");
@@ -356,7 +428,9 @@ describe("channel service — defaults, persistence and requests", () => {
 		expect(svc.hasConversationBinding("c2")).toBe(true);
 		expect(svc.bindingViewMessage("c2").effective).toMatchObject({ channelId: "ch-1", modelId: "main/m1" });
 		expect(svc.credentialFor("c2", "main")).toBe("sk-one");
-		expect(svc.bindingViewMessage("c2").effective?.bindingRevision).not.toBe(svc.bindingViewMessage("c1").effective?.bindingRevision);
+		expect(svc.bindingViewMessage("c2").effective?.bindingRevision).not.toBe(
+			svc.bindingViewMessage("c1").effective?.bindingRevision,
+		);
 		// 没有来源绑定时不会凭空生成绑定。
 		svc.inheritBinding("c3", "c4");
 		expect(svc.hasConversationBinding("c4")).toBe(false);
@@ -402,7 +476,11 @@ describe("channel service — defaults, persistence and requests", () => {
 		// 本端用旧版本提交 → 必须 conflict，且不得静默覆盖外部编辑。
 		await svc.saveChannel({ commandId: "stale", channel: channelDraft("ch-2", null), expectedConfigRevision: 1 });
 		expect(h.lastReceipt("stale")).toMatchObject({ ok: false, phase: "conflict" });
-		expect(loadCatalog(dir).catalog.channels.map((c) => c.id).sort()).toEqual(["ch-1", "ch-ext"]);
+		expect(
+			loadCatalog(dir)
+				.catalog.channels.map((c) => c.id)
+				.sort(),
+		).toEqual(["ch-1", "ch-ext"]);
 
 		// 收到 conflict 后服务已经对齐磁盘，再用新版本重试就能成功（可恢复）。
 		const fresh = h.lastState();
@@ -413,7 +491,11 @@ describe("channel service — defaults, persistence and requests", () => {
 			expectedConfigRevision: h.lastReceipt("stale")?.configRevision,
 		});
 		expect(h.lastReceipt("retry")?.ok).toBe(true);
-		expect(loadCatalog(dir).catalog.channels.map((c) => c.id).sort()).toEqual(["ch-1", "ch-2", "ch-ext"]);
+		expect(
+			loadCatalog(dir)
+				.catalog.channels.map((c) => c.id)
+				.sort(),
+		).toEqual(["ch-1", "ch-2", "ch-ext"]);
 	});
 
 	it("keeps bindings of two clients apart even when both use conversation id c1", async () => {
@@ -441,7 +523,11 @@ describe("channel service — defaults, persistence and requests", () => {
 		await svc.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
 		// 另一端（独立实例，共享同一个 agentDir）先写了自己的绑定。
 		const other = new ChannelService(makeHost(dir, "other-client").host);
-		await other.select({ commandId: "other", conversationId: "c2", selection: { channelId: "ch-1", modelId: "main/m1" } });
+		await other.select({
+			commandId: "other",
+			conversationId: "c2",
+			selection: { channelId: "ch-1", modelId: "main/m1" },
+		});
 		// 本端随后写自己的绑定 → 两边的绑定都要在文件里。
 		await svc.select({ commandId: "mine", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m2" } });
 		const catalog = loadCatalog(dir).catalog;

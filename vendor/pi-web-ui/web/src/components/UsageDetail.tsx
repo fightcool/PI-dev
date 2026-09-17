@@ -6,7 +6,9 @@
  *
  * Breadcrumbs (changing this affects):
  *   @COUPLED components/FooterBar.tsx (打开本面板的触发点 + 有效渠道显示),
- *            use-chat.ts (channelState.channels 用于把 channelId 解析成显示名)
+ *            use-chat.ts (channelState.channels 用于把 channelId 解析成显示名),
+ *            channel-account.ts（formatAmount = 全局唯一金额口径；余额/已用两行经
+ *            balanceTextOf/usedTextOf 走它，与 chip、设置页渠道行同数字）
  *   📖 docs/DEV-CON-PROPOSAL.md §7（请求/运行/会话口径、渠道归属、未知归属诚实地标未归属）
  *   @CONTRACT 只读展示。归属按「请求发出时」记录的 channelId 展示——渠道改名/删除不会把旧用量
  *             挪到新渠道；channelId 缺失一律显示「未归属」，解析不到名字时显示原 id 而不是猜名字。
@@ -141,7 +143,8 @@ export function UsageDetail({
 		const status = view.account;
 		const used = usedTextOf(status);
 		const state = accountStateView(status);
-		const failed = isAccountQueryFailed(status);		return (
+		const failed = isAccountQueryFailed(status);
+		return (
 			<div className="usage-account">
 				<div className="usage-account-head">
 					{t("channelAccountDetailTitle")}

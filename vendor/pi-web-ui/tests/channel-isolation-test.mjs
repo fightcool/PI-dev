@@ -85,7 +85,11 @@ const mock = createServer(async (req, res) => {
 			created: Date.now(),
 			model: payload.model,
 			choices: [],
-			usage: { prompt_tokens: 120, completion_tokens: 12, prompt_tokens_details: { cached_tokens: 20, cache_write_tokens: 4 } },
+			usage: {
+				prompt_tokens: 120,
+				completion_tokens: 12,
+				prompt_tokens_details: { cached_tokens: 20, cache_write_tokens: 4 },
+			},
 		})}\n\n`,
 	);
 	res.write("data: [DONE]\n\n");
@@ -222,32 +226,59 @@ try {
 	check("global active key is 密钥 2", readAuth().mock?.key === ORIGINAL_ACTIVE);
 	// 2) 两个渠道分别引用两把密钥。
 	const savedA = await runCommand(client, "channel_save", {
-		channel: { id: "ch-a", displayName: "渠道 A", providerId: "mock", credentialRef: { providerId: "mock", keyName: "密钥 1" } },
+		channel: {
+			id: "ch-a",
+			displayName: "渠道 A",
+			providerId: "mock",
+			credentialRef: { providerId: "mock", keyName: "密钥 1" },
+		},
 	});
 	check("channel ch-a saved", savedA.ok === true, savedA.error ?? "");
 	const savedB = await runCommand(client, "channel_save", {
-		channel: { id: "ch-b", displayName: "渠道 B", providerId: "mock", credentialRef: { providerId: "mock", keyName: "密钥 2" } },
+		channel: {
+			id: "ch-b",
+			displayName: "渠道 B",
+			providerId: "mock",
+			credentialRef: { providerId: "mock", keyName: "密钥 2" },
+		},
 	});
 	check("channel ch-b saved", savedB.ok === true, savedB.error ?? "");
 
 	// 3) 会话 A 绑定 ch-a（非 active 的密钥 1），先真实跑一轮。
-	const selectA = await runCommand(client, "channel_select", { conversationId: convA, channelId: "ch-a", modelId: "mock/chan-mock" });
+	const selectA = await runCommand(client, "channel_select", {
+		conversationId: convA,
+		channelId: "ch-a",
+		modelId: "mock/chan-mock",
+	});
 	check("conversation A selects 渠道 A", selectA.ok === true && selectA.phase === "applied", selectA.error ?? "");
-	check("receipt carries the binding revision", selectA.binding?.channelId === "ch-a" && selectA.binding?.bindingRevision >= 1);
+	check(
+		"receipt carries the binding revision",
+		selectA.binding?.channelId === "ch-a" && selectA.binding?.bindingRevision >= 1,
+	);
 	check("selecting a channel does not rewrite the global active key", readAuth().mock?.key === ORIGINAL_ACTIVE);
 
 	seenAuth.length = 0;
 	client.send({ type: "prompt", text: "ping-a" });
 	const deadlineA = Date.now() + 25000;
 	while (seenAuth.length === 0 && Date.now() < deadlineA) await sleep(50);
-	await client.waitForState((s) => s.conversationId === convA && s.isStreaming === false && (s.messages?.length ?? 0) > 0, 25000).catch(() => undefined);
-	check("conversation A used its channel credential", seenAuth[0]?.authorization === "Bearer sk-active-one", seenAuth[0]?.authorization ?? "no request seen");
+	await client
+		.waitForState((s) => s.conversationId === convA && s.isStreaming === false && (s.messages?.length ?? 0) > 0, 25000)
+		.catch(() => undefined);
+	check(
+		"conversation A used its channel credential",
+		seenAuth[0]?.authorization === "Bearer sk-active-one",
+		seenAuth[0]?.authorization ?? "no request seen",
+	);
 
 	// 4) 新对话 B（A 已有内容 → new_chat 真的新建），绑定 ch-b。
 	client.send({ type: "new_chat" });
 	const stateB = await client.waitForState((s) => s.conversationId !== convA);
 	const convB = stateB.conversationId;
-	const selectB = await runCommand(client, "channel_select", { conversationId: convB, channelId: "ch-b", modelId: "mock/chan-mock" });
+	const selectB = await runCommand(client, "channel_select", {
+		conversationId: convB,
+		channelId: "ch-b",
+		modelId: "mock/chan-mock",
+	});
 	check("conversation B selects 渠道 B", selectB.ok === true && selectB.phase === "applied", selectB.error ?? "");
 
 	// 5) B 端真实跑一轮 → 用 sk-active-two，且不影响 A 的绑定。
@@ -255,18 +286,35 @@ try {
 	client.send({ type: "prompt", text: "ping-b" });
 	const deadlineB = Date.now() + 25000;
 	while (seenAuth.length === 0 && Date.now() < deadlineB) await sleep(50);
-	await client.waitForState((s) => s.conversationId === convB && s.isStreaming === false && (s.messages?.length ?? 0) > 0, 25000).catch(() => undefined);
-	check("conversation B used its channel credential", seenAuth[0]?.authorization === "Bearer sk-active-two", seenAuth[0]?.authorization ?? "no request seen");
+	await client
+		.waitForState((s) => s.conversationId === convB && s.isStreaming === false && (s.messages?.length ?? 0) > 0, 25000)
+		.catch(() => undefined);
+	check(
+		"conversation B used its channel credential",
+		seenAuth[0]?.authorization === "Bearer sk-active-two",
+		seenAuth[0]?.authorization ?? "no request seen",
+	);
 
 	// 6) A 的绑定在 B 跑动期间未被改写（回归“另一对话不受影响”）。
 	const bindingA = (client.channelState?.bindings ?? []).find((b) => b.conversationId === convA);
-	check("conversation A binding survives conversation B's run", bindingA?.channelId === "ch-a" && bindingA?.modelId === "mock/chan-mock");
+	check(
+		"conversation A binding survives conversation B's run",
+		bindingA?.channelId === "ch-a" && bindingA?.modelId === "mock/chan-mock",
+	);
 
 	// 7) 多端/快照可见：两个绑定都在同一份 channel_state 里，且当前对话的快照带自己的绑定。
 	const stateMsg = client.channelState;
 	const bindings = stateMsg?.bindings ?? [];
-	check("both conversation bindings are published", bindings.some((b) => b.conversationId === convA && b.channelId === "ch-a") && bindings.some((b) => b.conversationId === convB && b.channelId === "ch-b"));
-	check("snapshot exposes the active conversation binding", client.state?.channelBinding?.effective?.channelId === "ch-b", JSON.stringify(client.state?.channelBinding ?? null));
+	check(
+		"both conversation bindings are published",
+		bindings.some((b) => b.conversationId === convA && b.channelId === "ch-a") &&
+			bindings.some((b) => b.conversationId === convB && b.channelId === "ch-b"),
+	);
+	check(
+		"snapshot exposes the active conversation binding",
+		client.state?.channelBinding?.effective?.channelId === "ch-b",
+		JSON.stringify(client.state?.channelBinding ?? null),
+	);
 	check("global auth.json untouched after all switches", readAuth().mock?.key === ORIGINAL_ACTIVE);
 
 	// 7b) P4 首个切片：两次真实运行都已落盘到用量历史，且按渠道/项目分组可查。
@@ -274,7 +322,9 @@ try {
 	const channelRows = byChannel.rows.map((r) => [r.key, r.requests]);
 	check(
 		"usage history groups the two real runs by their own channel",
-		byChannel.ok === true && channelRows.some(([k, n]) => k === "ch-a" && n >= 1) && channelRows.some(([k, n]) => k === "ch-b" && n >= 1),
+		byChannel.ok === true &&
+			channelRows.some(([k, n]) => k === "ch-a" && n >= 1) &&
+			channelRows.some(([k, n]) => k === "ch-b" && n >= 1),
 		JSON.stringify(channelRows),
 	);
 	const perRequest = {
@@ -286,8 +336,12 @@ try {
 	check(
 		"usage history totals match the mock's reported usage (tokens + cache survive persistence)",
 		byChannel.totals.requests === 2 &&
-			byChannel.totals.total === byChannel.totals.input + byChannel.totals.output + byChannel.totals.cacheRead + byChannel.totals.cacheWrite &&
-			perRequest.input === 96 && perRequest.output === 12 && perRequest.cacheRead === 20 && perRequest.cacheWrite === 4,
+			byChannel.totals.total ===
+				byChannel.totals.input + byChannel.totals.output + byChannel.totals.cacheRead + byChannel.totals.cacheWrite &&
+			perRequest.input === 96 &&
+			perRequest.output === 12 &&
+			perRequest.cacheRead === 20 &&
+			perRequest.cacheWrite === 4,
 		`${JSON.stringify(byChannel.totals)} perRequest=${JSON.stringify(perRequest)}`,
 	);
 	check(
@@ -296,9 +350,17 @@ try {
 		JSON.stringify({ unpriced: byChannel.totals.unpricedRequests, cost: byChannel.totals.cost }),
 	);
 	const byProject = await queryHistory(client, "project");
-	check("usage history can group by project (cwd)", byProject.rows.some((r) => r.key === workdir), JSON.stringify(byProject.rows.map((r) => r.key)));
+	check(
+		"usage history can group by project (cwd)",
+		byProject.rows.some((r) => r.key === workdir),
+		JSON.stringify(byProject.rows.map((r) => r.key)),
+	);
 	const windowed = await queryHistory(client, "day");
-	check("usage history groups by UTC day", windowed.rows.every((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.key)), JSON.stringify(windowed.rows.map((r) => r.key)));
+	check(
+		"usage history groups by UTC day",
+		windowed.rows.every((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.key)),
+		JSON.stringify(windowed.rows.map((r) => r.key)),
+	);
 
 	// 7c) P4 运维：诊断包只含元数据——合成密钥正文绝不能出现在载荷里。
 	client.send({ type: "list_diagnostics", reqId: 7 });
@@ -307,17 +369,28 @@ try {
 	check("diagnostics bundle is returned with metadata", diag.ok === true && Boolean(diag.bundle), diag.error ?? "");
 	check(
 		"diagnostics carries version/paths/unit and channel counts",
-		diag.bundle.app.protocolVersion === PROTOCOL_VERSION && (diag.bundle.release.protocolVersion === null || typeof diag.bundle.release.protocolVersion === "number") &&
-			typeof diag.bundle.instance.agentDir === "string" && Array.isArray(diag.bundle.units) &&
-			diag.bundle.channels.count === 2 && diag.bundle.usage.requests >= 2,
-		JSON.stringify({ appProtocol: diag.bundle.app.protocolVersion, releaseProtocol: diag.bundle.release.protocolVersion, channels: diag.bundle.channels, usage: diag.bundle.usage.requests }),
+		diag.bundle.app.protocolVersion === PROTOCOL_VERSION &&
+			(diag.bundle.release.protocolVersion === null || typeof diag.bundle.release.protocolVersion === "number") &&
+			typeof diag.bundle.instance.agentDir === "string" &&
+			Array.isArray(diag.bundle.units) &&
+			diag.bundle.channels.count === 2 &&
+			diag.bundle.usage.requests >= 2,
+		JSON.stringify({
+			appProtocol: diag.bundle.app.protocolVersion,
+			releaseProtocol: diag.bundle.release.protocolVersion,
+			channels: diag.bundle.channels,
+			usage: diag.bundle.usage.requests,
+		}),
 	);
 	check(
 		"diagnostics never leaks credential values (synthetic keys absent)",
 		!diagText.includes("sk-active-one") && !diagText.includes("sk-active-two") && !diagText.includes("apiKey"),
 		diagText.slice(0, 160),
 	);
-	check("diagnostics reports the alert switch and thresholds", typeof diag.alertsEnabled === "boolean" && diag.thresholds?.criticalPercent === 90);
+	check(
+		"diagnostics reports the alert switch and thresholds",
+		typeof diag.alertsEnabled === "boolean" && diag.thresholds?.criticalPercent === 90,
+	);
 
 	// 7d) 真实服务端上的「生成中切换 → 待生效 → 本轮结束后落定」（对齐真实验收发现的问题：
 	// agent_end 时 isStreaming 仍为 true，待生效若只在 agent_end 尝试会被永久丢弃）。
@@ -326,9 +399,19 @@ try {
 	const switchSent = Date.now();
 	client.send({ type: "prompt", text: "slow-ping" });
 	await client.waitForState((s) => s.isStreaming === true, 20000);
-	const pendingSwitch = await runCommand(client, "channel_select", { conversationId: switchTarget, channelId: "ch-b", modelId: "mock/chan-mock" });
-	check("生成中切换返回待生效", pendingSwitch.ok === true && pendingSwitch.phase === "pending", JSON.stringify({ phase: pendingSwitch.phase, error: pendingSwitch.error }));
-	await client.waitForState((s) => s.conversationId === switchTarget && s.isStreaming === false, 30000).catch(() => undefined);
+	const pendingSwitch = await runCommand(client, "channel_select", {
+		conversationId: switchTarget,
+		channelId: "ch-b",
+		modelId: "mock/chan-mock",
+	});
+	check(
+		"生成中切换返回待生效",
+		pendingSwitch.ok === true && pendingSwitch.phase === "pending",
+		JSON.stringify({ phase: pendingSwitch.phase, error: pendingSwitch.error }),
+	);
+	await client
+		.waitForState((s) => s.conversationId === switchTarget && s.isStreaming === false, 30000)
+		.catch(() => undefined);
 	const settled = Date.now();
 	let appliedBinding = null;
 	for (let i = 0; i < 40; i++) {
@@ -344,12 +427,32 @@ try {
 
 	// 7e) 渠道模型白名单：非白名单模型必须被拒；白名单内可正常绑定。
 	const limited = await runCommand(client, "channel_save", {
-		channel: { id: "ch-limited", displayName: "限模型渠道", providerId: "mock", credentialRef: { providerId: "mock", keyName: "密钥 1" }, models: ["chan-mock"] },
+		channel: {
+			id: "ch-limited",
+			displayName: "限模型渠道",
+			providerId: "mock",
+			credentialRef: { providerId: "mock", keyName: "密钥 1" },
+			models: ["chan-mock"],
+		},
 	});
 	check("可保存带模型白名单的渠道", limited.ok === true, limited.error ?? "");
-	const notAllowed = await runCommand(client, "channel_select", { conversationId: convB, channelId: "ch-limited", modelId: "mock/other-model" });
-	check("白名单外的模型被明确拒绝", notAllowed.ok === false && notAllowed.phase === "rejected" && String(notAllowed.error).includes("不在该渠道的可用列表内"), notAllowed.error ?? "");
-	const allowed = await runCommand(client, "channel_select", { conversationId: convB, channelId: "ch-limited", modelId: "mock/chan-mock" });
+	const notAllowed = await runCommand(client, "channel_select", {
+		conversationId: convB,
+		channelId: "ch-limited",
+		modelId: "mock/other-model",
+	});
+	check(
+		"白名单外的模型被明确拒绝",
+		notAllowed.ok === false &&
+			notAllowed.phase === "rejected" &&
+			String(notAllowed.error).includes("不在该渠道的可用列表内"),
+		notAllowed.error ?? "",
+	);
+	const allowed = await runCommand(client, "channel_select", {
+		conversationId: convB,
+		channelId: "ch-limited",
+		modelId: "mock/chan-mock",
+	});
 	check("白名单内的模型可正常绑定", allowed.ok === true, allowed.error ?? "");
 
 	// 7e2) 方案 A：一条 channel_save 同时写服务商（models.json）与渠道档案。
@@ -367,7 +470,11 @@ try {
 	});
 	check("一条命令同时新建服务商与渠道", created.ok === true, created.error ?? "");
 	client.send({ type: "list_channels" });
-	const afterCreate = await client.waitForType("channel_state", (m) => m.channels.some((c) => c.id === "ch-created"), 10000);
+	const afterCreate = await client.waitForType(
+		"channel_state",
+		(m) => m.channels.some((c) => c.id === "ch-created"),
+		10000,
+	);
 	const createdChannel = afterCreate.channels.find((c) => c.id === "ch-created");
 	const savedModels = JSON.parse(readFileSync(join(agentDir, "models.json"), "utf8"));
 	// providerId 留空 → 服务端由渠道显示名 slug 生成（中文名回落 provider-<n>，非空即合规）。
@@ -390,54 +497,109 @@ try {
 		channel: { id: "ch-broken", displayName: "坏服务商", providerId: "ch-broken" },
 		provider: { name: "坏服务商", api: "openai-completions", baseUrl: "", models: [{ id: "x" }] },
 	});
-	check("服务商缺 baseUrl 时渠道也不落盘", broken.ok === false && String(broken.error).includes("服务商未写入"), JSON.stringify({ error: broken.error, phase: broken.phase }));
+	check(
+		"服务商缺 baseUrl 时渠道也不落盘",
+		broken.ok === false && String(broken.error).includes("服务商未写入"),
+		JSON.stringify({ error: broken.error, phase: broken.phase }),
+	);
 
 	// 7f) 账户查询模板：用户自配 URL/字段映射（走本地替身），预设随 channel_state 下发。
 	client.send({ type: "list_channels" });
 	const withPresets = await client.waitForType("channel_state", (m) => Array.isArray(m.accountPresets), 10000);
-	check("channel_state 下发账户查询预设（可一键填充）", ["deepseek", "openai-gateway", "openrouter"].every((id) => withPresets.accountPresets.some((p) => p.id === id)), JSON.stringify(withPresets.accountPresets.map((p) => p.id)));
+	check(
+		"channel_state 下发账户查询预设（可一键填充）",
+		["deepseek", "openai-gateway", "openrouter", "uu-api"].every((id) =>
+			withPresets.accountPresets.some((p) => p.id === id),
+		),
+		JSON.stringify(withPresets.accountPresets.map((p) => p.id)),
+	);
 	const templated = await runCommand(client, "channel_save", {
 		channel: {
-			id: "ch-template", displayName: "模板渠道", providerId: "mock",
+			id: "ch-template",
+			displayName: "模板渠道",
+			providerId: "mock",
 			credentialRef: { providerId: "mock", keyName: "密钥 1" },
-			extra: { account: { kind: "template", url: `${mockBase}/api/user/self`, method: "GET", mapping: { limit: "data.quota", used: "data.used_quota", remaining: "data.quota", scope: "data.display_name" }, scale: 2, unit: "USD" } },
+			extra: {
+				account: {
+					kind: "template",
+					request: { url: `${mockBase}/api/user/self`, method: "GET", headers: { authorization: "Bearer {apiKey}" } },
+					map: { limit: "data.quota", used: "data.used_quota", remaining: "data.quota", planName: "data.display_name" },
+					scale: 2,
+					unit: "USD",
+				},
+			},
 		},
 	});
 	check("可保存自定义查询模板渠道", templated.ok === true, templated.error ?? "");
 	await runCommand(client, "channel_query_account", { channelId: "ch-template" });
 	await sleep(1200);
-	const acct = (client.channelState?.accounts ?? []).find((a) => a.accountRef === "ch-template" || a.accountRef === "模板渠道");
-	check("模板渠道查询成功并解析出余额/单位/范围", acct?.status === "ok" && acct?.unit === "USD" && typeof acct?.balance === "number" && Boolean(acct?.scope), JSON.stringify(acct ?? null));
+	const acct = (client.channelState?.accounts ?? []).find(
+		(a) => a.accountRef === "ch-template" || a.accountRef === "模板渠道",
+	);
+	check(
+		"模板渠道查询成功并解析出余额/单位/范围",
+		acct?.status === "ok" && acct?.unit === "USD" && typeof acct?.balance === "number" && Boolean(acct?.scope),
+		JSON.stringify(acct ?? null),
+	);
 
 	// 7g) 已存模板必须能完整回填（否则「编辑已存渠道」等于重配）：channel_state 的 account
-	// 回显要包含 url/method/mapping/items/scale/unit，且不含任何密钥值。
+	// 回显**整份模板 JSON**（request/map/unit/scale），且不含任何密钥值。
 	client.send({ type: "list_channels" });
-	const echoed = await client.waitForType("channel_state", (m) => m.channels.some((c) => c.id === "ch-template" && c.account), 10000);
+	const echoed = await client.waitForType(
+		"channel_state",
+		(m) => m.channels.some((c) => c.id === "ch-template" && c.account),
+		10000,
+	);
 	const view = echoed.channels.find((c) => c.id === "ch-template");
 	check(
-		"已存账户模板在界面可完整回填（url/method/mapping/items/unit/scale）",
-		view.account.url === `${mockBase}/api/user/self` && view.account.method === "GET" && typeof view.account.mapping === "object" &&
-			view.account.mapping.limit === "data.quota" && view.account.unit === "USD" && view.account.scale === 2,
+		"已存账户模板在界面可完整回填（request/map/unit/scale）",
+		view.account.request?.url === `${mockBase}/api/user/self` &&
+			view.account.request?.method === "GET" &&
+			view.account.map?.limit === "data.quota" &&
+			view.account.map?.planName === "data.display_name" &&
+			view.account.unit === "USD" &&
+			view.account.scale === 2,
 		JSON.stringify(view.account),
 	);
-	check("模板回显不含任何密钥值", !JSON.stringify(view.account).match(/sk-[A-Za-z0-9]|apiKey\s*:/), JSON.stringify(view.account).slice(0, 120));
-	check("渠道视图带模型白名单字段（空 = 不限）", Array.isArray(view.models) && view.models.length === 0 && Array.isArray(echoed.channels.find((c) => c.id === "ch-limited").models) && echoed.channels.find((c) => c.id === "ch-limited").models.length === 1);
+	check(
+		"模板回显不含任何密钥值",
+		!JSON.stringify(view.account).match(/sk-[A-Za-z0-9]|apiKey\s*:/),
+		JSON.stringify(view.account).slice(0, 120),
+	);
+	check(
+		"渠道视图带模型白名单字段（空 = 不限）",
+		Array.isArray(view.models) &&
+			view.models.length === 0 &&
+			Array.isArray(echoed.channels.find((c) => c.id === "ch-limited").models) &&
+			echoed.channels.find((c) => c.id === "ch-limited").models.length === 1,
+	);
 
 	// 8) 组合命令的失败路径：模型不属于该渠道服务商 → 明确拒绝，绑定保持。
-	const bad = await runCommand(client, "channel_select", { conversationId: convB, channelId: "ch-b", modelId: "mock/missing-model" });
-	check("unknown model is rejected with the previous binding kept", bad.ok === false && bad.phase === "rejected", bad.error ?? "");
+	const bad = await runCommand(client, "channel_select", {
+		conversationId: convB,
+		channelId: "ch-b",
+		modelId: "mock/missing-model",
+	});
+	check(
+		"unknown model is rejected with the previous binding kept",
+		bad.ok === false && bad.phase === "rejected",
+		bad.error ?? "",
+	);
 	// 9) 明确的状态请求：list_channels 直接回 channel_state（不是命令回执）。
 	client.send({ type: "list_channels" });
 	const listed = await client.waitForType("channel_state", (m) => m.channels.some((c) => c.id === "ch-b"), 10000);
 	check(
 		"list_channels returns server-side channels and the published credential names",
-		listed.channels.map((c) => c.id).join() === "ch-a,ch-b" && listed.channels[0].keys.some((k) => k.keyName === "密钥 1"),
+		listed.channels.map((c) => c.id).join() === "ch-a,ch-b" &&
+			listed.channels[0].keys.some((k) => k.keyName === "密钥 1"),
 	);
 
 	// 10) 未认证的错误帧不会杀死服务（P0 入口安全）。
 	ws.send("null");
 	await sleep(300);
-	const health = await fetch(`http://127.0.0.1:${PORT}/api/health`).then((r) => r.ok).catch(() => false);
+	const health = await fetch(`http://127.0.0.1:${PORT}/api/health`)
+		.then((r) => r.ok)
+		.catch(() => false);
 	check("a malformed websocket frame does not kill the process", health === true);
 
 	ws.close();
@@ -447,6 +609,8 @@ try {
 	server.kill("SIGTERM");
 	mock.close();
 	await sleep(200);
-	console.log(failures === 0 ? "\n✓ channel isolation: all checks passed" : `\n✗ channel isolation: ${failures} check(s) failed`);
+	console.log(
+		failures === 0 ? "\n✓ channel isolation: all checks passed" : `\n✗ channel isolation: ${failures} check(s) failed`,
+	);
 	process.exit(failures === 0 ? 0 : 1);
 }

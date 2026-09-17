@@ -10,11 +10,13 @@
  *            protocol.ts (wire types channel_state / channel_command_result / channel_select)
  *   📖 docs/DEV-CON-PROPOSAL.md §4 (配置对象、所有权与安全), §5 (热切换与会话语义), §9 (P0 技术项)
  *   @CONTRACT 纯逻辑模块：禁止 fs / 网络 / SDK 导入，便于 vitest 单测直接覆盖规格。
+ *   @COUPLED account-template.ts（isSafeHeaderValue：账户模板请求头的窄豁免判定，同为纯函数）
  *   @WHY 渠道元数据只保存「引用」（providerId/keyName/modelId），不复制 models.json 或
  *        provider-keys.json 的可写事实源；密钥正文永不进入本模块的数据结构。
  *   @MAGIC MAX_PERSISTED_BINDINGS=200: 对话绑定是引用型元数据，超出按 lastUsedAt 淘汰最旧。
  * ──────────────────────────────────────────────────
  */
+import { isSafeHeaderValue } from "./account-template.js";
 
 /** 协议端点：同一渠道内的模型调用协议入口；缺省单端点用 "default"。 */
 export const DEFAULT_ENDPOINT_ID = "default";
@@ -103,9 +105,7 @@ export interface ChannelCatalog {
 }
 
 /** 切换计划：立即应用 or 待生效（等本轮结束）。 */
-export type SwitchPlan =
-	| { mode: "apply" }
-	| { mode: "pending"; reason: "streaming" | "queue" };
+export type SwitchPlan = { mode: "apply" } | { mode: "pending"; reason: "streaming" | "queue" };
 
 /** 版本冲突结果。 */
 export type RevisionCheck = { ok: true } | { ok: false; kind: "conflict" | "missing" };
@@ -174,10 +174,30 @@ export function providerIdFromName(name: string, existing: string[] = []): strin
 /**
  * 禁止把密钥正文写进渠道元数据（本模块的唯一安全不变量）。
  * 返回命中的字段路径列表；非空即拒绝写入。
+ * @GOTCHA 窄豁免：账户查询模板的 `extra.account.request.headers` 是**声明式请求头**，值必须是
+ *   占位符/短常量（`Bearer {apiKey}`、`application/json`）——只有这一条路径、且每个值都通过
+ *   isSafeHeaderValue 才放行；别处的 headers/authorization 一律照旧拒绝（见单测）。
  */
 export function findSecretMaterial(value: unknown, path = ""): string[] {
-	const forbidden = new Set(["apikey", "api_key", "key", "keys", "token", "secret", "password", "headers", "authorization"]);
+	const forbidden = new Set([
+		"apikey",
+		"api_key",
+		"key",
+		"keys",
+		"token",
+		"secret",
+		"password",
+		"headers",
+		"authorization",
+	]);
 	const hits: string[] = [];
+	/** 该 headers 是否为账户模板的声明式请求头（路径 + 值形状双重判定）。 */
+	const isTemplateHeaders = (at: string, node: unknown): boolean =>
+		/(^|\.)account\.request$/.test(at) &&
+		node !== null &&
+		typeof node === "object" &&
+		!Array.isArray(node) &&
+		Object.values(node as Record<string, unknown>).every(isSafeHeaderValue);
 	const walk = (node: unknown, at: string): void => {
 		if (node === null || typeof node !== "object") return;
 		if (Array.isArray(node)) {
@@ -186,6 +206,7 @@ export function findSecretMaterial(value: unknown, path = ""): string[] {
 		}
 		for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
 			const here = at ? `${at}.${k}` : k;
+			if (k.trim().toLowerCase() === "headers" && isTemplateHeaders(at, v)) continue;
 			if (forbidden.has(k.trim().toLowerCase()) && v !== null && v !== undefined && v !== "") hits.push(here);
 			walk(v, here);
 		}
@@ -374,7 +395,17 @@ export function normalizeChannelRecord(raw: unknown): ChannelRecord | null {
 					keyName: String((credRaw as CredentialRef).keyName),
 				}
 			: null;
-	const known = new Set(["id", "displayName", "providerId", "endpointId", "credentialRef", "accountRef", "models", "enabled", "extra"]);
+	const known = new Set([
+		"id",
+		"displayName",
+		"providerId",
+		"endpointId",
+		"credentialRef",
+		"accountRef",
+		"models",
+		"enabled",
+		"extra",
+	]);
 	const extra: Record<string, unknown> = { ...((r.extra as Record<string, unknown>) ?? {}) };
 	for (const [k, v] of Object.entries(r)) if (!known.has(k)) extra[k] = v;
 	return {
@@ -384,7 +415,9 @@ export function normalizeChannelRecord(raw: unknown): ChannelRecord | null {
 		endpointId: typeof r.endpointId === "string" && r.endpointId.trim() ? r.endpointId.trim() : DEFAULT_ENDPOINT_ID,
 		credentialRef,
 		accountRef: typeof r.accountRef === "string" && r.accountRef.trim() ? r.accountRef.trim() : null,
-		models: Array.isArray(r.models) ? (r.models as unknown[]).filter((m): m is string => typeof m === "string" && m.trim().length > 0) : [],
+		models: Array.isArray(r.models)
+			? (r.models as unknown[]).filter((m): m is string => typeof m === "string" && m.trim().length > 0)
+			: [],
 		enabled: r.enabled !== false,
 		extra,
 	};

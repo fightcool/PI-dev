@@ -6,6 +6,7 @@
  *
  * Breadcrumbs (changing this affects):
  *   @COUPLED components/ChannelRow.tsx (列表行 + 账户状态), components/ChannelForm.tsx (新建/编辑表单),
+ *            components/ChannelAccountModal.tsx (账户查询设置弹窗：列表行入口),
  *            components/ChannelUsage.tsx (按渠道用量),
  *            components/SettingsModal.tsx (挂载为「渠道」分区 + 传 usageHistory),
  *            app/app-dialogs.tsx (channelApi),
@@ -18,8 +19,8 @@
  *   @GOTCHA 启用切换 / 任何行内保存都必须带上 models（白名单）：channel_save 是整体替换，
  *           少带字段就等于把白名单清空（这是之前「渠道改不动」的一部分）。
  *   @GOTCHA 每条命令都要有回执展示（成功/失败/冲突），否则删除/切换看起来像「点了没反应」。
- *   @ASSUME channel_state 的渠道视图不下发 extra，也不下发 mapping/items：编辑时只有在用户
- *           动过账户配置（ChannelForm 的 touched）时才提交 extra，避免静默覆盖。
+ *   @ASSUME 账户配置保存 = 整体覆盖 extra.account（服务端对 extra 是浅合并）：列表行的弹窗
+ *           只在用户点了保存时提交，新建/编辑表单则看 ChannelForm 的 touched。
  * ──────────────────────────────────────────────────
  */
 import { useEffect, useState } from "react";
@@ -39,6 +40,7 @@ export interface ChannelModelsResult {
 import { useI18n, useT } from "../i18n";
 import { channelAllowsModel } from "../channel-models";
 import { ChannelRow } from "./ChannelRow";
+import { ChannelAccountModal, formatAccountJson } from "./ChannelAccountModal";
 import { ChannelForm, channelDraftOf, type ChannelDraft } from "./ChannelForm";
 import { ChannelUsage } from "./ChannelUsage";
 
@@ -181,6 +183,8 @@ export function ChannelSettings({
 	const accounts = channelState?.accounts ?? [];
 	/** 表单草稿：null = 未在编辑（列表视图）。 */
 	const [draft, setDraft] = useState<ChannelDraft | null>(null);
+	/** 正在配账户查询的渠道（列表行入口）；null = 弹窗关着。 */
+	const [accountEditing, setAccountEditing] = useState<UiChannelInfo | null>(null);
 	const [querying, setQuerying] = useState<{ commandId: string; channelId: string } | null>(null);
 	/** 本面板发起的最近一条命令：只展示它的回执（冲突时给刷新入口）。 */
 	const [lastCommand, setLastCommand] = useState<{ id: string; op: OpKey | null } | null>(null);
@@ -204,7 +208,7 @@ export function ChannelSettings({
 	 * 行内保存（切换启用等）必须带上全部字段：channel_save 是整体替换，
 	 * 少带 models 会把白名单清空（见 @GOTCHA）。
 	 */
-	const saveInputOf = (c: UiChannelInfo, patch: { enabled: boolean }) => ({
+	const saveInputOf = (c: UiChannelInfo, patch: { enabled?: boolean; extra?: Record<string, unknown> }) => ({
 		id: c.id,
 		displayName: c.displayName,
 		providerId: c.providerId,
@@ -212,7 +216,8 @@ export function ChannelSettings({
 		credentialRef: c.credentialRef,
 		accountRef: c.accountRef,
 		models: c.models ?? [],
-		enabled: patch.enabled,
+		enabled: patch.enabled ?? c.enabled,
+		...(patch.extra ? { extra: patch.extra } : {}),
 	});
 
 	return (
@@ -274,12 +279,32 @@ export function ChannelSettings({
 						issue(commandId);
 					}}
 					onEdit={() => setDraft(channelDraftOf(c, c.providerId, providerConfigs?.find((p) => p.providerId === c.providerId) ?? null))}
+					onConfigureAccount={() => setAccountEditing(c)}
 					onDelete={() => {
 						if (!window.confirm(t("channelDeleteConfirm", { name: c.displayName }))) return;
 						issue(channelApi.deleteChannel(c.id), "channelOpDelete");
 					}}
 				/>
 			))}
+			{/* 账户查询设置：列表行直入，保存就走同一条 channel_save（带全字段，见 @GOTCHA）。 */}
+			{accountEditing && (
+				<ChannelAccountModal
+					key={accountEditing.id}
+					title={`${t("channelAccountSectionTitle")} · ${accountEditing.displayName}`}
+					kind={typeof accountEditing.account?.kind === "string" ? accountEditing.account.kind : ""}
+					json={formatAccountJson(accountEditing.account)}
+					presets={channelState?.accountPresets}
+					showOverwrite
+					onSave={({ account }) => {
+						issue(
+							channelApi.saveChannel({ channel: saveInputOf(accountEditing, { extra: { account } }) }),
+							"channelOpSave",
+						);
+						setAccountEditing(null);
+					}}
+					onClose={() => setAccountEditing(null)}
+				/>
+			)}
 			{draft && (
 				<ChannelForm
 					key={draft.id ?? "new"}

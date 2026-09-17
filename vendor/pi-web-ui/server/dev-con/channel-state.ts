@@ -7,7 +7,8 @@
  * Breadcrumbs (changing this affects):
  *   @COUPLED channel-model.ts (纯逻辑/数据结构)、channel-store.ts (channels.json 读写),
  *            channel-service.ts (命令层唯一调用方)、channel-config.ts (渠道/默认值/账户命令),
- *            channel-accounts.ts（账户配置解析与 CCTQ 内存默认值）、protocol.ts (channel_state 视图类型)
+ *            channel-accounts.ts（账户配置解析与 CCTQ 内存默认值）、protocol.ts (channel_state 视图类型),
+ *            account-template-schema.ts（redactTemplateForEcho：账户模板回显清洗）
  *   📖 docs/DEV-CON-PROPOSAL.md §4（配置对象、所有权与安全/组合命令）, §5（切换场景表）,
  *      §7（请求时绑定快照 → 用量归属）
  *   @CONTRACT 状态层只做三件事：目录内存态、持久化（先落盘成功再提交内存）、视图构造；
@@ -33,6 +34,7 @@ import {
 } from "./channel-model.js";
 import { loadCatalog, saveCatalog } from "./channel-store.js";
 import { accountQueryConfig, topupUrlOf } from "./channel-accounts.js";
+import { redactTemplateForEcho } from "./account-template-schema.js";
 
 /** 状态层依赖的宿主能力（窄接口：只含目录/绑定语义需要的读口）。 */
 export interface ChannelStateHost {
@@ -133,7 +135,7 @@ export class ChannelState {
 	private ownBindingView(
 		conversationId: string,
 		binding: ChannelBinding,
-	): Omit<ChannelBinding, "conversationId"> & { conversationId: string } | null {
+	): (Omit<ChannelBinding, "conversationId"> & { conversationId: string }) | null {
 		const ownId = this.conversationIdOf(conversationId);
 		if (ownId === null) return null;
 		return { ...binding, conversationId: ownId };
@@ -214,13 +216,23 @@ export class ChannelState {
 	}
 
 	/** 有效/待生效绑定的只读视图（快照 UI 用）。 */
-	bindingViewFor(conversationId: string): { effective: ChannelBinding | null; pending: ChannelBinding | null; source: BindingSource } {
+	bindingViewFor(conversationId: string): {
+		effective: ChannelBinding | null;
+		pending: ChannelBinding | null;
+		source: BindingSource;
+	} {
 		const stored = this.storedBinding(conversationId) ?? null;
 		const { selection, source } = this.effectiveSelectionFor(conversationId);
 		const effective =
 			stored ??
 			(selection
-				? makeBinding({ conversationId, selection, configRevision: this.current.configRevision, bindingRevision: 0, now: 0 })
+				? makeBinding({
+						conversationId,
+						selection,
+						configRevision: this.current.configRevision,
+						bindingRevision: 0,
+						now: 0,
+					})
 				: null);
 		const pend = this.pendingFor(conversationId);
 		const pending = pend
@@ -266,32 +278,16 @@ export class ChannelState {
 				accountRef: c.accountRef,
 				// 该渠道限定的模型（provider 内 id）；空 = 不限制。
 				models: c.models ?? [],
-				// 只回显账户查询配置的非敏感字段（URL/单位/换算/账户凭据名），绝不含密钥值。
-				// 回显账户查询配置（模板字段一并回显，否则"已存模板无法编辑"）：
-				// 只允许白名单键，且**只允许字符串/数字/布尔/纯对象**——任何密钥值都不可能带出去
-				// （渠道配置本身也不允许出现 apiKey/key 字段，见 channel-store 的写入校验）。
+				// 回显完整的账户查询配置（模板本身不含密钥，前端弹窗靠它把已存配置显示出来）。
+				// 防线依旧：递归剔除键名含 key/token/secret/password 的项（credentialKeyName 是**密钥名**，保留），
+				// 写盘侧还有 channel-store 的 findSecretMaterial 一道闸。
 				account: (() => {
 					const raw = accountQueryConfig(c);
 					if (!raw || typeof raw !== "object" || typeof raw.kind !== "string") return null;
-					const fields = raw as unknown as Record<string, unknown>;
-					const allowed = ["kind", "url", "method", "apiKeyHeader", "apiKeyPrefix", "body", "unit", "scale", "credentialKeyName"] as const;
-					const out: Record<string, unknown> = {};
-					for (const key of allowed) {
-						const value = fields[key];
-						if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") out[key] = value;
-					}
+					const out = { ...(redactTemplateForEcho(raw) as Record<string, unknown>) };
 					// 充值链接由服务端解析（{baseUrl} 占位需要服务商 baseUrl，前端不知道），前端直接当 href 用。
 					const topup = topupUrlOf(c);
 					if (topup) out.topupUrl = topup;
-					for (const key of ["mapping", "items"] as const) {
-						const value = fields[key];
-						if (value && typeof value === "object" && !Array.isArray(value)) {
-							const entries = Object.entries(value as Record<string, unknown>)
-								.filter(([, v]) => typeof v === "string")
-								.slice(0, 20);
-							if (entries.length > 0) out[key] = Object.fromEntries(entries);
-						}
-					}
 					return Object.keys(out).length > 0 ? out : null;
 				})(),
 				enabled: c.enabled,
@@ -303,7 +299,10 @@ export class ChannelState {
 	}
 
 	/** 唯一的状态构造出口（账号快照由命令层传入，状态层不认识 AccountRegistry）。 */
-	stateMessage(accounts: UiAccountStatus[], accountPresets: ChannelStateMessage["accountPresets"] = []): ChannelStateMessage {
+	stateMessage(
+		accounts: UiAccountStatus[],
+		accountPresets: ChannelStateMessage["accountPresets"] = [],
+	): ChannelStateMessage {
 		return {
 			type: "channel_state",
 			configRevision: this.current.configRevision,

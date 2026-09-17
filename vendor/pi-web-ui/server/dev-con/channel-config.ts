@@ -8,7 +8,8 @@
  *   @COUPLED channel-service.ts (命令层：串行化 + 回执 + 校验的委托方),
  *            channel-state.ts (目录读写：commitConfig/refresh/绑定版本),
  *            channel-model.ts (纯逻辑：validateChannelRecord/detachChannel/nextChannelId),
- *            channel-accounts.ts (queryAccount 的账户适配器)
+ *            channel-accounts.ts (queryAccount 的账户适配器),
+ *            account-template-schema.ts（validateAccountTemplate：保存时的模板结构校验）
  *   📖 docs/DEV-CON-PROPOSAL.md §4「配置变更采用校验/预览 → revision复核 → 应用 → 验证和回执」,
  *      §7（余额/配额查询）, §9（P0 技术项）
  *   @CONTRACT 本模块只实现「渠道档案 / 默认值 / 账户查询」四类配置命令，通过 ChannelConfigPort
@@ -36,6 +37,7 @@ import {
 	type ChannelSelection,
 } from "./channel-model.js";
 import type { ChannelState } from "./channel-state.js";
+import { validateAccountTemplate } from "./account-template-schema.js";
 import type { AccountRegistry } from "./channel-accounts.js";
 import type { SelectionInput } from "./channel-service.js";
 
@@ -177,11 +179,27 @@ export async function saveChannelCommand(port: ChannelConfigPort, input: SaveCha
 	}
 	const others = port.state.catalog.channels.filter((c) => c.id !== record.id);
 	const errors = validateChannelRecord(record, others);
+	// 账户模板的结构校验（中文文案可直接展示）：前端只能本地 JSON.parse，语义对不对只有服务端知道。
+	const accountRaw = record.extra?.account;
+	if (accountRaw && typeof accountRaw === "object" && (accountRaw as { kind?: unknown }).kind === "template") {
+		const verdict = validateAccountTemplate(accountRaw);
+		if (!verdict.ok) errors.push(`账户查询模板：${verdict.error}`);
+	}
 	if (errors.length > 0) {
-		port.receipt({ commandId: input.commandId, ok: false, phase: "rejected", channelId: record.id, error: `${partial ? `${partial}；` : ""}${errors.join("；")}`, errorEn: `${partialEn ? `${partialEn}; ` : ""}${errors.join("; ")}` });
+		port.receipt({
+			commandId: input.commandId,
+			ok: false,
+			phase: "rejected",
+			channelId: record.id,
+			error: `${partial ? `${partial}；` : ""}${errors.join("；")}`,
+			errorEn: `${partialEn ? `${partialEn}; ` : ""}${errors.join("; ")}`,
+		});
 		return;
 	}
-	if (record.credentialRef && !port.keyNames(record.providerId).some((k) => k.keyName === record.credentialRef?.keyName)) {
+	if (
+		record.credentialRef &&
+		!port.keyNames(record.providerId).some((k) => k.keyName === record.credentialRef?.keyName)
+	) {
 		port.receipt({
 			commandId: input.commandId,
 			ok: false,
@@ -214,7 +232,13 @@ export function deleteChannelCommand(port: ChannelConfigPort, input: DeleteChann
 		return port.conflictReceipt(input.commandId, "channel");
 	}
 	if (!port.state.catalog.channels.some((c) => c.id === input.channelId)) {
-		port.receipt({ commandId: input.commandId, ok: false, phase: "rejected", error: "渠道不存在", errorEn: "Channel not found" });
+		port.receipt({
+			commandId: input.commandId,
+			ok: false,
+			phase: "rejected",
+			error: "渠道不存在",
+			errorEn: "Channel not found",
+		});
 		return;
 	}
 	const { catalog, detachedConversations } = detachChannel(port.state.catalog, input.channelId);
@@ -238,7 +262,13 @@ export function setDefaultCommand(port: ChannelConfigPort, input: SetDefaultInpu
 	if (input.selection) {
 		const built = port.buildSelection(input.selection);
 		if ("error" in built) {
-			port.receipt({ commandId: input.commandId, ok: false, phase: "rejected", error: built.error, errorEn: built.errorEn });
+			port.receipt({
+				commandId: input.commandId,
+				ok: false,
+				phase: "rejected",
+				error: built.error,
+				errorEn: built.errorEn,
+			});
 			return;
 		}
 		selection = built.selection;
@@ -261,7 +291,13 @@ export function setDefaultCommand(port: ChannelConfigPort, input: SetDefaultInpu
 export async function queryAccountCommand(port: ChannelConfigPort, input: QueryAccountInput): Promise<void> {
 	const channel = port.state.catalog.channels.find((c) => c.id === input.channelId);
 	if (!channel) {
-		port.receipt({ commandId: input.commandId, ok: false, phase: "rejected", error: "渠道不存在", errorEn: "Channel not found" });
+		port.receipt({
+			commandId: input.commandId,
+			ok: false,
+			phase: "rejected",
+			error: "渠道不存在",
+			errorEn: "Channel not found",
+		});
 		return;
 	}
 	if (!port.accounts) {

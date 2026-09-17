@@ -73,7 +73,15 @@ describe("effective selection precedence", () => {
 	it("prefers the conversation binding over any default", () => {
 		const withBinding: ChannelCatalog = {
 			...catalog,
-			bindings: { c1: makeBinding({ conversationId: "c1", selection: selection("ch-1"), configRevision: 3, bindingRevision: 7, now: 1 }) },
+			bindings: {
+				c1: makeBinding({
+					conversationId: "c1",
+					selection: selection("ch-1"),
+					configRevision: 3,
+					bindingRevision: 7,
+					now: 1,
+				}),
+			},
 		};
 		const resolved = resolveEffectiveSelection(withBinding, "c1", "/proj");
 		expect(resolved.source).toBe("conversation");
@@ -116,9 +124,9 @@ describe("channel records", () => {
 		expect(validateChannelRecord(channel("ch-1"))).toEqual([]);
 		expect(validateChannelRecord({ ...channel("ch-1"), displayName: "  " })).toContain("渠道名称不能为空");
 		expect(validateChannelRecord(channel("ch-1"), [channel("ch-1")]).join()).toContain("已存在");
-		expect(
-			validateChannelRecord(channel("ch-1", { credentialRef: { providerId: "other", keyName: "k" } })),
-		).toContain("凭据引用的服务商与渠道不一致");
+		expect(validateChannelRecord(channel("ch-1", { credentialRef: { providerId: "other", keyName: "k" } }))).toContain(
+			"凭据引用的服务商与渠道不一致",
+		);
 	});
 	it("rejects a model that does not belong to the channel provider", () => {
 		const errors = validateSelection(selection("ch-1", "other/m1"), channel("ch-1"));
@@ -131,7 +139,10 @@ describe("channel records", () => {
 		expect(validateSelection(selection("ch-1", "main/m2"), limited)).toContain("模型不在该渠道的可用列表内：main/m2");
 		// 空白名单 = 不限制（向后兼容：老渠道没有这个字段也不能被锁死）。
 		expect(validateSelection(selection("ch-1", "main/m2"), channel("ch-1"))).toEqual([]);
-		expect(normalizeChannelRecord({ id: "ch-2", providerId: "main", models: ["a", "", 3, "b"] })?.models).toEqual(["a", "b"]);
+		expect(normalizeChannelRecord({ id: "ch-2", providerId: "main", models: ["a", "", 3, "b"] })?.models).toEqual([
+			"a",
+			"b",
+		]);
 		expect(normalizeChannelRecord({ id: "ch-3", providerId: "main" })?.models).toEqual([]);
 	});
 
@@ -159,6 +170,31 @@ describe("secret material guard", () => {
 			"a[1].headers.authorization",
 		]);
 	});
+
+	it("allows only the account template's declarative request headers (placeholders, no literal keys)", () => {
+		// 账户模板的 request.headers 是声明式请求头：值必须是占位符/短常量 → 放行。
+		const template = {
+			kind: "template",
+			request: { url: "{baseUrl}/v1/usage", headers: { authorization: "Bearer {apiKey}", accept: "application/json" } },
+			map: { remaining: "balance" },
+		};
+		expect(findSecretMaterial({ channels: [{ id: "ch-1", extra: { account: template } }] })).toEqual([]);
+		// 同一位置写明文密钥 → 照旧拒绝（窄豁免只看值的形状，不是无条件放过路径）。
+		const leaky = {
+			kind: "template",
+			request: { url: "https://x", headers: { authorization: "Bearer sk-0123456789abcdef" } },
+			map: { remaining: "balance" },
+		};
+		expect(findSecretMaterial({ channels: [{ id: "ch-1", extra: { account: leaky } }] })).toEqual([
+			"channels[0].extra.account.request.headers",
+			"channels[0].extra.account.request.headers.authorization",
+		]);
+		// 别处的 headers 不在豁免范围内。
+		expect(findSecretMaterial({ channels: [{ extra: { headers: { authorization: "Bearer {apiKey}" } } }] })).toEqual([
+			"channels[0].extra.headers",
+			"channels[0].extra.headers.authorization",
+		]);
+	});
 });
 
 describe("maintenance", () => {
@@ -169,8 +205,20 @@ describe("maintenance", () => {
 			instanceDefault: selection("ch-1"),
 			projectDefaults: { "/a": selection("ch-1"), "/b": selection("ch-2") },
 			bindings: {
-				c1: makeBinding({ conversationId: "c1", selection: selection("ch-1"), configRevision: 1, bindingRevision: 1, now: 1 }),
-				c2: makeBinding({ conversationId: "c2", selection: selection("ch-2"), configRevision: 1, bindingRevision: 2, now: 2 }),
+				c1: makeBinding({
+					conversationId: "c1",
+					selection: selection("ch-1"),
+					configRevision: 1,
+					bindingRevision: 1,
+					now: 1,
+				}),
+				c2: makeBinding({
+					conversationId: "c2",
+					selection: selection("ch-2"),
+					configRevision: 1,
+					bindingRevision: 2,
+					now: 2,
+				}),
 			},
 		};
 		const { catalog: next, detachedConversations } = detachChannel(catalog, "ch-1");
@@ -184,7 +232,13 @@ describe("maintenance", () => {
 		const bindings = Object.fromEntries(
 			Array.from({ length: 5 }, (_, i) => [
 				`c${i}`,
-				makeBinding({ conversationId: `c${i}`, selection: selection("ch-1"), configRevision: 1, bindingRevision: i, now: i }),
+				makeBinding({
+					conversationId: `c${i}`,
+					selection: selection("ch-1"),
+					configRevision: 1,
+					bindingRevision: i,
+					now: i,
+				}),
 			]),
 		);
 		const pruned = pruneBindings(bindings, 2);
@@ -205,10 +259,14 @@ describe("充值链接校验（会作为 href 渲染）", () => {
 		extra,
 	});
 	it("accepts http(s) and rejects anything else", () => {
-		expect(validateChannelRecord(base({ account: { kind: "template", topupUrl: "https://x.example/topup" } }))).toEqual([]);
+		expect(validateChannelRecord(base({ account: { kind: "template", topupUrl: "https://x.example/topup" } }))).toEqual(
+			[],
+		);
 		const bad = validateChannelRecord(base({ account: { kind: "template", topupUrl: "javascript:alert(1)" } }));
 		expect(bad.join()).toContain("充值链接必须是 http(s) 地址");
-		expect(validateChannelRecord(base({ account: { kind: "template", topupUrl: "data:text/html,x" } })).join()).toContain("充值链接必须是 http(s)");
+		expect(
+			validateChannelRecord(base({ account: { kind: "template", topupUrl: "data:text/html,x" } })).join(),
+		).toContain("充值链接必须是 http(s)");
 	});
 	it("treats an empty value as not configured", () => {
 		expect(validateChannelRecord(base({ account: { kind: "template", topupUrl: "" } }))).toEqual([]);

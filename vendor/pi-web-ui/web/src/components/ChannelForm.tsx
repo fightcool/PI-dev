@@ -7,7 +7,7 @@
  * Breadcrumbs (changing this affects):
  *   @COUPLED components/ChannelSettings.tsx（唯一挂载点：新建/编辑渠道档案）,
  *            components/ChannelModelWhitelist.tsx（模型白名单勾选）,
- *            components/ChannelAccountQuery.tsx（账户查询模板 + accountPayloadOf 校验）,
+ *            components/ChannelAccountModal.tsx（账户查询弹窗 + accountPayloadOf 校验）,
  *            components/ChannelFields.tsx（字段控件）, channel-models.ts（白名单 id 口径）,
  *            server/dev-con/channel-config.ts（channel_save 校验：id/名称/服务商/凭据/白名单）,
  *            use-chat.ts（channelModelsResult 状态 + fetch_channel_models 出帧）
@@ -15,8 +15,8 @@
  *           别的服务商的模型塞进白名单）。
  *   📖 docs/DEV-CON-PROPOSAL.md §4（渠道档案只存引用、不存密钥）, §6（设置页校验）
  *   @CONTRACT 只提交 channel_save 的 payload；凭据按名称引用（null = 跟随服务商 active key）。
- *   @ASSUME channel_state 不下发 extra 里的 mapping/items/method/prefix，因此**没动过账户配置
- *           就不提交 extra**（深合并不存在，浅合并会整体替换）；动过则由 accountPayloadOf 整体生成。
+ *   @ASSUME 账户配置**没打开过弹窗就不提交 extra**（服务端浅合并，提交等于整体替换）；
+ *           动过则由 ChannelAccountModal 的 accountPayloadOf 整体生成。
  *   @GOTCHA 白名单里的 id 是「服务商内部 id」：换服务商必须清空（旧 id 在新服务商下无意义），
  *           否则用户会看到「限定 N 个模型」但一个模型都不出现。
  *   @GOTCHA 新建时 id 可填（服务端生成缺省值），编辑时 id 只读——它是绑定键，
@@ -31,7 +31,7 @@ import type { ChannelProviderSaveInput, ChannelSaveInput } from "../use-chat";
 import type { ModelInfo, ProviderKeyInfo, UiChannelInfo, UiModelConfigEntry, UiProviderConfig } from "../types";
 import { useT } from "../i18n";
 import { ChannelModelWhitelist } from "./ChannelModelWhitelist";
-import { ChannelAccountQuery, accountPayloadOf, type AccountPreset } from "./ChannelAccountQuery";
+import { ChannelAccountModal, accountPayloadOf, accountSummaryOf, formatAccountJson, type AccountPreset } from "./ChannelAccountModal";
 import { SelectField, TextField } from "./ChannelFields";
 
 /** 「跟随服务商当前密钥」在 <select> 里的哨兵值（空值留给 disabled 占位项）。 */
@@ -68,21 +68,13 @@ export interface ChannelDraft {
 	/** 模型白名单（服务商内部 id）；空数组 = 不限。 */
 	models: string[];
 	enabled: boolean;
-	/** 账户查询配置（kind 为空 = 不查询；见 ChannelAccountQuery.tsx）。 */
+	/** 查询方式（"" = 不查询 / template / openai-gateway；见 ChannelAccountModal.tsx）。 */
 	accountKind: string;
-	accountUrl: string;
-	accountMethod: string;
-	accountApiKeyHeader: string;
-	accountApiKeyPrefix: string;
-	accountBody: string;
-	accountMappingJson: string;
-	accountItemsJson: string;
-	accountUnit: string;
-	accountScale: string;
-	/** 账户查询专用凭据名（少数供应商需要另一把 API key；留空 = 用渠道模型凭据）。 */
-	accountCredentialKeyName: string;
-	/** 充值页地址（可选；显示在「用量详情」标题右侧的直达链接）。 */
-	accountTopupUrl: string;
+	/**
+	 * 账户查询配置的 JSON 原文（弹窗文本框内容；空 = 没配置）。
+	 * @CONTRACT 保存时解析成对象直接当 extra.account 提交——UI 不再拆成十几个字段。
+	 */
+	accountJson: string;
 }
 
 export function channelDraftOf(
@@ -91,13 +83,10 @@ export function channelDraftOf(
 	/** 该渠道服务商的现有连接（来自 chat.modelsConfig）；只有自定义服务商才有。 */
 	provider?: UiProviderConfig | null,
 ): ChannelDraft {
-	// channel_state 现在**完整回显**账户配置（含 method/apiKeyHeader/apiKeyPrefix/body/mapping/items），
-	// 因此编辑已存模板时可以正确回填；仍保留默认值兜底：空串在服务端语义里是「不加前缀」，
-	// 留空会静默改坏一个能用的配置，所以缺字段时回落到服务端默认值。
-	const hasAccount = Boolean(c?.account);
-	const echo = (c?.account ?? {}) as Record<string, unknown>;
-	const echoText = (key: string): string => (typeof echo[key] === "string" ? (echo[key] as string) : "");
-	const echoJson = (key: string): string => (echo[key] && typeof echo[key] === "object" ? JSON.stringify(echo[key], null, 2) : "");
+	// channel_state **完整回显**账户配置（整份声明式 JSON），因此编辑已存配置时把它原样格式化
+	// 进文本框即可；没有配置时留空（弹窗里选「不查询」或粘贴模板）。
+	const account = (c?.account ?? null) as Record<string, unknown> | null;
+	const accountKind = account && typeof account.kind === "string" ? account.kind : "";
 	return {
 		id: c?.id ?? null,
 		idInput: c?.id ?? "",
@@ -116,18 +105,8 @@ export function channelDraftOf(
 		accountRef: c?.accountRef ?? "",
 		models: c?.models ?? [],
 		enabled: c?.enabled ?? true,
-		accountKind: echoText("kind"),
-		accountUrl: echoText("url"),
-		accountMethod: echoText("method") || "GET",
-		accountApiKeyHeader: echoText("apiKeyHeader") || (hasAccount ? "authorization" : ""),
-		accountApiKeyPrefix: typeof echo.apiKeyPrefix === "string" ? echo.apiKeyPrefix : hasAccount ? "Bearer " : "",
-		accountBody: echoText("body"),
-		accountMappingJson: echoJson("mapping"),
-		accountItemsJson: echoJson("items"),
-		accountUnit: echoText("unit"),
-		accountScale: typeof echo.scale === "number" ? String(echo.scale) : "",
-		accountCredentialKeyName: echoText("credentialKeyName"),
-		accountTopupUrl: echoText("topupUrl"),
+		accountKind,
+		accountJson: formatAccountJson(account),
 	};
 }
 
@@ -195,6 +174,8 @@ export function ChannelForm({
 	const [error, setError] = useState<string | null>(null);
 	/** 账户配置是否被改过：没改过就不提交 extra（见 @ASSUME）。 */
 	const [accountTouched, setAccountTouched] = useState(false);
+	/** 账户查询设置弹窗是否打开。 */
+	const [accountOpen, setAccountOpen] = useState(false);
 	const set = (patch: Partial<ChannelDraft>) => setForm((d) => ({ ...d, ...patch }));
 	const knownKeys = providerKeys[form.providerId] ?? [];
 	/** 「新建服务商」模式：本表单同时写 models.json。 */
@@ -281,7 +262,7 @@ export function ChannelForm({
 	const submit = () => {
 		const newId = form.idInput.trim();
 		if (!form.id && newId && !isValidChannelId(newId)) return setError(t("channelIdInvalid"));
-		const account = accountPayloadOf(form, t);
+		const account = accountPayloadOf({ kind: form.accountKind, json: form.accountJson }, t);
 		if (account.error) return setError(account.error);
 		// 新建/更新服务商：地址与模型是硬要求（models.json 那边同样会拒）。
 		let provider: ChannelProviderSaveInput | undefined;
@@ -324,7 +305,9 @@ export function ChannelForm({
 			// 白名单始终提交（空数组 = 不限，必须能显式清空）。
 			models: form.models,
 			enabled: form.enabled,
-			...(account.account && accountTouched ? { extra: { account: account.account } } : {}),
+			// 没动过账户配置就不提交 extra（服务端是整体覆盖，见 @ASSUME）；
+			// 动过则提交解析后的整份 JSON（null = 显式「不查询」）。
+			...(accountTouched ? { extra: { account: account.account ?? null } } : {}),
 		};
 		// provider 是 channel 的**同级**字段（见 protocol.ts 的 channel_save），不能塞进 channel。
 		onSave({ channel, ...(provider ? { provider } : {}) });
@@ -495,12 +478,30 @@ export function ChannelForm({
 				onChange={(v) => set({ accountRef: v })}
 			/>
 			<p className="set-hint">{t("channelAccountHint")}</p>
-			<ChannelAccountQuery
-				draft={form}
-				presets={accountPresets}
-				onChange={set}
-				onTouch={() => setAccountTouched(true)}
-			/>
+			{/* 账户查询：一行摘要 + 弹窗（旧的十几个字段埋在表单底部，没人能一眼看到全貌）。 */}
+			<div className="chan-account-row">
+				<span className="field-label">{t("channelAccountSectionTitle")}</span>
+				<span className="chan-meta">{accountSummaryOf({ kind: form.accountKind, json: form.accountJson }, t)}</span>
+				<button type="button" className="chan-btn" onClick={() => setAccountOpen(true)}>
+					{t("channelAccountConfigure")}
+				</button>
+			</div>
+			{accountOpen && (
+				<ChannelAccountModal
+					title={t("channelAccountSectionTitle")}
+					kind={form.accountKind}
+					json={form.accountJson}
+					presets={accountPresets}
+					// 新建渠道没有已存配置，不必拿「整体覆盖」吓人。
+					showOverwrite={!!form.id}
+					onSave={({ kind, json }) => {
+						set({ accountKind: kind, accountJson: json });
+						setAccountTouched(true);
+						setAccountOpen(false);
+					}}
+					onClose={() => setAccountOpen(false)}
+				/>
+			)}
 			<label className="chan-enable">
 				<input type="checkbox" checked={form.enabled} onChange={(e) => set({ enabled: e.target.checked })} />
 				{t("channelEnabledLabel")}

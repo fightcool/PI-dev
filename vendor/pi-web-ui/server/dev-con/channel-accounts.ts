@@ -26,8 +26,15 @@
  */
 import type { UiAccountStatus } from "../protocol.js";
 import type { ChannelRecord } from "./channel-model.js";
-import { accountTemplateOf, applyAccountTemplate, renderTemplateText, ACCOUNT_TEMPLATE_PRESETS, type AccountTemplate } from "./account-template.js";
-export { ACCOUNT_TEMPLATE_PRESETS } from "./account-template.js";
+import {
+	applyAccountTemplate,
+	buildTemplateHeaders,
+	describeTemplateProblem,
+	renderTemplateText,
+} from "./account-template.js";
+import { accountTemplateOf } from "./account-template-schema.js";
+import { ACCOUNT_TEMPLATE_PRESETS } from "./account-template-presets.js";
+export { ACCOUNT_TEMPLATE_PRESETS } from "./account-template-presets.js";
 
 /** @MAGIC 见头部说明。 */
 export const DEFAULT_TIMEOUT_MS = 5_000;
@@ -66,7 +73,11 @@ export interface AccountAdapter {
 	/** 该渠道是否可用此适配器。 */
 	match(channel: ChannelRecord): boolean;
 	/** 执行查询；实现必须只使用传入的凭据，不得落盘。 */
-	query(input: { channel: ChannelRecord; apiKey: string; signal: AbortSignal }): Promise<Omit<AccountQueryResult, "accountRef" | "kind">>;
+	query(input: {
+		channel: ChannelRecord;
+		apiKey: string;
+		signal: AbortSignal;
+	}): Promise<Omit<AccountQueryResult, "accountRef" | "kind">>;
 }
 
 /** 渠道里的账户配置（channel.extra.account）。 */
@@ -136,7 +147,8 @@ async function fetchJson(
 	} catch (err) {
 		return { ok: false, status: 0, error: (err as Error).name === "AbortError" ? "查询超时" : (err as Error).message };
 	}
-	if (res.status >= 300 && res.status < 400) return { ok: false, status: res.status, error: "账户接口返回重定向，已按策略拒绝" };
+	if (res.status >= 300 && res.status < 400)
+		return { ok: false, status: res.status, error: "账户接口返回重定向，已按策略拒绝" };
 	if (!res.ok) return { ok: false, status: res.status, error: `账户接口返回 HTTP ${res.status}` };
 	const reader = res.body?.getReader();
 	if (!reader) return { ok: false, status: res.status, error: "账户接口无响应体" };
@@ -156,7 +168,11 @@ async function fetchJson(
 			}
 		}
 	} catch (err) {
-		return { ok: false, status: res.status, error: (err as Error).name === "AbortError" ? "查询超时" : (err as Error).message };
+		return {
+			ok: false,
+			status: res.status,
+			error: (err as Error).name === "AbortError" ? "查询超时" : (err as Error).message,
+		};
 	}
 	const text = Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
 	try {
@@ -221,7 +237,12 @@ async function queryOpenAiBilling(
 		used = usage.ok ? num(((usage.body ?? {}) as Record<string, unknown>).total_usage) : undefined;
 	}
 	if (used === undefined) return null;
-	const sub = await fetchJson(fetchImpl, `${origin}/v1/dashboard/billing/subscription`, { method: "GET", headers }, signal);
+	const sub = await fetchJson(
+		fetchImpl,
+		`${origin}/v1/dashboard/billing/subscription`,
+		{ method: "GET", headers },
+		signal,
+	);
 	const subBody = (sub.ok ? (sub.body ?? {}) : {}) as Record<string, unknown>;
 	const total = num(subBody.hard_limit_usd) ?? num(subBody.soft_limit_usd) ?? num(subBody.system_hard_limit_usd);
 	// 面向用户的一句话（不要放字段名/上限占位值这类开发者语言；技术细节留给失败时的 error）。
@@ -266,7 +287,10 @@ export const openAiGatewayAdapter: AccountAdapter = {
 	async query({ channel, apiKey, signal }) {
 		const cfg = accountConfig(channel);
 		// 支持 {baseUrl} 占位（与模板适配器同一口径：取该渠道所属服务商注册的 baseUrl）。
-		const configured = renderTemplateText((cfg?.url ?? "").trim(), { baseUrl: providerBaseUrlOf(channel), apiKey }).replace(/\/+$/, "");
+		const configured = renderTemplateText((cfg?.url ?? "").trim(), {
+			baseUrl: providerBaseUrlOf(channel),
+			apiKey,
+		}).replace(/\/+$/, "");
 		if (!configured) return { status: "failed", error: "未配置账户接口地址" };
 		const origin = siteRootOf(configured);
 		if (!/^https?:\/\//i.test(origin)) return { status: "failed", error: `账户接口地址必须是 http(s)：${configured}` };
@@ -284,14 +308,24 @@ export const openAiGatewayAdapter: AccountAdapter = {
 		const queryQuotaProbe = async (): Promise<
 			{ result: Omit<AccountQueryResult, "accountRef" | "kind"> } | { error: string; status?: number }
 		> => {
-			const res = await fetchJson(fetch, selfUrl, { method: "GET", headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" } }, signal);
+			const res = await fetchJson(
+				fetch,
+				selfUrl,
+				{ method: "GET", headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" } },
+				signal,
+			);
 			if (!res.ok) return { error: res.error ?? "账户接口请求失败", status: res.status };
 			const body = (res.body ?? {}) as Record<string, unknown>;
 			const data = (body.data ?? body) as Record<string, unknown>;
 			const quota = num(data.quota);
 			const used = num(data.used_quota) ?? num(data.usedQuota);
 			if (quota === undefined && used === undefined) return { error: "账户接口未返回可识别的额度字段" };
-			const displayName = typeof data.display_name === "string" ? data.display_name : typeof data.username === "string" ? data.username : undefined;
+			const displayName =
+				typeof data.display_name === "string"
+					? data.display_name
+					: typeof data.username === "string"
+						? data.username
+						: undefined;
 			// balance = 可用余额（有已用量时扣掉），不是总额度。
 			const remaining = quota === undefined ? undefined : (used === undefined ? quota : quota - used) / scale;
 			return {
@@ -300,7 +334,12 @@ export const openAiGatewayAdapter: AccountAdapter = {
 					scope: displayName,
 					unit,
 					balance: remaining,
-					quota: { used: used === undefined ? undefined : used / scale, limit: quota === undefined ? undefined : quota / scale, remaining, unit },
+					quota: {
+						used: used === undefined ? undefined : used / scale,
+						limit: quota === undefined ? undefined : quota / scale,
+						remaining,
+						unit,
+					},
 					checkedAt: Date.now(),
 				},
 			};
@@ -335,7 +374,12 @@ export const deepSeekAdapter: AccountAdapter = {
 	async query({ channel, apiKey, signal }) {
 		const cfg = accountConfig(channel);
 		const base = (cfg?.url ?? "https://api.deepseek.com").replace(/\/+$/, "");
-		const res = await fetchJson(fetch, `${base}/user/balance`, { method: "GET", headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" } }, signal);
+		const res = await fetchJson(
+			fetch,
+			`${base}/user/balance`,
+			{ method: "GET", headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" } },
+			signal,
+		);
 		if (!res.ok) return { status: "failed", error: res.error };
 		const body = (res.body ?? {}) as { is_available?: unknown; balance_infos?: unknown };
 		const infos = Array.isArray(body.balance_infos) ? body.balance_infos : [];
@@ -356,8 +400,11 @@ export const deepSeekAdapter: AccountAdapter = {
 					toppedUp: toNumber(info.topped_up_balance) ?? 0,
 				};
 			})
-			.filter((entry): entry is { currency: string; total: number; granted: number; toppedUp: number } => entry !== null);
-		if (entries.length === 0) return { status: "failed", error: "账户接口未返回可识别的余额字段（balance_infos 为空或缺少 total_balance）" };
+			.filter(
+				(entry): entry is { currency: string; total: number; granted: number; toppedUp: number } => entry !== null,
+			);
+		if (entries.length === 0)
+			return { status: "failed", error: "账户接口未返回可识别的余额字段（balance_infos 为空或缺少 total_balance）" };
 		// 主条目：优先匹配渠道配置的币种，否则取第一条（官方通常只返回账户所属币种）。
 		const preferred = cfg?.unit ? entries.find((entry) => entry.currency === cfg.unit) : undefined;
 		const primary = preferred ?? entries[0];
@@ -375,8 +422,9 @@ export const deepSeekAdapter: AccountAdapter = {
 };
 
 /**
- * 模板适配器：用户在渠道里自配 URL/方法/鉴权/字段映射（内置三家只是预设）。
+ * 模板适配器：用户在渠道里自配请求与字段映射（内置几家只是预设）。
  * 请求与解析都走同一套有界基建（超时/体积/禁重定向/限频/缓存）。
+ * @CONTRACT 磁盘上的老平铺配置由 accountTemplateOf 现场迁移，这里只面对**新结构**。
  */
 export const templateAdapter: AccountAdapter = {
 	kind: "template",
@@ -385,18 +433,23 @@ export const templateAdapter: AccountAdapter = {
 		const template = accountTemplateOf(channel);
 		if (!template) return { status: "failed", error: "未配置账户查询模板" };
 		const baseUrl = providerBaseUrlOf(channel);
-		const url = renderTemplateText(template.url, { baseUrl, apiKey });
-		if (!/^https?:\/\//i.test(url)) return { status: "failed", error: `账户接口地址必须是 http(s)：${url}` };
-		const headerName = (template.apiKeyHeader ?? "authorization").trim() || "authorization";
-		const prefix = template.apiKeyPrefix ?? "Bearer ";
-		const method = template.method ?? "GET";
+		const url = renderTemplateText(template.request.url, { baseUrl, apiKey });
+		if (!/^https?:\/\//i.test(url)) {
+			// @BUGFIX 双花括号被渲染成 `{https://uuapi.io}/usage` 后只报 http(s) 校验失败，
+			//   用户完全看不懂问题在括号上 —— 把这句坑翻译成人话附在后面。
+			const hint = describeTemplateProblem(template.request.url);
+			return { status: "failed", error: `账户接口地址必须是 http(s)：${url}${hint ? `（${hint}）` : ""}` };
+		}
+		const method = template.request.method ?? "GET";
 		const res = await fetchJson(
 			fetch,
 			url,
 			{
 				method,
-				headers: { [headerName]: `${prefix}${apiKey}`, accept: "application/json", ...(method === "POST" ? { "content-type": "application/json" } : {}) },
-				...(method === "POST" && template.body ? { body: renderTemplateText(template.body, { baseUrl, apiKey }) } : {}),
+				headers: buildTemplateHeaders(template, { baseUrl, apiKey }),
+				...(method === "POST" && template.request.body
+					? { body: renderTemplateText(template.request.body, { baseUrl, apiKey }) }
+					: {}),
 			},
 			signal,
 		);
@@ -464,7 +517,12 @@ export const openRouterAdapter: AccountAdapter = {
 	async query({ channel, apiKey, signal }) {
 		const cfg = accountConfig(channel);
 		const base = (cfg?.url ?? "https://openrouter.ai/api/v1").replace(/\/+$/, "");
-		const credits = await fetchJson(fetch, `${base}/credits`, { headers: { authorization: `Bearer ${apiKey}` } }, signal);
+		const credits = await fetchJson(
+			fetch,
+			`${base}/credits`,
+			{ headers: { authorization: `Bearer ${apiKey}` } },
+			signal,
+		);
 		if (!credits.ok) return { status: "failed", error: credits.error };
 		const cdata = ((credits.body ?? {}) as Record<string, unknown>).data as Record<string, unknown> | undefined;
 		const total = num(cdata?.total_credits);
@@ -627,7 +685,12 @@ export class AccountRegistry {
 
 	/** 账户查询模板预设（UI 一键填充；不含任何密钥）。 */
 	presets(): { id: string; label: string; description: string; template: Record<string, unknown> }[] {
-		return ACCOUNT_TEMPLATE_PRESETS.map((p) => ({ id: p.id, label: p.label, description: p.description, template: { ...p.template } }));
+		return ACCOUNT_TEMPLATE_PRESETS.map((p) => ({
+			id: p.id,
+			label: p.label,
+			description: p.description,
+			template: { ...p.template },
+		}));
 	}
 
 	/** 测试/维护用：清空缓存。 */
