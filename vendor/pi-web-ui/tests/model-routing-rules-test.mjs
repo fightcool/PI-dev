@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 
-const PORT = Number(process.argv[2] || 8885);
+const PORT = Number(process.argv[2] || 8947);
 const base = mkdtempSync(join(tmpdir(), "pi-web-routing-"));
 const workdir = join(base, "work");
 const dataDir = join(base, "data");

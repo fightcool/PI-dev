@@ -60,11 +60,13 @@ describe("冒烟清单端口唯一性", () => {
 		).toEqual([]);
 	});
 
-	it("端口都在可用区间（非特权端口，且不撞线上 8787）", () => {
+	it("端口都在可用区间（≥8900 且非线上 8787）", () => {
+		// ≥8900 是 vendor AGENTS.md「测试规范：端口隔离（≥8900）」的硬约束：8900 以下是
+		// 常见本地开发/示例服务的占用区间，容易与操作人正在跑的东西撞。
 		const bad: string[] = [];
 		for (const name of list) {
 			for (const port of portsOf(name)) {
-				if (port < 1024 || port > 65535 || port === 8787) bad.push(`${name}:${port}`);
+				if (port < 8900 || port > 65535 || port === 8787) bad.push(`${name}:${port}`);
 			}
 		}
 		expect(bad).toEqual([]);
