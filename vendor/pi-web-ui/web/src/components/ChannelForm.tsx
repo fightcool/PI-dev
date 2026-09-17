@@ -24,6 +24,11 @@
  *   @GOTCHA 模型 id 用 bareModelId（只剥第一个 provider 前缀），"openrouter/vendor/model" 不会剥错。
  *   @WHY 账户「测试查询」不被允许：写配置来测试会让失败验证污染真实档案；保存后由行内
  *        「查询账户」命令验证（channel_query_account，只读）。
+ *   @WHY 从「列表下方的内联长列」改成**弹窗 + 可折叠分组**（与账户查询弹窗共用 ChannelDialog）：
+ *        原来 12 个字段一条直列铺在渠道列表下方——没有 ESC、遮罩、焦点圈，保存按钮要滚到底才看见，
+ *        而旁边的账户查询却已经是规规矩矩的弹窗，同一个面板里两套交互。现在必填项（显示名/连接/
+ *        模型）默认展开，进阶项（渠道 id、命名凭据、协议端点、账户引用、账户查询）收进分区，
+ *        折叠时用一行摘要说明里面配了什么。
  * ──────────────────────────────────────────────────
  */
 import { useEffect, useRef, useState } from "react";
@@ -32,6 +37,7 @@ import type { ModelInfo, ProviderKeyInfo, UiChannelInfo, UiModelConfigEntry, UiP
 import { useT } from "../i18n";
 import { ChannelModelWhitelist } from "./ChannelModelWhitelist";
 import { ChannelAccountModal, accountPayloadOf, accountSummaryOf, formatAccountJson, type AccountPreset } from "./ChannelAccountModal";
+import { ChannelDialog, ChannelSection } from "./ChannelDialog";
 import { SelectField, TextField } from "./ChannelFields";
 
 /** 「跟随服务商当前密钥」在 <select> 里的哨兵值（空值留给 disabled 占位项）。 */
@@ -176,6 +182,8 @@ export function ChannelForm({
 	const [accountTouched, setAccountTouched] = useState(false);
 	/** 账户查询设置弹窗是否打开。 */
 	const [accountOpen, setAccountOpen] = useState(false);
+	/** 「基本信息」分区展开状态（默认展开：显示名是必填项）。 */
+	const [basicsOpen, setBasicsOpen] = useState(true);
 	const set = (patch: Partial<ChannelDraft>) => setForm((d) => ({ ...d, ...patch }));
 	const knownKeys = providerKeys[form.providerId] ?? [];
 	/** 「新建服务商」模式：本表单同时写 models.json。 */
@@ -313,24 +321,62 @@ export function ChannelForm({
 		onSave({ channel, ...(provider ? { provider } : {}) });
 	};
 
+	/** 进阶分区默认收起：已配过的（id/凭据/端点/账户引用/账户查询）用摘要提示，不必展开也知道。 */
+	const [advOpen, setAdvOpen] = useState(false);
+	const accountSummary = accountSummaryOf({ kind: form.accountKind, json: form.accountJson }, t);
+	/** 进阶分区折叠时的一行摘要：只列真正配了值的项，避免一堆「默认」噪声。 */
+	const advSummary = [
+		form.id || form.idInput.trim() ? `id ${form.id || form.idInput.trim()}` : "",
+		form.credentialKeyName ?? "",
+		form.endpointId.trim(),
+		form.accountRef.trim(),
+		accountSummary,
+	]
+		.filter(Boolean)
+		.join(" · ");
+
 	return (
-		<div className="chan-form">
-			<div className="chan-form-title">{form.id ? t("channelEditTitle") : t("channelAdd")}</div>
-			<TextField
-				label={t("channelDisplayName")}
-				value={form.displayName}
-				ph={t("channelDisplayNamePh")}
-				onChange={(v) => set({ displayName: v })}
-			/>
-			<label className="field">
-				<span className="field-label">{t("channelId")}</span>
-				{form.id ? (
-					<input value={form.id} readOnly />
-				) : (
-					<input value={form.idInput} placeholder={t("channelIdPh")} onChange={(e) => set({ idInput: e.target.value })} />
-				)}
-				{form.id && <span className="field-hint">{t("channelIdLocked")}</span>}
-			</label>
+		<ChannelDialog
+			title={form.id ? t("channelEditTitle") : t("channelAdd")}
+			subtitle={form.id || undefined}
+			titleId="chan-form-title"
+			className="chan-form-dialog"
+			onClose={onCancel}
+			footer={
+				<>
+					{error && <div className="chan-warn">{error}</div>}
+					<button type="button" className="chan-btn" onClick={onCancel}>
+						{t("cancel")}
+					</button>
+					<button
+						type="button"
+						className="chan-btn primary"
+						disabled={!form.displayName.trim() || !form.providerId}
+						onClick={submit}
+					>
+						{t("save")}
+					</button>
+				</>
+			}
+		>
+			<ChannelSection
+				title={t("channelSectionBasics")}
+				hint={t("channelSectionBasicsHint")}
+				summary={form.displayName.trim() || undefined}
+				open={basicsOpen}
+				onToggle={() => setBasicsOpen((v) => !v)}
+			>
+				<TextField
+					label={t("channelDisplayName")}
+					value={form.displayName}
+					ph={t("channelDisplayNamePh")}
+					onChange={(v) => set({ displayName: v })}
+				/>
+				<label className="chan-enable">
+					<input type="checkbox" checked={form.enabled} onChange={(e) => set({ enabled: e.target.checked })} />
+					{t("channelEnabledLabel")}
+				</label>
+			</ChannelSection>
 			{/* ---- 服务商连接（方案 A：渠道面板是唯一入口）--------------------------------
 			   旧流程要先去模型下拉的「管理模型」建服务商（baseUrl/协议/密钥），再回这里引用它 ——
 			   两个入口改同一个东西，协议填错也不知道。现在新建渠道时直接把连接一起填。 */}
@@ -359,12 +405,6 @@ export function ChannelForm({
 				{connOpen && (
 					<>
 						<TextField
-							label={t("channelConnProviderId")}
-							value={form.providerIdInput}
-							ph={form.displayName.trim() ? undefined : "cctq-claude"}
-							onChange={(v) => set({ providerIdInput: v })}
-						/>
-						<TextField
 							label={t("channelConnBaseUrl")}
 							value={form.providerBaseUrl}
 							ph="https://www.cctq.ai"
@@ -384,6 +424,12 @@ export function ChannelForm({
 							type="password"
 							ph={providerConfig?.hasApiKey ? t("channelConnApiKeyKeep") : t("channelConnApiKeyNew")}
 							onChange={(v) => set({ providerApiKey: v })}
+						/>
+						<TextField
+							label={t("channelConnProviderId")}
+							value={form.providerIdInput}
+							ph={form.displayName.trim() ? undefined : "cctq-claude"}
+							onChange={(v) => set({ providerIdInput: v })}
 						/>
 						<label className="chan-enable">
 							<input
@@ -417,31 +463,6 @@ export function ChannelForm({
 					</SelectField>
 				)}
 			</div>
-			{/* 命名凭据只对已注册服务商有意义（新建服务商的密钥就在上方的「密钥」字段里）。 */}
-			{!connOpen && (
-				<SelectField
-					label={t("channelCredentialKey")}
-					value={form.credentialKeyName ?? FOLLOW_ACTIVE}
-					onChange={(v) => set({ credentialKeyName: v === FOLLOW_ACTIVE ? null : v })}
-				>
-					<option value={FOLLOW_ACTIVE}>{t("channelFollowActiveKey")}</option>
-					{knownKeys.map((k) => (
-						<option key={k.name} value={k.name}>
-							{k.name}
-							{k.active ? " ●" : ""}
-						</option>
-					))}
-					{form.credentialKeyName && !knownKeys.some((k) => k.name === form.credentialKeyName) && (
-						<option value={form.credentialKeyName}>{form.credentialKeyName}</option>
-					)}
-				</SelectField>
-			)}
-			<TextField
-				label={t("channelEndpoint")}
-				value={form.endpointId}
-				ph={t("channelEndpointPh")}
-				onChange={(v) => set({ endpointId: v })}
-			/>
 			{/* 新建服务商时候选来自本次接口探测；已有服务商时来自抓取+本地目录。 */}
 			<ChannelModelWhitelist
 				models={connOpen ? [] : models}
@@ -471,21 +492,64 @@ export function ChannelForm({
 				</button>
 			</div>
 			{connOpen && <p className="set-hint">{t("channelConnModelsHint")}</p>}
-			<TextField
-				label={t("channelAccountRef")}
-				value={form.accountRef}
-				ph={t("channelAccountRefPh")}
-				onChange={(v) => set({ accountRef: v })}
-			/>
-			<p className="set-hint">{t("channelAccountHint")}</p>
-			{/* 账户查询：一行摘要 + 弹窗（旧的十几个字段埋在表单底部，没人能一眼看到全貌）。 */}
-			<div className="chan-account-row">
-				<span className="field-label">{t("channelAccountSectionTitle")}</span>
-				<span className="chan-meta">{accountSummaryOf({ kind: form.accountKind, json: form.accountJson }, t)}</span>
-				<button type="button" className="chan-btn" onClick={() => setAccountOpen(true)}>
-					{t("channelAccountConfigure")}
-				</button>
-			</div>
+			{/* ---- 进阶（默认收起）：绑定键、凭据、端点、账户 ---- */}
+			<ChannelSection
+				title={t("channelAdvancedTitle")}
+				hint={t("channelAdvancedHint")}
+				summary={advSummary || t("channelAdvancedAllDefault")}
+				open={advOpen}
+				onToggle={() => setAdvOpen((v) => !v)}
+			>
+				<label className="field">
+					<span className="field-label">{t("channelId")}</span>
+					{form.id ? (
+						<input value={form.id} readOnly />
+					) : (
+						<input value={form.idInput} placeholder={t("channelIdPh")} onChange={(e) => set({ idInput: e.target.value })} />
+					)}
+					{form.id && <span className="field-hint">{t("channelIdLocked")}</span>}
+				</label>
+				{/* 命名凭据只对已注册服务商有意义（新建服务商的密钥就在上方的「密钥」字段里）。 */}
+				{!connOpen && (
+					<SelectField
+						label={t("channelCredentialKey")}
+						value={form.credentialKeyName ?? FOLLOW_ACTIVE}
+						onChange={(v) => set({ credentialKeyName: v === FOLLOW_ACTIVE ? null : v })}
+					>
+						<option value={FOLLOW_ACTIVE}>{t("channelFollowActiveKey")}</option>
+						{knownKeys.map((k) => (
+							<option key={k.name} value={k.name}>
+								{k.name}
+								{k.active ? " ●" : ""}
+							</option>
+						))}
+						{form.credentialKeyName && !knownKeys.some((k) => k.name === form.credentialKeyName) && (
+							<option value={form.credentialKeyName}>{form.credentialKeyName}</option>
+						)}
+					</SelectField>
+				)}
+				<TextField
+					label={t("channelEndpoint")}
+					value={form.endpointId}
+					ph={t("channelEndpointPh")}
+					onChange={(v) => set({ endpointId: v })}
+				/>
+				<TextField
+					label={t("channelAccountRef")}
+					value={form.accountRef}
+					ph={t("channelAccountRefPh")}
+					onChange={(v) => set({ accountRef: v })}
+				/>
+				<p className="set-hint">{t("channelAccountHint")}</p>
+				{/* 账户查询：一行摘要 + 弹窗（旧的十几个字段埋在表单底部，没人能一眼看到全貌）。 */}
+				<div className="chan-account-row">
+					<span className="field-label">{t("channelAccountSectionTitle")}</span>
+					<span className="chan-meta">{accountSummary}</span>
+					<button type="button" className="chan-btn" onClick={() => setAccountOpen(true)}>
+						{t("channelAccountConfigure")}
+					</button>
+				</div>
+			</ChannelSection>
 			{accountOpen && (
 				<ChannelAccountModal
 					title={t("channelAccountSectionTitle")}
@@ -502,24 +566,6 @@ export function ChannelForm({
 					onClose={() => setAccountOpen(false)}
 				/>
 			)}
-			<label className="chan-enable">
-				<input type="checkbox" checked={form.enabled} onChange={(e) => set({ enabled: e.target.checked })} />
-				{t("channelEnabledLabel")}
-			</label>
-			{error && <div className="chan-warn">{error}</div>}
-			<div className="chan-form-actions">
-				<button type="button" className="chan-btn" onClick={onCancel}>
-					{t("cancel")}
-				</button>
-				<button
-					type="button"
-					className="chan-btn primary"
-					disabled={!form.displayName.trim() || !form.providerId}
-					onClick={submit}
-				>
-					{t("save")}
-				</button>
-			</div>
-		</div>
+		</ChannelDialog>
 	);
 }

@@ -1241,6 +1241,13 @@ export const zh = {
 	channelIdPh: "留空自动生成",
 	channelIdLocked: "渠道 id 是绑定键，创建后不可修改（改名请用显示名）。",
 	channelIdInvalid: "渠道 id 需为 2–48 位小写字母/数字/连字符",
+	// 渠道：新建/编辑弹窗里的「基本信息」分区
+	channelSectionBasics: "基本信息",
+	channelSectionBasicsHint: "显示名就是列表和模型下拉里看到的名字。",
+	// 渠道：新建/编辑弹窗里的「进阶」分区（默认收起：绑定键/凭据/端点/账户引用/账户查询）
+	channelAdvancedTitle: "进阶设置",
+	channelAdvancedHint: "这些都可以留空：渠道 id 自动生成，凭据默认跟随服务商当前密钥。",
+	channelAdvancedAllDefault: "全部默认",
 	// 渠道：账户查询设置（独立弹窗 + 一份声明式 JSON + 预设一键填充）
 	channelAccountSectionTitle: "账户查询设置",
 	channelAccountConfigure: "配置账户查询…",

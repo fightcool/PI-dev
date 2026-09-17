@@ -23,10 +23,11 @@
  *   @ASSUME 弹窗按 key 重挂载（调用方给 key），所以内部状态只从 props 初始化一次。
  * ──────────────────────────────────────────────────
  */
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { Translate } from "../i18n";
 import { useT } from "../i18n";
 import { SelectField, TextAreaField } from "./ChannelFields";
+import { ChannelDialog } from "./ChannelDialog";
 
 /** 服务端下发的账户查询预设（选中即把 template 格式化后填进文本框）。 */
 export type AccountPreset = { id: string; label: string; description: string; template: Record<string, unknown> };
@@ -112,10 +113,6 @@ export function accountSummaryOf(input: { kind: string; json: string }, t: Trans
 	return url ? `${label} · ${url}` : label;
 }
 
-/** 弹窗内可聚焦元素（Tab 焦点环）；disabled 的按钮取不到焦点，直接排除。 */
-const FOCUSABLE =
-	"button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]";
-
 /**
  * 「账户查询设置」弹窗：查询方式（三选一）+ 预设一键填充 + 一份声明式 JSON。
  * 纯受控壳：不发任何命令，保存时把校验过的 extra.account 交给调用方（列表行直接存，
@@ -147,43 +144,8 @@ export function ChannelAccountModal({
 	);
 	const [json, setJson] = useState(initialJson);
 	const [presetId, setPresetId] = useState("");
-	const boxRef = useRef<HTMLDivElement>(null);
 	const areaRef = useRef<HTMLTextAreaElement>(null);
 	const { account, error } = accountPayloadOf({ kind, json }, t);
-
-	// ESC 关闭 + Tab 焦点不逃出弹窗（捕获阶段：不让底层面板的快捷键先吃掉按键）。
-	useEffect(() => {
-		const onKey = (e: KeyboardEvent) => {
-			if (e.key === "Escape") {
-				e.stopPropagation();
-				onClose();
-				return;
-			}
-			if (e.key !== "Tab") return;
-			const box = boxRef.current;
-			if (!box) return;
-			const items = [...box.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => el.tabIndex !== -1);
-			if (items.length === 0) return;
-			const first = items[0];
-			const last = items[items.length - 1];
-			const active = document.activeElement as HTMLElement | null;
-			const inside = !!active && box.contains(active);
-			if (e.shiftKey && (!inside || active === first)) {
-				e.preventDefault();
-				last.focus();
-			} else if (!e.shiftKey && (!inside || active === last)) {
-				e.preventDefault();
-				first.focus();
-			}
-		};
-		document.addEventListener("keydown", onKey, true);
-		return () => document.removeEventListener("keydown", onKey, true);
-	}, [onClose]);
-
-	// 打开即把光标放进 JSON 文本框（模板方式是主场景，能直接粘贴）。
-	useEffect(() => {
-		areaRef.current?.focus();
-	}, []);
 
 	const preset = presets?.find((p) => p.id === presetId);
 	/** 选预设 = 把它的 template 以格式化 JSON 整体填进文本框（kind 跟随模板）。 */
@@ -197,18 +159,29 @@ export function ChannelAccountModal({
 	};
 
 	return (
-		<div className="modal-backdrop" onClick={onClose}>
-			<div
-				className="modal chan-account-modal"
-				role="dialog"
-				aria-modal="true"
-				aria-labelledby="chan-account-modal-title"
-				ref={boxRef}
-				onClick={(e) => e.stopPropagation()}
-			>
-				<div className="modal-head">
-					<h2 id="chan-account-modal-title">{title}</h2>
-				</div>
+		<ChannelDialog
+			title={title}
+			titleId="chan-account-modal-title"
+			className="chan-account-modal"
+			onClose={onClose}
+			initialFocusRef={areaRef}
+			footer={
+				<>
+					{error && <div className="chan-warn">{error}</div>}
+					<button type="button" className="chan-btn" onClick={onClose}>
+						{t("cancel")}
+					</button>
+					<button
+						type="button"
+						className="chan-btn primary"
+						disabled={!!error}
+						onClick={() => onSave({ kind, json, account: account ?? null })}
+					>
+						{t("save")}
+					</button>
+				</>
+			}
+		>
 				<div className="chan-account-modes">
 					<span className="field-label">{t("channelAccountMode")}</span>
 					{(
@@ -253,22 +226,7 @@ export function ChannelAccountModal({
 						<p className="set-hint">{t("channelAccountPlaceholders")}</p>
 					</>
 				)}
-				{showOverwrite && <p className="set-hint">{t("channelTemplateOverwrite")}</p>}
-				{error && <div className="chan-warn">{error}</div>}
-				<div className="chan-form-actions">
-					<button type="button" className="chan-btn" onClick={onClose}>
-						{t("cancel")}
-					</button>
-					<button
-						type="button"
-						className="chan-btn primary"
-						disabled={!!error}
-						onClick={() => onSave({ kind, json, account: account ?? null })}
-					>
-						{t("save")}
-					</button>
-				</div>
-			</div>
-		</div>
+			{showOverwrite && <p className="set-hint">{t("channelTemplateOverwrite")}</p>}
+		</ChannelDialog>
 	);
 }

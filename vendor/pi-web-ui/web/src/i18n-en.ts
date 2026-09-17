@@ -1271,6 +1271,11 @@ export const en: EnDictionary = {
 	channelIdLocked: "The channel id is the binding key and cannot change after creation (rename via the display name instead).",
 	channelIdInvalid: "Channel id must be 2–48 lowercase letters, digits or hyphens",
 	// Channels: account query settings (standalone modal + one declarative JSON + preset fill)
+	channelSectionBasics: "Basics",
+	channelSectionBasicsHint: "The display name is what the channel list and the model picker show.",
+	channelAdvancedTitle: "Advanced",
+	channelAdvancedHint: "All optional: the channel id is generated, and the credential follows the provider's active key by default.",
+	channelAdvancedAllDefault: "All defaults",
 	channelAccountSectionTitle: "Account query settings",
 	channelAccountConfigure: "Configure account query…",
 	channelAccountMode: "Query mode",
