@@ -46,6 +46,7 @@ import { AgentService, workspacePath, QuiesceRejectedError } from "./agent-servi
 import { isAbsoluteWirePath, wireToAbs } from "./files-service.js";
 import { previewKind } from "./text-sniff.js";
 import { startControlServer } from "./control-socket.js";
+import { startEventLoopProbe } from "./event-loop-probe.js";
 import { scheduleUploadCleanup } from "./uploads.js";
 import { ensureWindowsBash, windowsBashDir } from "./ensure-bash.js";
 import { listThemes, resolveThemeFile } from "./themes.js";
@@ -730,6 +731,11 @@ const heartbeatTimer = setInterval(() => {
 		}
 	}
 }, 10_000);
+
+// 事件循环阻塞探针（默认关闭；PI_WEB_LOOP_PROBE=1 时每 10s 一行 [loop]）。
+// 单进程同时跑 UI 与 agent，任何同步工作都会同时卡住所有客户端——这是量化它的唯一手段。
+// 见 docs/EVENT-LOOP-SPLIT-PROPOSAL.md §4 验收指标 1。
+const stopLoopProbe = startEventLoopProbe();
 
 // 引擎分发：PI_WEB_ENGINE=dsh 时使用 DeepSeek Harness 引擎（server/dsh/），
 // 默认 pi 引擎。同一 wire 协议，前端无感知（ready/health 携带 engine 字段）。
@@ -1773,6 +1779,7 @@ async function shutdown(): Promise<void> {
 	shuttingDown = true;
 	console.log("\nshutting down…");
 	clearInterval(heartbeatTimer);
+	stopLoopProbe();
 	stopControl();
 	pluginMgr.dispose();
 	mcpBridge.dispose();
