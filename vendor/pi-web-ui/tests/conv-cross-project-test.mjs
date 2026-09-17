@@ -15,7 +15,7 @@ import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
-import { execSync } from "node:child_process";
+import { ensureBuild } from "./lib/build.mjs";
 
 const PORT = Number(process.argv[2] || 8908);
 const MOCK_PORT = PORT + 1;
@@ -113,7 +113,7 @@ writeFileSync(
 );
 
 const repoRoot = realpathSync(new URL("../", import.meta.url));
-execSync("npm run build", { cwd: repoRoot, stdio: "ignore" });
+ensureBuild({ cwd: repoRoot, label: "conv-cross-project-test" });
 const server = spawn(process.execPath, ["dist/server/index.js"], {
 	cwd: repoRoot,
 	env: {

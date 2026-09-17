@@ -8,7 +8,8 @@
  * Run:  node slash-commands-test.mjs
  */
 import { portUp, freePort } from "./lib/port-utils.mjs";
-import { execSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
+import { ensureBuild } from "./lib/build.mjs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -76,12 +77,7 @@ function connect() {
 
 async function main() {
 	// Build + boot the server on a dedicated port.
-	try {
-		execSync("npm run build", { cwd: PROJ, stdio: "ignore" });
-	} catch {
-		console.error("build failed");
-		process.exit(1);
-	}
+	ensureBuild({ cwd: PROJ, label: "slash-commands-test" });
 	try {
 		await freePort(PORT);
 	} catch {

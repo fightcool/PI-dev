@@ -20,6 +20,7 @@
  * 用法：node tests/new-project-ui-test.mjs
  */
 import { CHROME_PATH } from "./lib/chrome.mjs";
+import { ensureBuild } from "./lib/build.mjs";
 import { portUp, freePort } from "./lib/port-utils.mjs";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
@@ -43,6 +44,9 @@ const dataDir = mkdtempSync(join(tmpdir(), "pi-web-newproj-data-"));
 const agentDir = join(base, "agent");
 const NEW_NAME = "demo-project";
 const newProjPath = join(parentDir, NEW_NAME);
+
+// dist/ 必须先是最新构建（单独跑时自建；由跑器提前构建则直接复用）。
+ensureBuild({ cwd: REPO_ROOT, label: "new-project-ui-test" });
 
 let failures = 0;
 const check = (name, ok, extra = "") => {

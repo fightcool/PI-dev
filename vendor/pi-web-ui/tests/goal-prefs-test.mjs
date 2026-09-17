@@ -18,7 +18,7 @@ const REPO_ROOT = fileURLToPath(new globalThis.URL("../", import.meta.url));
 
 /* eslint-env node */
 
-const PORT = 8908;
+const PORT = 8880;
 const PROJ = REPO_ROOT;
 const CID = "prefs-client";
 

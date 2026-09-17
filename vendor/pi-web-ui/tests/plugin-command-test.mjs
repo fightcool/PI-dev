@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
 
-const PORT = 8979;
+const PORT = 8884;
 const BASE = `http://127.0.0.1:${PORT}`;
 
 const serverPath = realpathSync(process.execPath);

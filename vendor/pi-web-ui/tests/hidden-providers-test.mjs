@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 
-const PORT = Number(process.argv[2] || 8978);
+const PORT = Number(process.argv[2] || 8886);
 const base = mkdtempSync(join(tmpdir(), "pi-web-hiddenprov-"));
 const workdir = join(base, "work");
 const dataDir = join(base, "data");
