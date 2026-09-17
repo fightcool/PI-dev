@@ -20,6 +20,9 @@
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+// 「失败」的口径只有一处定义（lib/usage/token-usage.mjs）：这里与渠道失败告警共用同一判断。
+// @ts-expect-error Host runtime module is JavaScript by design.
+import { isFailedStopReason } from "#usage";
 
 /** @MAGIC 见头部说明。 */
 export const USAGE_HISTORY_MAX_BYTES = 8 * 1024 * 1024;
@@ -54,6 +57,10 @@ export interface UsageHistoryRecord {
 	currency: string | null;
 	/** 供应商是否上报了用量；旧记录无此字段（按已上报处理）。 */
 	usageKnown?: boolean;
+	/** SDK 的终止原因（stop/toolUse/length/error/aborted）；旧记录无此字段。 */
+	stopReason?: string;
+	/** 失败原因（仅失败请求有值，有界长度）；旧记录无此字段。 */
+	failureReason?: string;
 }
 
 export type UsageHistoryGroup = "channel" | "project" | "model" | "source" | "day";
@@ -79,6 +86,21 @@ export interface UsageHistoryRow {
 	unpricedRequests: number;
 	/** 该组里供应商未上报用量的请求数（0 token 不等于没消耗）。 */
 	unreportedRequests: number;
+	/**
+	 * 该组里**以错误结束**的请求数（stopReason=error）。这些请求通常已经计费了输入
+	 * token 却没产出任何可用输出 —— 就是“白烧”。用户主动中止（aborted）不算在内：
+	 * 那是有意为之，不是故障。
+	 */
+	failedRequests: number;
+	/** 失败请求白烧掉的输入 token（miss + 读缓存 + 写缓存，与 cacheHitRate 同分母）。 */
+	wastedInput: number;
+	/**
+	 * 时间窗内的缓存命中率（0..1），token 加权平均而非逐请求平均——
+	 * 短前缀请求与 10 万 token 的请求不该等权。口径与 web/src/cache-stats.ts
+	 * 的 cacheMetrics 一致：cacheRead / (input + cacheRead + cacheWrite)；
+	 * 分母为 0（没有 token / 全部未上报）时为 null，界面显示「—」而不是 0%。
+	 */
+	cacheHitRate: number | null;
 	firstAt: number | null;
 	lastAt: number | null;
 }
@@ -99,7 +121,23 @@ export interface UsageHistoryResult {
 const UNATTRIBUTED = "unattributed";
 
 function emptyRow(key: string): UsageHistoryRow {
-	return { key, requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, unpricedRequests: 0, unreportedRequests: 0, firstAt: null, lastAt: null };
+	return { key, requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, unpricedRequests: 0, unreportedRequests: 0, failedRequests: 0, wastedInput: 0, cacheHitRate: null, firstAt: null, lastAt: null };
+}
+
+/**
+ * 缓存命中率 = 命中读入 token / 全部输入 token。
+ * `input` 在 pi 的口径里只是**未命中**的部分（见 cache-stats.ts 的 @WHY），
+ * 所以分母是 input + cacheRead + cacheWrite，不是 input 本身。
+ * 分母为 0 返回 null：「没有 token」和「命中率 0%」不是一回事。
+ */
+export function cacheHitRateOf(row: Pick<UsageHistoryRow, "input" | "cacheRead" | "cacheWrite">): number | null {
+	const totalInput = row.input + row.cacheRead + row.cacheWrite;
+	return totalInput > 0 ? row.cacheRead / totalInput : null;
+}
+
+/** 派生的命中率只在这里算一次，保证行与 totals 同一口径。 */
+function finalizeRow(row: UsageHistoryRow): UsageHistoryRow {
+	return { ...row, cacheHitRate: cacheHitRateOf(row) };
 }
 
 function addTo(row: UsageHistoryRow, record: UsageHistoryRecord): void {
@@ -112,6 +150,11 @@ function addTo(row: UsageHistoryRow, record: UsageHistoryRecord): void {
 	row.cost += record.cost;
 	if (record.costBasis === "unknown") row.unpricedRequests += 1;
 	if (record.usageKnown === false) row.unreportedRequests += 1;
+	// 白烧口径：只有 error 计入（aborted 是用户主动中止，不该被当成渠道故障）。
+	if (isFailedStopReason(record.stopReason)) {
+		row.failedRequests += 1;
+		row.wastedInput += record.input + record.cacheRead + record.cacheWrite;
+	}
 	row.firstAt = row.firstAt === null ? record.at : Math.min(row.firstAt, record.at);
 	row.lastAt = row.lastAt === null ? record.at : Math.max(row.lastAt, record.at);
 }
@@ -152,13 +195,13 @@ export function aggregateUsage(
 		addTo(totals, record);
 		rows.set(key, row);
 	}
-	const ordered = [...rows.values()].sort((a, b) => (b.total - a.total) || a.key.localeCompare(b.key));
+	const ordered = [...rows.values()].map(finalizeRow).sort((a, b) => (b.total - a.total) || a.key.localeCompare(b.key));
 	return {
 		groupBy: query.groupBy,
 		from,
 		to,
 		rows: ordered,
-		totals: { ...totals, requests: totals.requests },
+		totals: finalizeRow(totals),
 		scanned: meta.scanned ?? records.length,
 		skipped: meta.skipped ?? 0,
 		truncated: meta.truncated ?? false,

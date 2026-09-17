@@ -1804,6 +1804,12 @@ export type ServerMessage =
 				unpricedRequests: number;
 				/** 该组里供应商未上报用量的请求数（0 token 不等于没消耗）。 */
 				unreportedRequests: number;
+				/** 以错误结束的请求数（stopReason=error，已计费却无产出）。 */
+				failedRequests: number;
+				/** 失败请求白烧掉的输入 token（miss + 读缓存 + 写缓存）。 */
+				wastedInput: number;
+				/** 时间窗内缓存命中率（0..1，token 加权）；null = 无 token 可算（界面显示「—」）。 */
+				cacheHitRate: number | null;
 				firstAt: number | null;
 				lastAt: number | null;
 			}[];
@@ -1817,6 +1823,10 @@ export type ServerMessage =
 				cost: number;
 				unpricedRequests: number;
 				unreportedRequests: number;
+				failedRequests: number;
+				wastedInput: number;
+				/** 全窗口缓存命中率（0..1，token 加权）；null = 无 token 可算。 */
+				cacheHitRate: number | null;
 			};
 			scanned: number;
 			skipped: number;

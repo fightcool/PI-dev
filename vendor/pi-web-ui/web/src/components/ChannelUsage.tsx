@@ -15,6 +15,12 @@
  *   @GOTCHA usageHistory 是**全局共享**状态：用量详情面板可能刚用别的 groupBy 覆盖它。
  *           这里只在 history.groupBy === "channel" 时渲染行，否则显示「正在读取」而不是错位的数字。
  *   @GOTCHA 「该渠道没有记录」显示为「—」而不是 0：0 请求与「没有读到记录」不是一回事。
+ *   @GOTCHA 缓存命中率 null（没有 token 可算）同样显示「—」而不是 0%：口径是 token 加权的
+ *            cacheRead/(input+cacheRead+cacheWrite)（见 server/dev-con/usage-history.ts 的
+ *            cacheHitRateOf），不是逐请求命中率的算术平均。
+ *   @GOTCHA 失败标注只走 `isFailedStopReason`（lib/usage/token-usage.mjs）——只算 stopReason=error
+ *            （网关搞流等），不计用户主动中止；白烧 token 按 k/M 缩写与表格其余数字同格式。
+ *            服务端告警与聚合同一口径，见 channel-failure-alert.ts。
  *   @WHY 每个渠道一行（含未归属行），因为用户抱怨的正是「渠道没有自己的用量统计」。
  * ──────────────────────────────────────────────────
  */
@@ -28,6 +34,9 @@ const WINDOWS: UsageHistoryWindow[] = ["today", "7d", "30d", "all"];
 const formatTokens = (n: number): string =>
 	n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 const formatCost = (n: number): string => (n === 0 ? "0" : n < 0.01 ? n.toFixed(4) : n.toFixed(2));
+/** 命中率：null 是「没有 token 可算」（无记录 / 全部未上报），必须显示「—」而不是 0%。 */
+const formatHitRate = (rate: number | null | undefined): string =>
+	rate === null || rate === undefined ? "—" : `${(rate * 100).toFixed(1)}%`;
 
 type Row = UsageHistoryMsg["rows"][number];
 
@@ -41,8 +50,9 @@ function buildRows(channels: UiChannelInfo[], historyRows: Row[]): { key: string
 }
 
 /**
- * 「按渠道用量」：时间窗 + 每渠道的请求数/Token/费用/最近使用。
+ * 「按渠道用量」：时间窗 + 每渠道的请求数/Token/合计/缓存命中率/费用/最近使用。
  * 未归属行与未知价格、未上报用量都显式标注（复用既有的 i18n 键，口径与用量历史一致）。
+ * 命中率由服务端算好（同一份聚合里算一次），这里只负责显示与「—」的诚实回落。
  */
 export function ChannelUsage({
 	channels,
@@ -95,6 +105,7 @@ export function ChannelUsage({
 								<th>{t("usageColInput")}</th>
 								<th>{t("usageColOutput")}</th>
 								<th>{t("usageColTotal")}</th>
+								<th title={t("usageCacheHitRateTip")}>{t("usageColCacheHitRate")}</th>
 								<th>{t("usageColCost")}</th>
 								<th>{t("channelUsageLastUsed")}</th>
 							</tr>
@@ -107,17 +118,26 @@ export function ChannelUsage({
 									return (
 										<tr key={entry.key} className="chan-usage-empty-row">
 											<td>{label(entry)}</td>
-											<td colSpan={6}>{t("channelUsageNoRecords")}</td>
+											<td colSpan={7}>{t("channelUsageNoRecords")}</td>
 										</tr>
 									);
 								}
 								return (
 									<tr key={entry.key}>
 										<td>{label(entry)}</td>
-										<td>{row.requests}</td>
+										<td>
+											{row.requests}
+											{(row.failedRequests ?? 0) > 0 && (
+												<span className="usage-unknown-price" title={t("usageFailedTip", { tokens: formatTokens(row.wastedInput ?? 0) })}>
+													{" "}
+													{t("usageHistoryFailed", { n: row.failedRequests })}
+												</span>
+											)}
+										</td>
 										<td>{formatTokens(row.input)}</td>
 										<td>{formatTokens(row.output)}</td>
 										<td>{formatTokens(row.total)}</td>
+										<td title={t("usageCacheHitRateTip")}>{formatHitRate(row.cacheHitRate)}</td>
 										<td>
 											{formatCost(row.cost)}
 											{(row.unreportedRequests ?? 0) > 0 && (

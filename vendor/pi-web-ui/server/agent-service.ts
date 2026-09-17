@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync, rmSync, statSync, mkdirSync, watch, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve, sep } from "node:path";
 // @ts-expect-error Host runtime module is JavaScript by design.
-import { normalizeUsageEvent, TokenUsageTracker } from "#usage";
+import { isFailedStopReason, normalizeUsageEvent, TokenUsageTracker } from "#usage";
 import { PROTOCOL_VERSION } from "./protocol-version.js";
 import { ChannelService } from "./dev-con/channel-service.js";
 import { AccountRegistry } from "./dev-con/channel-accounts.js";
@@ -34,6 +34,7 @@ import { measureAreas } from "./dev-con/storage-usage.js";
 import { buildDiagnostics, usageSummaryOf } from "./dev-con/ops-diagnostics.js";
 import { capabilityFixHint, runCapabilityProbe, type CapabilityVerdict } from "./dev-con/endpoint-capability.js";
 import { evaluateAlerts, markFired, ALERT_COOLDOWN_MS, ALERT_CRITICAL_PERCENT, ALERT_WARN_PERCENT, type OpsAlert } from "./dev-con/ops-alerts.js";
+import { evaluateChannelFailureAlerts, CHANNEL_FAILURE_WINDOW_MS, type ChannelFailureAlert, type FailureSample } from "./dev-con/channel-failure-alert.js";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
@@ -1594,7 +1595,10 @@ export class ClientSession {
 		// the list is non-empty). unref: must not keep the process alive.
 		this.bg.start();
 		// P4 运维：资源告警周期检查（60 秒；unref 不阻止退出；开关与冷却见 checkResourceAlerts）。
-		this.alertTimer = setInterval(() => this.checkResourceAlerts(), 60_000);
+		this.alertTimer = setInterval(() => {
+			this.checkResourceAlerts();
+			this.checkChannelFailureAlerts();
+		}, 60_000);
 		this.alertTimer.unref?.();
 		this.accounts = new AccountRegistry();
 		this.channels = new ChannelService(this.makeChannelHost(agentDir), this.accounts);
@@ -2269,6 +2273,40 @@ export class ClientSession {
 		if (!newest || newest.id === conv.lastPersistedUsageId) return;
 		conv.lastPersistedUsageId = newest.id;
 		this.usageHistory.append(newest);
+		ClientSession.noteFailureSample(newest);
+	}
+
+	/**
+	 * 渠道失败告警的滚动样本（有界，只放内存）。
+	 * @WHY 实例级而不是对话级：网关搞流是**渠道**的问题，「哪个客户端发起的」无关；
+	 * 分散到各会话的计数器根本不会越线。与 alertLastFired 同级。
+	 */
+	private static readonly failureSamples: FailureSample[] = [];
+	private static readonly FAILURE_SAMPLE_LIMIT = 600;
+
+	private static noteFailureSample(record: UsageHistoryRecord): void {
+		try {
+			ClientSession.failureSamples.push({
+				at: record.at,
+				subjectKey: ClientSession.failureSubjectKey(record),
+				failed: isFailedStopReason(record.stopReason),
+				input: (record.input ?? 0) + (record.cacheRead ?? 0) + (record.cacheWrite ?? 0),
+			});
+			const limit = ClientSession.FAILURE_SAMPLE_LIMIT;
+			if (ClientSession.failureSamples.length > limit) ClientSession.failureSamples.splice(0, ClientSession.failureSamples.length - limit);
+		} catch {
+			/* 采样失败绝不阻断编码 */
+		}
+	}
+
+	/**
+	 * 告警主体：优先渠道绑定，没有绑定时回落到服务商（provider 总是记录得到）。
+	 * 两者都没有才返回 null → 该样本不参与告警。
+	 */
+	private static failureSubjectKey(record: UsageHistoryRecord): string | null {
+		if (record.channelId) return `channel:${record.channelId}`;
+		if (record.providerId && record.providerId !== "unknown") return `provider:${record.providerId}`;
+		return null;
 	}
 
 	/**
@@ -2338,6 +2376,54 @@ export class ClientSession {
 			});
 		} catch {
 			/* 告警检查失败绝不影响服务 */
+		}
+	}
+
+	/**
+	 * P4 运维：渠道失败告警。网关搞流（stream 半途断开）时请求照旧计费输入 token、
+	 * 产出为空：钱一直在烧，但「请求数/费用」看上去完全正常，所以必须单独报。
+	 * 阈值/冷却见 channel-failure-alert.ts；用户主动中止不计入（那是有意为之）。
+	 */
+	checkChannelFailureAlerts(): void {
+		if (!this.opsAlertsEnabled()) return;
+		try {
+			const alerts = evaluateChannelFailureAlerts({
+				samples: ClientSession.failureSamples,
+				lastFired: Object.fromEntries(ClientSession.alertLastFired),
+				now: Date.now(),
+			});
+			if (alerts.length === 0) return;
+			const now = Date.now();
+			for (const alert of alerts) ClientSession.alertLastFired.set(alert.key, now);
+			this.emit({
+				type: "notice",
+				level: "warning",
+				text: alerts.map((a) => this.channelFailureText(a)).join("；"),
+				textEn: alerts.map((a) => this.channelFailureTextEn(a)).join("; "),
+			});
+		} catch {
+			/* 告警检查失败绝不影响服务 */
+		}
+	}
+
+	private channelFailureText(alert: ChannelFailureAlert): string {
+		const minutes = Math.round(CHANNEL_FAILURE_WINDOW_MS / 60_000);
+		return `${this.failureSubjectLabel(alert)} 近 ${minutes} 分钟 ${alert.requests} 次请求中 ${alert.failed} 次失败（${Math.round(alert.rate * 100)}%），白烧约 ${alert.wastedInput} 输入 token`;
+	}
+
+	private channelFailureTextEn(alert: ChannelFailureAlert): string {
+		const minutes = Math.round(CHANNEL_FAILURE_WINDOW_MS / 60_000);
+		return `${this.failureSubjectLabel(alert)}: ${alert.failed} of ${alert.requests} requests failed in the last ${minutes} min (${Math.round(alert.rate * 100)}%), wasting ~${alert.wastedInput} input tokens`;
+	}
+
+	/** 告警文案里的主体名：渠道用展示名，服务商回落用其注册名（都取不到就用 id）。 */
+	private failureSubjectLabel(alert: ChannelFailureAlert): string {
+		const [kind, id] = alert.subjectKey.split(":", 2);
+		if (kind === "channel") return this.channels.channelDisplayName(id) ?? alert.subjectLabel;
+		try {
+			return this.runtime.services.modelRuntime.getProviders().find((p) => p.id === id)?.name ?? alert.subjectLabel;
+		} catch {
+			return alert.subjectLabel;
 		}
 	}
 
@@ -2556,13 +2642,16 @@ export class ClientSession {
 					cost: result.totals.cost,
 					unpricedRequests: result.totals.unpricedRequests,
 					unreportedRequests: result.totals.unreportedRequests,
+					failedRequests: result.totals.failedRequests,
+					wastedInput: result.totals.wastedInput,
+					cacheHitRate: result.totals.cacheHitRate,
 				},
 				scanned: result.scanned,
 				skipped: result.skipped,
 				truncated: result.truncated,
 			});
 		} catch (err) {
-			this.emit({ type: "usage_history", reqId, ok: false, error: (err as Error).message, groupBy: query.groupBy, from: null, to: null, rows: [], totals: { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, unpricedRequests: 0, unreportedRequests: 0 }, scanned: 0, skipped: 0, truncated: false });
+			this.emit({ type: "usage_history", reqId, ok: false, error: (err as Error).message, groupBy: query.groupBy, from: null, to: null, rows: [], totals: { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, unpricedRequests: 0, unreportedRequests: 0, failedRequests: 0, wastedInput: 0, cacheHitRate: null }, scanned: 0, skipped: 0, truncated: false });
 		}
 	}
 

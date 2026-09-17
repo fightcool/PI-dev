@@ -94,6 +94,86 @@ describe("usage history aggregation", () => {
 		expect(groupKeyOf(record(), "model")).toBe("main/m1");
 		expect(groupKeyOf(record(), "day")).toBe("2026-09-10");
 	});
+
+	it("reports a token-weighted cache hit rate, not a per-request average", () => {
+		// 小请求 100% 命中、大请求全未命中：逐请求平均会得 50%，
+		// token 加权则应该被大请求压到接近 0——后者才是真实成本口径。
+		const rows = aggregateUsage(
+			[
+				record({ id: "small", input: 0, cacheRead: 100, cacheWrite: 0, total: 100 }),
+				record({ id: "big", input: 100_000, cacheRead: 0, cacheWrite: 0, total: 100_000 }),
+			],
+			{ groupBy: "channel" },
+		).rows[0];
+		expect(rows.cacheHitRate).toBeCloseTo(100 / 100_100, 10);
+		expect(rows.cacheHitRate).not.toBeCloseTo(0.5, 2);
+	});
+
+	it("counts cache writes in the hit-rate denominator", () => {
+		// 首次请求：只写缓存（无命中）→ 0%；下一个请求把同一段读回来 → 命中率上升。
+		const cold = aggregateUsage([record({ id: "cold", input: 900, cacheRead: 0, cacheWrite: 100 })], { groupBy: "channel" });
+		expect(cold.rows[0].cacheHitRate).toBe(0);
+		expect(cold.totals.cacheHitRate).toBe(0);
+		const warm = aggregateUsage(
+			[record({ id: "cold", input: 900, cacheRead: 0, cacheWrite: 100 }), record({ id: "warm", input: 0, cacheRead: 1_000, cacheWrite: 0 })],
+			{ groupBy: "channel" },
+		);
+		expect(warm.rows[0].cacheHitRate).toBeCloseTo(1_000 / 2_000, 10);
+		expect(warm.totals.cacheHitRate).toBeCloseTo(1_000 / 2_000, 10);
+	});
+
+	it("returns null when there are no tokens to compute over (never 0%)", () => {
+		// 全部未上报：0 token 不等于「命中率 0%」，界面要显示「—」。
+		const silent = aggregateUsage(
+			[record({ id: "silent", input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, costBasis: "unknown", usageKnown: false })],
+			{ groupBy: "channel" },
+		);
+		expect(silent.rows[0].cacheHitRate).toBeNull();
+		expect(silent.totals.cacheHitRate).toBeNull();
+		// 空窗口同样是 null，不是 0。
+		expect(aggregateUsage([], { groupBy: "channel" }).totals.cacheHitRate).toBeNull();
+	});
+
+	it("keeps per-group rates independent", () => {
+		const result = aggregateUsage(
+			[
+				record({ id: "a", channelId: "ch-hit", input: 10, cacheRead: 990, cacheWrite: 0 }),
+				record({ id: "b", channelId: "ch-miss", input: 1_000, cacheRead: 0, cacheWrite: 0 }),
+			],
+			{ groupBy: "channel" },
+		);
+		const byKey = new Map(result.rows.map((r) => [r.key, r.cacheHitRate]));
+		expect(byKey.get("ch-hit")).toBeCloseTo(0.99, 10);
+		expect(byKey.get("ch-miss")).toBe(0);
+	});
+
+	it("counts failed requests and the input they wasted (gateway dropped the stream)", () => {
+		// 网关搞流：输入照计费、输出为空（stopReason=error，errorMessage 记原因）。
+		const rows = aggregateUsage(
+			[
+				record({ id: "truncated", stopReason: "error", failureReason: "Anthropic stream ended before message_stop", input: 1_147, cacheRead: 73_414, cacheWrite: 351, output: 1 }),
+				record({ id: "ok", stopReason: "stop", output: 120 }),
+			],
+			{ groupBy: "channel" },
+		).rows[0];
+		expect(rows.failedRequests).toBe(1);
+		expect(rows.wastedInput).toBe(1_147 + 73_414 + 351);
+		expect(rows.requests).toBe(2);
+	});
+
+	it("does not count user-cancelled requests as failures", () => {
+		// 用户主动中止（aborted）是有意为之：算成故障会让告警变成噪声、也误导渠道判断。
+		const totals = aggregateUsage([record({ id: "stopped", stopReason: "aborted", input: 5_000 })], { groupBy: "channel" }).totals;
+		expect(totals.failedRequests).toBe(0);
+		expect(totals.wastedInput).toBe(0);
+	});
+
+	it("treats legacy records without stopReason as not failed", () => {
+		// 旧记录没有 stopReason 字段：不能因此被当成失败。
+		const totals = aggregateUsage([record({ id: "legacy" })], { groupBy: "channel" }).totals;
+		expect(totals.failedRequests).toBe(0);
+		expect(totals.wastedInput).toBe(0);
+	});
 });
 
 describe("usage history store", () => {

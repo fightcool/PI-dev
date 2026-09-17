@@ -25,6 +25,22 @@ export const DEFAULT_USAGE_LIMITS = Object.freeze({
   maxRunMs: 10 * 60_000,
 });
 
+/** 失败原因只当证据看，截断到有界长度（用量历史是 append-only JSONL，不能让它无限膨胀）。 */
+export const FAILURE_REASON_MAX_CHARS = 120;
+
+/**
+ * 请求是否「以失败告终、白烧了已计费的输入 token」——**唯一口径**：
+ * 用量历史聚合（UsageHistoryRow.failedRequests / wastedInput）与渠道失败告警都走这里，
+ * 不许各自再写一份判断（两处漂移会让界面数字与告警对不上）。
+ *
+ * @WHY 只认 `error`：`aborted` 是用户主动中止，有意为之；把它算成故障会让告警变噪声，
+ *      也会把「渠道有问题」这个结论指向错误的渠道（SDK 在用户中止与传输中断两种情况下
+ *      都写 stopReason，只有 error 才是我们要找的传输/网关故障）。
+ */
+export function isFailedStopReason(stopReason) {
+  return stopReason === "error";
+}
+
 /** 用量来源分类（§7：子代理、重试、压缩摘要、探测分别标注）。 */
 export const USAGE_SOURCES = Object.freeze(["user", "retry", "subagent", "compaction", "vision", "review", "wizard", "probe", "system"]);
 
@@ -96,6 +112,14 @@ export function normalizeUsageEvent(event) {
     modelId: typeof message?.model === "string" ? message.model : undefined,
     responseModel: typeof message?.responseModel === "string" ? message.responseModel : undefined,
     role: typeof message?.role === "string" ? message.role : undefined,
+    // §7 失败口径：SDK 把中断/报错的 assistant 消息标成 stopReason=error|aborted，
+    // 但**照样可能已经计费了输入 token**（网关掐流就是典型：input 照收、content 空）。
+    // 不记录这个字段，“白烧”就永远在历史里不可见。
+    stopReason: typeof message?.stopReason === "string" ? message.stopReason : undefined,
+    failureReason:
+      typeof message?.errorMessage === "string" && message.errorMessage.trim()
+        ? message.errorMessage.trim().slice(0, FAILURE_REASON_MAX_CHARS)
+        : undefined,
   };
 }
 
@@ -202,6 +226,9 @@ export class TokenUsageTracker {
       // 供应商是否上报了用量：全 0 且无费用时**不能声称消耗为 0**（真实链路上网关会返回
       // 空内容且不带 usage），界面应按「未报告」展示而不是 0。
       usageKnown: tokens.total > 0 || tokens.cost > 0,
+      // 失败标记（可选，旧记录没有）：只写有值的情况，避免给每条正常记录多塞空字段。
+      ...(normalized.stopReason ? { stopReason: normalized.stopReason } : {}),
+      ...(normalized.failureReason ? { failureReason: normalized.failureReason } : {}),
     };
     this.#records.push(record);
     if (this.#records.length > this.#recordLimit) this.#records.splice(0, this.#records.length - this.#recordLimit);
