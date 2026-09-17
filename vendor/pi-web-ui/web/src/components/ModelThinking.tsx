@@ -363,6 +363,7 @@ export const ModelThinking = memo(function ModelThinking({
 								filter={modelFilter}
 								binding={channelBinding}
 								accounts={channelState?.accounts ?? []}
+								activeModelId={currentModelId}
 								onSelect={(channelId, credentialKeyName, modelId) => {
 									const commandId = channelApi.selectChannel({ channelId, credentialKeyName, modelId });
 									if (commandId) setLastChannelCommand(commandId);

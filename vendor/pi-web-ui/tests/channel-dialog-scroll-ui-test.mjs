@@ -152,6 +152,14 @@ try {
 		await page.locator(".chan-section-head", { hasText: "进阶设置" }).first().click();
 		await page.setViewportSize({ width: vp.width, height: vp.height });
 		await sleep(200);
+		// @GOTCHA 内容区现在真的能滚了，Playwright 点「进阶设置」时的 scroll-into-view 会把 body
+		//   滚走一段，下面那批几何断言（首子元素与头部的相对位置）就会量到滚动后的坐标。
+		//   先归零再量，否则会把「已滚动」误判成「负边距又漏进来了」。
+		await page.evaluate(() => {
+			const body = document.querySelector('[role="dialog"].chan-form-dialog .chan-dialog-body');
+			if (body) body.scrollTop = 0;
+		});
+		await sleep(100);
 
 		const geom = await page.evaluate(() => {
 			const dialog = document.querySelector('[role="dialog"].chan-form-dialog');
@@ -205,7 +213,31 @@ try {
 		// 高视口下内容未必溢出，这一档只验「关闭按钮/头脚位置」；矮视口才强制验滚动。
 		if (vp.height <= 620 && geom.bodyScrollable < 40)
 			await fail(`${vp.name}: 溢出只有 ${geom.bodyScrollable}px，太小，测不出滚动`);
-		results.push(`${vp.name}: body 可滚 ${geom.bodyScrollable}px，滚到 ${moved}；弹窗本体不滚；头脚在位`);
+
+		// ⑥ 内层容器不得自己把内容裁掉。
+		// @BUGFIX 事故形态（用户反馈两次）：展开「进阶设置」后里面内容显示不全、也滚不了。
+		//   原因不在外层：.chan-section 有 overflow:hidden（圆角裁切用），而它作为
+		//   .chan-dialog-body（column flex）的 flex item 默认 flex-shrink:1 会被压得比内容短，
+		//   于是超出部分直接被裁掉；外层又因为子元素「不溢出」而算不出 scrollHeight 差，
+		//   连滚动条都不会出现。早先的用例只看 .chan-dialog-body，正好漏掉这一层。
+		// @CONTRACT 任何内层容器要么自己可滚，要么保持内容高把溢出交给外层 ——
+		//   不允许「裁掉且不可滚」。
+		const clipped = await page.evaluate(() => {
+			const body = document.querySelector('[role="dialog"].chan-form-dialog .chan-dialog-body');
+			const bad = [];
+			for (const el of body.querySelectorAll("*")) {
+				const hidden = el.scrollHeight - el.clientHeight;
+				if (hidden <= 4) continue;
+				const o = getComputedStyle(el).overflowY;
+				if (o === "hidden" || o === "clip")
+					bad.push(`${el.className?.toString().slice(0, 40) || el.tagName}:裁掉${hidden}px(${o})`);
+			}
+			return bad.slice(0, 8);
+		});
+		if (clipped.length > 0)
+			await fail(`${vp.name}: 内层容器裁掉内容且不可滚 → ${clipped.join(" / ")}`);
+
+		results.push(`${vp.name}: body 可滚 ${geom.bodyScrollable}px，滚到 ${moved}；弹窗本体不滚；头脚在位；无内层裁切`);
 		await page.close();
 	}
 } finally {

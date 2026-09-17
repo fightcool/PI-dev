@@ -186,6 +186,25 @@ try {
 		check(`[${vp.name}] 配了账户查询、未查过 → 如实写「未查询」`, secondAcct === 1 && secondText.includes("未查询"), secondText);
 		check(`[${vp.name}] 没配账户查询 → 余额那一格不出现（不拿 0 冒充）`, (await first.locator(".chan-head-acct").count()) === 0);
 
+		// ⑤ 全新对话（还没有任何渠道绑定）里，只要 Agent 已有生效模型，就必须看得出当前渠道。
+		// @WHY 事故形态：渠道绑定是**按对话**存的（channels.json 的 bindings 以 conversationId 为 key），
+		//   新建对话 binding.effective 为 null，而早先的实现只看 binding —— 于是输入区 chip 上
+		//   明明显示着模型名，下拉里却一个高亮都没有（用真实 5 渠道配置复现过）。
+		//   现在 binding 缺失时回退到 Agent 实际生效的模型反推渠道。
+		// @CONTRACT 反推只在**命中唯一渠道**时生效；同一模型属于多个渠道时宁可不标，
+		//   也不能猜一个标成「正在使用」。
+		const beforePick = await page.evaluate(() => ({
+			current: document.querySelectorAll(".chan-group.current").length,
+			name: document.querySelector(".chan-group.current .chan-name")?.textContent ?? "",
+			chip: document.querySelector(".composer-tools .chip-model")?.textContent ?? "",
+		}));
+		// 本 fixture 里 chip 的模型（claude-opus-5）只属于 UU apiClaude 一个渠道 → 反推唯一，必须标上。
+		check(
+			`[${vp.name}] 无对话绑定时用实际生效模型反推出当前渠道`,
+			beforePick.current === 1 && beforePick.name.includes("UU apiClaude"),
+			`current=${beforePick.current} name=${beforePick.name} chip=${beforePick.chip}`,
+		);
+
 		// 选中第二个渠道下的一个模型 → 它成为当前生效渠道。
 		await second.locator(".dd-item").first().click();
 		await sleep(800);

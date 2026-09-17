@@ -29,7 +29,7 @@ import { useState } from "react";
 import { FiRefreshCw, FiAlertTriangle, FiClock, FiCheckCircle } from "react-icons/fi";
 import type { ModelInfo, UiAccountStatus, UiChannelBinding, UiChannelBindingView, UiChannelInfo } from "../types";
 import { useI18n, useT } from "../i18n";
-import { channelModels, hasModelWhitelist } from "../channel-models";
+import { channelModels, hasModelWhitelist, inferChannelIdByModel } from "../channel-models";
 import { channelBalanceBrief } from "../channel-account";
 import { DropdownItem } from "./Dropdown";
 import type { ChannelCommandResult } from "../use-chat";
@@ -58,6 +58,7 @@ function ChannelGroup({
 	filter,
 	effective,
 	pending,
+	currentByModel,
 	keyName,
 	accounts,
 	onKeyChange,
@@ -68,6 +69,11 @@ function ChannelGroup({
 	filter: string;
 	effective: UiChannelBinding | null;
 	pending: UiChannelBinding | null;
+	/**
+	 * 没有对话绑定时的回退：本渠道被认为当前，且实际生效的模型是这个 `provider/id`。
+	 * @CONTRACT 非 null 时才用它标当前；与 effective 二选一，不叠加。
+	 */
+	currentByModel: string | null;
 	keyName: string | null;
 	/** 账户快照（只读）：渠道头的余额/已用摘要。 */
 	accounts: UiAccountStatus[];
@@ -86,7 +92,8 @@ function ChannelGroup({
 	// 白名单过滤在这里发生（空白名单 = 该服务商全部模型，行为与加白名单之前一致）。
 	const rows = channelModels(models, channel, filter);
 	// 当前正在使用的渠道：整组高亮（会话界面看不出用的是哪个渠道，见 @CONTRACT）。
-	const isCurrent = effective?.channelId === channel.id;
+	// currentByModel 是「新对话尚未绑定」时的回退（见它的 @WHY）。
+	const isCurrent = effective ? effective.channelId === channel.id : currentByModel !== null;
 	const isPendingChannel = !isCurrent && pending?.channelId === channel.id;
 	// 命名凭据子组：每个 key 一个 chip + 「跟随服务商当前密钥」(= credentialKeyName null)。
 	const keyOptions: { value: string | null; label: string; active?: boolean }[] = [
@@ -129,7 +136,9 @@ function ChannelGroup({
 						))}
 					</div>
 					{rows.map((m) => {
-						const isActive = effective?.channelId === channel.id && effective.modelId === m.id;
+						const isActive = effective
+							? effective.channelId === channel.id && effective.modelId === m.id
+							: currentByModel === m.id;
 						const isPending = pending?.channelId === channel.id && pending.modelId === m.id;
 						return (
 							<DropdownItem
@@ -177,6 +186,7 @@ export function ChannelModelList({
 	filter,
 	binding,
 	accounts = [],
+	activeModelId = null,
 	onSelect,
 }: {
 	channels: UiChannelInfo[];
@@ -185,10 +195,19 @@ export function ChannelModelList({
 	binding: UiChannelBindingView | null | undefined;
 	/** 账户快照（channel_state.accounts）；缺省空数组 = 渠道头不显示余额。 */
 	accounts?: UiAccountStatus[];
+	/**
+	 * Agent 当下实际在用的模型（`provider/id`，即 ModelThinking 的 currentModelId）。
+	 * @WHY 渠道绑定是按对话存的：新建对话还没有绑定时 binding.effective 为 null，
+	 *   但输入区 chip 上已经显示着模型名 —— 只看 binding 会变成「有模型却没任何高亮」。
+	 *   所以 binding 缺失时回退到它，与非渠道模式的当前项判定同一口径。
+	 */
+	activeModelId?: string | null;
 	onSelect: (channelId: string, credentialKeyName: string | null, modelId: string) => void;
 }) {
 	const [keySel, setKeySel] = useState<Record<string, string | null>>({});
-	const currentId = binding?.effective?.channelId ?? null;
+	// 当前渠道：优先用对话绑定；没绑定时（新对话）用实际生效模型反推（见 inferChannelIdByModel）。
+	const inferredId = binding?.effective?.channelId ? null : inferChannelIdByModel(channels, models, activeModelId);
+	const currentId = binding?.effective?.channelId ?? inferredId;
 	// 只把当前渠道提到最前，其余顺序原样保留（稳定排序，不让列表每次打开都变样）。
 	const ordered = currentId ? [...channels].sort((a, b) => Number(b.id === currentId) - Number(a.id === currentId)) : channels;
 	return (
@@ -204,6 +223,7 @@ export function ChannelModelList({
 						filter={filter}
 						effective={binding?.effective ?? null}
 						pending={binding?.pending ?? null}
+						currentByModel={currentId === c.id && !binding?.effective ? activeModelId : null}
 						keyName={keyName}
 						accounts={accounts}
 						onKeyChange={(next) => setKeySel((prev) => ({ ...prev, [c.id]: next }))}

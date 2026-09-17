@@ -51,3 +51,23 @@ export function channelModels(
 export function hasModelWhitelist(channel: Pick<UiChannelInfo, "models"> | null | undefined): boolean {
 	return (channel?.models ?? []).length > 0;
 }
+
+/**
+ * 没有对话绑定时，用「Agent 实际生效的模型」反推它属于哪个渠道。
+ *
+ * @WHY 渠道绑定是按对话存的（channels.json 的 bindings 以 conversationId 为 key）。
+ *   新建对话还没有绑定，binding.effective 为 null，但输入区 chip 上已经显示着模型名 ——
+ *   只看 binding 的话，用户看到的就是「有模型却一个高亮都没有」。
+ * @CONTRACT 只在**命中唯一渠道**时返回它；同一模型可能出现在多个渠道下（不同服务商配了
+ *   同名模型，或多个渠道指向同一服务商），那种情况返回 null —— 宁可不高亮，
+ *   也不能把用户没选的渠道标成「正在使用」。
+ */
+export function inferChannelIdByModel(
+	channels: Pick<UiChannelInfo, "id" | "providerId" | "models">[],
+	models: ModelInfo[],
+	activeModelId: string | null | undefined,
+): string | null {
+	if (!activeModelId) return null;
+	const hits = channels.filter((c) => channelModels(models, c).some((m) => m.id === activeModelId));
+	return hits.length === 1 ? hits[0].id : null;
+}

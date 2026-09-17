@@ -11545,6 +11545,14 @@ button.source-default-toggle {
 	border: 1px solid var(--border-soft);
 	border-radius: 9px;
 	overflow: hidden;
+	/* @BUGFIX 2026-09-17：必須禁止被压缩。
+	   父容器 .chan-dialog-body 是 column flex 且高度受限（flex:1 1 auto; min-height:0），
+	   本元素作为 flex item 默认 flex-shrink:1 会被压到比内容短，而上面那句
+	   overflow:hidden（圆角裁切用，不能删）会直接把超出部分**裁掉**。
+	   结果：展开「进阶设置」后内容被切掉一截，而外层因为子元素已经「不溢出」
+	   算不出 scrollHeight 差，于是也没有滚动条 —— 看上去就是「显示不全又滚不了」。
+	   flex:0 0 auto 后分区保持内容高，溢出下放给 .chan-dialog-body 滚。 */
+	flex: 0 0 auto;
 }
 .chan-section-head {
 	display: flex;
