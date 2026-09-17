@@ -33,12 +33,25 @@ if (!existsSync(TARGET)) {
 
 /** 构建号 = 短 commit + 构建时刻。commit 让同一次提交可追溯，时间戳保证脏工作区
  *  的两次构建也会得到不同的缓存名（否则本地反复构建时旧资源仍会被钉住）。
- *  @GOTCHA 发布构建跑在 `git archive` 展开的 staging 目录里，**那不是 git 工作区**，
- *    直接 git rev-parse 会拿到 nogit（实测过）。发布流程会传 PI_DEV_BUILD_COMMIT
- *    （见 scripts/lifecycle/release-build.mjs），所以以它为准，git 只做本地开发的回退。 */
+ *  @GOTCHA 发布构建跑在从 git 归档展开的 staging 目录里，**那不是 git 工作区**，
+ *    直接 git rev-parse 只会得到 nogit（实测过两次）。
+ *  @CONTRACT 取值优先级与 ../../scripts/build.mjs 写 build-info.json 时完全一致：
+ *    仓库根的 release-source.json（两条发布路径都会写它：prepare-release.mjs
+ *    与 release-build.mjs）→ PI_DEV_BUILD_COMMIT → git。不只依赖环境变量：
+ *    prepare-release.mjs 并不传它。 */
 const commit = (() => {
-	const fromEnv = process.env.PI_DEV_BUILD_COMMIT;
-	if (fromEnv && /^[a-f0-9]{7,40}$/.test(fromEnv)) return fromEnv.slice(0, 12);
+	const short = (v) => (/^[a-f0-9]{7,40}$/.test(v ?? "") ? v.slice(0, 12) : null);
+	// release-source.json 在仓库根（本文件在 vendor/pi-web-ui/scripts/ 下，往上三层）。
+	for (const p of [join(ROOT, "../../release-source.json"), join(ROOT, "release-source.json")]) {
+		try {
+			const hit = short(JSON.parse(readFileSync(p, "utf8")).commit);
+			if (hit) return hit;
+		} catch {
+			/* 不存在或不可读：继续往下一个源找 */
+		}
+	}
+	const fromEnv = short(process.env.PI_DEV_BUILD_COMMIT);
+	if (fromEnv) return fromEnv;
 	try {
 		return execFileSync("git", ["rev-parse", "--short=12", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
 	} catch {
