@@ -75,6 +75,8 @@ import type {
 } from "./plugins.js";
 import { syncPluginToolsIntoSession } from "./plugins.js";
 import { SettingsService } from "./settings-service.js";
+import { makeContextPolicyLoader, resolveContextBudget, type ContextPolicy } from "./context-policy.js";
+import { scanSessionStamps, sessionsRootDir } from "./session-signature.js";
 import { GoalService } from "./goal-service.js";
 import { MarkerService } from "./marker-service.js";
 import { SlashCommandsService, parseSlash } from "./slash-commands.js";
@@ -752,6 +754,12 @@ function conversationTitle(session: AgentSession): string {
  */
 export function piSessionsRoot(): string | undefined {
 	return process.env.PI_CODING_AGENT_SESSION_DIR || undefined;
+}
+
+/** 活模型的标识（`provider/id`），供系统级上下文策略的 exemptModels 匹配；模型未就绪时 undefined。 */
+function modelKeyOf(model: { provider?: string; id?: string } | undefined): string | undefined {
+	if (!model?.id) return undefined;
+	return model.provider ? `${model.provider}/${model.id}` : model.id;
 }
 
 export class ClientSession {
@@ -1647,6 +1655,15 @@ export class ClientSession {
 		ownerId?: string,
 	): CreateAgentSessionRuntimeFactory {
 		return async ({ cwd: effectiveCwd, sessionManager }) => {
+			// 自动压缩阈值走系统级策略（见 context-policy.ts，形状与默认值对齐 Codex）：
+			// SDK 判据是 contextTokens > contextWindow - reserveTokens，而 settings.json 里只有
+			// 一份全局 reserveTokens；本进程跨渠道/模型（窗口 20 万 ~ 105 万），必须按「当前
+			// 活跃模型」实时换算。默认无绝对上限 → 有效窗口 = 窗口 × 95%；想复现业界实跑预算
+			// 就在 <agentDir>/context-policy.json 写 autoCompactTokenLimit（Codex 同族模型 = 258400）。
+			// liveContextWindow 在下面 session 建好后指向该 session 的活 model——渠道热切换
+			// 换模型后无需重建 runtime，阈值自动跟着新窗口走。
+			let liveModel: () => { provider?: string; id?: string; contextWindow?: number } | undefined = () => undefined;
+			const loadContextPolicy = this.contextPolicyLoader();
 			const services = await createAgentSessionServices({
 				cwd: effectiveCwd,
 				modelRuntime: this.sharedModelRuntime,
@@ -1782,6 +1799,15 @@ export class ClientSession {
 					],
 				},
 			});
+			const baseReserveTokens = services.settingsManager.getCompactionReserveTokens.bind(services.settingsManager);
+			const baseKeepRecentTokens = services.settingsManager.getCompactionKeepRecentTokens.bind(services.settingsManager);
+			// 每次调用都重新让策略加载器取一次（内部按 mtime 缓存）——改 context-policy.json
+			// 无需重启，下一个请求就生效。
+			services.settingsManager.getCompactionReserveTokens = () =>
+				resolveContextBudget(liveModel()?.contextWindow, loadContextPolicy(), modelKeyOf(liveModel()))?.reserveTokens ??
+				baseReserveTokens();
+			// 策略可选地接管「压缩后保留最近原文」的 token 预算（null = 跟随 settings.json）。
+			services.settingsManager.getCompactionKeepRecentTokens = () => loadContextPolicy().keepRecentTokens ?? baseKeepRecentTokens();
 			const created = await createAgentSessionFromServices({
 				services,
 				sessionManager,
@@ -1827,6 +1853,8 @@ export class ClientSession {
 					makeAskUserQuestionTool(this),
 				],
 			});
+			// 会话已建好：把阈值数据源接到这个 session 的活模型上（setModel 后读到的就是新窗口）。
+			liveModel = () => created.session.model;
 			// 终端工具开关从创建起就生效（工具始终注册进注册表，只调活跃集）。
 			this.applyToolGating(created.session);
 			return {
@@ -2927,7 +2955,8 @@ export class ClientSession {
 				break;
 			}
 			case "entry_appended": {
-				this.invalidateSessionInfos(conv.cwd);
+				// 本端自己的写入：标记后不重扫列表（agent_end 统一刷新）。
+				this.markLiveSessionFile(conv);
 				// SDK 仅在扩展 appendEntry 时发 entry_appended（entry 恒为 custom），
 				// assistant 消息不会走这里——气泡级解析见 case "message_end"。
 				this.scheduleSessionsRefresh();
@@ -2935,7 +2964,8 @@ export class ClientSession {
 				break;
 			}
 			case "message_end": {
-				this.invalidateSessionInfos(conv.cwd);
+				// 同上：流式期间每条消息都失效缓存会让列表刷新反复付 540ms 全量解析。
+				this.markLiveSessionFile(conv);
 				// 轨迹事件：一条消息定稿（user/assistant 都收；custom display:false
 				// 的 serializeMessage 返回 null 时跳过）。
 				try {
@@ -3137,6 +3167,7 @@ export class ClientSession {
 		const conv = this.conv;
 		const state = conv.session.agent.state;
 		const model = state.model;
+		const loadContextPolicy = this.contextPolicyLoader();
 		let stats: UiState["stats"] = {
 			totalMessages: 0,
 			tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
@@ -3162,19 +3193,24 @@ export class ClientSession {
 				contextUsage: (() => {
 					const cu = s.contextUsage;
 					if (!cu) return stats.contextUsage;
+					// 分母用**策略的有效预算**（= 触发点），而不是模型的物理窗口：这样进度条涨满就
+					// 等于即将压缩，与 Codex 的显示口径一致（它的分母是 272k 而不是 872k）。
+					// 物理窗口仍由 models.json 拥有；此处只影响展示（FooterBar 的 tokens / N 与百分比）。
+					const budget = resolveContextBudget(model?.contextWindow, loadContextPolicy(), modelKeyOf(model));
+					const denominator = budget?.triggerTokens ?? cu.contextWindow;
 					// 压缩刚结束、下轮响应未到：SDK 报 null，用压缩结果回填约数。
-					if (cu.tokens == null && conv.lastCompactionTokens != null && cu.contextWindow > 0) {
+					if (cu.tokens == null && conv.lastCompactionTokens != null && denominator > 0) {
 						return {
 							tokens: conv.lastCompactionTokens,
-							contextWindow: cu.contextWindow,
-							percent: (conv.lastCompactionTokens / cu.contextWindow) * 100,
+							contextWindow: denominator,
+							percent: (conv.lastCompactionTokens / denominator) * 100,
 							estimated: true,
 						};
 					}
 					return {
 						tokens: cu.tokens,
-						contextWindow: cu.contextWindow,
-						percent: cu.percent,
+						contextWindow: denominator,
+						percent: cu.tokens == null || denominator <= 0 ? null : (cu.tokens / denominator) * 100,
 					};
 				})(),
 			};
@@ -4811,18 +4847,51 @@ export class ClientSession {
 	 *  client that never opened the panel never pays the disk scan. */
 	private sessionsRequested = false;
 
-	private readonly sessionHistory = new SessionHistoryCache((cwd) => SessionManager.list(cwd, piSessionsRoot()));
+	private readonly sessionHistory = this.makeSessionCache((cwd) => SessionManager.list(cwd, piSessionsRoot()));
 
 	/** Every-project scan for the project switcher. `listAll` parses EVERY persisted
-	 *  transcript (measured ~0.25s for 9 files / 16 MiB) and used to run uncached on
-	 *  every attach and every cwd change.
-	 *  @PERF TTL 30s：会话增删/改名/跨端完成都会经 invalidateSessionInfos 立即失效，
-	 *  这个窗口只用来吸收同一次交互内的重复请求；值取长是因为列表本身只用于项目切换
-	 *  器（粗粒度），而每次重算都是全量磁盘解析。 */
-	private readonly projectSessions = new SessionHistoryCache(
-		() => SessionManager.listAll(piSessionsRoot()),
-		30_000,
-	);
+	 *  transcript (measured 2026-09-16: 960ms across 25 files / 75MB) and used to run
+	 *  uncached on every attach, every cwd change and every list invalidation.
+	 *  @PERF TTL 30s 只作为签名不可用时的兜底；正常情况下由签名 gate 决定是否重扫。 */
+	private readonly projectSessions = this.makeSessionCache(() => SessionManager.listAll(piSessionsRoot()), 30_000);
+
+	/** 本进程正在写入的会话文件（运行中的对话）。签名 gate 对它们豁免：这些写入的
+	 *  事实源就是内存里的会话本身，没必要为它们重扫整份磁盘；由 agent_end 的
+	 *  broadcastPersistedNode() → invalidateSessionInfos() 在每轮结束时统一刷新。
+	 *  @PERF 没有这道豁免时，运行期每 800ms 防抖推送都会触发一次 540ms 全量重扫。 */
+	private readonly liveSessionFiles = new Set<string>();
+
+	/** 系统级上下文策略（<agentDir>/context-policy.json，按 mtime 热生效）。
+	 *  懒建：agentDir 在构造函数里赋值，而字段初始化早于构造体，因此不能在字段里直接建。 */
+	private policyLoader?: () => ContextPolicy;
+	private contextPolicyLoader(): () => ContextPolicy {
+		this.policyLoader ??= makeContextPolicyLoader(this.agentDir);
+		return this.policyLoader;
+	}
+
+	/** 会话列表缓存：签名 gate（磁盘没变就不重新解析 jsonl）+ 运行中会话豁免。 */
+	private makeSessionCache(
+		load: (cwd: string) => Promise<SessionInfo[]>,
+		ttlMs?: number,
+	): SessionHistoryCache {
+		return new SessionHistoryCache(load, ttlMs, undefined, undefined, {
+			signature: () => scanSessionStamps(sessionsRootDir(this.agentDir)),
+			adopted: (path) => this.liveSessionFiles.has(path),
+		});
+	}
+
+	/** 记住「这个会话文件是本端在写」；其磁盘签名变化不再触发列表重扫。 */
+	private markLiveSessionFile(conv: Conversation): void {
+		const file = conv.session.sessionFile;
+		if (file) this.liveSessionFiles.add(file);
+	}
+
+	/** 本轮结束：文件不再是「本端正在写」，让下一次列表刷新真正重扫一次（拿到最新
+	 *  messageCount / modified）。 */
+	private endLiveSessionFile(conv: Conversation): void {
+		const file = conv.session.sessionFile;
+		if (file) this.liveSessionFiles.delete(file);
+	}
 
 	/** Fixed key: the all-projects scan ignores cwd (see projectSessions). */
 	private static readonly ALL_PROJECTS_KEY = "*";
@@ -4891,6 +4960,8 @@ export class ClientSession {
 		try {
 			const file = conv.session.sessionFile;
 			if (!file) return;
+			// 本轮已结束：撤销「本端在写」豁免，让随后的列表刷新真正重扫一次。
+			this.endLiveSessionFile(conv);
 			this.invalidateSessionInfos(conv.cwd);
 			// 记下自己刚写入的签名，避免下次接入时把自己的写当作「其他端的更新」重载。
 			this.updateDiskSig(conv);

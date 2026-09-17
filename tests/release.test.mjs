@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fixture } from "./helpers/release-fixture.mjs";
+import { MANAGED } from "./helpers/config-fixture.mjs";
 import { runRelease } from "../scripts/lifecycle/release.mjs";
 import { releaseOptions } from "../scripts/lifecycle/release-options.mjs";
 
@@ -29,7 +30,9 @@ test("release builds only reviewed archive, runs vendor server, and rolls back u
   assert.equal(f.json("shared/previous.json").id, "first");
   assert.equal(f.json("shared/state/agent/settings.json").custom, "preserve");
   assert.equal(readFileSync(config.tokenFile, "utf8"), token);
-  assert.deepEqual(f.json("shared/state/agent/settings.json").packages, [join(f.current(), "node_modules/pi-context-prune")]);
+  // 托管扩展路径必须重挂到**新** release 根；期望值随 profile 推导（lean 现为空列表）。
+  assert.deepEqual(f.json("shared/state/agent/settings.json").packages,
+    MANAGED[config.profile].map(name => join(f.current(), "node_modules", name)));
   f.failHealth();
   await assert.rejects(f.release("release", "bad"), /restored second/);
   assert.equal(f.current(), join(f.base, "releases/second"));

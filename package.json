@@ -16,8 +16,8 @@
     "build": "node scripts/build.mjs",
     "typecheck": "npm --prefix vendor/pi-web-ui run typecheck",
     "test:unit": "npm --prefix vendor/pi-web-ui test",
-    "test:performance": "node tests/performance/browser.mjs",
-    "test:smoke": "node scripts/protocol-smoke.mjs",
+    "test:performance": "nice -n 10 node tests/performance/browser.mjs",
+    "test:smoke": "nice -n 10 node scripts/protocol-smoke.mjs",
     "start": "node scripts/start.mjs",
     "pm2": "node scripts/pm2.mjs",
     "doctor": "node scripts/doctor.mjs",
@@ -29,7 +29,7 @@
     "test:channels:unit": "npm --prefix vendor/pi-web-ui run test:channels:unit",
     "test:channels": "npm --prefix vendor/pi-web-ui run test:channels",
     "test:channels:multi": "npm --prefix vendor/pi-web-ui run test:channels:multi",
-    "test:channels:browser": "node tests/channels/browser-ui.mjs",
+    "test:channels:browser": "nice -n 10 node tests/channels/browser-ui.mjs",
     "maintenance:switch-release": "node scripts/maintenance/switch-production-release.mjs",
     "release:check": "node scripts/release.mjs"
   },
@@ -37,7 +37,6 @@
     "@earendil-works/pi-coding-agent": "0.85.1",
     "@howaboua/pi-codex-conversion": "3.0.31",
     "@narumitw/pi-goal": "0.54.4",
-    "pi-context-prune": "1.4.0",
     "pi-lens": "4.1.5",
     "pi-mcp-adapter": "2.32.1",
     "pi-subagents": "0.66.0"
