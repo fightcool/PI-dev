@@ -113,7 +113,6 @@ export function AppDialogs({
 				/* 新建项目：默认展开「文件夹名称」行，建完直接当工作目录打开（openAfterCreate）。
 				   已存在的目录也能直接「选择」——同一个选择器两种用法，不再开第二个弹窗。 */
 				<DirectoryPicker
-					initialPath={chat.state?.cwd ?? ""}
 					cwd={chat.state?.cwd ?? ""}
 					completions={chat.pathCompletions}
 					send={send}

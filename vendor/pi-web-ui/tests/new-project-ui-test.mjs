@@ -21,6 +21,7 @@
  */
 import { CHROME_PATH } from "./lib/chrome.mjs";
 import { ensureBuild } from "./lib/build.mjs";
+import { isolatedEnv, seedToken } from "./lib/isolated-env.mjs";
 import { portUp, freePort } from "./lib/port-utils.mjs";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
@@ -31,7 +32,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const REPO_ROOT = fileURLToPath(new globalThis.URL("../", import.meta.url));
-const PORT = 8905;
+const PORT = 8913;
 const BASE = `http://localhost:${PORT}`;
 
 // 父目录（浏览目标）+ 起始工作区（两者分开：新建后 cwd 必须真的换过去）
@@ -63,17 +64,14 @@ async function run() {
 	} catch {
 		/* port free */
 	}
-	const env = { ...process.env };
-	for (const key of ["PI_WEB_TOKEN", "PI_WEB_MANAGED"]) delete env[key];
 	server = spawn("node", ["dist/server/index.js"], {
 		cwd: REPO_ROOT,
-		env: {
-			...env,
+		env: isolatedEnv({
 			PI_WEB_PORT: String(PORT),
 			PI_WEB_DATA_DIR: dataDir,
 			PI_CODING_AGENT_DIR: agentDir,
 			PI_WEB_CWD: startDir,
-		},
+		}),
 		stdio: "ignore",
 	});
 	for (let i = 0; i < 40 && !(await portUp(PORT)); i++) await sleep(250);
@@ -81,9 +79,7 @@ async function run() {
 	browser = await chromium.launch({ executablePath: CHROME_PATH });
 	const page = await browser.newPage();
 	// 跳过纯客户端的 Passkey 门 + 固定中文（下面的断言看中文文案）。
-	await page.addInitScript(
-		"try{localStorage.setItem('pi-web-ui:token','e2e-isolated-instance');localStorage.setItem('pi-web-ui:lang','zh')}catch(e){}",
-	);
+	await seedToken(page);
 	page.on("pageerror", (e) => console.log("pageerror:", e.message));
 	await page.goto(BASE);
 	await page.waitForSelector(".panel-left .panel-sessions", { timeout: 15000 });

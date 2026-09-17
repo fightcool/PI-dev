@@ -249,7 +249,6 @@ export function FooterBar({ chat, send, onQueryUsageHistory, usageOpen: usageOpe
 
 			{editing ? (
 				<DirectoryPicker
-					initialPath={state.cwd}
 					cwd={state.cwd}
 					completions={chat.pathCompletions}
 					send={send}

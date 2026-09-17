@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { spawn } from "node:child_process";
 import { ensureBuild } from "./lib/build.mjs";
+import { isolatedEnv, seedToken } from "./lib/isolated-env.mjs";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,14 +41,6 @@ const check = (name, ok, extra = "") => {
 	console.log(`${ok ? "✓" : "✗"} ${name}${extra ? " — " + extra : ""}`);
 	if (!ok) failures++;
 };
-
-/** 隔离子进程环境：去掉鉴权/托管变量（见文件头 @GOTCHA）。 */
-function isolatedEnv() {
-	const env = { ...process.env };
-	for (const key of ["PI_WEB_TOKEN", "PI_WEB_MANAGED"]) delete env[key];
-	return env;
-}
-
 ensureBuild({ cwd: PROJ, label: "left-panel-test" });
 
 // Free the port from any straggler before spawning.
@@ -66,9 +59,7 @@ for (let i = 0; i < 40 && !(await portUp(PORT)); i++) await sleep(250);
 
 const browser = await chromium.launch({ executablePath: HEADLESS });
 const page = await browser.newPage();
-await page.addInitScript(
-	"try{localStorage.setItem('pi-web-ui:token','e2e-isolated-instance');localStorage.setItem('pi-web-ui:lang','zh')}catch(e){}",
-);
+await seedToken(page);
 await page.goto(URL);
 await page.waitForSelector(".panel-left .panel-sessions", { timeout: 15000 });
 

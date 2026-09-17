@@ -10,13 +10,22 @@
  *      （make_dir 是 void，抢跑会让 set_cwd 的 fs.stat 失败）；
  *   ④ 已存在的目录仍能直接「选择」；选中当前 cwd 不重复发 set_cwd；
  *   ⑤ 在路径框里改了父目录（未按 Enter）后新建，目录必须建在**输入的那个父目录**下
- *      （浏览器 E2E 先抛出来的真 bug：默默建到了旧目录）。
+ *      （浏览器 E2E 先抛出来的真 bug：默默建到了旧目录）；
+ *   ⑥ 名字已存在时不得谎称“创建成功”：不发 make_dir，按钮变「打开」并真打开它；
+ *   ⑦ 文件夹名输入行上的 ESC 只收起输入行，**不关**整个选择器（自查发现的 bug）。
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { act } from "react-dom/test-utils";
-import { DirectoryPicker, findCreatedDir, parentOf, MACHINE_ROOT } from "../../web/src/components/DirectoryPicker.js";
+import { DirectoryPicker } from "../../web/src/components/DirectoryPicker.js";
+import {
+	findCreatedDir,
+	isExistingDir,
+	createParent,
+	parentOf,
+	MACHINE_ROOT,
+} from "../../web/src/components/directory-picker-path.js";
 import { LeftPanelProjects, projectName } from "../../web/src/components/LeftPanelProjects.js";
 import { LanguageProvider } from "../../web/src/i18n.js";
 
@@ -85,6 +94,26 @@ describe("路径工具（纯函数）", () => {
 	it("projectName：目录名即项目名（协议里没有独立名字字段）", () => {
 		expect(projectName("/home/dev/PI-dev")).toBe("PI-dev");
 		expect(projectName("C:\\work\\app")).toBe("app");
+	});
+
+	it("createParent：路径框优先（绝对路径）——建目录绝不能默默建到旧目录", () => {
+		expect(createParent("/srv/workspaces", "/home/dev")).toBe("/srv/workspaces");
+		expect(createParent("C:/work", "/home/dev")).toBe("C:/work");
+		// 非绝对路径 / 空 / 机器根 → 回落到当前浏览目录
+		expect(createParent("", "/home/dev")).toBe("/home/dev");
+		expect(createParent("sub/dir", "/home/dev")).toBe("/home/dev");
+		expect(createParent(MACHINE_ROOT, "/home/dev")).toBe("/home/dev");
+	});
+
+	it("isExistingDir：只把同名**目录**当已存在（文件不算）", () => {
+		const listing = [
+			{ name: "demo", path: "/home/dev/demo", type: "dir" as const },
+			{ name: "note.md", path: "/home/dev/note.md", type: "file" as const },
+		];
+		expect(isExistingDir(listing, "/home/dev", "demo")).toBe(true);
+		expect(isExistingDir(listing, "/home/dev/", " demo ")).toBe(true);
+		expect(isExistingDir(listing, "/home/dev", "note.md")).toBe(false);
+		expect(isExistingDir(listing, "/home/dev", "brand-new")).toBe(false);
 	});
 });
 
@@ -178,7 +207,6 @@ describe("目录选择器（新建项目形态）", () => {
 						LanguageProvider,
 						null,
 						createElement(DirectoryPicker, {
-							initialPath: "/home/dev",
 							cwd: "/home/dev",
 							completions,
 							send: (m) => {
@@ -205,14 +233,27 @@ describe("目录选择器（新建项目形态）", () => {
 		const dialog = container.querySelector('[role="dialog"]');
 		expect(dialog).not.toBeNull();
 		expect(dialog!.getAttribute("aria-modal")).toBe("true");
+		// ESC 走容器冒泡：焦点在弹窗里时按下即可关（不再是全局捕获监听）。
 		act(() => {
-			document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+			dialog!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		});
 		expect(onClose).toHaveBeenCalledTimes(1);
 		click(dialog!); // 内部点击不关
 		expect(onClose).toHaveBeenCalledTimes(1);
 		click(container.querySelector(".cwd-picker-backdrop")!);
 		expect(onClose).toHaveBeenCalledTimes(2);
+	});
+
+	it("文件夹名输入行上的 ESC 只收起输入行，不关整个选择器", () => {
+		const { container, onClose } = mountPicker();
+		const input = container.querySelector<HTMLInputElement>(".cwd-newrow input")!;
+		act(() => {
+			input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		});
+		// 旧实现用 document 捕获阶段监听，会抢在输入行之前把弹窗关掉
+		expect(onClose).not.toHaveBeenCalled();
+		expect(container.querySelector(".cwd-newrow input")).toBeNull();
+		expect(container.querySelector(".cwd-newbtn")?.textContent).toContain("新建文件夹");
 	});
 
 	it("newFolderOpen：打开即展开文件夹名输入行，按钮是「创建并打开」", () => {
@@ -240,7 +281,7 @@ describe("目录选择器（新建项目形态）", () => {
 		expect(onClose).toHaveBeenCalled();
 	});
 
-	it("创建失败（列表里始终没有该目录）不会误发 set_cwd", async () => {
+	it("创建失败（列表里始终没有该目录）不会误发 set_cwd，并就地给出提示", async () => {
 		vi.useFakeTimers();
 		const { container, sent } = mountPicker();
 		const input = container.querySelector<HTMLInputElement>(".cwd-newrow input")!;
@@ -250,6 +291,22 @@ describe("目录选择器（新建项目形态）", () => {
 			await vi.advanceTimersByTimeAsync(6000);
 		});
 		expect(sent.some((m) => m.type === "set_cwd")).toBe(false);
+		// 服务端 notice 之外的就地反馈（否则弹窗只是静静地停在那里）
+		expect(container.querySelector(".cwd-hint-warn")?.textContent).toContain("没能创建");
+	});
+
+	it("名字已存在时不谎称创建：不发 make_dir，按钮变「打开」并真打开它", () => {
+		const { container, sent, onClose } = mountPicker({
+			completions: [{ name: "demo", path: "/home/dev/demo", type: "dir" }],
+		});
+		const input = container.querySelector<HTMLInputElement>(".cwd-newrow input")!;
+		type(input, "demo");
+		// 先给出「会发生什么」的提示，按钮也不再写成「创建」
+		expect(container.querySelector(".cwd-hint-warn")?.textContent).toContain("已存在");
+		click(byText(container, "打开"));
+		expect(sent.filter((m) => m.type === "make_dir")).toEqual([]);
+		expect(sent.filter((m) => m.type === "set_cwd")).toEqual([{ type: "set_cwd", path: "/home/dev/demo" }]);
+		expect(onClose).toHaveBeenCalled();
 	});
 
 	it("已有目录可直接「选择」；选中当前 cwd 不发 set_cwd", () => {
@@ -265,7 +322,7 @@ describe("目录选择器（新建项目形态）", () => {
 		expect(sent.filter((m) => m.type === "set_cwd")).toEqual([{ type: "set_cwd", path: "/home/dev/existing" }]);
 		expect(onClose).toHaveBeenCalled();
 
-		// 「选择当前目录」在 initialPath === cwd 时只关闭，不重复切
+		// 「选择当前目录」在 cwd 与浏览目录相同时只关闭，不重复切
 		sent.length = 0;
 		click(byText(container, "选择当前目录"));
 		expect(sent.some((m) => m.type === "set_cwd")).toBe(false);

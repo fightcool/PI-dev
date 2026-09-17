@@ -3004,6 +3004,11 @@ body.lp-resizing .lp-sash.dragging::after {
 	line-height: 1.5;
 	color: var(--text-faint);
 }
+/* 新建输入行下的就地提示（名字已存在 / 创建失败）——比 transient notice 更难错过。 */
+.cwd-hint-warn {
+	margin-top: 4px;
+	color: var(--amber);
+}
 
 .status-queue {
 	color: var(--amber);

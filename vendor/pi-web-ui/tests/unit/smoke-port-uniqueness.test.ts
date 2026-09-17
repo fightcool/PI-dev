@@ -1,19 +1,27 @@
-/* 🍞 AI Breadcrumb — @COUPLED ../run-smoke.mjs（冒烟清单 ALL = 被判定的用例集合）,
+/* 🍞 AI Breadcrumb — @COUPLED ../run-smoke.mjs（冒烟清单 ALL = 并发执行的用例集合）,
  *   ../<name>-test.mjs（各自声明端口：`const PORT = 8898` 或 `Number(process.argv[2] || 8955)`）
- * @CONTRACT 冒烟跑器并发执行清单内用例（默认 JOBS=3），因此**清单内任意两个用例不得占用同一端口**：
+ * @CONTRACT 凡是**自己起 server 并绑定固定端口**的用例，都不得与他人共用同一端口：
  *   同端口会互相踩——后起的用例 freePort 会把先起用例的 server 杀掉，或直接连上别人的 server，
  *   表现为与本功能无关的假失败（"no result" / 回执永远不来）。
+ *   两类用例都被覆盖：① run-smoke 跑批内的（并发，默认 JOBS=3）；
+ *   ② 跑批外但会自己起 server 的浏览器 E2E（人手同时跑 / CI 分片跑）。
  *   不绑固定端口的用例（纯 CLI、或 `listen(0)` 取动态端口）视为「无端口」，不参与唯一性判定。
- * @BUGFIX 2026-09-17：实测有 6 组端口冲突（8898 被 conv-cwd/preview/restart-handoff 三个共用，
+ * @BUGFIX 2026-09-17：实测跑批内有 6 组端口冲突（8898 被 conv-cwd/preview/restart-handoff 三个共用，
  *   8967 被 left-panel-delete/vscode-editor-plugin 共用，另有 8908 / 8955+8956 / 8978 / 8979 / 8981）。
  *   跑批时确实复现过 preview-test 全项 "no result"（单独跑通过）。本用例把「端口唯一」变成
  *   可执行约束，而不是靠人记得。
+ * @KNOWN 跑批外仍有 7 组**历史冲突**（测试基座欠账，改它们要单独把对应 E2E 跑一遍，未并入本次
+ *   修复）：见 KNOWN_PREEXISTING_PORTS。它们被排除在断言之列，但「排除名单必须仍然冲突」
+ *   （清单过期会让用例失败提醒清理）——同时新增用例仍不准再撞这些端口。
  */
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const root = join(__dirname, "..", "..");
+
+/** 跑批外已知的历史冲突端口（测试基座欠账）。修好后从本名单里删掉，用例会提醒你。 */
+const KNOWN_PREEXISTING_PORTS = [8898, 8899, 8901, 8937, 8962, 8965, 8977];
 
 /** run-smoke.mjs 的 ALL 清单（被判定的用例名）。 */
 function smokeList(): string[] {
@@ -37,6 +45,29 @@ function portsOf(name: string): number[] {
 	const ports = new Set<number>([base]);
 	for (const m of src.matchAll(/\b[A-Z_]*PORT\s*=\s*PORT\s*\+\s*(\d+)/g)) ports.add(base + Number(m[1]));
 	return [...ports];
+}
+
+/** 跑批外会自起 server 的用例名（含浏览器 E2E）——它们同样不能共端口。 */
+function serverSpawningTests(): string[] {
+	return readdirSync(join(root, "tests"))
+		.filter((f) => f.endsWith("-test.mjs"))
+		.map((f) => f.replace(/\.mjs$/, ""))
+		.filter((name) => {
+			try {
+				return readFileSync(join(root, "tests", `${name}.mjs`), "utf8").includes("dist/server/index.js");
+			} catch {
+				return false;
+			}
+		});
+}
+
+/** 端口 → 占用它的用例名（只在给定用例集合里统计）。 */
+function portOwners(names: string[]): Map<number, string[]> {
+	const owners = new Map<number, string[]>();
+	for (const name of names) {
+		for (const port of portsOf(name)) owners.set(port, [...(owners.get(port) ?? []), name]);
+	}
+	return owners;
 }
 
 describe("冒烟清单端口唯一性", () => {
@@ -82,5 +113,27 @@ describe("冒烟清单端口唯一性", () => {
 			}
 		});
 		expect(missing).toEqual([]);
+	});
+});
+
+describe("自起 server 的用例端口唯一性（跑批之外）", () => {
+	const spawners = serverSpawningTests();
+
+	it("确实扫到了自起 server 的用例（解析逻辑没坏）", () => {
+		expect(spawners.length).toBeGreaterThan(30);
+	});
+
+	it("跑批外的历史冲突只在名单内，且不得新增", () => {
+		const clashes = [...portOwners(spawners).entries()]
+			.filter(([, who]) => who.length > 1)
+			.filter(([port]) => !KNOWN_PREEXISTING_PORTS.includes(port))
+			.map(([port, who]) => `${port} → ${who.join(", ")}`);
+		expect(clashes, "新用例请挑一个没人用的端口（8900+，见上面空闲区间）").toEqual([]);
+	});
+
+	it("已知冲突名单没有过期（修掉一个就该从名单里删掉）", () => {
+		const owners = portOwners(spawners);
+		const stale = KNOWN_PREEXISTING_PORTS.filter((port) => (owners.get(port)?.length ?? 0) < 2);
+		expect(stale, "这些端口已经不冲突了，请从 KNOWN_PREEXISTING_PORTS 里移除").toEqual([]);
 	});
 });

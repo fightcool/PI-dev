@@ -6,78 +6,57 @@
  *
  * Breadcrumbs (changing this affects):
  *   @COUPLED components/FooterBar.tsx（底栏工作目录入口，placement="footer"）,
+ *            components/DirectoryPickerNewFolder.tsx（文件夹名输入行）,
+ *            components/directory-picker-path.ts（路径纯函数：parentOf/browseQuery/createParent…）,
  *            components/LeftPanelProjects.tsx（左栏「＋ 新建项目」入口触发者）,
  *            app/app-dialogs.tsx（新建项目入口 placement="modal" 的挂载点）,
  *            styles.css（.cwd-picker / .cwd-list / .cwd-picker-modal）,
  *            server/files-service.ts（complete_path / make_dir 的服务端实现与 MACHINE_ROOT）
- *   📖 ../../docs/STRUCTURE.md（工作区与 cwd 的生命周期）
+ *   📖 ../../../docs/STRUCTURE.md（工作区与 cwd 的生命周期）
  *   @WHY 目录选择器原来内联在 FooterBar 里（唯一入口藏在底栏路径上），左栏「最近项目」
  *        没有新建入口，0 个项目时整块还不渲染 —— 新用户找不到任何新建项目的入口。
  *        抽成独立组件后底栏与左栏共用同一套浏览/新建/选择交互，行为不会分叉。
- *   @CONTRACT 本组件只发三种消息：complete_path（列目录）、make_dir（建目录）、set_cwd（选定）。
- *        它不认识项目元数据 —— 「项目」当前就是一个目录（见 protocol.ts ProjectSummary）。
+ *        路径纯函数与「文件夹名输入行」各自再分文件（本组件曾 387 行，超 300 行红线）。
+ *   @CONTRACT 本组件只发三种消息（类型取自 protocol.ts 的 ClientMessage，不再手抄一份联合）：
+ *        complete_path（列目录）、make_dir（建目录）、set_cwd（选定）。它不认识项目元数据 ——
+ *        「项目」当前就是一个目录（见 protocol.ts ProjectSummary）。
  *   @GOTCHA openAfterCreate 不用 setTimeout 猜 mkdir 是否完成：make_dir 与 set_cwd 都是
  *        `void`（服务端不等待），先发 set_cwd 会撞上 fs.stat 失败。改为等**刷新后的目录列表**
  *        里出现该目录（服务端列表就是证据）再 set_cwd。
  *   @BUGFIX 2026-09-20：路径输入框只改 draft，而「新建文件夹」建在 browsePath 下 ——
  *        弹窗里先输入父目录再建项目时，目录会默默建到**旧目录**里（浏览器 E2E 抛出来的）。
  *        修法：弹窗形态的 Enter = 定位到该目录（不切 cwd），且创建前把“看起来是目录的
- *        draft”当作父目录；底栏形态的 Enter 仍然是切工作目录（旧行为、有用例盘着）。
+ *        draft”当作父目录（createParent）；底栏形态的 Enter 仍然是切工作目录。
+ *   @BUGFIX 同日的另一处：弹窗用 document 捕获阶段监听 ESC，抢在文件夹名输入行之前处理，
+ *        于是「按 ESC 想收起输入行」会关掉整个弹窗。改为弹窗容器上的冒泡处理
+ *        （输入行自己 stopPropagation 就能拦下），并删掉全局监听。
  * ──────────────────────────────────────────────────
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { FiFolder, FiX } from "react-icons/fi";
+import type { ClientMessage } from "../types";
 import { useT } from "../i18n";
+import { NewFolderForm } from "./DirectoryPickerNewFolder";
+import {
+	browseQuery,
+	createParent,
+	findCreatedDir,
+	isExistingDir,
+	MACHINE_ROOT,
+	normalizePath,
+	parentOf,
+	type PathCompletion,
+} from "./directory-picker-path";
 
-/** 机器根（此电脑/盘符列表）wire 字面量 —— 与 server/files-service.ts 的 MACHINE_ROOT 同值。 */
-export const MACHINE_ROOT = "@root";
-
-/** 目录候选（协议 path_completions 的条目）。 */
-export interface PathCompletion {
-	name: string;
-	path: string;
-	type: "dir" | "file";
-}
-
-/** 路径比较用的规范化：统一分隔符 + 去掉尾部 "/"（"/a/b/" 与 "/a/b" 是同一目录）。 */
-function normalizePath(p: string): string {
-	const s = p.replace(/\\/g, "/");
-	return s.length > 1 && s.endsWith("/") ? s.slice(0, -1) : s;
-}
-
-/**
- * 「新建文件夹后自动打开」用：在刷新后的候选列表里找刚建好的目录。
- * 找不到返回 null（还没刷新到 / 创建失败），调用方继续等待。
- */
-export function findCreatedDir(completions: PathCompletion[], parentPath: string, name: string): string | null {
-	const wanted = normalizePath(`${normalizePath(parentPath)}/${name.trim()}`);
-	const hit = completions.find((c) => c.type === "dir" && normalizePath(c.path) === wanted);
-	return hit ? hit.path : null;
-}
-
-/** 绝对路径的父级；文件系统根返回 null。Windows 盘符根（"C:"）的父级是机器根。 */
-export function parentOf(p: string): string | null {
-	const s = p.endsWith("/") && p !== "/" ? p.slice(0, -1) : p;
-	if (s === MACHINE_ROOT || s === "/") return null;
-	const i = s.lastIndexOf("/");
-	if (i < 0) return /^[A-Za-z]:$/.test(s) ? MACHINE_ROOT : null;
-	if (i === 0) return "/"; // posix "/foo" → "/"
-	const parent = s.slice(0, i);
-	// Windows drive root resolves weirdly without the trailing slash.
-	return /^[A-Za-z]:$/.test(parent) ? parent + "/" : parent;
-}
+/** 本组件发出的三种协议消息（从 ClientMessage 取，避免与 protocol.ts 各写一份）。 */
+type PickerMessage = Extract<ClientMessage, { type: "complete_path" | "set_cwd" | "make_dir" }>;
 
 interface DirectoryPickerProps {
-	/** 打开时定位到的目录（绝对路径，原生分隔符会被规范成 "/"）。 */
-	initialPath: string;
-	/** 当前工作目录：选中它时不重复发 set_cwd。 */
+	/** 当前工作目录：打开时定位到这里，选中它时不重复发 set_cwd。 */
 	cwd: string;
 	/** 服务端 path_completions 的最新结果（目录与文件混合，内部只用目录）。 */
 	completions: PathCompletion[];
-	send: (
-		msg:
-			{ type: "complete_path"; path: string } | { type: "set_cwd"; path: string } | { type: "make_dir"; path: string },
-	) => boolean;
+	send: (msg: PickerMessage) => boolean;
 	onClose: () => void;
 	/** "footer"：底栏上方的浮层（默认，保持底栏原样）；"modal"：居中弹窗（新建项目入口）。 */
 	placement?: "footer" | "modal";
@@ -96,7 +75,6 @@ interface DirectoryPickerProps {
  * 底栏与左栏「＋ 新建项目」共用同一实例逻辑，只有落位与默认动作不同。
  */
 export function DirectoryPicker({
-	initialPath,
 	cwd,
 	completions,
 	send,
@@ -108,24 +86,23 @@ export function DirectoryPicker({
 	newFolderOpen = false,
 }: DirectoryPickerProps) {
 	const t = useT();
+	const isModal = placement === "modal";
 	// 服务端 cwd 是原生分隔符（Windows 下带反斜杠），选择器内部统一用 "/"，
 	// 否则 parentOf 按 "/" 切分会直接返回 null，↑ 按钮一开始就是禁用的。
-	const [browsePath, setBrowsePath] = useState(() => initialPath.replace(/\\/g, "/"));
-	const [draft, setDraft] = useState(() => initialPath.replace(/\\/g, "/"));
+	const [browsePath, setBrowsePath] = useState(() => cwd.replace(/\\/g, "/"));
+	const [draft, setDraft] = useState(() => cwd.replace(/\\/g, "/"));
 	const [showNew, setShowNew] = useState(newFolderOpen);
-	const [newName, setNewName] = useState("");
 	/** Tab 补全的当前候选下标（-1 = 未选中，Tab 从头开始）。 */
 	const [compIndex, setCompIndex] = useState(-1);
-	/** openAfterCreate 的等待目标：{父目录, 名字}，在刷新后的列表里出现即打开。 */
+	/** openAfterCreate 的等待目标：在刷新后的列表里出现即打开。 */
 	const [pendingCreate, setPendingCreate] = useState<{ parent: string; name: string } | null>(null);
-	const inputRef = useRef<HTMLInputElement>(null);
-	const newInputRef = useRef<HTMLInputElement>(null);
+	/** 「创建并打开」超时未见新目录 → 提示创建没成功（服务端 notice 之外的就地反馈）。 */
+	const [createFailed, setCreateFailed] = useState(false);
 
 	/** 目录选择器只用目录候选（文件是噪音；要精确路径可直接在输入框里打）。 */
 	const dirs = completions.filter((c) => c.type === "dir");
-
-	/** 带尾分隔符的查询：让服务端列**整个**目录而不是做前缀匹配。 */
-	const browseQuery = (p: string) => (p.endsWith("/") ? p : p + "/");
+	/** 新建时真正落在哪个父目录（路径框优先，见 createParent 的 @GOTCHA）。 */
+	const createBase = createParent(draft, browsePath);
 
 	// 打开与切目录时列目录（防抖）。
 	useEffect(() => {
@@ -162,31 +139,32 @@ export function DirectoryPicker({
 			commit(created);
 			return;
 		}
-		// 创建失败时服务端只回 notice（错误提示已可见），这里兜底解除等待，
-		// 免得选择器一直停在「创建中」的观感上。
-		const timer = setTimeout(() => setPendingCreate(null), 5000);
+		// 等不到新目录 = 创建没成功（服务端 notice 里已有原因）。就地给一句提示，
+		// 免得弹窗只是静静地停在那里（原先只有 5s 后静默解除等待）。
+		const timer = setTimeout(() => {
+			setPendingCreate(null);
+			setCreateFailed(true);
+		}, 5000);
 		return () => clearTimeout(timer);
 		// commit 依赖 send/cwd/onClose，均在一次打开内稳定；只跟 pendingCreate 与列表联动。
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [pendingCreate, dirs]);
 
-	/** 在当前浏览目录下建文件夹。 */
-	const createFolder = () => {
-		const name = newName.trim();
-		if (!name) return;
-		// @BUGFIX 用户在路径框里改了父目录但没按 Enter/没点「进入」时，draft 才是它的真实意图；
-		// 按 browsePath 建会默默建错位置。draft 为绝对路径且非机器根时以它为准。
-		const typed = draft.trim();
-		const parent =
-			typed && typed !== MACHINE_ROOT && (typed.startsWith("/") || /^[A-Za-z]:/.test(typed)) ? typed : browsePath;
-		send({ type: "make_dir", path: `${browseQuery(parent)}${name}` });
+	/** 建目录（或直接打开已存在的同名目录）。 */
+	const createFolder = (name: string) => {
+		setCreateFailed(false);
+		if (isExistingDir(dirs, createBase, name)) {
+			// 已存在 = 用户意图「用这个目录」，直接打开；不发 make_dir，也不谎称“已创建”。
+			commit(`${browseQuery(createBase)}${name}`);
+			return;
+		}
+		send({ type: "make_dir", path: `${browseQuery(createBase)}${name}` });
 		// make_dir 没有直接回执 —— 稍后刷新列表（openAfterCreate 也靠这次刷新拿到证据）。
 		setTimeout(() => {
-			send({ type: "complete_path", path: browseQuery(parent) });
+			send({ type: "complete_path", path: browseQuery(createBase) });
 		}, 80);
-		if (openAfterCreate) setPendingCreate({ parent, name });
-		setNewName("");
-		setShowNew(false);
+		if (openAfterCreate) setPendingCreate({ parent: createBase, name });
+		else setShowNew(false);
 	};
 
 	const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -196,7 +174,7 @@ export function DirectoryPicker({
 		} else if (e.key === "Enter" && !e.nativeEvent.isComposing) {
 			// 弹窗（新建项目）：Enter = 定位到该目录，因为接下来要在它里面建项目；
 			// 底栏：Enter = 切换工作目录（旧行为，有 left-panel-test.mjs 盘着）。
-			if (placement === "modal") {
+			if (isModal) {
 				setBrowsePath(draft.trim());
 				setCompIndex(-1);
 			} else {
@@ -213,31 +191,34 @@ export function DirectoryPicker({
 		}
 	};
 
-	// 弹窗形态：ESC 关闭（底栏形态的 ESC 由输入框的 onKeyDown 处理，保持原行为）。
-	useEffect(() => {
-		if (placement !== "modal") return;
-		const onKey = (e: KeyboardEvent) => {
-			if (e.key === "Escape") {
-				e.stopPropagation();
-				onClose();
-			}
-		};
-		document.addEventListener("keydown", onKey, true);
-		return () => document.removeEventListener("keydown", onKey, true);
-	}, [placement, onClose]);
+	const goTo = (path: string) => {
+		setBrowsePath(path);
+		setDraft(path);
+		setCompIndex(-1);
+	};
 
 	const upPath = parentOf(browsePath);
 	const atMachineRoot = browsePath === MACHINE_ROOT;
 
 	const panel = (
 		<div
-			className={`cwd-picker${placement === "modal" ? " cwd-picker-modal" : ""}`}
-			{...(placement === "modal"
-				? { role: "dialog", "aria-modal": true, "aria-label": title ?? t("cwdPickCurrent") }
-				: {})}
-			onClick={placement === "modal" ? (e) => e.stopPropagation() : undefined}
+			className={`cwd-picker${isModal ? " cwd-picker-modal" : ""}`}
+			{...(isModal ? { role: "dialog", "aria-modal": true, "aria-label": title ?? t("cwdPickCurrent") } : {})}
+			onClick={isModal ? (e) => e.stopPropagation() : undefined}
+			// ESC 关弹窗走**冒泡**（不是全局捕获）：文件夹名输入行自己 stopPropagation 就能拦住，
+			// 于是「ESC 收起输入行」不会连带把整个弹窗关掉。
+			onKeyDown={
+				isModal
+					? (e) => {
+							if (e.key === "Escape") {
+								e.stopPropagation();
+								onClose();
+							}
+						}
+					: undefined
+			}
 		>
-			{placement === "modal" && title && (
+			{isModal && title && (
 				<div className="cwd-picker-modal-head">
 					<span className="cwd-picker-modal-title">{title}</span>
 					<button type="button" className="cwd-up" title={t("close")} aria-label={t("close")} onClick={onClose}>
@@ -251,38 +232,15 @@ export function DirectoryPicker({
 					{atMachineRoot ? "💻" : <FiFolder />}
 					<span>{atMachineRoot ? t("computer") : browsePath}</span>
 				</span>
-				<button
-					type="button"
-					className="cwd-up"
-					disabled={atMachineRoot}
-					title={t("computer")}
-					onClick={() => {
-						setBrowsePath(MACHINE_ROOT);
-						setDraft(MACHINE_ROOT);
-						setCompIndex(-1);
-					}}
-				>
+				<button type="button" className="cwd-up" disabled={atMachineRoot} title={t("computer")} onClick={() => goTo(MACHINE_ROOT)}>
 					💻
 				</button>
-				<button
-					type="button"
-					className="cwd-up"
-					disabled={!upPath}
-					title={t("cwdGoUp")}
-					onClick={() => {
-						if (upPath) {
-							setBrowsePath(upPath);
-							setDraft(upPath);
-							setCompIndex(-1);
-						}
-					}}
-				>
+				<button type="button" className="cwd-up" disabled={!upPath} title={t("cwdGoUp")} onClick={() => upPath && goTo(upPath)}>
 					↑ {t("cwdGoUp")}
 				</button>
 			</div>
 			<div className="cwd-picker-row">
 				<input
-					ref={inputRef}
 					className="status-cwd-input cwd-picker-input"
 					value={draft}
 					placeholder={t("enterPath")}
@@ -307,16 +265,7 @@ export function DirectoryPicker({
 				{dirs.length === 0 && <div className="cwd-empty">{t("cwdEmpty")}</div>}
 				{dirs.map((d) => (
 					<div key={d.path} className="cwd-item">
-						<button
-							type="button"
-							className="cwd-enter"
-							title={`${t("cwdEnter")} ${d.path}`}
-							onClick={() => {
-								setBrowsePath(d.path);
-								setDraft(d.path);
-								setCompIndex(-1);
-							}}
-						>
+						<button type="button" className="cwd-enter" title={`${t("cwdEnter")} ${d.path}`} onClick={() => goTo(d.path)}>
 							<FiFolder />
 							<span className="cwd-name">{d.name}</span>
 						</button>
@@ -328,39 +277,18 @@ export function DirectoryPicker({
 			</div>
 			<div className="cwd-picker-foot">
 				{showNew ? (
-					<div className="cwd-newrow">
-						<input
-							ref={newInputRef}
-							value={newName}
-							autoFocus
-							spellCheck={false}
-							placeholder={t("cwdNewName")}
-							onChange={(e) => setNewName(e.target.value)}
-							onKeyDown={(e) => {
-								if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-									e.preventDefault();
-									createFolder();
-								} else if (e.key === "Escape") {
-									e.stopPropagation();
-									setShowNew(false);
-									setNewName("");
-								}
-							}}
-						/>
-						<button type="button" className="cwd-choose-btn primary" onClick={createFolder}>
-							{openAfterCreate ? t("cwdCreateAndOpen") : t("cwdCreate")}
-						</button>
-						<button
-							type="button"
-							className="cwd-choose-btn"
-							onClick={() => {
-								setShowNew(false);
-								setNewName("");
-							}}
-						>
-							{t("cwdCancel")}
-						</button>
-					</div>
+					<NewFolderForm
+						dirs={dirs}
+						parent={createBase}
+						openAfterCreate={openAfterCreate}
+						pending={pendingCreate !== null}
+						error={createFailed}
+						onCreate={createFolder}
+						onCancel={() => {
+							setShowNew(false);
+							setCreateFailed(false);
+						}}
+					/>
 				) : (
 					<button type="button" className="cwd-newbtn" onClick={() => setShowNew(true)}>
 						＋ {t("cwdNewFolder")}
@@ -370,7 +298,7 @@ export function DirectoryPicker({
 		</div>
 	);
 
-	if (placement === "modal") {
+	if (isModal) {
 		return (
 			<div className="modal-backdrop cwd-picker-backdrop" onClick={onClose}>
 				{panel}

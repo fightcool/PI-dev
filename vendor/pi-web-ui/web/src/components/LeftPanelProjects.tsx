@@ -19,8 +19,11 @@
  * ──────────────────────────────────────────────────
  */
 import { FiFolder, FiFolderPlus } from "react-icons/fi";
-import type { ProjectSummary } from "../types";
+import type { ClientMessage, ProjectSummary } from "../types";
 import { useT } from "../i18n";
+
+/** 本区块发出的两种消息（从 ClientMessage 取，避免与 protocol.ts 各写一份）。 */
+type ProjectMessage = Extract<ClientMessage, { type: "set_cwd" | "remove_project" }>;
 
 /** 目录名即项目名（协议里没有独立名字字段）。 */
 export function projectName(path: string): string {
@@ -34,7 +37,7 @@ interface LeftPanelProjectsProps {
 	collapsed: boolean;
 	/** 区块标题（含计数）由 LeftPanel 统一渲染，保证三块外观一致。 */
 	header: React.ReactNode;
-	send: (msg: { type: "set_cwd"; path: string } | { type: "remove_project"; path: string }) => boolean;
+	send: (msg: ProjectMessage) => boolean;
 	/** 打开目录选择器（新建项目）。由 App 层持有，因为选择器要用 chat.pathCompletions。 */
 	onNewProject: () => void;
 	/** 「从最近项目移出」的二次确认按钮（LeftPanel 的共用实现）。 */
