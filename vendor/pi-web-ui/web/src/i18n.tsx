@@ -100,6 +100,7 @@ export const zh = {
 	cwdNewFolder: "新建文件夹",
 	cwdNewName: "文件夹名称",
 	cwdCreate: "创建",
+	cwdCreateAndOpen: "创建并打开",
 	cwdCancel: "取消",
 	cacheHit: "缓存命中",
 	cacheHitTip: "缓存读取 {read} · 缓存写入 {write} · 未命中 {miss}（共 {input} 输入 token）",
@@ -181,6 +182,10 @@ export const zh = {
 
 	/* left panel */
 	recentProjects: "最近项目",
+	newProject: "新建项目",
+	newProjectTip: "新建项目：选择父目录 → 输入项目名 → 创建并打开（也可直接选择已有目录）",
+	newProjectHint: "项目就是一个工作目录：先浏览到要放项目的父目录，输入项目名后「创建并打开」；已有目录直接点「选择」。",
+	noProjects: "还没有项目",
 	runningConversations: "运行的对话",
 	subagentBadge: "子代理",
 	convErrorBadge: "子代理运行报错：{error}",
@@ -1084,6 +1089,9 @@ export const zh = {
 	usageHistoryUnpriced: "（{n} 条未知价格）",
 	usageHistoryWindowNote: "按 UTC 切分时间窗；金额为估算（非供应商扣费），未知价格不计入费用",
 	usageHistoryTruncated: "记录过多，结果不完整",
+	usageHistoryFailed: "（{n} 条失败）",
+	usageFailedTip:
+		"这些请求已计费输入却没能产出可用回答（网关/传输中断，例如 stream 半途断开），合计白烧约 {tokens} 输入 token；用户主动中止不计入。",
 	usageHistorySkipped: "跳过 {n} 条损坏记录",
 	usageGroup_channel: "按渠道",
 	usageGroup_project: "按项目",
@@ -1174,6 +1182,9 @@ export const zh = {
 	usageColInput: "输入",
 	usageColOutput: "输出",
 	usageColTotal: "合计",
+	usageColCacheHitRate: "缓存命中率",
+	usageCacheHitRateTip:
+		"时间窗内命中缓存的输入 token 占比（token 加权）：cacheRead ÷（未命中 + cacheRead + 新建缓存）。没有 token 可算时显示「—」，不按 0% 计。",
 	usageColCost: "费用",
 	settingsChannels: "渠道",
 	settingsChannelsDesc:

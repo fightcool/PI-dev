@@ -5,7 +5,6 @@ import {
 	FiChevronUp,
 	FiChevronsLeft,
 	FiEdit2,
-	FiFolder,
 	FiMessageSquare,
 	FiTrash2,
 	FiX,
@@ -13,6 +12,7 @@ import {
 import type { ConversationSummary, ProjectSummary, SessionSummary } from "../types";
 import type { ConnStatus } from "../use-chat";
 import { useT } from "../i18n";
+import { LeftPanelProjects, projectName } from "./LeftPanelProjects";
 
 /** Props are deliberately NARROW (no whole-ChatState object): every field is
  *  stable while tokens stream in, so the shallow-compared memo() below skips
@@ -50,6 +50,8 @@ interface LeftPanelProps {
 	collapsible?: boolean;
 	/** Fired when the user clicks the collapse button. */
 	onToggleCollapse?: () => void;
+	/** 「＋ 新建项目」：打开目录选择器（App 层持有，见 LeftPanelProjects 的 @WHY）。 */
+	onNewProject: () => void;
 }
 
 function formatModified(ts: number): string {
@@ -148,6 +150,7 @@ export const LeftPanel = memo(function LeftPanel({
 	active,
 	collapsible,
 	onToggleCollapse,
+	onNewProject,
 }: LeftPanelProps) {
 	const t = useT();
 	const currentFile = sessionFile;
@@ -178,7 +181,8 @@ export const LeftPanel = memo(function LeftPanel({
 			const headerH = 32; // .lp-section-title 高度（与 styles.css 中 .lp-section.collapsed 对齐）
 			const minPx = 72;
 			const visibleMeta = [
-				{ key: "projects" as const, visible: projects.length > 0, collapsed: collapseProjects },
+				// 最近项目区块常显（空态里也要有新建入口），故 visible 恒为 true。
+				{ key: "projects" as const, visible: true, collapsed: collapseProjects },
 				{ key: "convs" as const, visible: conversations.length > 0, collapsed: collapseConvs },
 				{ key: "sessions" as const, visible: true, collapsed: collapseSessions },
 			].filter((s) => s.visible);
@@ -208,7 +212,7 @@ export const LeftPanel = memo(function LeftPanel({
 			window.addEventListener("pointermove", onMove);
 			window.addEventListener("pointerup", onUp);
 		},
-		[weights, projects.length, conversations.length, collapseProjects, collapseConvs, collapseSessions],
+		[weights, conversations.length, collapseProjects, collapseConvs, collapseSessions],
 	);
 
 	useEffect(() => {
@@ -222,8 +226,6 @@ export const LeftPanel = memo(function LeftPanel({
 		const title = s.name || s.firstMessage.trim();
 		return title.length > 0 ? title : t("emptyChat");
 	};
-
-	const projectName = (path: string): string => path.split(/[\\/]/).pop() || path;
 
 	const delButton = (key: string, hint: string, confirmHint: string, onConfirm: () => void, icon?: React.ReactNode) => {
 		const armed = confirmDel === key;
@@ -264,7 +266,7 @@ export const LeftPanel = memo(function LeftPanel({
 
 	// 归一化权重：单展开时强制 flex=1 填满；多展开时按权重比例均值归一，避免 0.539 这类小数导致容器留空
 	const visibleMetaForFlex = [
-		{ key: "projects" as const, visible: projects.length > 0, collapsed: collapseProjects },
+		{ key: "projects" as const, visible: true, collapsed: collapseProjects },
 		{ key: "convs" as const, visible: conversations.length > 0, collapsed: collapseConvs },
 		{ key: "sessions" as const, visible: true, collapsed: collapseSessions },
 	].filter((s) => s.visible);
@@ -283,50 +285,29 @@ export const LeftPanel = memo(function LeftPanel({
 					<FiChevronsLeft />
 				</button>
 			)}
-			{/* Recent projects — collapsible, flex share */}
-			{projects.length > 0 && (
-				<div
-					className={`lp-section panel-projects ${collapseProjects ? "collapsed" : ""}`}
-					style={!collapseProjects ? { flex: `${effFlex("projects")} 1 0px` } : undefined}
-				>
-					{sectionHeader(t("recentProjects"), collapseProjects, toggleProjects, projects.length)}
-					{!collapseProjects && (
-						<div className="lp-section-body projects-scroll">
-							{projects.map((p) => {
-								const active = currentCwd === p.path;
-								return (
-									<div
-										className="lp-row"
-										key={p.path}
-										onMouseLeave={() => setConfirmDel((k) => (k === `proj:${p.path}` ? null : k))}
-									>
-										<button
-											type="button"
-											className={`project-item ${active ? "active" : ""}`}
-											title={p.path}
-											onClick={() => {
-												if (!active) send({ type: "set_cwd", path: p.path });
-											}}
-										>
-											<FiFolder className="project-icon" />
-											<span className="project-info">
-												<span className="project-name">{projectName(p.path)}</span>
-												<span className="project-path">{p.path}</span>
-											</span>
-											<span className="project-time">{formatModified(p.lastUsed)}</span>
-										</button>
-										{delButton(`proj:${p.path}`, t("deleteProject"), t("deleteProjectConfirm"), () =>
-											send({ type: "remove_project", path: p.path }),
-										)}
-									</div>
-								);
-							})}
-						</div>
-					)}
-				</div>
-			)}
+			{/* Recent projects — collapsible, flex share. 常显（0 个项目时也要能新建）。 */}
+			<div
+				className={`lp-section panel-projects ${collapseProjects ? "collapsed" : ""}`}
+				style={!collapseProjects ? { flex: `${effFlex("projects")} 1 0px` } : undefined}
+			>
+				<LeftPanelProjects
+					projects={projects}
+					cwd={currentCwd}
+					collapsed={collapseProjects}
+					header={sectionHeader(t("recentProjects"), collapseProjects, toggleProjects, projects.length)}
+					send={send}
+					onNewProject={onNewProject}
+					formatModified={formatModified}
+					onRowLeave={(key) => setConfirmDel((k) => (k === key ? null : k))}
+					renderRemoveButton={(p) =>
+						delButton(`proj:${p.path}`, t("deleteProject"), t("deleteProjectConfirm"), () =>
+							send({ type: "remove_project", path: p.path }),
+						)
+					}
+				/>
+			</div>
 			{/* sash: projects ↔ next */}
-			{projects.length > 0 && !collapseProjects && (conversations.length > 0 ? !collapseConvs : !collapseSessions) && (
+			{!collapseProjects && (conversations.length > 0 ? !collapseConvs : !collapseSessions) && (
 				<div
 					className="lp-sash"
 					onPointerDown={createSashHandler("projects", conversations.length > 0 ? "convs" : "sessions")}

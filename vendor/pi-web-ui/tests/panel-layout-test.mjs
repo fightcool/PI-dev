@@ -4,6 +4,11 @@
  * (Without a background run the running list stays hidden — new chats are
  * only listed once displaced while streaming — so the layout asserts the
  * section stays absent and the history structure stays intact.)
+ *
+ * @GOTCHA PasskeyGate 是纯客户端门：隔离实例下页面也先渲染登录卡，不种 localStorage token
+ *   就永远等不到 `.panel-left`（与布局无关的假失败）。
+ * @GOTCHA 鉴权环境必须隔离（与 run-smoke.mjs 的 smokeEnv 同一口径）：宿主带着 PI_WEB_TOKEN 时，
+ *   本用例起的隔离 server 会要求口令，匠名 WS 401，快照相关的断言全部假失败。
  */
 import { CHROME_PATH } from "./lib/chrome.mjs";
 import { portUp, freePort } from "./lib/port-utils.mjs";
@@ -30,6 +35,13 @@ const check = (name, ok, extra = "") => {
 	if (!ok) failures++;
 };
 
+/** 隔离子进程环境：去掉鉴权/托管变量（见文件头 @GOTCHA）。 */
+function isolatedEnv() {
+	const env = { ...process.env };
+	for (const key of ["PI_WEB_TOKEN", "PI_WEB_MANAGED"]) delete env[key];
+	return env;
+}
+
 try {
 	execSync("npm run build", { cwd: PROJ, stdio: "ignore" });
 } catch {
@@ -42,13 +54,16 @@ try {
 await sleep(400);
 const server = spawn("node", ["dist/server/index.js"], {
 	cwd: PROJ,
-	env: { ...process.env, PI_WEB_PORT: String(PORT), PI_WEB_CWD: WS },
+	env: { ...isolatedEnv(), PI_WEB_PORT: String(PORT), PI_WEB_CWD: WS },
 	stdio: "ignore",
 });
 for (let i = 0; i < 40 && !(await portUp(PORT)); i++) await sleep(250);
 
 const browser = await chromium.launch({ executablePath: HEADLESS });
 const page = await browser.newPage();
+await page.addInitScript(
+	"try{localStorage.setItem('pi-web-ui:token','e2e-isolated-instance');localStorage.setItem('pi-web-ui:lang','zh')}catch(e){}",
+);
 await page.goto(URL);
 await page.waitForSelector(".panel-left .panel-sessions", { timeout: 15000 });
 await sleep(800);

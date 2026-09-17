@@ -5,6 +5,10 @@
  *        渠道面板是服务商/密钥/模型的唯一入口，不再两处交叉。
  *   — 📖 docs/DEV-CON-PROPOSAL.md §6/§4 */
 import { lazy, Suspense } from "react";
+import { useT } from "../i18n";
+// @WHY 不做 lazy：它已被 FooterBar 静态引用（底栏常在），再 dynamic import 只会拿到
+// vite 的「无法拆分」警告，不产生任何体积收益。
+import { DirectoryPicker } from "../components/DirectoryPicker";
 import type { AppConnection } from "./types";
 import type { useAppDialogs } from "./use-app-dialogs";
 import type { useAttachments } from "./use-attachments";
@@ -33,6 +37,7 @@ export function AppDialogs({
 	onSwitchToTerminal: () => void;
 	onSwitchToChat: () => void;
 }) {
+	const t = useT();
 	const { chat, send, channelApi, terminal } = connection;
 	const {
 		previewFile,
@@ -47,6 +52,8 @@ export function AppDialogs({
 		setBgTasksOpen,
 		globalSearchOpen,
 		setGlobalSearchOpen,
+		newProjectOpen,
+		setNewProjectOpen,
 		setSearchJump,
 		searchVisited,
 	} = dialogs;
@@ -102,6 +109,22 @@ export function AppDialogs({
 				/>
 			)}
 			{bgTasksOpen && <BgTasksModal servers={chat.bgServers} send={send} onClose={() => setBgTasksOpen(false)} />}
+			{newProjectOpen && (
+				/* 新建项目：默认展开「文件夹名称」行，建完直接当工作目录打开（openAfterCreate）。
+				   已存在的目录也能直接「选择」——同一个选择器两种用法，不再开第二个弹窗。 */
+				<DirectoryPicker
+					initialPath={chat.state?.cwd ?? ""}
+					cwd={chat.state?.cwd ?? ""}
+					completions={chat.pathCompletions}
+					send={send}
+					placement="modal"
+					title={t("newProject")}
+					hint={t("newProjectHint")}
+					openAfterCreate
+					newFolderOpen
+					onClose={() => setNewProjectOpen(false)}
+				/>
+			)}
 			{(globalSearchOpen || searchVisited) && (
 				<GlobalSearchModal
 					open={globalSearchOpen}

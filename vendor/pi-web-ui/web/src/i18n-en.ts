@@ -95,6 +95,7 @@ export const en: EnDictionary = {
 	cwdNewFolder: "New folder",
 	cwdNewName: "Folder name",
 	cwdCreate: "Create",
+	cwdCreateAndOpen: "Create and open",
 	cwdCancel: "Cancel",
 	cacheHit: "Cache hit",
 	cacheHitTip: "read {read} · write {write} · miss {miss} (of {input} input tokens)",
@@ -180,6 +181,11 @@ export const en: EnDictionary = {
 
 	/* left panel */
 	recentProjects: "Recent projects",
+	newProject: "New project",
+	newProjectTip: "New project: browse to a parent folder → type a project name → create and open (or just select an existing folder)",
+	newProjectHint:
+		"A project is a working directory: browse to the parent folder, type a name and choose “Create and open”. For an existing folder just click “Select”.",
+	noProjects: "No projects yet",
 	runningConversations: "Running chats",
 	subagentBadge: "Subagent",
 	convErrorBadge: "Subagent failed: {error}",
@@ -1108,6 +1114,9 @@ export const en: EnDictionary = {
 	usageHistoryUnpriced: "({n} unpriced)",
 	usageHistoryWindowNote: "Windows are cut in UTC; costs are estimates (not the provider's charge) and unpriced requests add no cost",
 	usageHistoryTruncated: "Too many records; the result is incomplete",
+	usageHistoryFailed: "({n} failed)",
+	usageFailedTip:
+		"These requests billed input but produced no usable answer (gateway/transport drop, e.g. a stream that ended early): about {tokens} input tokens wasted. Requests you cancelled yourself are not counted.",
 	usageHistorySkipped: "Skipped {n} damaged records",
 	usageGroup_channel: "By channel",
 	usageGroup_project: "By project",
@@ -1199,6 +1208,9 @@ export const en: EnDictionary = {
 	usageColInput: "Input",
 	usageColOutput: "Output",
 	usageColTotal: "Total",
+	usageColCacheHitRate: "Cache hit rate",
+	usageCacheHitRateTip:
+		"Share of input tokens served from the prompt cache in this window (token-weighted): cacheRead ÷ (miss + cacheRead + cache write). Shows “—” when there are no tokens to compute over, never 0%.",
 	usageColCost: "Cost",
 	settingsChannels: "Channels",
 	settingsChannelsDesc:
