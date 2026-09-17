@@ -31,9 +31,14 @@ if (!existsSync(TARGET)) {
 	process.exit(1);
 }
 
-/** 构建号 = 短 commit + 构建时刻。commit 让同一次提交可复现，时间戳保证脏工作区
- *  的两次构建也会得到不同的缓存名（否则本地反复构建时旧资源仍会被钉住）。 */
+/** 构建号 = 短 commit + 构建时刻。commit 让同一次提交可追溯，时间戳保证脏工作区
+ *  的两次构建也会得到不同的缓存名（否则本地反复构建时旧资源仍会被钉住）。
+ *  @GOTCHA 发布构建跑在 `git archive` 展开的 staging 目录里，**那不是 git 工作区**，
+ *    直接 git rev-parse 会拿到 nogit（实测过）。发布流程会传 PI_DEV_BUILD_COMMIT
+ *    （见 scripts/lifecycle/release-build.mjs），所以以它为准，git 只做本地开发的回退。 */
 const commit = (() => {
+	const fromEnv = process.env.PI_DEV_BUILD_COMMIT;
+	if (fromEnv && /^[a-f0-9]{7,40}$/.test(fromEnv)) return fromEnv.slice(0, 12);
 	try {
 		return execFileSync("git", ["rev-parse", "--short=12", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
 	} catch {
