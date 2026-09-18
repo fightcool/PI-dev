@@ -18,11 +18,14 @@
  * 只补两类事实，不做任何推断：stopReason=error 与它的错误文案（截断 120 字）。
  * 不改 token/费用/归属，不删除任何行；认不出来的记录原样保留。
  *
- * @GOTCHA 本脚本会重写整个文件，而在线的 pi 进程随时在往同一个文件 append——
- *   在服务运行时回填会丢掉期间新写的记录。脚本会比对读入前后的 size/mtime，
- *   发现变化就中止（提示先停服务）；但这只是乱局中的一道护栏，不是替代品。
+ * @GOTCHA 本脚本会重写整个文件，而在线的 pi 进程随时在往同一个文件 append。所以每条写入都走
+ *   「取样 → 读 → 算 → 写临时文件 → **紧贴 rename 之前再确认一次** → 原子替换」这个循环：
+ *   中途发现文件变了就丢掉临时文件重来（重读一份最新的，而不是拿旧内容盖上去）。
+ *   剩下的竞争窗口只有「最后一次确认 → rename」之间那一瞬（亚毫秒级），不需要停服。
+ * @ASSUME 但这是**尽力而为**，不是分布式事务：若在那一瞬恰好有请求完成，它的记录会没写好。
+ *   因而不建议在繁忙时段跑；预演（默认）不写盘，可先看数字。
  */
-import { copyFileSync, existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 // 失败口径与截断长度都从库里取：脚本不许维护第二份判断（两处漂移会回填出界面不认的记录）。
@@ -135,27 +138,44 @@ if (!apply) {
 	process.exit(0);
 }
 
-const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-// 写入前重新确认文件没被在线的 pi 进程追加过，否则重写会静默丢掉那些新记录。
-const before = statSync(historyPath);
-for (const path of [historyPath, ...(previous ? [previousPath] : [])]) {
-	const now = statSync(path);
-	if (path === historyPath && (now.size !== before.size || now.mtimeMs !== before.mtimeMs)) {
-		console.error(`${path} 在本次读取后被修改过（size/mtime 变了）。`);
-		console.error("在线进程正在 append，现在重写会丢掉新记录——请先停掉服务再回填。未写入任何内容。");
-		process.exit(1);
+/** 文件指纹：只用来判断「读取之后有没有被追加过」。取不到（不存在）时返回 null。 */
+function fingerprint(path) {
+	try {
+		const s = statSync(path);
+		return `${s.size}:${s.mtimeMs}`;
+	} catch {
+		return null;
 	}
 }
 
-for (const [path, result] of [
-	[historyPath, current],
-	...(previous ? [[previousPath, previous]] : []),
-]) {
-	const backup = `${path}.bak-${stamp}`;
-	copyFileSync(path, backup);
-	const tmp = `${path}.${process.pid}.backfill`;
-	writeFileSync(tmp, result.out.join("\n"), { mode: 0o600 });
-	renameSync(tmp, path);
-	console.log(`已回填 ${result.patched} 条：${path}（备份 ${backup}，${statSync(path).size} 字节）`);
+/**
+ * 原子回填一个文件：变了就重来，最多 few 次；每次重来都重读最新内容，不拿旧内容盖新数据。
+ * @WHY 不在「读之前」固定一份内容然后只靠最后一道检查：写入期间只要有一次 append，
+ *      重试一下就能把那条记录一起补进去，比中止更可用；而重试次数有限，繁忙时段也不会卡死。
+ */
+function applyFile(path, maxAttempts = 3) {
+	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+		const before = fingerprint(path);
+		const result = backfill(readFileSync(path, "utf8"));
+		const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+		const backup = `${path}.bak-${stamp}`;
+		const tmp = `${path}.${process.pid}.backfill`;
+		copyFileSync(path, backup);
+		writeFileSync(tmp, result.out.join("\n"), { mode: 0o600 });
+		// 最后一次确认紧贴 rename：窗口只剩这一条语句本身。
+		if (fingerprint(path) !== before) {
+			unlinkSync(tmp);
+			console.log(`${path} 在本次写入前被追加过，重试（第 ${attempt} 次）`);
+			continue;
+		}
+		renameSync(tmp, path);
+		console.log(`已回填 ${result.patched} 条：${path}（共 ${result.total} 条，备份 ${backup}）`);
+		return result;
+	}
+	console.error(`${path} 连续 ${maxAttempts} 次都在写入前被改动——现在很忙，稍后再跑或先停服务。未写入任何内容。`);
+	process.exit(1);
 }
+
+applyFile(historyPath);
+if (previous) applyFile(previousPath);
 console.log(`\n完成。备份目录：${dirname(historyPath)}`);
