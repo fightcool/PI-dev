@@ -6,7 +6,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { TokenUsageTracker, normalizeUsageEvent } from "../vendor/pi-web-ui/lib/usage/token-usage.mjs";
+import { TokenUsageTracker, isFailedStopReason, normalizeUsageEvent } from "../vendor/pi-web-ui/lib/usage/token-usage.mjs";
 
 /** 真实 SDK Usage 形状（pi-ai types.d.ts：totalTokens / cacheRead / cacheWrite / cost）。 */
 const sdkUsage = (over = {}) => ({
@@ -184,4 +184,45 @@ test("normalizes snake_case provider events and ignores a missing usage", () => 
   );
   assert.equal(normalized.scope, "partial");
   assert.equal(normalizeUsageEvent({ type: "agent_start" }), null);
+});
+
+test("per-request records carry the failure verdict and a bounded reason (白烧口径)", () => {
+  const t = new TokenUsageTracker();
+  t.startRun(0);
+  // 网关搞流：SDK 写 stopReason=error + errorMessage，而 usage 里的输入早就被计费了。
+  const longReason = `Anthropic stream ended before message_stop: ${"x".repeat(300)}`;
+  t.record(
+    normalizeUsageEvent({
+      type: "message_end",
+      message: assistant(sdkUsage({ output: 0, totalTokens: 1920 }), 1, { responseId: "resp-err", stopReason: "error", errorMessage: longReason }),
+    }),
+    1,
+    { source: "user", channelId: "ch-a" },
+  );
+  const failed = t.snapshot().records[0];
+  assert.equal(failed.stopReason, "error");
+  assert.equal(failed.failureReason.length, 120, "证据要截断到有界长度：用量历史是 append-only JSONL，不能无界膨胀");
+  assert.ok(longReason.startsWith(failed.failureReason), "截断保留原文前缀，不改写证据");
+  // 正常结束不写 failureReason：不给每条记录多塞空字段（旧记录也没有这些字段）。
+  t.record(normalizeUsageEvent({ type: "message_end", message: assistant(sdkUsage(), 2, { responseId: "resp-ok", stopReason: "stop" }) }), 2, { source: "user" });
+  const ok = t.snapshot().records[0];
+  assert.equal("failureReason" in ok, false);
+  assert.equal(ok.stopReason, "stop");
+});
+
+test("only stopReason=error counts as failure; a user abort never does", () => {
+  // 用户主动中止时 SDK 同样写 stopReason/errorMessage，但它是有意为之：
+  // 当成故障会让渠道告警变噪声，并把结论指向错误的渠道。
+  assert.equal(isFailedStopReason("error"), true);
+  assert.equal(isFailedStopReason("aborted"), false);
+  assert.equal(isFailedStopReason("stop"), false);
+  assert.equal(isFailedStopReason(undefined), false);
+  const t = new TokenUsageTracker();
+  t.startRun(0);
+  t.record(
+    normalizeUsageEvent({ type: "message_end", message: assistant(sdkUsage(), 3, { responseId: "resp-abort", stopReason: "aborted", errorMessage: "Request was aborted" }) }),
+    3,
+  );
+  // 中止的事实照记（留证据），是不是「失败」由 isFailedStopReason 的唯一口径决定。
+  assert.equal(t.snapshot().records[0].stopReason, "aborted");
 });

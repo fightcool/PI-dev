@@ -3,6 +3,9 @@
  * 📖 docs/DEV-CON-PROPOSAL.md §8 P4 首个切片（跨渠道/项目/时间历史）
  * @CONTRACT 只读展示服务端聚合结果：分组键是记录里的引用，未知/缺失按「未归属」显示，
  *   未知价格按「未知价格」显示（不是 0），触到扫描上限时明确标注结果不完整。
+ * @GOTCHA 缓存命中率与失败标注不是这里算的：命中率取服务端 token 加权值（null → 「—」，
+ *   表示没有 token 可算而不是 0%），失败只认 isFailedStopReason（stopReason=error），
+ *   与「按渠道用量」面板同一份聚合、同一口径，前端不重算。
  */
 import { memo, useEffect, useState } from "react";
 import type { UiChannelInfo } from "../types";
@@ -14,6 +17,9 @@ const WINDOWS: UsageHistoryWindow[] = ["today", "7d", "30d", "all"];
 
 const formatTokens = (n: number): string => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 const formatCost = (n: number): string => (n === 0 ? "0" : n < 0.01 ? n.toFixed(4) : n.toFixed(2));
+/** 命中率：null 是「没有 token 可算」（无记录 / 全部未上报），必须显示「—」而不是 0%。 */
+const formatHitRate = (rate: number | null | undefined): string =>
+	rate === null || rate === undefined ? "—" : `${(rate * 100).toFixed(1)}%`;
 
 export const UsageHistory = memo(function UsageHistory({
 	history,
@@ -74,6 +80,7 @@ export const UsageHistory = memo(function UsageHistory({
 								<th>{t("usageColInput")}</th>
 								<th>{t("usageColOutput")}</th>
 								<th>{t("usageColTotal")}</th>
+								<th title={t("usageCacheHitRateTip")}>{t("usageColCacheHitRate")}</th>
 								<th>{t("usageColCost")}</th>
 							</tr>
 						</thead>
@@ -81,10 +88,19 @@ export const UsageHistory = memo(function UsageHistory({
 							{history.rows.map((row) => (
 								<tr key={row.key}>
 									<td title={row.key}>{label(row.key)}</td>
-									<td>{row.requests}</td>
+									<td>
+										{row.requests}
+										{(row.failedRequests ?? 0) > 0 && (
+											<span className="usage-unknown-price" title={t("usageFailedTip", { tokens: formatTokens(row.wastedInput ?? 0) })}>
+												{" "}
+												{t("usageHistoryFailed", { n: row.failedRequests })}
+											</span>
+										)}
+									</td>
 									<td>{formatTokens(row.input)}</td>
 									<td>{formatTokens(row.output)}</td>
 									<td>{formatTokens(row.total)}</td>
+									<td title={t("usageCacheHitRateTip")}>{formatHitRate(row.cacheHitRate)}</td>
 									<td>
 										{formatCost(row.cost)}
 										{row.unreportedRequests > 0 && (
@@ -104,10 +120,19 @@ export const UsageHistory = memo(function UsageHistory({
 							))}
 							<tr className="usage-history-total">
 								<td>{t("usageHistoryTotals")}</td>
-								<td>{history.totals.requests}</td>
+								<td>
+									{history.totals.requests}
+									{(history.totals.failedRequests ?? 0) > 0 && (
+										<span className="usage-unknown-price" title={t("usageFailedTip", { tokens: formatTokens(history.totals.wastedInput ?? 0) })}>
+											{" "}
+											{t("usageHistoryFailed", { n: history.totals.failedRequests })}
+										</span>
+									)}
+								</td>
 								<td>{formatTokens(history.totals.input)}</td>
 								<td>{formatTokens(history.totals.output)}</td>
 								<td>{formatTokens(history.totals.total)}</td>
+								<td title={t("usageCacheHitRateTip")}>{formatHitRate(history.totals.cacheHitRate)}</td>
 								<td>{formatCost(history.totals.cost)}</td>
 							</tr>
 						</tbody>

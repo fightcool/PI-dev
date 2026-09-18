@@ -199,6 +199,18 @@ Authorization: Bearer <api key>
 
 **真实链路复验结果**（修复上线后按同一流程复跑）见 `docs/PM2-PRODUCTION.md` 的升级记录与本节后续更新。
 
+## 14. P4 运维：失败请求与「白烧」可见 + 渠道失败告警（2026-09-17）
+
+真实供应商验收暴露的另一类损失：**网关搞流**（Anthropic 流在 `message_stop` 之前断开）时，请求照旧计费输入 token、产出为空。在「请求数 / 费用」上它看起来完全正常，所以**除非单独统计失败，这类白烧永远不会自己浮出来**——一次中断就能烧掉数万输入 token，而它在现有指标里没有任何痕迹。
+
+- **记录（`lib/usage/token-usage.mjs`）**：逐请求记录新增 `stopReason` 与 `failureReason`（错误原文截断 120 字——append-only JSONL 不能无界膨胀）；两者只在有值时写入，旧记录没有该字段按「未失败」处理，不给每条正常记录多塞空字段。
+- **失败口径唯一**：`isFailedStopReason(stopReason)` 是唯一实现（服务端聚合、渠道告警、回填脚本共用）。**只有 `error` 算失败**；`aborted` 是用户主动中止（SDK 在两种情况下都写 `stopReason` + `errorMessage`），算成故障会让告警变噪声，也会把「渠道有问题」的结论指向错误的渠道。
+- **聚合（`server/dev-con/usage-history.ts`）**：每组新增 `failedRequests`（error 请求数）、`wastedInput`（这些请求已计费的输入 token = miss + 读缓存 + 写缓存）、`cacheHitRate`（时间窗内 **token 加权**缓存命中率 `cacheRead ÷ (input + cacheRead + cacheWrite)`，与 `web/src/cache-stats.ts` 同口径）。命中率分母为 0（没有 token / 全部未上报）时返回 **null**，界面显示「—」而不是 0%。
+- **告警（`server/dev-con/channel-failure-alert.ts`）**：纯函数（不读盘、不发通知、冷却由调用方执行，与 `ops-alerts.ts` 一致）+ 复用既有的 60 秒运维检查周期。**窗口 30 分钟、至少 5 次失败、失败率 ≥ 5%、同一主体冷却 60 分钟**（双阈值：次数下限挡住低频渠道的偶然失败，失败率下限挡住「2 次里 1 次失败」）。告警主体优先渠道 `channel:<id>`，**无渠道绑定时回落到 `provider:<id>`**（实测大量请求 `channelId=null`，只认渠道会让告警对最严重的白烧完全沉默）；两者都没有的样本直接丢弃（没有可操作对象）。开关沿用运维告警开关。
+- **协议/界面**：`usage_history` 的 rows/totals 新增上述三个字段（**协议 31**，双端同步）。「按渠道用量」与用量历史两张表都新增「缓存命中率」列；请求数列在失败数 > 0 时附「（n 条失败）」标注，tooltip 给出白烧的输入 token（按 k/M 缩写，与表格其余数字同格式）。
+- **一次性回填（`scripts/maintenance/backfill-usage-failures.mjs`）**：`stopReason`/`failureReason` 是后加字段，旧记录没有——**部署前已经烧掉的输入 token 不会自己出现**。会话文件里留着证据（assistant 消息的 `stopReason`/`errorMessage`/`responseId`），而用量记录 id 就是 `r:<responseId>`，据此可把旧记录补回来：**默认只预演**，`--apply` 才落盘（备份 + 临时文件原子替换，权限 0600）；认不出来的行原样保留，损坏行不删。脚本会比对读入前后的 size/mtime，发现文件被在线进程 append 过就中止——**回填必须在停服时执行**。
+- **验证**：单测新增 7 例（`tests/unit/usage-history.test.ts`：token 加权而非逐请求平均、cacheWrite 计入分母、无 token 记 null 而不是 0%、分组各自独立、失败数/白烧输入、aborted 不计、旧记录不计）+ 8 例（`tests/unit/channel-failure-alert.test.ts`：双阈值、窗口边界、无主体样本、按主体隔离的冷却、多主体按失败数排序、provider 级主体、白烧只算失败样本）+ 2 例（`tests/token-usage.test.mjs`：记录保留失败事实且原因截断到 120 字、aborted 不算失败）+ 协议版本守护用例；`node scripts/check-protocol-sync.mjs` 通过（v31）；回填脚本在合成数据上预演 + 落盘复验（只补 error 记录、aborted/已标注/认不出的行原样保留、损坏行不丢、mode 600）。
+
 ## 复现方式与本次实测结果
 
 ```bash
@@ -235,3 +247,4 @@ npm run test:channels:browser     # Chromium（桌面 + 移动视口）：渠道
 6. **渠道界面的验收范围**：`npm run test:channels:browser` 用真实 Chromium 覆盖 35 项断言——渠道分组、禁用/服务商缺失原因、有效/待生效提示、底部渠道、组合命令携带的 revision、用量归属与「未归属」标记、渠道设置页列表与账户状态（ok/unsupported/stale 与真实数值）、`channel_query_account`、带 `expectedConfigRevision` 的 `channel_save`，逐请求记录表（时间/来源/渠道/模型/费用、未知价格标注、计价依据说明），以及**移动端视口**（390×844，触屏）下同样的选择流程。**未**做真实设备/真机人工验收与真实供应商账号下的界面验收。
 7. **非中英文语言包的渠道文案**：新增 88 个 key 已按中文顺序填入 8 个语言包以保证一一对应，但暂时使用英文原文作为占位译文（运行时行为与缺 key 回落英文一致）；正式译文待补。
 8. **既有认证面加固**（recovery 限频、CSRF、query token、health 信息）：见 §7，需独立排期。
+9. **渠道失败告警的阈值与真实流量**：§14 的阈值（30 分钟窗 / ≥5 次失败 / ≥5% / 60 分钟冷却）是按单次真实事故的量级定的，**未经真实流量调参**；失败链路（stream 中途断开）需要在替身 provider 上造流中断，因此新增的失败标注与缓存命中率列**尚无 Chromium / 端到端断言**，只有单测与聚合单测覆盖。
