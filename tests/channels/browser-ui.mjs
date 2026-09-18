@@ -13,7 +13,8 @@
  * @GOTCHA 新增检查的语义（全在合成数据上验证，不允许因为“界面上看不到”就放宽）：
  *   模型白名单只在非空时生效（空 = 不限）、行内启用切换必须带上 models、
  *   编辑时渠道 id 只读、账户模板的 JSON 校验必须拦下坏配置（不得发出 channel_save）、
- *   删除要确认并有回执、按渠道用量把未归属/未上报/未知价格如实展示。
+ *   删除要确认并有回执、按渠道用量把未归属/未上报/未知价格如实展示，
+ *   缓存命中率按 token 加权展示且分母为 0 时显「—」而不是 0%、失败请求要能看出白烧了多少输入 token。
  *
  * 用法：node tests/channels/browser-ui.mjs
  */
@@ -303,6 +304,17 @@ try {
 			historyText.includes("渠道 A") && historyText.includes("Unattributed") && historyText.includes("Total") && historyText.includes("unpriced"),
 			historyText.split("\n").slice(0, 5).join(" / "),
 		);
+		// 协议 v31：失败白烧与缓存命中率在「用量历史」的合计行上也要看得见。
+		check("usage history declares the cache hit rate column", /cache hit rate/i.test(historyText), historyText.split("\n").slice(0, 3).join(" / "));
+		check("history totals show the token-weighted cache hit rate (16.0%)", historyText.includes("16.0%"), historyText.slice(0, 200));
+		const historyFailedNote = history.locator(".usage-unknown-price[title]").filter({ hasText: "(1 failed)" }).first();
+		check("history totals annotate failed requests", (await historyFailedNote.count()) === 1);
+		const historyFailedTip = await historyFailedNote.getAttribute("title").catch(() => null);
+		check(
+			"the failure tooltip ties the annotation to wasted input tokens (7.0k)",
+			/wasted/.test(String(historyFailedTip)) && String(historyFailedTip).includes("7.0k"),
+			String(historyFailedTip),
+		);
 		sent = [];
 		await history.locator(".chan-btn", { hasText: "By project" }).first().click();
 		await page.waitForTimeout(300);
@@ -336,7 +348,8 @@ try {
 	check(
 		"settings page shows ok / unsupported / stale account states with real numbers",
 		settingsText.includes("OK") && settingsText.includes("Unsupported") && settingsText.includes("Stale") &&
-			settingsText.includes("Balance 12.5 USD") && settingsText.includes("last successful result"),
+			// 金额走 formatAmount（全局唯一口径）：非整数一律两位小数，所以是 12.50 而不是 12.5。
+			settingsText.includes("Balance 12.50 USD") && settingsText.includes("last successful result"),
 	);
 	// TTL 过期的数据不是「渠道报错」：文案说「待刷新」，且说明写的是「上次查询太久了」。
 	check(
@@ -376,6 +389,21 @@ try {
 		usageText.includes("Unattributed") && usageText.includes("unpriced") && usageText.includes("unreported"),
 		usageText.slice(0, 260),
 	);
+	// 协议 v31：新增「缓存命中率」列（token 加权、分母为 0 时诚实地显「—」）与失败白烧标注。
+	check("per-channel usage table has a cache hit rate column", /cache hit rate/i.test(usageText), usageText.slice(0, 200));
+	check(
+		"cache hit rate is token-weighted per row (17.4% / 0.0%) and 「—」 when there is nothing to compute over",
+		usageText.includes("17.4%") && usageText.includes("0.0%") && usageText.includes("—"),
+		usageText.slice(0, 300),
+	);
+	const failedNote = usageBlock.locator(".usage-unknown-price[title]").filter({ hasText: "(1 failed)" }).first();
+	check("failed requests are annotated inline in the requests column", (await failedNote.count()) === 1);
+	const failedTip = await failedNote.getAttribute("title").catch(() => null);
+	check(
+		"the annotation explains the burn: about 7.0k input tokens billed with no usable answer",
+		String(failedTip).includes("7.0k") && /cancelled yourself/i.test(String(failedTip)),
+		String(failedTip),
+	);
 	check("channels without records say so instead of showing 0", usageText.includes("No records in this window"));
 	sent = [];
 	await usageBlock.locator(".chan-btn", { hasText: "30 days" }).first().click();
@@ -396,10 +424,18 @@ try {
 	// 6e) 编辑：id 只读（绑定键）+ 白名单已勾选；删除要确认并给回执。
 	sent = [];
 	await page.locator(".chan-settings .chan-row").first().locator('button.chan-btn[title="Edit"]').click();
-	const editForm = page.locator(".chan-form").first();
+	const editForm = page.locator(".chan-form-dialog").first();
 	await editForm.waitFor({ state: "visible", timeout: options.stepTimeout });
+	// 进阶分区（绑定键/凭据/端点/账户）默认收起，未展开时其内容**不在 DOM 里**（见 ChannelSection 的
+	// `{open && …}`）——先展开再断言，否则读到的 innerText 只有标题与基础分区。
+	await editForm.locator(".chan-section-head", { hasText: "Advanced" }).click();
 	const editText = await editForm.innerText();
-	check("editing keeps the channel id read-only and explains why", (await editForm.locator("input").nth(1).getAttribute("readonly")) !== null && editText.includes("binding key"), editText.slice(0, 120));
+	const idField = editForm.locator(".field", { hasText: "Channel id" }).locator("input").first();
+	check(
+		"editing keeps the channel id read-only and explains why",
+		(await idField.getAttribute("readonly")) !== null && editText.includes("binding key"),
+		editText.slice(0, 160),
+	);
 	check("editing pre-checks the channel's whitelist", (await editForm.locator(".chan-model-row input:checked").count()) === 1);
 	await editForm.locator(".chan-btn", { hasText: "Cancel" }).click();
 	await editForm.waitFor({ state: "hidden", timeout: options.stepTimeout }).catch(() => undefined);
@@ -412,15 +448,18 @@ try {
 	// 默认就是「新建服务商」：填地址/协议/密钥 → 拉接口清单 → 勾模型 → 保存即一条 channel_save
 	// 同时带上 provider（models.json），不再需要先去「管理模型」建一遍。
 	await page.locator(".chan-settings .chan-btn", { hasText: "Add channel" }).first().click();
-	const newForm = page.locator(".chan-settings form, .chan-form").first();
+	const newForm = page.locator(".chan-form-dialog").first();
 	await newForm.waitFor({ state: "visible", timeout: options.stepTimeout });
 	await newForm.locator("input").first().fill("CCTQ Claude");
 	check(
 		"new channel defaults to creating the provider in the same form",
 		await newForm.locator(".chan-conn-mode input").first().isChecked(),
 	);
-	await newForm.locator(".chan-conn .field input").nth(1).fill("https://www.cctq.ai");
-	await newForm.locator(".chan-conn .field input").nth(2).fill("sk-synthetic");
+	// 按标签定位，不用 nth()：字段增删（Provider ID / 鉴权头…）会让索引默默错位，
+	// 错位的后果是地址没填上 → 探测直接拒绝 → 用例死在后面某处，根因很难看出来。
+	const connField = (label) => newForm.locator(".chan-conn .field", { hasText: label }).locator("input").first();
+	await connField("Endpoint URL").fill("https://www.cctq.ai");
+	await connField("API key").fill("sk-synthetic");
 	await newForm.locator(".chan-conn select").first().selectOption("anthropic-messages");
 	check(
 		"the connection form warns about the protocol (Claude vs GPT)",
@@ -451,7 +490,7 @@ try {
 
 	// 6f) 新增渠道（复用已注册服务商）= 一条带 configRevision 的 channel_save（含白名单与账户查询模板）。
 	await page.locator(".chan-settings .chan-btn", { hasText: "Add channel" }).first().click();
-	const form = page.locator(".chan-settings form, .chan-form").first();
+	const form = page.locator(".chan-form-dialog").first();
 	await form.waitFor({ state: "visible", timeout: options.stepTimeout });
 	await form.locator("input").first().fill("渠道 新");
 	// 切到「使用已有服务商」：只引用已注册服务商，不写 models.json。
@@ -466,26 +505,36 @@ try {
 	// 模型白名单：一键全选该服务商的模型（空选 = 不限）。
 	await form.locator(".chan-models-head .chan-btn", { hasText: "Select all" }).click();
 	check("selecting all models fills the whitelist counter", (await form.locator(".chan-models-count").innerText()).includes("2"), await form.locator(".chan-models-count").innerText());
-	// 账户查询模板：预设一键填充 → 故意写坏 JSON → 保存必须被拦下。
-	const accountEditor = form.locator(".chan-account");
-	await accountEditor.locator("select").first().selectOption("deepseek");
+	// 账户查询模板：已从表单底部搬到独立弹窗（一行摘要 + 「配置账户查询…」），
+	// 并且这个入口在默认收起的「进阶」分区里 —— 先展开再点。
+	await form.locator(".chan-section-head", { hasText: "Advanced" }).click();
+	await form.locator(".chan-account-row .chan-btn").first().click();
+	const acctModal = page.locator(".chan-account-modal").first();
+	await acctModal.waitFor({ state: "visible", timeout: options.stepTimeout });
+	// 默认是「不查询」，选了预设才展开 JSON 编辑器（kind 跟着模板走）。
+	await acctModal.locator(".chan-account-modes input").nth(1).check();
+	await acctModal.locator("select").first().selectOption("deepseek");
+	const templateBox = acctModal.locator("textarea").first();
 	check(
 		"picking a preset fills the query template",
-		(await accountEditor.locator("input").first().inputValue()) === "https://api.deepseek.com/user/balance",
-		await accountEditor.locator("input").first().inputValue(),
+		(await templateBox.inputValue()).includes("https://api.deepseek.com/user/balance"),
+		(await templateBox.inputValue()).slice(0, 120),
 	);
-	const mappingBox = accountEditor.locator("textarea").last();
-	await mappingBox.fill("{not json");
-	sent = [];
-	await page.locator(".chan-settings .chan-btn", { hasText: "Save" }).last().click();
-	const warnText = (await page.locator(".chan-settings .chan-warn").allInnerTexts()).join(" | ");
+	await templateBox.fill("{not json");
+	const acctSave = acctModal.locator(".chan-btn", { hasText: "Save" });
+	// 文案现在是「Invalid JSON: …」（旧断言找的 “not valid JSON” 已不存在）。
+	// 用 textContent 而非 innerText：这个弹窗的 body 不在 innerText 的可渲染文本里。
+	const acctText = (await acctModal.textContent()) ?? "";
 	check(
-		"invalid JSON is reported instead of being sent as config",
-		!sent.some((m) => m.type === "channel_save") && /not valid JSON/.test(warnText),
-		warnText.slice(0, 200),
+		"invalid JSON disables the dialog's save and says why",
+		(await acctSave.isDisabled()) && /invalid JSON/i.test(acctText),
+		`disabled=${await acctSave.isDisabled()} · ${acctText.replace(/\s+/g, " ").slice(-160)}`,
 	);
-	// 换一个预设（会重新填充合法 JSON）后再保存。
-	await accountEditor.locator("select").first().selectOption("openrouter");
+	// 换一个预设（重新填合法 JSON）后再保存，弹窗应关掉并把模板带回表单。
+	await acctModal.locator("select").first().selectOption("openrouter");
+	await acctSave.click();
+	await acctModal.waitFor({ state: "hidden", timeout: options.stepTimeout }).catch(() => undefined);
+	check("a valid template closes the dialog and lands in the form", (await acctModal.count()) === 0 || !(await acctModal.isVisible()));
 	sent = [];
 	await page.locator(".chan-settings .chan-btn", { hasText: "Save" }).last().click();
 	const save = sent.find((m) => m.type === "channel_save");
