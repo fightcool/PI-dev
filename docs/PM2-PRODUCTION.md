@@ -154,6 +154,29 @@ journalctl --user -u pi-dev-switch.service --no-pager
 
 `SWITCH_DRAIN_TOLERATE` 仍然有效（切换派发方 `deploy-detached.mjs` 默认 1，容许派发者自己那一个在飞回合）。
 
+### 2026-09-18 生产升级（`40828ac46b82` → `cc355434275f`，协议 v31 → v31）
+
+| 项 | 结果 |
+| --- | --- |
+| 版本 | `current` → `releases/cc355434275f`，提交 `cc355434275f2098d79ef9eb8b8837e24ee22ca5`（PR #58：旧会话看不到新服务商 —— 模型目录自愈 + 变更广播 + `{baseUrl}` 按会话解析，**协议不变**） |
+| 候选构建 | `prepare-release.mjs cc35543`（锁文件未变 → 复用依赖，约 1 分钟）；`build-info.commit` 与 `release-source.json` 一致 = `cc355434275f2098d79ef9eb8b8837e24ee22ca5`、`protocolVersion` 31 |
+| 候选验证（产物级） | 候选目录内 `SMOKE_JOBS=3 npm run test:smoke` **46/46**（170.1s，比上次 +1 = 新增 `model-catalog-freshness-test`）；源码级由同一提交上的 CI 覆盖（PR #58 两个 job 均 success） |
+| 切换验收 | `drained (active=1 drainable=0 orphaned=0, tolerate<=1)` → `DEPLOYED 40828ac46b82 → cc355434275f pid=3215144 commit=cc355434275f protocol=31 entry=/assets/index-BUj3o7D1.js`（09:09:40.665Z，中断约 4 秒）；`/api/health` 200；prune 删除 0 个（保留 current + 回滚点 + keep=2）；`pi-dev-pm2.service=active` |
+| 在线核对 | `readlink current` = `releases/cc355434275f`；`current/vendor/pi-web-ui/dist/server/model-catalog-freshness.js` 存在、`dist/server/agent-service.js` 内 `ensureFreshModelCatalog|onModelCatalogChanged` 命中 9 处 → 新代码确实在线 |
+| 附带证据 | 这条切换日志是**排空门禁修复**（§16）首次在生产表现出完整取数：`active=1 drainable=0 orphaned=0` —— 修复前只看 `pendingMessages`，同一状态只在有排队时才会继续等 |
+| 回滚 | 旧 release `40828ac46b82` 完整保留；回滚即「停 unit → 原子恢复旧 `current` → `manager start` → 验收」 |
+
+### 2026-09-18 两次同段升级（`4ad9b7c68fbe` → `f5a83c6b6756` → `40828ac46b82`，均协议 v31）
+
+| 项 | 第一次（排空门禁修复上线） | 第二次（状态栏豁免自动折叠） |
+| --- | --- | --- |
+| 提交 / PR | `f5a83c6b6756` / PR #56 | `40828ac46b82` / PR #57 |
+| 候选验证 | 候选内 `quiesce-test` 27 项全绿；`node --test drain-policy/cutover` 7+5；`npm test` 213；`test:unit` 110/958 | 开发 checkout 跑 `npm run test:performance`（Chromium）与 `test:channels:browser`；产物 CSS 里 `.statusbar.chrome-collapsed` 已消失、`.inputbar.chrome-collapsed` 保留 —— 状态栏确实退出了自动折叠范围 |
+| 切换验收 | `DEPLOYED 4ad9b7c68fbe → f5a83c6b6756 pid=3190856`（03:33:12Z），prune 回收 `5bf65f2af46b` | `DEPLOYED f5a83c6b6756 → 40828ac46b82 pid=3198445 protocol=31 entry=/assets/index-BUj3o7D1.js`（03:57:32Z） |
+| 回滚 | `4ad9b7c68fbe` | `f5a83c6b6756` |
+
+> 第二次升级（`40828ac46b82`）也是后来那宗「旧会话看不到新服务商」的直接背景：`models.json` 在 08:15:29Z 被写入，而服务从 03:57:28Z 一直在跑 —— 4 小时 18 分钟的代差就是那个 bug 的充分条件（详见 [P0-VERIFICATION.md](P0-VERIFICATION.md) §18）。
+
 ### 2026-09-18 生产升级（`7a57b403db55` → `4ad9b7c68fbe`，协议 v30 → v31）
 
 > 编号说明：本文档的「第 N 次」停在 2026-09-12 第七次，2026-09-17 的几次升级（`733f85ceade6` → `fb140ad524a1` → `7a57b403db55`）没有逐条补记；本记录把 `7a57b403db55` 作为回滚点写全。
