@@ -51,6 +51,9 @@ function makeHost(dir: string, clientId = "test-client") {
 			return { ok: true };
 		},
 		resolveProviderKey: async (providerId) => (providerId === "main" ? "provider-own-key" : null),
+		// 账户查询的 {baseUrl} / 目录自愈：夹具里固定给 main 的地址，自愈为 no-op。
+		providerBaseUrl: (providerId) => (providerId === "main" ? "https://gw.example/v1" : undefined),
+		ensureModelCatalogFresh: async () => undefined,
 		getModel: (providerId, modelId) =>
 			models[`${providerId}/${modelId}`] ? { id: modelId, name: models[`${providerId}/${modelId}`] } : null,
 		keyNames: (providerId) =>

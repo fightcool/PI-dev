@@ -77,6 +77,8 @@ export interface AccountAdapter {
 		channel: ChannelRecord;
 		apiKey: string;
 		signal: AbortSignal;
+		/** 该服务商注册的 baseUrl（调用方按**本会话** runtime 解析；见 providerBaseUrlOf）。 */
+		providerBaseUrl?: (providerId: string) => string | undefined;
 	}): Promise<Omit<AccountQueryResult, "accountRef" | "kind">>;
 }
 
@@ -284,11 +286,21 @@ async function queryOpenAiBilling(
 export const openAiGatewayAdapter: AccountAdapter = {
 	kind: "openai-gateway",
 	match: (channel) => accountConfig(channel)?.kind === "openai-gateway",
-	async query({ channel, apiKey, signal }) {
+	async query({
+		channel,
+		apiKey,
+		signal,
+		providerBaseUrl,
+	}: {
+		channel: ChannelRecord;
+		apiKey: string;
+		signal: AbortSignal;
+		providerBaseUrl?: (providerId: string) => string | undefined;
+	}) {
 		const cfg = accountConfig(channel);
 		// 支持 {baseUrl} 占位（与模板适配器同一口径：取该渠道所属服务商注册的 baseUrl）。
 		const configured = renderTemplateText((cfg?.url ?? "").trim(), {
-			baseUrl: providerBaseUrlOf(channel),
+			baseUrl: providerBaseUrlOf(channel, providerBaseUrl),
 			apiKey,
 		}).replace(/\/+$/, "");
 		if (!configured) return { status: "failed", error: "未配置账户接口地址" };
@@ -429,10 +441,20 @@ export const deepSeekAdapter: AccountAdapter = {
 export const templateAdapter: AccountAdapter = {
 	kind: "template",
 	match: (channel) => accountTemplateOf(channel) !== null,
-	async query({ channel, apiKey, signal }) {
+	async query({
+		channel,
+		apiKey,
+		signal,
+		providerBaseUrl,
+	}: {
+		channel: ChannelRecord;
+		apiKey: string;
+		signal: AbortSignal;
+		providerBaseUrl?: (providerId: string) => string | undefined;
+	}) {
 		const template = accountTemplateOf(channel);
 		if (!template) return { status: "failed", error: "未配置账户查询模板" };
-		const baseUrl = providerBaseUrlOf(channel);
+		const baseUrl = providerBaseUrlOf(channel, providerBaseUrl);
 		const url = renderTemplateText(template.request.url, { baseUrl, apiKey });
 		if (!/^https?:\/\//i.test(url)) {
 			// @BUGFIX 双花括号被渲染成 `{https://uuapi.io}/usage` 后只报 http(s) 校验失败，
@@ -477,9 +499,20 @@ let providerBaseUrlLookup: ((providerId: string) => string | undefined) | null =
 export function setProviderBaseUrlLookup(lookup: (providerId: string) => string | undefined): void {
 	providerBaseUrlLookup = lookup;
 }
-function providerBaseUrlOf(channel: ChannelRecord): string {
+/**
+ * 渠道所属服务商的 baseUrl。
+ *
+ * @WHY 用户写的模板需要 {baseUrl} 才能复用同一个网关的不同部署；服务商 baseUrl 由 models.json 拥有。
+ * @CONTRACT 调用方（账户查询）应当传自己的 resolve（本会话的 runtime）。模块级 lookup 只是
+ *   **兑现用命**（UI 视图推导某个渠道是不是 cctq 部署、单测）：它由最后创建的 ClientSession 覆写，
+ *   服务进程里多会话并存时它答的是「别的标签页」的服务商表。
+ * @BUGFIX 2026-09-18：这里以前只有模块级 lookup。旧会话自己目录里没有的服务商，余额却能查到
+ *   （它的 {baseUrl} 被另一个会话已热加载的 runtime 答上了）——一个 bug 掩盖了另一个。
+ */
+function providerBaseUrlOf(channel: ChannelRecord, resolve?: (providerId: string) => string | undefined): string {
 	try {
-		return (providerBaseUrlLookup?.(channel.providerId) ?? "").replace(/\/+$/, "");
+		const fn = resolve ?? providerBaseUrlLookup;
+		return (fn?.(channel.providerId) ?? "").replace(/\/+$/, "");
 	} catch {
 		return "";
 	}
@@ -609,6 +642,11 @@ export class AccountRegistry {
 	async query(
 		channel: ChannelRecord,
 		resolveKey: (keyName: string | null) => string | null | Promise<string | null>,
+		/** 目录自愈 + {baseUrl} 解析都由调用方（会话层）提供；见 providerBaseUrlOf。 */
+		options: {
+			providerBaseUrl?: (providerId: string) => string | undefined;
+			ensureFresh?: () => Promise<void>;
+		} = {},
 	): Promise<AccountQueryResult> {
 		const accountRef = channel.accountRef || channel.id;
 		// 「账户查询只用用户为该用途明确配置的授权」：账户配置可指定自己的凭据名。
@@ -646,7 +684,15 @@ export class AccountRegistry {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 		try {
-			const result = await adapter.query({ channel, apiKey, signal: controller.signal });
+			// 目录自愈放在真正发请求之前：用户刚加的服务商，{baseUrl} 要能立刻解析出来。
+			// 失败不阻塞查询（沿用旧目录，由 adapter 如实报地址解析不出来）。
+			await options.ensureFresh?.().catch(() => undefined);
+			const result = await adapter.query({
+				channel,
+				apiKey,
+				signal: controller.signal,
+				providerBaseUrl: options.providerBaseUrl,
+			});
 			const merged: AccountQueryResult = {
 				accountRef,
 				kind: adapter.kind,

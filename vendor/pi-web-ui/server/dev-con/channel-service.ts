@@ -69,6 +69,10 @@ export interface ChannelServiceHost extends ChannelStateHost {
 	getModel: (providerId: string, modelId: string) => { id: string; name: string } | null;
 	/** 服务商自己配置的密钥（仅账户查询的兜底；密钥正文不出服务端）。 */
 	resolveProviderKey: (providerId: string) => Promise<string | null>;
+	/** 该服务商注册的 baseUrl（账户模板里的 {baseUrl}）。必须由本会话的 runtime 回答。 */
+	providerBaseUrl: (providerId: string) => string | undefined;
+	/** 账户查询前的模型目录自愈（models.json 可能被别处改写）。 */
+	ensureModelCatalogFresh: () => Promise<void>;
 	/** 已注册的服务商 id（渠道表单生成不冲突的服务商 id 用）。 */
 	providerIds: () => string[];
 	/** 渠道表单的「服务商连接」写入（models.json + 热加载）；错误以返回值上报。 */
@@ -144,7 +148,10 @@ export class ChannelService {
 
 	private conflictReceipt(commandId: string, what: "channel" | "binding", note?: string): void {
 		const base = what === "channel" ? "渠道配置已被其他端修改，请刷新后重试" : "对话绑定已被其他端修改，请刷新后重试";
-		const baseEn = what === "channel" ? "Channel config changed elsewhere; refresh and retry" : "Conversation binding changed elsewhere; refresh and retry";
+		const baseEn =
+			what === "channel"
+				? "Channel config changed elsewhere; refresh and retry"
+				: "Conversation binding changed elsewhere; refresh and retry";
 		this.receipt({
 			commandId,
 			ok: false,
@@ -163,6 +170,8 @@ export class ChannelService {
 			keyNames: (providerId) => this.host.keyNames(providerId),
 			resolveKeyValue: (providerId, keyName) => this.host.resolveKeyValue(providerId, keyName),
 			resolveProviderKey: (providerId) => this.host.resolveProviderKey(providerId),
+			providerBaseUrl: (providerId) => this.host.providerBaseUrl(providerId),
+			ensureModelCatalogFresh: () => this.host.ensureModelCatalogFresh(),
 			state: this.state,
 			dropPending: (conversationId) => this.disposeConversation(conversationId),
 			buildSelection: (input) => this.buildSelection(input),
@@ -188,20 +197,39 @@ export class ChannelService {
 		return this.enqueue(async () => {
 			const conversationId = input.conversationId || this.host.activeConversationId();
 			if (!this.host.conversationExists(conversationId)) {
-				this.receipt({ commandId: input.commandId, ok: false, phase: "rejected", conversationId, error: "对话不存在", errorEn: "Conversation not found" });
+				this.receipt({
+					commandId: input.commandId,
+					ok: false,
+					phase: "rejected",
+					conversationId,
+					error: "对话不存在",
+					errorEn: "Conversation not found",
+				});
 				return;
 			}
 			if (!checkConfigRevision(this.state.configRevision, input.expectedConfigRevision).ok) {
 				this.conflictReceipt(input.commandId, "channel");
 				return;
 			}
-			if (!checkBindingRevision(this.state.storedBinding(conversationId)?.bindingRevision ?? 0, input.expectedBindingRevision).ok) {
+			if (
+				!checkBindingRevision(
+					this.state.storedBinding(conversationId)?.bindingRevision ?? 0,
+					input.expectedBindingRevision,
+				).ok
+			) {
 				this.conflictReceipt(input.commandId, "binding");
 				return;
 			}
 			const built = this.buildSelection(input.selection);
 			if ("error" in built) {
-				this.receipt({ commandId: input.commandId, ok: false, phase: "rejected", conversationId, error: built.error, errorEn: built.errorEn });
+				this.receipt({
+					commandId: input.commandId,
+					ok: false,
+					phase: "rejected",
+					conversationId,
+					error: built.error,
+					errorEn: built.errorEn,
+				});
 				return;
 			}
 			const { selection } = built;
@@ -217,9 +245,22 @@ export class ChannelService {
 				commandId: input.commandId,
 				bindingRevision: this.state.bindingRevision + 1,
 			});
-			this.receipt({ commandId: input.commandId, ok: true, phase: "pending", conversationId, channelId: selection.channelId });
+			this.receipt({
+				commandId: input.commandId,
+				ok: true,
+				phase: "pending",
+				conversationId,
+				channelId: selection.channelId,
+			});
 			if (superseded && superseded.commandId !== input.commandId) {
-				this.receipt({ commandId: superseded.commandId, ok: false, phase: "superseded", conversationId, error: "已被更新的选择取代", errorEn: "Superseded by a newer selection" });
+				this.receipt({
+					commandId: superseded.commandId,
+					ok: false,
+					phase: "superseded",
+					conversationId,
+					error: "已被更新的选择取代",
+					errorEn: "Superseded by a newer selection",
+				});
 			}
 			this.pushState();
 		});
@@ -232,7 +273,15 @@ export class ChannelService {
 		} catch (err) {
 			// 在途请求与工具不受影响；绑定保持原样，UI 显示失败阶段。
 			const reason = (err as Error).message;
-			this.receipt({ commandId, ok: false, phase: "rejected", conversationId, channelId: selection.channelId, error: `切换失败：${reason}`, errorEn: `Switch failed: ${reason}` });
+			this.receipt({
+				commandId,
+				ok: false,
+				phase: "rejected",
+				conversationId,
+				channelId: selection.channelId,
+				error: `切换失败：${reason}`,
+				errorEn: `Switch failed: ${reason}`,
+			});
 			this.pushState();
 			return;
 		}
@@ -267,10 +316,22 @@ export class ChannelService {
 		return this.enqueue(() => {
 			const conversationId = input.conversationId || this.host.activeConversationId();
 			if (!this.host.conversationExists(conversationId)) {
-				this.receipt({ commandId: input.commandId, ok: false, phase: "rejected", conversationId, error: "对话不存在", errorEn: "Conversation not found" });
+				this.receipt({
+					commandId: input.commandId,
+					ok: false,
+					phase: "rejected",
+					conversationId,
+					error: "对话不存在",
+					errorEn: "Conversation not found",
+				});
 				return;
 			}
-			if (!checkBindingRevision(this.state.storedBinding(conversationId)?.bindingRevision ?? 0, input.expectedBindingRevision).ok) {
+			if (
+				!checkBindingRevision(
+					this.state.storedBinding(conversationId)?.bindingRevision ?? 0,
+					input.expectedBindingRevision,
+				).ok
+			) {
 				this.conflictReceipt(input.commandId, "binding");
 				return;
 			}
@@ -328,7 +389,10 @@ export class ChannelService {
 			return { error: `模型不存在：${selection.modelId}`, errorEn: `Model not found: ${selection.modelId}` };
 		}
 		if (credentialRef && !this.host.keyNames(channel.providerId).some((k) => k.keyName === credentialRef.keyName)) {
-			return { error: `命名凭据不存在：${credentialRef.keyName}`, errorEn: `Named credential not found: ${credentialRef.keyName}` };
+			return {
+				error: `命名凭据不存在：${credentialRef.keyName}`,
+				errorEn: `Named credential not found: ${credentialRef.keyName}`,
+			};
 		}
 		return { selection };
 	}
@@ -341,7 +405,12 @@ export class ChannelService {
 		if (validateSelection(selection, channel).length > 0) return false;
 		const parsed = selection.modelId.split("/");
 		if (parsed.length < 2 || !this.host.getModel(parsed[0], parsed.slice(1).join("/"))) return false;
-		if (selection.credentialRef && !this.host.keyNames(selection.credentialRef.providerId).some((k) => k.keyName === selection.credentialRef?.keyName)) {
+		if (
+			selection.credentialRef &&
+			!this.host
+				.keyNames(selection.credentialRef.providerId)
+				.some((k) => k.keyName === selection.credentialRef?.keyName)
+		) {
 			return false;
 		}
 		return true;
@@ -356,7 +425,9 @@ export class ChannelService {
 		return sameSelection(current, {
 			channelId: input.channelId,
 			endpointId: input.endpointId ?? DEFAULT_ENDPOINT_ID,
-			credentialRef: keyName ? { providerId: current.credentialRef?.providerId ?? channel?.providerId ?? "", keyName } : null,
+			credentialRef: keyName
+				? { providerId: current.credentialRef?.providerId ?? channel?.providerId ?? "", keyName }
+				: null,
 			modelId: input.modelId,
 		});
 	}
@@ -384,7 +455,11 @@ export class ChannelService {
 	}
 
 	/** 有效/待生效绑定的只读视图。 */
-	bindingViewFor(conversationId: string): { effective: ChannelBinding | null; pending: ChannelBinding | null; source: BindingSource } {
+	bindingViewFor(conversationId: string): {
+		effective: ChannelBinding | null;
+		pending: ChannelBinding | null;
+		source: BindingSource;
+	} {
 		return this.state.bindingViewFor(conversationId);
 	}
 

@@ -30,6 +30,7 @@ import type { ChannelServiceHost } from "./dev-con/channel-service.js";
 import { UsageHistoryStore, type UsageHistoryRecord } from "./dev-con/usage-history.js";
 import { collectResources } from "./dev-con/system-resources.js";
 import { setProviderBaseUrlLookup } from "./dev-con/channel-accounts.js";
+import { modelCatalogStale, modelConfigStamp, modelsConfigPathOf } from "./model-catalog-freshness.js";
 import { measureAreas } from "./dev-con/storage-usage.js";
 import { buildDiagnostics, usageSummaryOf } from "./dev-con/ops-diagnostics.js";
 import { capabilityFixHint, runCapabilityProbe, type CapabilityVerdict } from "./dev-con/endpoint-capability.js";
@@ -807,6 +808,9 @@ export class ClientSession {
 	 *  top bar applies to every chat, not just the one that set it. Seeded by
 	 *  the first conversation and reused by later ones. */
 	private sharedModelRuntime: Awaited<ReturnType<typeof createAgentSessionServices>>["modelRuntime"] | undefined;
+	/** 本会话 runtime 实际加载的 models.json 身份戳（mtime+size）。用于「目录自愈」：
+	 *  配置被别处改写后，旧会话不必重启服务就能跟上（见 ensureFreshModelCatalog）。 */
+	private modelsConfigStamp = "";
 
 	// -----------------------------------------------------------------------
 	// 渠道端点工具能力探测（DEV-CON）——见 dev-con/endpoint-capability.ts。
@@ -1610,7 +1614,12 @@ export class ClientSession {
 			invalidatePiConfig: () => {
 				this.piCheckCache = null;
 			},
-			pushModels: async () => this.listModels(),
+			// 目录变了要推给**所有**会话：每个会话有自己的 runtime 快照，只 emit 给当前会话
+			// 会让别的标签页停在旧目录（见 onModelCatalogChanged）。
+			pushModels: async () => {
+				await this.listModels();
+				this.onModelCatalogChanged?.();
+			},
 		});
 		// Prune dead background tasks every 30s (only spawns netstat/lsof while
 		// the list is non-empty). unref: must not keep the process alive.
@@ -1658,6 +1667,8 @@ export class ClientSession {
 		// First conversation = the resumed session; it also seeds the shared
 		// ModelRuntime that every later conversation reuses.
 		cs.sharedModelRuntime = runtime.services.modelRuntime;
+		// 目录自愈的基准：runtime 构造时就已读过一次 models.json（见 model-catalog-freshness.ts）。
+		cs.modelsConfigStamp = modelConfigStamp(modelsConfigPathOf(agentDir));
 		const conv = cs.makeConversation(runtime, conversationId, terminals);
 		cs.convs.set(conv.id, conv);
 		cs.activeId = conv.id;
@@ -3879,6 +3890,10 @@ export class ClientSession {
 	/** 渠道状态是实例级事实：由 AgentService 广播给全部客户端（多端看到同一有效绑定）。
 	 *  未设置时退化为单端推送（如纯单机测试）。 */
 	onChannelBroadcast: ((msg: ServerMessage) => void) | undefined = undefined;
+	/** 模型目录变化（服务商增删改）→ 让**其他**会话也重算目录。
+	 *  @WHY 每个会话有自己的 ModelRuntime（连接时构造的快照），models 消息只发给当前会话时，
+	 *    别的标签页会一直拿着旧目录：新服务商显示「该渠道暂无可用的模型」。 */
+	onModelCatalogChanged: (() => void) | undefined = undefined;
 
 	/** Persist an api-key credential for a provider (auth.json). */
 	setProviderApiKey(provider: string, apiKey: string): Promise<void> {
@@ -5942,9 +5957,35 @@ export class ClientSession {
 		this.flushSnapshot();
 	}
 
+	/**
+	 * 模型目录自愈：models.json 被别处改过就先重读一次（判据见 model-catalog-freshness.ts）。
+	 *
+	 * @WHY 会话的 runtime 是「连接那一刻的快照」：服务在跑，用户新加了一个服务商（或改了 baseUrl），
+	 *   旧会话里它根本不存在 —— 选择器显示「该渠道暂无可用的模型」、模板里的 {baseUrl} 也解析不出来，
+	 *   而刷新页面没用（同 clientId 会复用同一个 ClientSession）。任何依赖「服务商/模型表」的操作
+	 *   之前都该先过这里，用户就不必重启服务或换浏览器。
+	 * @CONTRACT refresh({allowNetwork:false}) 只重读磁盘配置，不请求远端目录（远端刷新是 SDK 的
+	 *   周期逻辑）。刷新失败**保留旧戳**：下次再试，不假装已是最新。
+	 * @GOTCHA 写路径（model-admin）自己 refresh 过但不更新本戳，所以紧接着的那次 list_models 会
+	 *   多刷一次本地重读（幂等、本地、无网络）。刻意如此：只为目录变更维护**一份**真相源。
+	 */
+	async ensureFreshModelCatalog(): Promise<void> {
+		const path = modelsConfigPathOf(this.agentDir);
+		const next = modelConfigStamp(path);
+		if (!modelCatalogStale(this.modelsConfigStamp, next)) return;
+		try {
+			await this.runtime.services.modelRuntime.refresh({ allowNetwork: false });
+			this.modelsConfigStamp = next;
+		} catch (err) {
+			console.warn(`[models] models.json reload failed: ${(err as Error).message}`);
+		}
+	}
+
 	/** List models that have valid authentication configured. */
 	async listModels(): Promise<void> {
 		try {
+			// 先自愈再列：否则旧会话永远看不到用户刚加的服务商。
+			await this.ensureFreshModelCatalog();
 			const mr = this.runtime.services.modelRuntime;
 			const available = await mr.getAvailable();
 			// 被「模型路由规则」判为退役的 id 不再作为可选路由（历史绑定仍能经 getModel 解析）。
@@ -6073,6 +6114,19 @@ export class ClientSession {
 					return [];
 				}
 			},
+			// 账户查询模板里的 {baseUrl} **必须用本会话的 runtime** 解析。
+			// @BUGFIX 2026-09-18：以前只有一个模块级全局 lookup（由最后创建的 ClientSession 覆写），
+			//   于是查到的是「别的标签页」的服务商表：旧会话自己能查出 uucodex 的余额（借了别人
+			//   已热加载的 runtime），而它自己的模型目录里根本没有这个服务商 —— 一个 bug 掩盖另一个。
+			providerBaseUrl: (providerId) => {
+				try {
+					return this.runtime.services.modelRuntime.getProviders().find((p) => p.id === providerId)?.baseUrl;
+				} catch {
+					return undefined;
+				}
+			},
+			// 账户查询前的目录自愈：模板 {baseUrl} 依赖服务商表，配置新加的服务商要能立刻查到。
+			ensureModelCatalogFresh: () => this.ensureFreshModelCatalog(),
 			// 渠道表单的「服务商连接」写入：与「管理模型」共用同一套落盘/热加载路径，
 			// 但错误以返回值上报，让渠道回执能说清「服务商未写入，渠道未保存」。
 			upsertProvider: (input) => this.modelAdmin.upsertProviderFromChannel(input),
@@ -6606,6 +6660,15 @@ export class AgentService {
 		cs.onChannelBroadcast = (msg) => {
 			for (const other of this.clients.values()) {
 				if (!other.isDisposedSession()) other.emitExternal(msg);
+			}
+		};
+		// 服务商/模型目录变化 → 其他会话各自重算（每个会话有自己的 runtime 快照，
+		// 要先自愈再列；见 ClientSession.ensureFreshModelCatalog）。不广播的话，
+		// 别人已打开的标签页会一直停在旧目录（新服务商 =「该渠道暂无可用的模型」）。
+		cs.onModelCatalogChanged = () => {
+			for (const other of this.clients.values()) {
+				if (other === cs || other.isDisposedSession()) continue;
+				void other.listModels();
 			}
 		};
 		cs.onSessionsListChanged = (cwd) => this.broadcastSessionsListChanged(cs.clientId, cwd);

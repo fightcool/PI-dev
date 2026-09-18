@@ -327,6 +327,49 @@ node scripts/maintenance/backfill-usage-failures.mjs --apply    # 落盘（含�
 
 回填脚本的并发护栏原本形同虚设（检查点取在 `readFileSync` **之后**，恰好漏掉它声称能拦的窗口），已改为「取样 → 读 → 算 → 写临时文件 → 紧贴 rename 再确认 → 原子替换；变了就重读重试」。合成竞态实测（并发写入者每 2ms 一条，共 400 条）：脚本重试 2 次后成功，最终 402 行**一行不丢**、0 坏行、0 残留临时文件。因此本次回填**不需要停服窗口**，备份为 `usage-history.jsonl.bak-2026-09-18T03-10-52-427Z`。
 
+## 18. 旧会话看不到新服务商（模型目录陈旧）与修复（2026-09-18）
+
+**症状**（操作人报告）：「没改任何东西，现在又可以查余额了，但模型选择器这里显示没可用模型？？？？」——渠道设置页里 UUcodex 显示「正常 · 余额 44.63 USD · 已用 170.26 USD · 限定 2 个模型」，同一个渠道在模型选择器里却是一行「该渠道暂无可用的模型」。
+
+**排查结论（先排除配置）**：把 `models.json` 拷到临时目录、把所有 `apiKey` 换成假值，用应用同一套 SDK 加载（零真实凭据）：
+
+```
+getProviders() … uu-api(https://uuapi.io), uucodex(https://uuapi.io/v1)
+getAvailable() … uucodex/gpt-5.6-sol, uucodex/gpt-6-astra      checkAuth(uucodex): 有
+getError(): (无)
+```
+
+同一份 JSON 在**新**运行时里完全能列出这两个模型 → 配置（`api: openai-responses`、baseUrl 带 `/v1`、白名单、路由规则）都没问题。
+
+**根因（两层）**：
+
+1. **runtime 是「连接那一刻的快照」**：SDK 的 `ModelRuntime` 只在构造时读一次 `models.json`；本次事实链：服务（pm2 worker）03:57:28Z 启动，`models.json` 08:15:29Z 被写入（`models-store.json` 同刻被写，证明是「通过 UI 保存服务商」触发的 `refresh()`），中间 4 小时 18 分。那个「保存过服务商」的会话 refresh 了，**别的会话没有**。模拟实验：旧运行时 `getProviders()/getAvailable()` 都不含 uucodex；写文件后（未 refresh）仍不含；显式 `refresh()` 后才包含。
+2. **刷新页面救不了**：`attach(clientId)` 会复用内存里的 `ClientSession`，而 `clientId` 存在 **sessionStorage**（同标签刷新保持）→ 同一个会话、同一个陈旧 runtime。
+
+**为什么「余额能查、模型没有」**：三条路径的数据源不同。渠道面板读 `models.json` 文件；账户模板的 `{baseUrl}` 走**模块级** `providerBaseUrlLookup`（由最后创建的 ClientSession 覆写，即保存过服务商的那个会话）→ 能解析；模型选择器走**当前会话自己** runtime 的 `getAvailable()` → 陈旧。控制套接字 `status` 当时报 `connectedClients: 3`（三个会话各有自己的 runtime），与上述一致。同一个进程级 lookup 让旧会话「借」到别人已热加载的地址，**一个 bug 掩盖了另一个**。
+
+**修复**：
+
+| 位置 | 变更 |
+| --- | --- |
+| `server/model-catalog-freshness.ts`（新） | 纯函数：`modelsConfigPathOf` / `stampOf` / `modelConfigStamp`（mtime+size）/ `modelCatalogStale`；任一侧取不到时**不算变过**（否则每次白 refresh） |
+| `server/agent-service.ts` | `ClientSession.ensureFreshModelCatalog()`：`models.json` 变了先 `refresh({allowNetwork:false})`（失败保留旧戳，下次再试）；`listModels()` 开头调用（用户下次 `list_models` 即自愈）；新增 `onModelCatalogChanged` 钩子，`pushModels` 在写完服务商后通知**所有**会话各自重算（各会话同样会自愈），而不是只 emit 给当前会话 |
+| `server/dev-con/channel-accounts.ts` | 适配器 `query` 接受调用方传入的 `providerBaseUrl` 解析器；`AccountRegistry.query` 增加 `{providerBaseUrl, ensureFresh}`，自愈在真正发请求前完成；模块级 lookup 降为兑现用命（UI 视图推导/单测） |
+| `server/dev-con/channel-config.ts`、`channel-service.ts` | 端口新增 `providerBaseUrl` / `ensureModelCatalogFresh`，由会话层实现（用本会话 runtime） |
+
+**实测证据**（本条改动全部命令）：
+
+```bash
+npm run typecheck                                        # 缺字段的假实现被拦下（tests/unit/channel-service.test.ts 夹具）
+npm --prefix vendor/pi-web-ui exec vitest run tests/unit/model-catalog-freshness.test.ts \
+  tests/unit/channel-accounts.test.ts tests/unit/channel-service.test.ts   # 8 + 34 + 22 项
+env -u PI_WEB_TOKEN -u PI_WEB_MANAGED node vendor/pi-web-ui/tests/model-catalog-freshness-test.mjs  # 真实 dist server 9 项全绿
+```
+
+回归测试的**负向验证**（临时把 `modelCatalogStale` 固定为 false 模拟修复缺失）：自愈那条断言直接失败、广播那条超时 —— 证明用例有牙齿，不是摆设。该用例已登记进冒烟清单 `tests/run-smoke.mjs`。
+
+**未做 / 不计入验收**：没有给 `models.json` 加 fs.watch（现在靠「下次 list_models / 账户查询」自愈，够用且不会多点触发）；`provider-keys.json` / `auth.json` 的变更不走这套自愈（它们只影响鉴权可用性，不影响目录形状）；真实浏览器双标签页的人工验证未做（有真实 dist server 的双会话用例代替）。
+
 ## 复现方式与本次实测结果
 
 ```bash
