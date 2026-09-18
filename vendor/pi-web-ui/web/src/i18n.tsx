@@ -916,8 +916,8 @@ export const zh = {
 	toolsWrapDesc: "开启：工具调用始终完整展开显示参数和输出；关闭：默认折叠，点击展开",
 	chromeAutoCollapse: "自动收缩底部控件",
 	chromeAutoCollapseDesc:
-		"开启：输出中或向上翻阅会话时自动收起目标条、输入工具条与状态栏，把竖向空间留给正文（滑到最底部、点输入框或点⌃展开即恢复）；关闭：保持原样",
-	chromeExpandTip: "展开输入工具条与状态栏",
+		"开启：输出中或向上翻阅会话时自动收起目标条与输入工具条，把竖向空间留给正文（滑到最底部、点输入框或点⌃展开即恢复）；关闭：保持原样",
+	chromeExpandTip: "展开输入工具条",
 	wideChat: "宽屏聊天列",
 	wideChatDesc: "开启：中央列铺满宽度（超宽屏有用）；关闭：保持 860px 上限",
 	projectTitle: "标题显示项目名",

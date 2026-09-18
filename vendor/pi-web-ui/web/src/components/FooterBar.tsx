@@ -21,7 +21,6 @@ import { cacheMetrics, estimateStreamTokens, streamRate, trimRateSamples, type R
 import { UsageDetail, formatTokens } from "./UsageDetail";
 import { channelAccountView } from "../channel-account";
 import { DirectoryPicker } from "./DirectoryPicker";
-import { useChromeCollapse } from "../app/use-chrome-collapse";
 
 interface FooterBarProps {
 	chat: ChatState;
@@ -46,8 +45,6 @@ interface FooterBarProps {
 export function FooterBar({ chat, send, onQueryUsageHistory, usageOpen: usageOpenProp, onUsageOpenChange, onRetryAccount }: FooterBarProps) {
 	const t = useT();
 	const state = chat.state;
-	/** 底部控件自动收缩：收起时状态栏压成 0 高度（用量面板是它的子节点，不能整块 display:none）。 */
-	const chromeCollapsed = useChromeCollapse()?.collapsed ?? false;
 	const [editing, setEditing] = useState(false);
 	/** 用量明细面板：受控（App 层）——未传时回落为组件内状态，保证旧调用点行为不变。 */
 	const [usageOpenLocal, setUsageOpenLocal] = useState(false);
@@ -120,8 +117,17 @@ export function FooterBar({ chat, send, onQueryUsageHistory, usageOpen: usageOpe
 		setEditing(true);
 	};
 
+	/**
+	 * Status bar 不参与「底部控件自动收缩」（web/src/chrome-collapse.ts）。
+	 *
+	 * @WHY 这一条窄栏显示的是**即时监控**（连接/渠道、上下文占用、缓存命中率、实时速率），
+	 *   输出刷屏或翻历史时正是用户盯着这些数字的时候，跟着收起等于把仪表盘关掉；而它本身
+	 *   只占一行（~26px），收起省下的空间与代价不成比例。目标条与输入工具条照旧参与收起。
+	 * @GOTCHA 用量详情面板是本组件的子节点（position:fixed）：即使以后再加收起逻辑，也不能
+	 *   对 .statusbar 整块 display:none，否则会把那个浮层一起藏掉（旧实现因此只隐藏内部状态项）。
+	 */
 	return (
-		<footer className={`statusbar${chromeCollapsed ? " chrome-collapsed" : ""}`}>
+		<footer className="statusbar">
 			<span className={`status-dot ${connClass}`} title={connLabel} />
 			<span className="status-item">{connLabel}</span>
 			<span className="status-sep">·</span>

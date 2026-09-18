@@ -6,8 +6,10 @@
  *
  * Breadcrumbs (changing this affects):
  *   @COUPLED ../chrome-collapse.ts（纯判定 + 单测）, ../chrome-collapse-settings.ts（开关）,
- *            ../components/ChatInput.tsx（setComposerFocused + collapsed）, ../components/FooterBar.tsx,
- *            ../components/GoalBar.tsx, ../components/MessageList.tsx（setAtBottom）, App.tsx（Provider）
+ *            ../components/ChatInput.tsx（setComposerFocused + collapsed）, ../components/GoalBar.tsx,
+ *            ../components/MessageList.tsx（setAtBottom）, App.tsx（Provider）
+ *   @CONTRACT 状态栏（FooterBar）不消费本上下文：它显示即时监控（上下文占用、缓存命中率、
+ *             实时速率），不参与自动收起。
  *   📖 docs/architecture-core.md
  *   @CONTRACT 三个信号由消费方上报：消息列表报 atBottom、输入框报聚焦、App 提供 streaming；
  *             `collapsed` 由纯函数 chromeCollapsed 算出（规则见该文件）。
@@ -28,7 +30,8 @@ import { chromeCollapsed, toggledForce, type ChromeForce } from "../chrome-colla
 import { useAutoCollapseChrome } from "../chrome-collapse-settings";
 
 export interface ChromeCollapseApi {
-	/** true = 底部控件（目标条 / 输入工具条 / 状态栏）应收起，把竖向空间让给正文。 */
+	/** true = 底部控件（目标条 / 输入工具条）应收起，把竖向空间让给正文。
+	 *  底部状态栏不在此列（始终可见，见 chrome-collapse.ts 的 @CONTRACT）。 */
 	collapsed: boolean;
 	/** 会话是否停在最底部（MessageList 上报）。 */
 	setAtBottom: (atBottom: boolean) => void;
