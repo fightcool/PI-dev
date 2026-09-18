@@ -20,6 +20,7 @@ import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pruneObsoleteStores } from "../lifecycle/release-deps.mjs";
 import { pruneReleases } from "../lifecycle/release-prune.mjs";
+import { evaluateDrain } from "../lifecycle/drain-policy.mjs";
 
 const HOME = process.env.HOME;
 const DEV_ROOT = process.env.PI_DEV_DEV_ROOT ?? "/home/dev/PI-dev";
@@ -46,6 +47,9 @@ const WAIT_MIN = Number(process.env.SWITCH_WAIT_MINUTES ?? 45);
  *   流式输出会中断）。所以默认 0，只有 Agent 自助部署这种明知代价的场景才显式传 1。
  */
 const DRAIN_TOLERATE = Number(process.env.SWITCH_DRAIN_TOLERATE ?? 0);
+// 停在同一个数值上多久就早退（默认 5 分钟）。见 drain-policy.mjs：闷等到总超时
+// 没有任何信息量，只会让人以为「切不动」（2026-09-18 实际白等过 45 分钟）。
+const DRAIN_STALL_MIN = Number(process.env.SWITCH_DRAIN_STALL_MINUTES ?? 5);
 /** @MAGIC 切换成功后默认额外保留 2 个已构建版本（除 current 与显式保护的 OLD_ID 之外）。
  *  之前没有任何回收环节，12 次上线就堆了 19 GiB；保留 2 个既够应急回退，也有界。 */
 const KEEP_RELEASES = Number(process.env.PI_DEV_SWITCH_KEEP ?? 2);
@@ -180,22 +184,42 @@ try {
 			log(`current already points at ${NEW_ID} but provenance differs; continuing with a normal switch`);
 		}
 	}
-	log(initial?.ok ? `serving pid=${initial.pid} quiesced=${initial.quiesced} active=${initial.activeConversations} pending=${initial.pendingMessages}` : "serving instance did not answer the control socket");
+	log(initial?.ok ? `serving pid=${initial.pid} quiesced=${initial.quiesced} active=${initial.activeConversations} pending=${initial.pendingMessages} drainable=${initial.drainableMessages ?? "?"} orphaned=${initial.orphanedMessages ?? "?"}` : "serving instance did not answer the control socket");
 	log(`current=${OLD_ID} → target=${NEW_ID}`);
 	phase("quiesce");
 	if (initial?.ok && !(await control("quiesce"))?.ok) throw new Error("quiesce failed");
 	quiesced = Boolean(initial?.ok);
 	const deadline = Date.now() + WAIT_MIN * 60_000;
+	// 等的是「在飞的工作 + 有运行消费的队列」；没有运行消费的孤儿队列不阻塞但会报出来。
+	let lastSignature = "";
+	let lastProgressAt = Date.now();
+	let drainVerdict = { detail: "not drained", note: null, done: false, abort: null };
+	let noticedOrphans = false;
 	for (; quiesced; ) {
 		const s = await status();
 		if (!s?.ok) throw new Error("instance became unavailable while draining");
-		if (s.activeConversations <= DRAIN_TOLERATE && s.pendingMessages <= DRAIN_TOLERATE) break;
+		const signature = `${s.activeConversations}/${s.drainableMessages ?? s.pendingMessages}`;
+		if (signature !== lastSignature) {
+			lastSignature = signature;
+			lastProgressAt = Date.now();
+		}
+		drainVerdict = evaluateDrain(s, {
+			tolerate: DRAIN_TOLERATE,
+			stalledMs: Date.now() - lastProgressAt,
+			stallLimitMs: DRAIN_STALL_MIN * 60_000,
+		});
+		if (drainVerdict.note && !noticedOrphans) {
+			noticedOrphans = true;
+			log(`WARNING: ${drainVerdict.note}`);
+		}
+		if (drainVerdict.done) break;
+		if (drainVerdict.abort) throw new Error(drainVerdict.abort);
 		// （循环条件见上：quiesced=false 时直接跳过排空）
-		if (Date.now() > deadline) throw new Error(`active work did not drain within ${WAIT_MIN} minutes`);
+		if (Date.now() > deadline) throw new Error(`active work did not drain within ${WAIT_MIN} minutes（${drainVerdict.detail}）`);
 		await delay(2_000);
 	}
-	log(`drained (active<=${DRAIN_TOLERATE} pending<=${DRAIN_TOLERATE})`);
-	phase("drained", { from: OLD_ID });
+	log(`drained (${drainVerdict.detail}, tolerate<=${DRAIN_TOLERATE})`);
+	phase("drained", { from: OLD_ID, drain: drainVerdict.detail });
 
 	// 退役旧入口：先停，再 disable（否则任何 daemon-reload 都会把它拉回来）。
 	log(`retiring legacy manager: ${LEGACY} + watchdog`);

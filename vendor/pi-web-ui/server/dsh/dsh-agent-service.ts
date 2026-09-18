@@ -34,7 +34,7 @@ import { homedir } from "node:os";
 import { BgServerTracker } from "../bg-servers.js";
 import { ClientStateStore, DEFAULT_RETRY_MAX_ATTEMPTS } from "../client-state.js";
 import { FilesService, workspacePath } from "../files-service.js";
-import { QuiesceRejectedError } from "../agent-service.js";
+import { QuiesceRejectedError, type DrainHolder } from "../agent-service.js";
 
 import { NATIVE_COMMANDS, parseSlash } from "../slash-commands.js";
 import { bilingual, pick, resolveServerLang, type ServerLang } from "../i18n.js";
@@ -1324,6 +1324,21 @@ export class DshClientSession {
 
 	pendingMessages(): number {
 		return 0;
+	}
+
+	/** dsh 引擎不把 steer / follow-up 放在服务端排队（见 pendingMessages 恒为 0），
+	 *  因此没有可排空 / 孤儿队列；保留这三个方法只为与 pi 引擎的排空契约对齐
+	 *  （control-socket status 字段必须两个实现都有值，否则切换脚本会拿到 undefined）。 */
+	drainableMessages(): number {
+		return 0;
+	}
+
+	orphanedMessages(): number {
+		return 0;
+	}
+
+	drainHolders(): DrainHolder[] {
+		return [];
 	}
 
 	private emitConversations(): void {
@@ -3899,6 +3914,9 @@ export class DshAgentService {
 	}
 
 	quiesce(): void {
+		// dsh 引擎不在服务端排队（pendingMessages 恒为 0），所以没有孤儿队列可点名，无需像 pi 引擎
+		// 那样在这里 warn；status 仍会报 drainableMessages=0 / orphanedMessages=0 / drainHolders=[]，
+		// 保证排空门禁两个引擎拿到同一组字段。
 		this.quiesced = true;
 		this.quiescedAt = Date.now();
 	}
@@ -3924,6 +3942,24 @@ export class DshAgentService {
 		return n;
 	}
 
+	drainableMessages(): number {
+		let n = 0;
+		for (const cs of this.clients.values()) n += cs.drainableMessages();
+		return n;
+	}
+
+	orphanedMessages(): number {
+		let n = 0;
+		for (const cs of this.clients.values()) n += cs.orphanedMessages();
+		return n;
+	}
+
+	drainHolders(): DrainHolder[] {
+		const holders: DrainHolder[] = [];
+		for (const cs of this.clients.values()) holders.push(...cs.drainHolders());
+		return holders;
+	}
+
 	noteSocketOpen(): void {
 		this.socketCount += 1;
 	}
@@ -3941,6 +3977,9 @@ export class DshAgentService {
 		connectedClients: number;
 		activeConversations: number;
 		pendingMessages: number;
+		drainableMessages: number;
+		orphanedMessages: number;
+		drainHolders: DrainHolder[];
 	} {
 		return {
 			pid: process.pid,
@@ -3950,6 +3989,9 @@ export class DshAgentService {
 			connectedClients: this.socketCount,
 			activeConversations: this.activeConversations(),
 			pendingMessages: this.pendingMessages(),
+			drainableMessages: this.drainableMessages(),
+			orphanedMessages: this.orphanedMessages(),
+			drainHolders: this.drainHolders(),
 		};
 	}
 
