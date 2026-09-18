@@ -392,7 +392,7 @@ npm run test:channels:browser     # Chromium（桌面 + 移动视口）：渠道
 
 > 注：`vitest` 必须在 `NODE_ENV` 未设为 `production` 的环境下运行，否则 React 会解析到生产构建，既有的 DOM 用例会以 `act(...) is not supported in production builds` 失败（与本次改动无关）。
 
-`npm run test:channels:browser` 在真实 Chromium（合成快照 + 模拟 WS，无真实服务/模型）中断言：有效渠道与待生效渠道同时可见、底部显示有效渠道、选择器按 4 个渠道分组、停用/服务商缺失渠道带原因且没有可点条目、点击「渠道 A + 密钥 2 + 模型」只发出**一条**带 `expectedConfigRevision`/`expectedBindingRevision` 的 `channel_select`、用量详情按来源/渠道展示且无渠道行为「Unattributed」、设置页列出全部渠道并标出服务商缺失、账户状态同时显示 ok/Unsupported/Stale（含 `Balance 12.5 USD` 与「上次成功结果」提示）、查询账户只发 `channel_query_account`、新建渠道发带 revision 的 `channel_save`、移动端视口（390×844）下有效/待生效提示与选择流程同样可用。
+`npm run test:channels:browser` 在真实 Chromium（合成快照 + 模拟 WS，无真实服务/模型）中断言：有效渠道与待生效渠道同时可见、底部显示有效渠道、选择器只列出**启用**的渠道（停用渠道不出现，服务商缺失的仍带原因且没有可点条目）、点击「渠道 A + 密钥 2 + 模型」只发出**一条**带 `expectedConfigRevision`/`expectedBindingRevision` 的 `channel_select`、用量详情按来源/渠道展示且无渠道行为「Unattributed」、设置页列出全部渠道（含停用的）并标出服务商缺失、账户状态同时显示 ok/Unsupported/Stale（含 `Balance 12.5 USD` 与「上次成功结果」提示）、查询账户只发 `channel_query_account`、新建渠道发带 revision 的 `channel_save`、移动端视口（390×844）下有效/待生效提示与选择流程同样可用。
 
 `npm run test:channels` 的断言（全部通过）：渠道保存/回执、会话 A 用**非 active** 的「密钥 1」发请求、会话 B 用「密钥 2」、A 的绑定不被 B 的运行改写、选择渠道不改写 `auth.json`、`channel_state` 发布两个绑定、快照暴露当前对话绑定、未知模型被拒绝且原绑定保留、畸形 WS 帧不杀进程。
 
@@ -403,7 +403,7 @@ npm run test:channels:browser     # Chromium（桌面 + 移动视口）：渠道
 3. **run 内 turn 边界切换**：SDK 支持但本期不启用（见 §2 取舍）。
 4. **旁路调用的用量归属**：视觉桥、压缩摘要、目标复核与目标向导均已接入（见 §4 与 `goal-service.ts#reportIsolatedUsage`）；仍未接入的是模型目录探测（只 GET /models，不产生 token）。压缩用会话统计差值，若压缩期间发生其他模型调用会被一并算入（当前 SDK 行为不会）。
 5. **多客户端并发编辑渠道配置**：已实现「每条命令先从磁盘对齐 + 哈希冲突检测 + 合并写入」，并有双客户端端到端用例（`tests/channel-multiclient-test.mjs`）；仍未经两个真实浏览器的人工并发验证。
-6. **渠道界面的验收范围**：`npm run test:channels:browser` 用真实 Chromium 覆盖 35 项断言——渠道分组、禁用/服务商缺失原因、有效/待生效提示、底部渠道、组合命令携带的 revision、用量归属与「未归属」标记、渠道设置页列表与账户状态（ok/unsupported/stale 与真实数值）、`channel_query_account`、带 `expectedConfigRevision` 的 `channel_save`，逐请求记录表（时间/来源/渠道/模型/费用、未知价格标注、计价依据说明），以及**移动端视口**（390×844，触屏）下同样的选择流程。**未**做真实设备/真机人工验收与真实供应商账号下的界面验收。
+6. **渠道界面的验收范围**：`npm run test:channels:browser` 用真实 Chromium 覆盖 35 项断言——渠道分组与**停用渠道不进选择器**、服务商缺失原因、有效/待生效提示、底部渠道、组合命令携带的 revision、用量归属与「未归属」标记、渠道设置页列表（含停用渠道，可重新启用）与账户状态（ok/unsupported/stale 与真实数值）、`channel_query_account`、带 `expectedConfigRevision` 的 `channel_save`，逐请求记录表（时间/来源/渠道/模型/费用、未知价格标注、计价依据说明），以及**移动端视口**（390×844，触屏）下同样的选择流程。**未**做真实设备/真机人工验收与真实供应商账号下的界面验收。
 7. **非中英文语言包的渠道文案**：新增 88 个 key 已按中文顺序填入 8 个语言包以保证一一对应，但暂时使用英文原文作为占位译文（运行时行为与缺 key 回落英文一致）；正式译文待补。
 8. **既有认证面加固**（recovery 限频、CSRF、query token、health 信息）：见 §7，需独立排期。
 9. **渠道失败告警的阈值**：已在真实历史（11351 条 assistant 消息 / 283 条失败）回测，并据此把口径收敛为「只认计费输入」（见 §14.1）；次数下限 5 相对事故峰值 31 留了 ~6 倍余量，但回测的是历史，不等于未来分布不变；端到端与 Chromium 断言已补齐（§14.1，替身 provider 造流中断，非真实网关）；真实供应商侧的掐流仍只有历史证据（153 条计费失败集中在 uu-api）。

@@ -1,15 +1,16 @@
-/* 🍞 AI Breadcrumb — @COUPLED ../../web/src/channel-models.ts（inferChannelIdByModel），
- *   ../../web/src/components/ModelChannelPicker.tsx（没有对话绑定时的当前渠道回退），
+/* 🍞 AI Breadcrumb — @COUPLED ../../web/src/channel-models.ts（inferChannelIdByModel / switcherChannels），
+ *   ../../web/src/components/ModelChannelPicker.tsx（没有对话绑定时的当前渠道回退 + 切换器过滤），
  *   ../channel-picker-current-ui-test.mjs（同一行为的浏览器级验证）
  * 📖 docs/DEV-CON-PROPOSAL.md §6（选择器）
- * @CONTRACT 这个文件钉住「没有对话绑定时怎么判断当前渠道」：
- *   ① 命中唯一渠道 → 返回它（用户反馈的「有模型却一个高亮都没有」就是缺了这一步）；
- *   ② 命中多个 → 返回 null，宁可不高亮，绝不把用户没选的渠道标成「正在使用」；
- *   ③ 白名单要参与过滤：模型不在白名单里的渠道不算命中。
+ * @CONTRACT 这个文件钉住两件事：
+ *   ① 「没有对话绑定时怎么判断当前渠道」：命中唯一渠道 → 返回它（用户反馈的「有模型却一个高亮
+ *      都没有」就是缺了这一步）；命中多个 → 返回 null，宁可不高亮，绝不把用户没选的渠道标成
+ *      「正在使用」；白名单要参与过滤。
+ *   ② 「切换器里列哪些渠道」：停用（enabled:false）的不列；服务商缺失/凭据缺失的**必须**列。
  */
 import { describe, expect, it } from "vitest";
 import type { ModelInfo, UiChannelInfo } from "../../web/src/types";
-import { inferChannelIdByModel } from "../../web/src/channel-models.js";
+import { inferChannelIdByModel, switcherChannels } from "../../web/src/channel-models.js";
 
 const chan = (id: string, providerId: string, models: string[] = []): UiChannelInfo => ({
 	id,
@@ -67,5 +68,28 @@ describe("inferChannelIdByModel", () => {
 
 	it("没有渠道时返回 null", () => {
 		expect(inferChannelIdByModel([], [model("opus-5", "prov-a")], "opus-5")).toBeNull();
+	});
+});
+
+describe("switcherChannels（切换器列出哪些渠道）", () => {
+	it("停用的渠道不进切换器", () => {
+		const off = { ...chan("ch-off", "prov-a"), enabled: false };
+		expect(switcherChannels([chan("ch-a", "prov-a"), off]).map((c) => c.id)).toEqual(["ch-a"]);
+	});
+
+	it("服务商缺失 / 凭据缺失的渠道保留（那是要用户去修的问题，不能默默消失）", () => {
+		const gone = { ...chan("ch-gone", "ghost"), providerMissing: true };
+		const keyless = { ...chan("ch-key", "prov-a"), keyMissing: true };
+		expect(switcherChannels([gone, keyless]).map((c) => c.id)).toEqual(["ch-gone", "ch-key"]);
+	});
+
+	it("enabled 缺失（老快照/夹具）按启用处理：缺字段绝不藏东西", () => {
+		const legacy = { ...chan("ch-legacy", "prov-a") } as Partial<UiChannelInfo>;
+		delete legacy.enabled;
+		expect(switcherChannels([legacy as UiChannelInfo]).map((c) => c.id)).toEqual(["ch-legacy"]);
+	});
+
+	it("全停用 → 空列表（调用方自己决定空态文案）", () => {
+		expect(switcherChannels([{ ...chan("ch-off", "prov-a"), enabled: false }])).toEqual([]);
 	});
 });

@@ -29,7 +29,7 @@ import { useState } from "react";
 import { FiRefreshCw, FiAlertTriangle, FiClock, FiCheckCircle } from "react-icons/fi";
 import type { ModelInfo, UiAccountStatus, UiChannelBinding, UiChannelBindingView, UiChannelInfo } from "../types";
 import { useI18n, useT } from "../i18n";
-import { channelModels, hasModelWhitelist, inferChannelIdByModel } from "../channel-models";
+import { channelModels, hasModelWhitelist, inferChannelIdByModel, switcherChannels } from "../channel-models";
 import { channelBalanceBrief } from "../channel-account";
 import { DropdownItem } from "./Dropdown";
 import type { ChannelCommandResult } from "../use-chat";
@@ -82,6 +82,8 @@ function ChannelGroup({
 }) {
 	const t = useT();
 	// 为什么不可用 —— 明确的理由，而不是静默把渠道藏起来（§5：失败/不可用必须可解释）。
+	// @CONTRACT 停用（!enabled）的渠道已被 ChannelModelList 过滤掉，这里的禁用分支是**防御**：
+	//   任何直接调 ChannelGroup 的地方（或未来新增的调用方）都必须仍能拿到原因，不能白屏。
 	const reason = channel.providerMissing
 		? t("channelProviderMissing")
 		: channel.keyMissing
@@ -179,6 +181,8 @@ function ChannelGroup({
  * 凭据子组选择保存在本组件：渠道+key+模型一次提交，不存在「UI 已换、实际未换」。
  * @CONTRACT 当前生效的渠道置顶（其余保持传入顺序，不重排）：渠道多了以后，「正在用哪个」
  *   不应该需要滴到列表中间去找。
+ * @CONTRACT **停用的渠道不在这里出现**（switcherChannels）：用户自己关掉的就不该再占位；
+ *   服务商缺失/凭据缺失的渠道仍然列出并写清原因（那是要他去修的问题）。
  */
 export function ChannelModelList({
 	channels,
@@ -205,11 +209,16 @@ export function ChannelModelList({
 	onSelect: (channelId: string, credentialKeyName: string | null, modelId: string) => void;
 }) {
 	const [keySel, setKeySel] = useState<Record<string, string | null>>({});
+	// 停用的渠道不进切换器（用户自己关的；理由见 channel-models.ts 的 switcherChannels）。
+	// 当前绑定/生效渠道即使被停用也 **不** 例外显示：输入区的状态 chip 依旧会说出它在用哪个渠道。
+	const visible = switcherChannels(channels);
 	// 当前渠道：优先用对话绑定；没绑定时（新对话）用实际生效模型反推（见 inferChannelIdByModel）。
-	const inferredId = binding?.effective?.channelId ? null : inferChannelIdByModel(channels, models, activeModelId);
+	const inferredId = binding?.effective?.channelId ? null : inferChannelIdByModel(visible, models, activeModelId);
 	const currentId = binding?.effective?.channelId ?? inferredId;
 	// 只把当前渠道提到最前，其余顺序原样保留（稳定排序，不让列表每次打开都变样）。
-	const ordered = currentId ? [...channels].sort((a, b) => Number(b.id === currentId) - Number(a.id === currentId)) : channels;
+	const ordered = currentId
+		? [...visible].sort((a, b) => Number(b.id === currentId) - Number(a.id === currentId))
+		: visible;
 	return (
 		<>
 			{ordered.map((c) => {
