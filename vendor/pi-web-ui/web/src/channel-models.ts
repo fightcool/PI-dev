@@ -5,11 +5,11 @@
  *              @PERF=performance @CONTRACT=interface contract 📖=dev doc reference
  *
  * Breadcrumbs (changing this affects):
- *   @COUPLED components/ModelChannelPicker.tsx（渠道分组的模型行）,
+ *   @COUPLED components/ModelChannelPicker.tsx（渠道分组的模型行 + 切捛器过滤）,
  *            components/ChannelModelWhitelist.tsx（勾选白名单）,
  *            components/ChannelSettings.tsx（默认模型下拉 / 白名单摘要）,
  *            server/dev-con/channel-model.ts（validateSelection 的白名单口径）
- *   📖 docs/DEV-CON-PROPOSAL.md §4（渠道 = 服务商+端点+凭据+模型白名单）
+ *   📖 docs/DEV-CON-PROPOSAL.md §4（渠道 = 服务商+端点+凭据+模型白名单）、§6（编码界面与选择器）
  *   @CONTRACT 纯函数，无 React / 无 IO。白名单按**服务商内部 id** 匹配（"deepseek-flash"），
  *             模型目录里的 id 是 "provider/deepseek-flash"；空白名单 = 不限（列出全部）。
  *   @GOTCHA 模型 id 可能不止一个斜杠（"openrouter/vendor/model"）——只剥掉**第一个** provider
@@ -50,6 +50,20 @@ export function channelModels(
 /** 白名单是否真的在限制（非空 = 限制）。 */
 export function hasModelWhitelist(channel: Pick<UiChannelInfo, "models"> | null | undefined): boolean {
 	return (channel?.models ?? []).length > 0;
+}
+
+/**
+ * 渠道**切捛器**里应该列出的渠道（设置页/用量面板不用这个）。
+ *
+ * @WHY 停用是用户**自己的决定**（在渠道设置里关掉的），他既然关了就不该在切捛器里再看到它，
+ *   也不需要在那里再被解释一次。而 `providerMissing` / `keyMissing` 是**需要他去修的问题**，
+ *   那类渠道必须保留并把原因写出来 —— 默默消失会让人以为渠道被删了（见 ChannelGroup 的 reason）。
+ * @CONTRACT 只过滤「切捛器」（ModelChannelPicker 的模型列表）。设置页要能重新启用它、
+ *   用量面板要能统计它、状态 chip 要能说出当前绑定 —— 那些地方一律拿**全部**渠道。
+ * @GOTCHA `enabled` 缺失（老快照/测试夹具）按**启用**处理：缺字段绝不藏东西（同一口径见 channelAllowsModel）。
+ */
+export function switcherChannels(channels: UiChannelInfo[]): UiChannelInfo[] {
+	return channels.filter((c) => c.enabled !== false);
 }
 
 /**

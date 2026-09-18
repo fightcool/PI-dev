@@ -216,19 +216,26 @@ try {
 	await errCard.locator(".msg-error-more").first().click();
 	check("Details folds back", (await errCard.locator(".msg-error-detail").count()) === 0);
 
-	// 3) 选择器按渠道分组，禁用渠道给出明确原因且不可点选。
+	// 3) 选择器按渠道分组：**停用的渠道不出现在这里**（用户自己关掉的，不该再占位），
+	//    服务商缺失/凭据缺失仍然列出并给出理由（那是要用户去修的问题）。
 	// 触发器是 Dropdown 里的 .chip（内含 .chip-model 名称）。
 	await page.locator("button.chip", { has: page.locator(".chip-model") }).first().click();
 	await page.locator(".chan-group").first().waitFor({ state: "visible", timeout: options.stepTimeout });
 	const groups = await page.locator(".chan-group").count();
 	const names = await page.locator(".chan-group .chan-name").allInnerTexts();
-	check("picker groups models by channel", groups === 4, `groups=${groups} names=${names.join("|")}`);
+	check("picker lists only enabled channels", groups === 3, `groups=${groups} names=${names.join("|")}`);
+	check("a disabled channel is absent from the picker", !names.some((n) => n.includes("停用")), names.join("|"));
 	const disabledHeads = page.locator(".chan-group .chan-head.disabled");
 	const disabledCount = await disabledHeads.count();
 	const reasons = (await page.locator(".chan-group .chan-head.disabled .chan-reason").allInnerTexts()).join(" | ");
-	check("disabled channels are marked with a reason", disabledCount === 2, `${disabledCount}: ${reasons}`);
+	// 理由文案随语言（用例上下文是 en-US）：只断言「只剰下服务商缺失那一个、且说的是服务商而不是禁用」。
+	check(
+		"only the missing-provider channel is marked with a reason",
+		disabledCount === 1 && /服务商|Provider/.test(reasons) && !/禁用|disabled/i.test(reasons),
+		`${disabledCount}: ${reasons}`,
+	);
 	const clickable = await page.locator(".chan-group .chan-head.disabled .dd-model-cell, .chan-group .chan-head.disabled .chan-key").count();
-	check("disabled channels expose no clickable model/key", clickable === 0, `clickable=${clickable}`);
+	check("channels with a reason expose no clickable model/key", clickable === 0, `clickable=${clickable}`);
 
 	// 3b) 模型白名单（channel.models）：非空时只显示白名单内的模型，并在渠道头上写明。
 	const wlHint = await page.locator(".chan-group .chan-whitelist").allInnerTexts();
@@ -667,7 +674,7 @@ try {
 		await mobilePage.locator("button.chip", { has: mobilePage.locator(".chip-model") }).first().click();
 		await mobilePage.locator(".chan-group").first().waitFor({ state: "visible", timeout: options.stepTimeout });
 		const mobileGroups = await mobilePage.locator(".chan-group").count();
-		check("mobile picker groups channels too", mobileGroups === 4, `groups=${mobileGroups}`);
+		check("mobile picker lists only enabled channels too", mobileGroups === 3, `groups=${mobileGroups}`);
 		mobileSent.length = 0;
 		const mobileGroupA = mobilePage.locator(".chan-group", { has: mobilePage.locator(".chan-name", { hasText: "渠道 A" }) });
 		await mobileGroupA.locator(".dd-model-cell", { hasText: "Mock One" }).first().click();
