@@ -29,6 +29,7 @@
     "test:channels:unit": "npm --prefix vendor/pi-web-ui run test:channels:unit",
     "test:channels": "npm --prefix vendor/pi-web-ui run test:channels",
     "test:channels:multi": "npm --prefix vendor/pi-web-ui run test:channels:multi",
+    "test:channels:failures": "npm --prefix vendor/pi-web-ui run test:channels:failures",
     "test:channels:browser": "nice -n 10 node tests/channels/browser-ui.mjs",
     "maintenance:switch-release": "node scripts/maintenance/switch-production-release.mjs",
     "release:check": "node scripts/release.mjs"
