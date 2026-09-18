@@ -68,6 +68,12 @@ export interface ChannelConfigPort {
 	 *  @WHY 自定义服务商（CCQTCC / micu 这类）的 key 只存在 models.json，没有 provider-keys.json
 	 *  里的名字；旧实现直接报「未绑定命名凭据」，这类渠道的余额永远查不出来。 */
 	resolveProviderKey: (providerId: string) => Promise<string | null>;
+	/** 该服务商注册的 baseUrl（账户模板里的 {baseUrl} 占位）。
+	 *  @CONTRACT 必须由**当前会话**的 runtime 回答：跨会话共用一份会让旧会话查到别人
+	 *    已热加载的服务商地址，反而掩盖自己目录陈旧的事实。 */
+	providerBaseUrl: (providerId: string) => string | undefined;
+	/** 账户查询前的模型目录自愈（models.json 可能被别处改写，见 agent-service.ensureFreshModelCatalog）。 */
+	ensureModelCatalogFresh: () => Promise<void>;
 	/** 目录状态（读写唯一出口：commitConfig）。 */
 	state: ChannelState;
 	/** 释放某个对话的待生效选择（渠道被删除时）。 */
@@ -311,8 +317,13 @@ export async function queryAccountCommand(port: ChannelConfigPort, input: QueryA
 		});
 		return;
 	}
-	const result = await port.accounts.query(channel, async (keyName) =>
-		keyName ? port.resolveKeyValue(channel.providerId, keyName) : await port.resolveProviderKey(channel.providerId),
+	const result = await port.accounts.query(
+		channel,
+		async (keyName) =>
+			keyName ? port.resolveKeyValue(channel.providerId, keyName) : await port.resolveProviderKey(channel.providerId),
+		// {baseUrl} 用本会话的 runtime 解析（不是服务进程里「最后连接的那个会话」）。
+		// 顺便先自愈目录：用户刚加的服务商必须能立刻查到余额，而不是等重启。
+		{ providerBaseUrl: port.providerBaseUrl, ensureFresh: port.ensureModelCatalogFresh },
 	);
 	const usable = result.status === "ok" || result.status === "stale";
 	port.receipt({

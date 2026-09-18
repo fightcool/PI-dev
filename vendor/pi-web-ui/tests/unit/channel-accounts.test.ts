@@ -637,6 +637,57 @@ describe("模板适配器（声明式单份 JSON）", () => {
 	});
 });
 
+describe("一次查询的服务商表解析（多会话隔离）", () => {
+	it("模板 {baseUrl} 用调用方传入的解析器，而不是进程级全局", async () => {
+		// 全局 = 「别的标签页」的服务商表。旧行为：旧会话会借到它，于是余额查得出来、
+		// 而自己的模型目录里根本没有这个服务商（一个 bug 掩盖另一个）——必须不再发生。
+		setProviderBaseUrlLookup(() => "http://127.0.0.1:1");
+		const seen: string[] = [];
+		const base = await stub((url, res) => {
+			seen.push(url.pathname);
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ balance: 12.5 }));
+		});
+		const ch = {
+			...channel(""),
+			providerId: "uucodex",
+			extra: {
+				account: {
+					kind: "template",
+					url: "{baseUrl}/usage",
+					apiKeyHeader: "authorization",
+					apiKeyPrefix: "Bearer ",
+					unit: "USD",
+					mapping: { balance: "balance" },
+				},
+			},
+		};
+		let refreshed = 0;
+		const result = await registry().query(ch, () => "sk-1", {
+			providerBaseUrl: (id) => (id === "uucodex" ? base : undefined),
+			ensureFresh: async () => {
+				refreshed += 1;
+			},
+		});
+		expect(result).toMatchObject({ status: "ok", balance: 12.5 });
+		expect(seen).toEqual(["/usage"]);
+		expect(refreshed).toBe(1); // 自愈在真正发请求之前
+	});
+
+	it("没给解析器时仍回落到进程级 lookup（UI 视图推导/单测路径）", async () => {
+		const base = await stub((_url, res) => {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ balance: 3 }));
+		});
+		setProviderBaseUrlLookup((id) => (id === "main" ? base : undefined));
+		const ch = {
+			...channel(""),
+			extra: { account: { kind: "template", url: "{baseUrl}/usage", mapping: { balance: "balance" } } },
+		};
+		expect(await registry().query(ch, () => "sk-1")).toMatchObject({ status: "ok", balance: 3 });
+	});
+});
+
 describe("充值直达链接（用量面板标题右侧）", () => {
 	it("显式配置优先，其次按账户查询方式取默认值，{baseUrl} 会被解析", () => {
 		setProviderBaseUrlLookup((id) => (id === "main" ? "https://gw.example/v1" : undefined));
