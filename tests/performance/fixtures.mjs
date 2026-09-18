@@ -5,6 +5,10 @@
  * @CONTRACT Only deterministic synthetic text; never load sessions or credentials.
  * @GOTCHA usage_history 行必须同时带 unpricedRequests 与 unreportedRequests：
  *   缺字段会让「未知价格/未上报」的诚实展示在测试中失去覆盖（客户端用 ?? 0 容错）。
+ *   同理必须带 failedRequests / wastedInput / cacheHitRate（协议 v31 新增）：
+ *   命中率故意给出三种形态——有值（17.4%）、真 0%（0.0%）、无可算（null → 「—」），
+ *   把「没有 token 可算」和「命中率 0%」这两件事在界面上分开，否则只测其中一种会把
+ *   两者的回落写反也看不出来。
  * 📖 tests/performance/README.md
  */
 export const pluginId = 'performance-fixture';
@@ -150,11 +154,12 @@ export function socketReply(message, state) {
         type: 'usage_history', reqId: message.reqId, ok: true, groupBy: message.groupBy,
         from: message.from ?? null, to: message.to ?? null,
         rows: [
-          { key: 'ch-a', requests: 2, input: 90, output: 38, cacheRead: 20, cacheWrite: 5, total: 153, cost: 0.03, unpricedRequests: 0, unreportedRequests: 0, firstAt: 1700000000000, lastAt: 1700000005000 },
-          { key: 'unattributed', requests: 1, input: 10, output: 2, cacheRead: 0, cacheWrite: 0, total: 12, cost: 0, unpricedRequests: 1, unreportedRequests: 1, firstAt: 1700000006000, lastAt: 1700000006000 },
+          { key: 'ch-a', requests: 2, input: 90, output: 38, cacheRead: 20, cacheWrite: 5, total: 153, cost: 0.03, unpricedRequests: 0, unreportedRequests: 0, failedRequests: 1, wastedInput: 7000, cacheHitRate: 20 / 115, firstAt: 1700000000000, lastAt: 1700000005000 },
+          { key: 'ch-b', requests: 1, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, unpricedRequests: 0, unreportedRequests: 1, failedRequests: 0, wastedInput: 0, cacheHitRate: null, firstAt: 1700000007000, lastAt: 1700000007000 },
+          { key: 'unattributed', requests: 1, input: 10, output: 2, cacheRead: 0, cacheWrite: 0, total: 12, cost: 0, unpricedRequests: 1, unreportedRequests: 1, failedRequests: 0, wastedInput: 0, cacheHitRate: 0, firstAt: 1700000006000, lastAt: 1700000006000 },
         ],
-        totals: { requests: 3, input: 100, output: 40, cacheRead: 20, cacheWrite: 5, total: 165, cost: 0.03, unpricedRequests: 1, unreportedRequests: 1 },
-        scanned: 3, skipped: 0, truncated: false,
+        totals: { requests: 4, input: 100, output: 40, cacheRead: 20, cacheWrite: 5, total: 165, cost: 0.03, unpricedRequests: 1, unreportedRequests: 2, failedRequests: 1, wastedInput: 7000, cacheHitRate: 20 / 125 },
+        scanned: 4, skipped: 0, truncated: false,
       }];
     case 'list_provider_keys': return channels ? [{ type: 'provider_keys', keys: state.providerKeys ?? {} }] : [];
     case 'channel_select':

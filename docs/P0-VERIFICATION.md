@@ -206,10 +206,34 @@ Authorization: Bearer <api key>
 - **记录（`lib/usage/token-usage.mjs`）**：逐请求记录新增 `stopReason` 与 `failureReason`（错误原文截断 120 字——append-only JSONL 不能无界膨胀）；两者只在有值时写入，旧记录没有该字段按「未失败」处理，不给每条正常记录多塞空字段。
 - **失败口径唯一**：`isFailedStopReason(stopReason)` 是唯一实现（服务端聚合、渠道告警、回填脚本共用）。**只有 `error` 算失败**；`aborted` 是用户主动中止（SDK 在两种情况下都写 `stopReason` + `errorMessage`），算成故障会让告警变噪声，也会把「渠道有问题」的结论指向错误的渠道。
 - **聚合（`server/dev-con/usage-history.ts`）**：每组新增 `failedRequests`（error 请求数）、`wastedInput`（这些请求已计费的输入 token = miss + 读缓存 + 写缓存）、`cacheHitRate`（时间窗内 **token 加权**缓存命中率 `cacheRead ÷ (input + cacheRead + cacheWrite)`，与 `web/src/cache-stats.ts` 同口径）。命中率分母为 0（没有 token / 全部未上报）时返回 **null**，界面显示「—」而不是 0%。
-- **告警（`server/dev-con/channel-failure-alert.ts`）**：纯函数（不读盘、不发通知、冷却由调用方执行，与 `ops-alerts.ts` 一致）+ 复用既有的 60 秒运维检查周期。**窗口 30 分钟、至少 5 次失败、失败率 ≥ 5%、同一主体冷却 60 分钟**（双阈值：次数下限挡住低频渠道的偶然失败，失败率下限挡住「2 次里 1 次失败」）。告警主体优先渠道 `channel:<id>`，**无渠道绑定时回落到 `provider:<id>`**（实测大量请求 `channelId=null`，只认渠道会让告警对最严重的白烧完全沉默）；两者都没有的样本直接丢弃（没有可操作对象）。开关沿用运维告警开关。
+- **告警（`server/dev-con/channel-failure-alert.ts`）**：纯函数（不读盘、不发通知、冷却由调用方执行，与 `ops-alerts.ts` 一致）+ 复用既有的运维检查周期（默认 60 秒，可用 `PI_WEB_OPS_ALERT_MS` 覆盖，下限 1000）。**窗口 30 分钟、至少 5 次失败、失败率 ≥ 5%、同一主体冷却 60 分钟**（双阈值：次数下限挡住低频渠道的偶然失败，失败率下限挡住「2 次里 1 次失败」）。告警主体优先渠道 `channel:<id>`，**无渠道绑定时回落到 `provider:<id>`**（实测大量请求 `channelId=null`，只认渠道会让告警对最严重的白烧完全沉默）；两者都没有的样本直接丢弃（没有可操作对象）。开关沿用运维告警开关。
 - **协议/界面**：`usage_history` 的 rows/totals 新增上述三个字段（**协议 31**，双端同步）。「按渠道用量」与用量历史两张表都新增「缓存命中率」列；请求数列在失败数 > 0 时附「（n 条失败）」标注，tooltip 给出白烧的输入 token（按 k/M 缩写，与表格其余数字同格式）。
 - **一次性回填（`scripts/maintenance/backfill-usage-failures.mjs`）**：`stopReason`/`failureReason` 是后加字段，旧记录没有——**部署前已经烧掉的输入 token 不会自己出现**。会话文件里留着证据（assistant 消息的 `stopReason`/`errorMessage`/`responseId`），而用量记录 id 就是 `r:<responseId>`，据此可把旧记录补回来：**默认只预演**，`--apply` 才落盘（备份 + 临时文件原子替换，权限 0600）；认不出来的行原样保留，损坏行不删。脚本会比对读入前后的 size/mtime，发现文件被在线进程 append 过就中止——**回填必须在停服时执行**。
 - **验证**：单测新增 7 例（`tests/unit/usage-history.test.ts`：token 加权而非逐请求平均、cacheWrite 计入分母、无 token 记 null 而不是 0%、分组各自独立、失败数/白烧输入、aborted 不计、旧记录不计）+ 8 例（`tests/unit/channel-failure-alert.test.ts`：双阈值、窗口边界、无主体样本、按主体隔离的冷却、多主体按失败数排序、provider 级主体、白烧只算失败样本）+ 2 例（`tests/token-usage.test.mjs`：记录保留失败事实且原因截断到 120 字、aborted 不算失败）+ 协议版本守护用例；`node scripts/check-protocol-sync.mjs` 通过（v31）；回填脚本在合成数据上预演 + 落盘复验（只补 error 记录、aborted/已标注/认不出的行原样保留、损坏行不丢、mode 600）。
+
+### 14.1 失败链路的端到端与浏览器证据（2026-09-18 补齐）
+
+上面那轮只有单测，而单测证明不了「真实服务里这条链真的通」：记录靠 SDK 事件、聚合靠 WS 查询、告警靠 60 秒定时器，中间任何一环断掉，单测都是绿的。补两类断言：
+
+- **端到端（`tests/usage-failure-test.mjs`，也进冒烟清单）**：替身 anthropic-messages 端点按 pi-ai 的判据（`iterateAnthropicEvents` 的 `sawMessageStart && !sawMessageEnd`）在 `message_start` 之后直接收流，逐字复现线上那句 `Anthropic stream ended before message_stop`（该错误串在 `RETRYABLE_PROVIDER_ERROR_PATTERN` 里，所以会被自动重试）。28 项断言覆盖：掐流后本轮仍产出正常回复（自动重试救回，「只漏钱不丢活」的前提）；`failedRequests=1`、`wastedInput=8000`（miss+读+写缓存）与 token 加权命中率（`2400/8550`）在 WS 查询结果里精确到个位；totals 同样带这三个字段；JSONL 里落 `stopReason=error` + `failureReason`（与线上同一句、长度 ≤120）；**用户主动中止**（慢流 + abort）记 `stopReason=aborted` 但 `failedRequests` 保持 0；持续掐流的渠道在 ≥5 次失败后**真的发出告警**、点名渠道显示名、给出失败率与白烧 token 量，而只失败 1 次的渠道不触发。
+  - 检查周期由 `PI_WEB_OPS_ALERT_MS` 压到 1 秒（沿用既有 `PI_WEB_*_MS` 惯例，下限 1000 防热循环），**窗口与冷却仍按生产值**走；否则单条用例要等一个 60 秒 tick，必然脆。
+- **浏览器（`npm run test:channels:browser`，合成 `usage_history`）**：「缓存命中率」列同时在「按渠道用量」与用量历史两张表上被断言，且三种形态分开验：有值 `17.4%`、真 0%（未归属行 `0.0%`）、**无可算时显「—」而不是 0%**（零 token 行）；失败标注 `(1 failed)` 挂在请求数上，tooltip 必须写出 `7.0k` 白烧输入 token 且说明「自己取消的不算」。
+- **顺手修掉的测试漂移**：这个套件此前在默认分支上就是红的（它不在 CI 里，改了 UI 没人发现）——`.chan-form` 早改名为 `.chan-form-dialog`（表单变弹窗）、金额按 `formatAmount` 输出两位小数（`12.50` 而非 `12.5`）、id/账户/白名单分别进了默认收起的「进阶」分区与独立弹窗、坏 JSON 的文案与拦截方式改成「按钮禁用 + Invalid JSON」。现在 94 项全绿。
+
+实测（2026-09-18，本机 4 vCPU）：
+
+```bash
+npm run typecheck                                   # 通过
+npm test                                            # 204 passed / 0 failed
+npm run test:unit                                   # 110 文件 / 957 passed
+npm run test:channels:unit                          # 12 文件 / 153 passed
+npm run test:channels:failures                      # 28 项断言全过（新建，~11s）
+SMOKE_JOBS=3 npm run test:smoke                     # 45/45（含 usage-failure-test 11.4s；总 161s）
+npm run test:channels:browser                       # 94 项断言全过（修漂移后）
+npm run test:performance                            # login / synthetic-20/200/1000 全部 passed
+npm run check:publish                               # PASS（674 个受跟踪文件）
+node scripts/check-protocol-sync.mjs                # 双端 v31 一致（在 vendor/pi-web-ui 下运行）
+```
 
 ## 复现方式与本次实测结果
 
@@ -247,4 +271,5 @@ npm run test:channels:browser     # Chromium（桌面 + 移动视口）：渠道
 6. **渠道界面的验收范围**：`npm run test:channels:browser` 用真实 Chromium 覆盖 35 项断言——渠道分组、禁用/服务商缺失原因、有效/待生效提示、底部渠道、组合命令携带的 revision、用量归属与「未归属」标记、渠道设置页列表与账户状态（ok/unsupported/stale 与真实数值）、`channel_query_account`、带 `expectedConfigRevision` 的 `channel_save`，逐请求记录表（时间/来源/渠道/模型/费用、未知价格标注、计价依据说明），以及**移动端视口**（390×844，触屏）下同样的选择流程。**未**做真实设备/真机人工验收与真实供应商账号下的界面验收。
 7. **非中英文语言包的渠道文案**：新增 88 个 key 已按中文顺序填入 8 个语言包以保证一一对应，但暂时使用英文原文作为占位译文（运行时行为与缺 key 回落英文一致）；正式译文待补。
 8. **既有认证面加固**（recovery 限频、CSRF、query token、health 信息）：见 §7，需独立排期。
-9. **渠道失败告警的阈值与真实流量**：§14 的阈值（30 分钟窗 / ≥5 次失败 / ≥5% / 60 分钟冷却）是按单次真实事故的量级定的，**未经真实流量调参**；失败链路（stream 中途断开）需要在替身 provider 上造流中断，因此新增的失败标注与缓存命中率列**尚无 Chromium / 端到端断言**，只有单测与聚合单测覆盖。
+9. **渠道失败告警的阈值与真实流量**：§14 的阈值（30 分钟窗 / ≥5 次失败 / ≥5% / 60 分钟冷却）是按单次真实事故的量级定的，**未经真实流量调参**；失败链路（stream 中途断开）的端到端与 Chromium 断言已在 §14.1 补齐（替身 provider 造流中断，非真实网关），但**真实供应商侧的掐流复现仍只靠历史证据**（152/152 全在 uu-api/claude-opus-5）。
+10. **失败白烧的历史回填尚未执行**：`scripts/maintenance/backfill-usage-failures.mjs` 已可用，但重写 append-only JSONL 与在线进程存在竞态，需要停服窗口（预演：可回填 191 条 / 17,595,531 白烧 token）。

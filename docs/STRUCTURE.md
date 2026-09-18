@@ -41,6 +41,7 @@ Node `#usage` / `#governance` package imports 让源码与编译产物引用同�
 - `npm run test:channels:unit`：渠道模型/存储/服务/账户的纯逻辑单测。
 - `npm run test:channels`：端到端双对话双密钥隔离验证（先 `npm run build`，使用本地替身模型端点）。
 - `npm run test:channels:multi`：端到端多客户端验证（广播一致、外部修改冲突可恢复、绑定键按 clientId 隔离）。
+- `npm run test:channels:failures`：端到端「网关搞流 → 白烧可见 → 越线告警」（替身 anthropic 端点在 `message_start` 后收流，含自动重试救回、aborted 不算失败；也在冒烟清单里）。
 - `npm run test:channels:browser`：真实 Chromium 下的渠道界面断言（合成数据 + 模拟 WS）。
 - `npm run check:publish`：交付文件及常见秘密检查。
 

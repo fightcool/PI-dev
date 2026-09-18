@@ -47,6 +47,7 @@ const ALL = [
 	"clear-provider-key-test",
 	"channel-isolation-test",
 	"channel-multiclient-test",
+	"usage-failure-test",
 	"conv-cross-project-test",
 	"conv-cwd-test",
 	"conversation-lifecycle-test",

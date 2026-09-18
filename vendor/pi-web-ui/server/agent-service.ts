@@ -167,6 +167,15 @@ const STALL_NOTIFY_MS = (() => {
  *  UiMessage objects are pure-function results, so eviction only costs a
  *  recompute on next access. Bounds memory for marathon sessions. */
 const UI_MESSAGE_CACHE_CAP = 4096;
+/** P4 运维告警（资源越线 + 渠道失败白烧）的检查周期。默认 60 秒。
+ *  Override: PI_WEB_OPS_ALERT_MS（毫秒；下限 1000 —— 更小就是把定时器变成热循环）。
+ *  @WHY 需要这个旋钮是因为告警的**窗口与冷却**是分钟级常量，而检查周期只决定
+ *  「多久发现」。端到端用例要证明的是整条链路（采样 → 判定 → 发通知），不是那 60 秒，
+ *  没有旋钮就只能靠等一个 tick，单条用例多花一分钟且必然脆。 */
+const OPS_ALERT_CHECK_MS = (() => {
+	const v = Number(process.env.PI_WEB_OPS_ALERT_MS);
+	return Number.isFinite(v) && v >= 1000 ? v : 60_000;
+})();
 /** Preview panel cap: only the first 512KB of a file is ever read/sent. */
 
 /** Thrown when the service is quiesced (draining) and the request is NEW work
@@ -1594,11 +1603,12 @@ export class ClientSession {
 		// Prune dead background tasks every 30s (only spawns netstat/lsof while
 		// the list is non-empty). unref: must not keep the process alive.
 		this.bg.start();
-		// P4 运维：资源告警周期检查（60 秒；unref 不阻止退出；开关与冷却见 checkResourceAlerts）。
+		// P4 运维：资源与渠道失败告警周期检查（默认 60 秒，见 OPS_ALERT_CHECK_MS；
+		// unref 不阻止退出；开关与冷却见 checkResourceAlerts / checkChannelFailureAlerts）。
 		this.alertTimer = setInterval(() => {
 			this.checkResourceAlerts();
 			this.checkChannelFailureAlerts();
-		}, 60_000);
+		}, OPS_ALERT_CHECK_MS);
 		this.alertTimer.unref?.();
 		this.accounts = new AccountRegistry();
 		this.channels = new ChannelService(this.makeChannelHost(agentDir), this.accounts);
