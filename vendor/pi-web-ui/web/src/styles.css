@@ -6835,20 +6835,15 @@ div.chead[role="button"]:focus-visible,
 
 /* ---- 底部控件自动收敛（chrome-collapse.ts / app/use-chrome-collapse.tsx）--------
  * 输出流式刷屏或用户在翻历史时，把「非对话内容」压到最小：目标条 / 输入工具条
- * （附件·模板·模型·思考强度）/ 快捷短语 / 状态栏全部收起，只留一行的输入框 + 展开 + 发送。
+ * （附件·模板·模型·思考强度）/ 快捷短语全部收起，只留一行的输入框 + 展开 + 发送。
  * 展开的触发：滑到会话最底部、聚焦输入框、或点输入框里的⌃展开。
- * PC 与移动端同一套规则（用户要求多端一致）。 */
-.statusbar.chrome-collapsed {
-	height: 0;
-	min-height: 0;
-	padding: 0;
-	border-top: 0;
-}
-/* @GOTCHA 不能对 .statusbar 用 display:none：用量详情面板是它的子节点（position:fixed），
- *   整块隐藏会把面板一起藏掉。只收起内部的状态项，浮层保持可见。 */
-.statusbar.chrome-collapsed > *:not(.usage-panel):not(.status-cwd-backdrop):not(.cwd-picker) {
-	display: none;
-}
+ * PC 与移动端同一套规则（用户要求多端一致）。
+ *
+ * @CONTRACT **状态栏（.statusbar）不在收敛范围内**：它显示即时监控（连接/渠道、上下文
+ *   占用、缓存命中率、实时速率），收起来等于关掉仪表盘，而只省一条窄栏（2026-09-18 调整）。
+ * @GOTCHA 因此这里没有也不应有 .statusbar.chrome-collapsed：用量详情面板是状态栏的子节点
+ *   （position:fixed），若要重新引入收起，不能对 .statusbar 用 display:none，否则会把浮层
+ *   一起藏掉（旧实现只隐藏内部状态项，代价是高度/边框还得单独压平）。 */
 .inputbar.chrome-collapsed {
 	padding-top: 6px;
 	padding-bottom: 8px;

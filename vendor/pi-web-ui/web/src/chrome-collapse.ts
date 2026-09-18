@@ -8,12 +8,14 @@
  * Breadcrumbs (changing this affects):
  *   @COUPLED app/use-chrome-collapse.tsx（React 层：状态与上下文，调用本文件的纯函数）,
  *            components/ChatInput.tsx（收起输入工具条/快捷短语）,
- *            components/FooterBar.tsx（收起状态栏）, components/GoalBar.tsx（收起空闲目标条）,
- *            components/MessageList.tsx（报告「是否停在最底部」）
+ *            components/GoalBar.tsx（收起空闲目标条）, components/MessageList.tsx（报告「是否停在最底部」）
  *   📖 docs/architecture-core.md
- *   @WHY 移动端与窄屏的底部控件（目标条 / 输入工具条 / 状态栏）能吃掉 130px 以上，输出流式
+ *   @WHY 移动端与窄屏的底部控件（目标条 / 输入工具条）能吃掉 130px 以上，输出流式
  *        刷屏时留给正文的可见区域很小。规则：**输出中**或**用户在翻历史**时自动收起，
  *        用户把会话滑到最底部（或聚焦输入框、点一下展开）才恢复。
+ *   @CONTRACT **底部状态栏（FooterBar）不在此列**：它显示即时监控（连接/渠道、上下文占用、
+ *        缓存命中率、实时速率），收起等于关掉仪表盘，而只省一条窄栏（2026-09-18 调整）。
+ *        两个地方因而互不依赖：FooterBar 不读本规则，本规则也不为它算值。
  *   @CONTRACT 只做纯判定，不做 IO/定时：输入是四个信号，输出一个布尔，便于用事件序列单测。
  * ────────────────────────────────────────────────────────────────────────── */
 

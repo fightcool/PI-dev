@@ -132,25 +132,31 @@ async function selectViews(page, result, traffic, options) {
 
 /**
  * 底部控件自动收缩（web/src/chrome-collapse.ts）：在真实浏览器里验证「往上翻 → 收起，
- * 滑回最底部 → 展开」，以及收起时输入框仍可用（能打字、能发送）。
- * @WHY 这条规则同时影响状态栏/目标条/输入工具条三处，必须在真实滚动事件与真实布局下验证；
+ * 滑回最底部 → 展开」，收起时输入框仍可用（能打字、能发送），以及**状态栏不参与收起**
+ * （它显示即时监控：上下文占用与缓存命中率，收起等于把仪表盘关掉）。
+ * @WHY 这条规则影响目标条与输入工具条两处，必须在真实滚动事件与真实布局下验证；
  *   纯函数单测只能钉住判定，不能证明 DOM 真的收起来了。
  */
 async function chromeCollapseChecks(page, result, options) {
   result.activePhase = 'chromeCollapse';
   let chromeStep = 'start';
-  /** 等状态栏达到期望的收起状态（React 提交 + 上报在下几个帧内完成，不靠固定 sleep）。 */
+  /** 等输入工具条达到期望的收起状态（React 提交 + 上报在下几个帧内完成，不靠固定 sleep）。 */
   const waitCollapsed = want =>
     page.waitForFunction(
-      expected => document.querySelector('.statusbar')?.classList.contains('chrome-collapsed') === expected,
+      expected => document.querySelector('.inputbar')?.classList.contains('chrome-collapsed') === expected,
       want,
       { timeout: 5000 },
     );
   try {
-    const collapsed = () => page.locator('.statusbar.chrome-collapsed').count();
+    const collapsed = () => page.locator('.inputbar.chrome-collapsed').count();
     chromeStep = 'baseline';
     // 起点：停在最底部（上一个阶段刚点过「回到底部」）→ 不收起。
     check(result, 'chrome expands while pinned to the bottom', (await collapsed()) === 0);
+    check(
+      result,
+      'status bar shows live metrics while expanded',
+      (await page.locator('.statusbar .status-cache').isVisible()) && (await page.locator('.statusbar .status-ctx').isVisible()),
+    );
     // 往上翻历史 → 状态栏/工具条/空闲目标条让位给正文，输入框仍在。
     // @GOTCHA 这里必须用**真实滚轮手势**，不能直接改 scrollTop + dispatchEvent：
     //   useBottomScroll 有 250ms 的 grace 窗口专门忽略「程序化滚动」，合成事件会被当成
@@ -161,6 +167,14 @@ async function chromeCollapseChecks(page, result, options) {
     await settle(page, options.settleMs);
     await waitCollapsed(true);
     check(result, 'chrome collapses when scrolling up through history', (await collapsed()) === 1);
+    // 状态栏豁免：收起时它既不能带上 chrome-collapsed 类，也不能藏掉实时数字。
+    chromeStep = 'statusbar-exempt';
+    check(result, 'status bar is exempt from auto-collapse', (await page.locator('.statusbar.chrome-collapsed').count()) === 0);
+    check(
+      result,
+      'status bar still shows live metrics while the chrome is collapsed',
+      (await page.locator('.statusbar .status-cache').isVisible()) && (await page.locator('.statusbar .status-ctx').isVisible()),
+    );
     chromeStep = 'composer-visibility';
     check(
       result,
