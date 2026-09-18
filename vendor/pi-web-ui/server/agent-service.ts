@@ -25,7 +25,7 @@ import { isFailedStopReason, normalizeUsageEvent, TokenUsageTracker } from "#usa
 import { PROTOCOL_VERSION } from "./protocol-version.js";
 import { ChannelService } from "./dev-con/channel-service.js";
 import { AccountRegistry } from "./dev-con/channel-accounts.js";
-import type { ChannelRecord, ChannelSelection, RequestBindingSnapshot } from "./dev-con/channel-model.js";
+import type { ChannelRecord, RequestBindingSnapshot } from "./dev-con/channel-model.js";
 import type { ChannelServiceHost } from "./dev-con/channel-service.js";
 import { UsageHistoryStore, type UsageHistoryRecord } from "./dev-con/usage-history.js";
 import { collectResources } from "./dev-con/system-resources.js";
@@ -33,7 +33,7 @@ import { setProviderBaseUrlLookup } from "./dev-con/channel-accounts.js";
 import { measureAreas } from "./dev-con/storage-usage.js";
 import { buildDiagnostics, usageSummaryOf } from "./dev-con/ops-diagnostics.js";
 import { capabilityFixHint, runCapabilityProbe, type CapabilityVerdict } from "./dev-con/endpoint-capability.js";
-import { evaluateAlerts, markFired, ALERT_COOLDOWN_MS, ALERT_CRITICAL_PERCENT, ALERT_WARN_PERCENT, type OpsAlert } from "./dev-con/ops-alerts.js";
+import { evaluateAlerts, ALERT_COOLDOWN_MS, ALERT_CRITICAL_PERCENT, ALERT_WARN_PERCENT, type OpsAlert } from "./dev-con/ops-alerts.js";
 import { evaluateChannelFailureAlerts, CHANNEL_FAILURE_WINDOW_MS, type ChannelFailureAlert, type FailureSample } from "./dev-con/channel-failure-alert.js";
 import {
 	createAgentSessionFromServices,

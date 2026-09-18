@@ -90,4 +90,14 @@ describe("channel failure alerts", () => {
 		const alerts = evaluateChannelFailureAlerts({ samples, now: T0 + 1000 });
 		expect(alerts[0].wastedInput).toBe(5_000);
 	});
+
+	it("stays silent when the failures never billed any input (quota, pre-request rejects)", () => {
+		// 真实回测：零计费的失败（额度不足 403、请求前就被网关拒掉）在历史上一共有 7 次会越过
+		// 次数+失败率双阈值，全部是噪声——它们不是「白烧」（没烧到钱），而且本身已有可见出口
+		// （报错卡 + 余额面板）。告警只该盯「请求数与费用看上去完全正常」的那种损失。
+		expect(evaluateChannelFailureAlerts({ samples: failures(8, { input: 0 }), now: T0 + 1000 })).toEqual([]);
+		// 只要其中一条真的计费了输入，它又该报了。
+		const mixed = [...failures(4, { input: 0 }), ...failures(1, { input: 500 })];
+		expect(evaluateChannelFailureAlerts({ samples: mixed, now: T0 + 1000 })).toHaveLength(1);
+	});
 });

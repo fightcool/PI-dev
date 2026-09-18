@@ -79,6 +79,7 @@ const truncationsLeft = new Map([
 	["/p1/v1/messages", 1],
 	["/p2/v1/messages", Number.POSITIVE_INFINITY],
 ]);
+/** 到达替身端点的请求路径（只用来给响应 id 编个唯一序号，不参与断言）。 */
 const seen = [];
 
 const mock = createServer(async (req, res) => {
@@ -91,7 +92,7 @@ const mock = createServer(async (req, res) => {
 		/* keep empty */
 	}
 	const path = new URL(req.url ?? "/", "http://x").pathname;
-	seen.push({ path, tools: JSON.stringify(body.tools ?? []) });
+	seen.push(path);
 
 	// 工具能力探测必须**正常答复**：否则渠道会被标成「不支持工具调用」，
 	// 那条告警会混进本用例的通知流，噪声掩盖我们要断言的那条。

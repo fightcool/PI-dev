@@ -20,6 +20,22 @@
  *           实测大量请求 channelId=null，只认渠道会让告警对最严重的白烧完全沉默。
  *   @MAGIC 默认阈值：窗口 30 分钟、至少 5 次失败、失败率 ≥ 5%、冷却 60 分钟、每渠道单独冷却。
  *         失败率下限避免「2 次里 1 次失败」就报警；次数下限避免低频渠道的偶然失败刷屏。
+ *         另外要求窗口内**确实烧掉了输入 token**（wastedInput > 0）：告警说的是白烧（钱），
+ *         而不是所有失败。用真实历史（11351 条 assistant 消息 / 283 条失败，2026-09-10 ~ 09-18）
+ *         回测过这个口径，见表。
+ *   @MAGIC 阈值余量也是回测出来的：真实事故（uu-api）30 分钟窗峰值 31 条计费失败，
+ *         次数下限取 5 留了 ~6 倍余量；其余服务商历史上计费失败为 0，不会误报。
+ *
+ *   回测（同一份历史，套用不同口径——窗口/失败率/冷却相同）：
+ *
+ *   | 口径 | 会触发的告警 | 实际含义 |
+ *   | --- | --- | --- |
+ *   | 所有 `error` | cctq 4 次 + CCQTCC 1 次 + rightcode 2 次 + uu-api 7 次 | **7 次是噪声**：全是零计费失败（额度不足 403、请求前就被拒），文案会写成「白烧约 0 输入 token」 |
+ *   | 只认计费输入（本实现） | uu-api 7 次 / 6.95M token | 全部是真白烧，与线上事故一一对应 |
+ *
+ *   额度不足这类失败**本来就有可见的出口**（会话里的报错卡 + 余额面板），再报一次
+ *   只会让「白烧」这个信号贬值；而掐流恰恰是「请求数与费用看上去完全正常」的那种，
+ *   只能靠这个告警。
  * ──────────────────────────────────────────────────
  */
 
@@ -73,7 +89,12 @@ export interface ChannelFailureAlertInputs {
 
 /**
  * 判定本次应触发的渠道失败告警（不修改输入）。
- * 窗口外的样本、无主体的样本、以及未越过「失败次数 + 失败率」双阈值的渠道都不产生告警。
+ * 窗口外的样本、无主体的样本、以及未越过「失败次数 + 失败率 + 确实烧掉输入 token」
+ * 三重阈值的渠道都不产生告警。
+ *
+ * @WHY 为什么单独要求 wastedInput > 0：白烧 = 「已经计费了输入 token 却没产出可用输出」。
+ *      零计费的失败（额度不足 403、请求前就被网关拒掉）不是白烧，而且它们本身就有可见出口
+ *      （报错卡 + 余额面板），拿它们报警只会让这个信号贬值：文案会变成「白烧约 0 输入 token」。
  */
 export function evaluateChannelFailureAlerts(input: ChannelFailureAlertInputs): ChannelFailureAlert[] {
 	const now = input.now ?? Date.now();
@@ -102,6 +123,8 @@ export function evaluateChannelFailureAlerts(input: ChannelFailureAlertInputs): 
 		if (entry.requests === 0 || entry.failed < minFailures) continue;
 		const rate = entry.failed / entry.requests;
 		if (rate < minRate) continue;
+		// 只有真的烧掉了输入 token 才算「白烧」（见函数头 @WHY）。
+		if (entry.wastedInput <= 0) continue;
 		const key = `channel-failure:${subjectKey}`;
 		const firedAt = lastFired[key];
 		if (typeof firedAt === "number" && now - firedAt < cooldown) continue;
