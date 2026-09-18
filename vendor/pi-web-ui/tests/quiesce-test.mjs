@@ -176,6 +176,28 @@ async function main() {
 		check("status has pid", typeof st?.pid === "number");
 		check("status quiesced=false initially", st?.quiesced === false);
 		check("status cwd=repo", st?.cwd === REPO);
+		// 排空门禁的取数口（scripts/lifecycle/drain-policy.mjs 只看 drainableMessages）：
+		// 没有运行在消费的排队消息（孤儿队列）不再充当门禁，所以这两个数必须在真实服务上就有。
+		check("status has drainableMessages", typeof st?.drainableMessages === "number");
+		check("status has orphanedMessages", typeof st?.orphanedMessages === "number");
+		check(
+			"pending = drainable + orphaned（门禁依赖的不变量）",
+			st?.pendingMessages === st?.drainableMessages + st?.orphanedMessages,
+		);
+		check("status has drainHolders", Array.isArray(st?.drainHolders));
+		const holdersOk = (st?.drainHolders ?? []).every(
+			(h) => typeof h?.id === "string" && typeof h?.streaming === "boolean" && Number.isInteger(h?.queued) && h?.idleSeconds >= 0,
+		);
+		check("drainHolders entries are complete", holdersOk);
+		// 语义自洽：有可排空队列就必须有人在流式，有孤儿队列就必须有人排队却没跑。
+		check(
+			"drainable>0 ⇔ 有流式持有者",
+			(st?.drainableMessages ?? 0) === 0 || (st?.drainHolders ?? []).some((h) => h?.streaming),
+		);
+		check(
+			"orphaned>0 ⇔ 有队列但无运行",
+			(st?.orphanedMessages ?? 0) === 0 || (st?.drainHolders ?? []).some((h) => !h?.streaming && h?.queued > 0),
+		);
 
 		console.log("\n[3] Origin admission (HTTP-level)");
 		// Cross-origin must NOT open.

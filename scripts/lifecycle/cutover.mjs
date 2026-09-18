@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { atomicJson } from "./files.mjs";
 import { waitForHealth } from "./health.mjs";
+import { evaluateDrain } from "./drain-policy.mjs";
 
 export function systemctl(args) {
   return execFileSync("systemctl", ["--user", ...args], { encoding: "utf8", timeout: 60000,
@@ -30,11 +31,24 @@ export async function cutover(options, { control, run = systemctl, health = wait
     quiesced = true;
     update("waiting", { connectedClients: initial.connectedClients, activeConversations: initial.activeConversations });
     const deadline = now() + waitMs;
+    // 与 switch-production-release.mjs 同一套判定：孤儿队列不阻塞（等也不会变）、
+    // 停滞超过阈值就早退并点名。见 lifecycle/drain-policy.mjs 的 @WHY。
+    const stallLimitMs = Number(process.env.SWITCH_DRAIN_STALL_MINUTES ?? 5) * 60_000;
+    let lastSignature = "";
+    let lastProgressAt = now();
     while (true) {
       const status = await control("status");
       if (!status?.ok) throw new Error("Old service became unavailable while waiting.");
-      if (status.activeConversations === 0 && status.pendingMessages === 0) break;
-      if (now() >= deadline) throw new Error("Active work did not drain before the deployment deadline.");
+      const signature = `${status.activeConversations}/${status.drainableMessages ?? status.pendingMessages}`;
+      if (signature !== lastSignature) {
+        lastSignature = signature;
+        lastProgressAt = now();
+      }
+      const verdict = evaluateDrain(status, { stalledMs: now() - lastProgressAt, stallLimitMs });
+      if (verdict.note) update("waiting", { drainNote: verdict.note, drain: verdict.detail });
+      if (verdict.done) break;
+      if (verdict.abort) throw new Error(verdict.abort);
+      if (now() >= deadline) throw new Error(`Active work did not drain before the deployment deadline.（${verdict.detail}）`);
       await sleep(pollMs);
     }
     // No credential files are copied. runtime.json contains only instance paths.

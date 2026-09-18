@@ -50,7 +50,16 @@ export interface ControlStatus {
 	quiescedSince?: number;
 	connectedClients?: number;
 	activeConversations?: number;
+	/** 排队总数（含孤儿队列，仅供观测）；排空门禁请用 drainableMessages。 */
 	pendingMessages?: number;
+	/** 排队消息中**有运行在消费**的那部分——排空门禁只看这个数。
+	 *  @WHY 没有运行消费的队列在 quiesce 期间永远不会变（新工作全被拒），
+	 *  等它就是白等；见 scripts/lifecycle/drain-policy.mjs。 */
+	drainableMessages?: number;
+	/** 排队消息中没人消费的那部分（孤儿队列）：不阻塞排空，但重启会丢弃。 */
+	orphanedMessages?: number;
+	/** 持有排空门禁的对话（切换日志用它点名）。 */
+	drainHolders?: Array<{ id: string; streaming: boolean; queued: number; idleSeconds: number }>;
 }
 
 /** Start the control socket; returns a stop function. */

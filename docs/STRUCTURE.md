@@ -32,7 +32,7 @@ Node `#usage` / `#governance` package imports 让源码与编译产物引用同�
 - `npm run dev`：独立开发实例，前端5173、后端8890，配置和数据在该checkout的 `.dev/`，不继承在线用户配置。
 - `npm run build`：构建应用并写入 `vendor/pi-web-ui/dist/build-info.json`。
 - `npm run typecheck`：应用双端类型检查。
-- `npm test`：根工程及生命周期测试。
+- `npm test`：根工程及生命周期测试（含 `tests/drain-policy.test.mjs`：排空门禁只看「有运行在消费」的队列、孤儿队列不阻塞、停滞早退点名）。
 - `npm run test:unit`：应用纯逻辑单测。
 - `npm run test:smoke`：应用自包含协议冒烟；**默认并行 3**（`SMOKE_JOBS=N` 覆盖），实测 ~190s（串行约 10–11 分钟）。按 [AGENTS.md](../AGENTS.md)「测试分层与验证节奏」只在里程碑跑。
 - `npm run test:performance`：模拟HTTP/WS的浏览器回归；不接触真实服务或模型。

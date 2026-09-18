@@ -42,7 +42,7 @@ import { logPhase, startTrace, type TimingTrace } from "./timing.js";
  */
 const BASELINE_DISK_SYNC_MAX_MS = 1500;
 import { PROTOCOL_VERSION } from "./protocol-version.js";
-import { AgentService, workspacePath, QuiesceRejectedError } from "./agent-service.js";
+import { AgentService, workspacePath, QuiesceRejectedError, type DrainHolder } from "./agent-service.js";
 import { isAbsoluteWirePath, wireToAbs } from "./files-service.js";
 import { previewKind } from "./text-sniff.js";
 import { startControlServer } from "./control-socket.js";
@@ -924,6 +924,12 @@ export interface DispatchSession {
 	emitNotice(level: "info" | "warning" | "error", text: string, textEn?: string): void;
 	activeConversations(): number;
 	pendingMessages(): number;
+	/** 排队消息中有运行在消费的那部分（排空门禁只看它，见 scripts/lifecycle/drain-policy.mjs）。 */
+	drainableMessages(): number;
+	/** 排队消息里没有运行消费的那部分（孤儿队列，不阻塞排空但会报出来）。 */
+	orphanedMessages(): number;
+	/** 持有排空门禁的对话（早退时点名用）。 */
+	drainHolders(): DrainHolder[];
 }
 
 /** 引擎无关的服务接口（index.ts attach 流程 + 插件扩展点所需）。 */
@@ -947,9 +953,15 @@ export interface EngineService {
 		connectedClients: number;
 		activeConversations: number;
 		pendingMessages: number;
+		drainableMessages: number;
+		orphanedMessages: number;
+		drainHolders: DrainHolder[];
 	};
 	activeConversations(): number;
 	pendingMessages(): number;
+	drainableMessages(): number;
+	orphanedMessages(): number;
+	drainHolders(): DrainHolder[];
 	applyPluginAgentTools(): void;
 	applyPluginCommandCatalog(): void;
 	refreshBackgroundServers(): void;

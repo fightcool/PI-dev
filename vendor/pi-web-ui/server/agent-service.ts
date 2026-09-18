@@ -551,6 +551,18 @@ export { workspacePath };
  * OWN AgentSessionRuntime, so starting a new chat or switching between chats
  * never interrupts another conversation's in-flight run.
  */
+/** 排空诊断里「谁在持有工作」的一条记录（控制套接字 status → 切换日志）。 */
+export interface DrainHolder {
+	/** 对话 id 前 8 位（够在界面上认出来，不把全量 id 写进日志）。 */
+	id: string;
+	/** 有在飞的一轮（在消费它的队列）。 */
+	streaming: boolean;
+	/** 排队的 steer + follow-up 条数。 */
+	queued: number;
+	/** 距最后一次 SDK 事件多久（秒）——“6 分钟无输出”这类诊断靠它。 */
+	idleSeconds: number;
+}
+
 export interface Conversation {
 	id: string;
 	/** Display title: first user prompt (truncated) or the default. */
@@ -4252,11 +4264,61 @@ export class ClientSession {
 	}
 
 	/** Messages queued in the SDK (steer + follow-up) — pending work for
-	 *  quiesce status. Quiesce refuses to add more, so this only drains. */
+	 *  quiesce status. Quiesce refuses to add more, so this only drains.
+	 *
+	 *  @GOTCHA 这是「排队总数」，**不是**排空该等的量：见 drainableMessages()。 */
 	pendingMessages(): number {
 		let n = 0;
 		for (const c of this.convs.values()) n += c.queueFollowUp.length + c.queueSteering.length;
 		return n;
+	}
+
+	/** Messages queued behind a LIVE run — the only pending work worth waiting for.
+	 *
+	 *  @WHY quiesce 会把一切新工作拒之门外（prompt 直接返回、新客户端 4403），所以**没有运行在
+	 *  消费**的队列等多久都不会变。2026-09-18 的生产切换就因此白等 45 分钟
+	 *  （active=0、pending=2、无运行在消费），排空循环既不报谁卡住了也不早退。
+	 *  排空要等的是「在飞的工作」，不是「队列里的字节」。 */
+	drainableMessages(): number {
+		let n = 0;
+		for (const c of this.convs.values()) {
+			try {
+				if (c.session.isStreaming) n += c.queueFollowUp.length + c.queueSteering.length;
+			} catch {
+				// session being replaced — not running, so nothing consumes its queue
+			}
+		}
+		return n;
+	}
+
+	/** 排队消息里没有运行消费的那部分（孤儿队列）：不阻塞排空，但必须报出来
+	 *  （重启会丢弃它们，界面上的待发气泡要重发）。 */
+	orphanedMessages(): number {
+		return this.pendingMessages() - this.drainableMessages();
+	}
+
+	/** 排空诊断：谁在持有工作。切换日志用它点名，而不是只说「没排空」。 */
+	drainHolders(): DrainHolder[] {
+		const now = Date.now();
+		const holders: DrainHolder[] = [];
+		for (const c of this.convs.values()) {
+			const queued = c.queueFollowUp.length + c.queueSteering.length;
+			let streaming = false;
+			try {
+				streaming = c.session.isStreaming;
+			} catch {
+				// session being replaced — treat as not running
+			}
+			if (!streaming && queued === 0) continue;
+			const lastEvent = c.lastSdkEventAt || c.lastActiveAt || now;
+			holders.push({
+				id: String(c.id).slice(0, 8),
+				streaming,
+				queued,
+				idleSeconds: Math.max(0, Math.round((now - lastEvent) / 1000)),
+			});
+		}
+		return holders;
 	}
 
 	async prompt(
@@ -6352,10 +6414,24 @@ export class AgentService {
 		return this.quiesced;
 	}
 
-	/** Enter quiesce: stop admitting new work. Existing runs keep going. */
+	/** Enter quiesce: stop admitting new work. Existing runs keep going.
+	 *
+	 *  @WHY 进来时先把「孤儿队列」点出来：排队但没有任何运行在消费的消息，在 quiesce 期间
+	 *  永远不会变（新工作全被拒），排空门禁不该等它。只把 pending 计数报出去而不说是谁，
+	 *  操作人只能看到门禁不动（2026-09-18 因此白等 45 分钟）。 */
 	quiesce(): void {
 		this.quiesced = true;
 		this.quiescedAt = Date.now();
+		const orphaned = this.orphanedMessages();
+		if (orphaned > 0) {
+			const who = this.drainHolders()
+				.filter((holder) => !holder.streaming && holder.queued > 0)
+				.map((holder) => `${holder.id}(排队 ${holder.queued} 条)`)
+				.join("、");
+			console.warn(
+				`[quiesce] ${orphaned} 条排队消息没有运行在消费（孤儿队列），不计入排空等待：${who || "对话未知"}；重启会丢弃它们。`,
+			);
+		}
 	}
 
 	/** Leave quiesce: admit new work again. */
@@ -6381,6 +6457,27 @@ export class AgentService {
 		let n = 0;
 		for (const cs of this.clients.values()) n += cs.pendingMessages();
 		return n;
+	}
+
+	/** Aggregate: 排队消息中有运行在消费的那部分（排空门禁只看它）。 */
+	drainableMessages(): number {
+		let n = 0;
+		for (const cs of this.clients.values()) n += cs.drainableMessages();
+		return n;
+	}
+
+	/** Aggregate: 排队消息中没有人消费的那部分（不阻塞排空，但会报出来）。 */
+	orphanedMessages(): number {
+		let n = 0;
+		for (const cs of this.clients.values()) n += cs.orphanedMessages();
+		return n;
+	}
+
+	/** Aggregate: 持有排空门禁的对话（用于早退时点名）。 */
+	drainHolders(): DrainHolder[] {
+		const holders: DrainHolder[] = [];
+		for (const cs of this.clients.values()) holders.push(...cs.drainHolders());
+		return holders;
 	}
 
 	/** 插件用：全客户端最近活跃对话的快照（at 最大者即“当前打开的对话”）。 */
@@ -6415,6 +6512,9 @@ export class AgentService {
 		connectedClients: number;
 		activeConversations: number;
 		pendingMessages: number;
+		drainableMessages: number;
+		orphanedMessages: number;
+		drainHolders: DrainHolder[];
 	} {
 		return {
 			pid: process.pid,
@@ -6424,6 +6524,9 @@ export class AgentService {
 			connectedClients: this.socketCount,
 			activeConversations: this.activeConversations(),
 			pendingMessages: this.pendingMessages(),
+			drainableMessages: this.drainableMessages(),
+			orphanedMessages: this.orphanedMessages(),
+			drainHolders: this.drainHolders(),
 		};
 	}
 

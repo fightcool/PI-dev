@@ -275,6 +275,58 @@ node -e 'const fs=require("node:fs");const rows=fs.readFileSync(process.env.HOME
 - **能控制的只有选择**：命中率现在在「按渠道用量」里逐渠道可见（见 §14），换渠道或要求网关保会话亲和是唯一实际手段；旧账（本次回填要补的那 191 条 / 17.6M 白烧 token）也已单独可查。
 - **不做的**：没有为绕开网关而自制缓存、拆提示词或禁用缓存——那些要么改变计费口径，要么在网关不配合时纯亏。
 
+## 16. 排空门禁的「闷等」缺陷与修复（2026-09-18）
+
+**症状**：生产切换第一次派发（02:21:07Z）在排空阶段白等 45 分钟后 `aborted before touching managers`——服务未被触碰、`current` 未变、站点全程健康，但操作人只看到「没排空」，无法得知是谁卡住：
+
+```
+switch: serving pid=2205360 quiesced=false active=1 pending=2
+switch: FAILED: active work did not drain within 45 minutes
+switch: aborted before touching managers; instance resumed
+```
+
+**根因**（两层）：
+
+1. **计数口径错**：`pendingMessages` 是排队总数（steer + follow-up），里面混了两类：有运行在消费的（运行结束会自己消化，值得等）与**没有运行消费的孤儿队列**（quiesce 期间新工作一律被拒：prompt 直接返回、新客户端 4403 —— 运行不会自己出现，**等多久都不会变**）。本次快照 `active=0、pending=2`，那 2 条属于一条已经没有运行的会话（近 2 小时只有另一条会话在写会话文件）。
+2. **循环无诊断、无早退**：只比对计数，不报谁持有、不在「数值不再变化」时停下，只能等满 `SWITCH_WAIT_MINUTES`（默认 45）。同一套憨门禁在 `scripts/lifecycle/cutover.mjs` 也有一份。
+
+**修复**：
+
+| 位置 | 变更 |
+| --- | --- |
+| `scripts/lifecycle/drain-policy.mjs`（新） | 纯函数 `evaluateDrain(status, {tolerate, stalledMs, stallLimitMs})` → `{done, abort, note, detail}`：门禁只看 `activeConversations` 与 **`drainableMessages`**；孤儿队列不阻塞但要 `note` 报出来；停滞超过 `SWITCH_DRAIN_STALL_MINUTES`（默认 5）就**早退并点名**（哪条对话在流式、已多久无输出、排队几条，含 `SWITCH_DRAIN_TOLERATE` 提示） |
+| `scripts/maintenance/switch-production-release.mjs`、`scripts/lifecycle/cutover.mjs` | 两处排空循环改用该判定；日志与 `switch-status.json` 的 `drain` 字段带上 `active/drainable/orphaned` |
+| `server/agent-service.ts`（pi） | 新增 `drainableMessages()` / `orphanedMessages()` / `drainHolders()`（对话 id 前 8 位、是否流式、排队数、距最后一次 SDK 事件多久）；`quiesce()` 当场 warn 点名孤儿队列；`serviceStatus()` 报这三个字段 |
+| `server/dsh/dsh-agent-service.ts`（dsh） | 同名字段对齐（dsh 不在服务端排队，恒为 0/[]），保证控制套接字两个引擎拿到同一组字段 |
+| `server/control-socket.ts`、`server/index.ts` | 类型里把三个字段列为**必需**（缺字段的实现在 `npm run typecheck` 阶段就会被拦下，不靠人记） |
+
+**回退兼容**：新脚本可能跑在升级前的旧进程上，那时没有 `drainableMessages` —— 判定回退到 `pendingMessages`（与修复前同口径，不会误判成已排空），只是拿不到点名信息。
+
+**实测证据**（本条改动全部命令）：
+
+```bash
+node --test tests/drain-policy.test.mjs tests/cutover.test.mjs   # 7 + 5 项（含「孤儿队列不再阻塞」「停滞早退点名」两个新集成用例）
+npm test                                                        # 213 项
+npm run test:unit                                               # 110 文件 / 958 项（含控制套接字归属）
+env -u PI_WEB_TOKEN -u PI_WEB_MANAGED node vendor/pi-web-ui/tests/quiesce-test.mjs   # 真实服务 27 项全绿，含新增的 7 项门禁取数断言
+npm run typecheck                                               # 缺字段的假实现被拦下（tests/unit/control-socket-ownership.test.ts）
+```
+
+裸跑 e2e 时必须剥掉 `PI_WEB_TOKEN`/`PI_WEB_MANAGED`（宿主 shell 继承服务进程环境，不剥则隔离实例要求鉴权 → 401），仓库既有 `tests/lib/isolated-env.mjs` 就是干这个的。
+
+**边界（不掩盖）**：孤儿队列在重启时会被丢弃（不再阻塞排空，但会被点名 warn 写进日志与状态文件）；界面上的待发气泡需要重发。这不比修复前更差（修复前它们也永远不会被消费，只是把切换一起卡死）。
+
+## 17. 失败白烧的历史回填（已执行）
+
+切换上线（协议 v31）后执行：
+
+```bash
+node scripts/maintenance/backfill-usage-failures.mjs            # 预演：可回填 191 条 / 17,595,531 白烧 token
+node scripts/maintenance/backfill-usage-failures.mjs --apply    # 落盘（含备份，服务在线）
+```
+
+回填脚本的并发护栏原本形同虚设（检查点取在 `readFileSync` **之后**，恰好漏掉它声称能拦的窗口），已改为「取样 → 读 → 算 → 写临时文件 → 紧贴 rename 再确认 → 原子替换；变了就重读重试」。合成竞态实测（并发写入者每 2ms 一条，共 400 条）：脚本重试 2 次后成功，最终 402 行**一行不丢**、0 坏行、0 残留临时文件。因此本次回填**不需要停服窗口**，备份为 `usage-history.jsonl.bak-2026-09-18T03-10-52-427Z`。
+
 ## 复现方式与本次实测结果
 
 ```bash
@@ -312,4 +364,4 @@ npm run test:channels:browser     # Chromium（桌面 + 移动视口）：渠道
 7. **非中英文语言包的渠道文案**：新增 88 个 key 已按中文顺序填入 8 个语言包以保证一一对应，但暂时使用英文原文作为占位译文（运行时行为与缺 key 回落英文一致）；正式译文待补。
 8. **既有认证面加固**（recovery 限频、CSRF、query token、health 信息）：见 §7，需独立排期。
 9. **渠道失败告警的阈值**：已在真实历史（11351 条 assistant 消息 / 283 条失败）回测，并据此把口径收敛为「只认计费输入」（见 §14.1）；次数下限 5 相对事故峰值 31 留了 ~6 倍余量，但回测的是历史，不等于未来分布不变；端到端与 Chromium 断言已补齐（§14.1，替身 provider 造流中断，非真实网关）；真实供应商侧的掐流仍只有历史证据（153 条计费失败集中在 uu-api）。
-10. **失败白烧的历史回填尚未执行**：`scripts/maintenance/backfill-usage-failures.mjs` 已可用，但重写 append-only JSONL 与在线进程存在竞态，需要停服窗口（预演：可回填 191 条 / 17,595,531 白烧 token）。
+10. **失败白烧的历史回填已执行**（2026-09-18，见 §17）：191 条 / 17,595,531 白烧 token 已落盘，服务在线完成（重试护栏 + 备份）。仍未做的是**下一次**回填的自动化（目前是手动跑维护命令），以及回填脚本自身的单元测试（现有证据是合成竞态实跑，不是单测）。

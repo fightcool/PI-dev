@@ -139,7 +139,34 @@ journalctl --user -u pi-dev-switch.service --no-pager
 
 脚本是**幂等**的：若 `current` 已指向目标版本、进程健康且 `build-info` 与 `release-source` 一致，则直接以 `already_deployed` 成功返回（不动服务、不覆盖状态）；控制套接字查询带重试，刚重启的进程不会被误判为「无人在服务」。
 
-阶段：quiesce → 排空（active/pending 均归零，超时即中止并恢复接收）→ 停用并 disable 旧 unit/watchdog → 原子替换 current → `manager start` → 验收（新 PID、健康、build-info 与 release-source 一致、公网入口发的是该版本前端、匿名 WebSocket 仍被 401 拒绝）→ `unquiesce`。失败时原子回退旧 release 并重启 PM2；PM2 起不来则用旧 unit 兜底保证站点可用（并在状态文件中标注）。`--collect` 的 transient unit 在退出时可能打印一条 "Failed to open …/transient/…: No such file or directory"，属清理噪声。
+阶段：quiesce → 排空 → 停用并 disable 旧 unit/watchdog → 原子替换 current → `manager start` → 验收（新 PID、健康、build-info 与 release-source 一致、公网入口发的是该版本前端、匿名 WebSocket 仍被 401 拒绝）→ `unquiesce`。失败时原子回退旧 release 并重启 PM2；PM2 起不来则用旧 unit 兜底保证站点可用（并在状态文件中标注）。`--collect` 的 transient unit 在退出时可能打印一条 "Failed to open …/transient/…: No such file or directory"，属清理噪声。
+
+**排空等的是什么**（`scripts/lifecycle/drain-policy.mjs`，2026-09-18 重写）：门禁只看 `activeConversations` 与 **`drainableMessages`**（排队消息里**有运行在消费**的那部分）。排队总数 `pendingMessages` 里还混着一类**没有运行消费的孤儿队列**——quiesce 期间新工作一律被拒（prompt 直接返回、新客户端 4403），运行不会自己出现，**等它多久都不会变**。旧实现只看 `pending === 0`，因此会被这种队列永久卡住：2026-09-18 那次就是 `active=0、pending=2` 白等 45 分钟后 aborted（服务未被触碰，`current` 未变）。现在：
+
+| 情况 | 行为 |
+| --- | --- |
+| 在飞的工作 / 有运行消费的队列 | 照旧等，直到归零 |
+| 孤儿队列（无运行消费） | **不阻塞**，但写进日志与 `switch-status.json` 的 `drain` 字段：重启会丢弃它们，界面上的待发气泡需重发 |
+| 数值停在原地超过 `SWITCH_DRAIN_STALL_MINUTES`（默认 5） | **早退并点名**（哪条对话在流式、已多久无输出、排队几条），而不是等满 `SWITCH_WAIT_MINUTES`（默认 45） |
+| 旧进程没有 `drainableMessages` 字段（新脚本跑在升级前的服务上） | 回退到 `pendingMessages`（与修复前同口径），`drainableMessages`/`orphanedMessages`/`drainHolders` 由服务的控制套接字 status 提供（pi 与 dsh 两个引擎都报，字段缺失会被类型检查拦下） |
+
+**排空期间新工作被拒**这个前提是这套判定的依据：quiesce 时 prompt 直接返回、新客户端 4403，所以「没有运行在消费」的队列不可能自己开始被消费。孤儿队列在 `quiesce` 时会被服务端点名 warn（`[quiesce] N 条排队消息没有运行在消费…`）。
+
+`SWITCH_DRAIN_TOLERATE` 仍然有效（切换派发方 `deploy-detached.mjs` 默认 1，容许派发者自己那一个在飞回合）。
+
+### 2026-09-18 生产升级（`7a57b403db55` → `4ad9b7c68fbe`，协议 v30 → v31）
+
+> 编号说明：本文档的「第 N 次」停在 2026-09-12 第七次，2026-09-17 的几次升级（`733f85ceade6` → `fb140ad524a1` → `7a57b403db55`）没有逐条补记；本记录把 `7a57b403db55` 作为回滚点写全。
+
+| 项 | 结果 |
+| --- | --- |
+| 版本 | `current` → `releases/4ad9b7c68fbe`，提交 `4ad9b7c68fbeeb8aba4eee609c0b1a11d497c43`（用量失败/白烧可视化 + 平均缓存命中率列 + 持续掐流告警 + 回填与排空工具，**协议 v30 → v31**） |
+| 候选构建 | `prepare-release.mjs 4ad9b7c68fbe`（锁文件未变 → 复用当前 release 依赖，约 1.5 分钟）；`build-info` 与 `release-source` 一致、`protocolVersion` 31、`release-source` 提交 = 目标提交 |
+| 候选验证（产物级） | 候选目录内 `SMOKE_JOBS=3 npm run test:smoke` **45/45**（163.5s）、`test:channels` ✓、`test:channels:multi` ✓、`test:channels:failures` **28 项** ✓、`test:channels:browser` **94 项** ✓。源码级由同一提交上的 CI 覆盖（PR #52/#53/#54/#55 均 success） |
+| 切换验收 | `DEPLOYED 7a57b403db55 → 4ad9b7c68fbe pid=3160616 commit=4ad9b7c68fbe protocol=31 entry=/assets/index-Cr0OLVLP.js`（03:08:57Z）；`/api/health` 200；prune 回收 `733f85ceade6`，保留 current + 回滚点 + keep=2 |
+| 事故与根因 | **第一次派发（02:21:07Z）排空白等 45 分钟后 aborted**：`active=0` 但 `pendingMessages=2`（两条孤儿排队消息，没有任何运行在消费），门禁 `active<=1 && pending<=1` 一直不满足。脚本在 `aborted before touching managers` 时未触碰任何服务、`current` 未变、站点全程健康。二次派发用 `SWITCH_DRAIN_TOLERATE=2` → `drained (active<=2 pending<=2)` → deployed。根因与修复（门禁改看 `drainableMessages`、停滞早退点名）见 [P0-VERIFICATION.md](P0-VERIFICATION.md) §16 |
+| 历史回填 | 切换后跑 `backfill-usage-failures.mjs --apply`：**191 条**补上 `stopReason=error`，合计 **17,595,531 白烧输入 token** 进入界面统计；写入采用修复后的「紧贴 rename 再确认 + 重试」护栏（服务在线、不停服），备份 `usage-history.jsonl.bak-2026-09-18T03-10-52-427Z` |
+| 回滚 | 旧 release `7a57b403db55`（协议 v30）完整保留；回滚即「停 unit → 原子恢复旧 `current` → `manager start` → 验收」 |
 
 ### 2026-09-12 第七次生产升级（`266fff494684` → `7466643885f4`）
 
