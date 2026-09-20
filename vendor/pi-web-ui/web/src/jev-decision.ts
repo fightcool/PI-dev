@@ -171,7 +171,8 @@ export function resolveEffectiveThresholds(
 ): EffectiveThresholds {
 	const approveAt = finiteOr(scoped.approveAt, global.approveAt);
 	const blockAt = finiteOr(scoped.blockAt, global.blockAt);
-	if (!(blockAt < approveAt)) return { ...global, scoped: false };
+	// 回落时只回这对值本身（不把 perProposition 之类的额外字段一起带走）。
+	if (!(blockAt < approveAt)) return { approveAt: global.approveAt, blockAt: global.blockAt, scoped: false };
 	return { approveAt, blockAt, scoped: true };
 }
 
@@ -212,7 +213,9 @@ export function propositionDraftOf(scoped: UiJevPropositionThresholds | undefine
 export function effectiveDraftThresholds(draft: JevPropositionDraft, global: ThresholdPair): EffectiveThresholds {
 	const approveRaw = draft.approveAt.trim() === "" ? undefined : (parseThreshold(draft.approveAt) ?? undefined);
 	const blockRaw = draft.blockAt.trim() === "" ? undefined : (parseThreshold(draft.blockAt) ?? undefined);
-	if (approveRaw === undefined && blockRaw === undefined) return { ...global, scoped: false };
+	if (approveRaw === undefined && blockRaw === undefined) {
+		return { approveAt: global.approveAt, blockAt: global.blockAt, scoped: false };
+	}
 	return resolveEffectiveThresholds({ approveAt: approveRaw, blockAt: blockRaw }, global);
 }
 
@@ -246,7 +249,15 @@ export function propositionThresholdsPatch(
 	for (const [id, draft] of entries) {
 		const approveAt = draft.approveAt.trim() === "" ? undefined : (parseThreshold(draft.approveAt) ?? undefined);
 		const blockAt = draft.blockAt.trim() === "" ? undefined : (parseThreshold(draft.blockAt) ?? undefined);
-		patch[id] = approveAt === undefined && blockAt === undefined ? null : { approveAt, blockAt };
+		if (approveAt === undefined && blockAt === undefined) {
+			patch[id] = null;
+			continue;
+		}
+		// 留空的一侧**不带字段**（不是带 undefined）：服务端 mergeThresholds 才会保留它已有的那一侧。
+		const entry: UiJevPropositionThresholds = {};
+		if (approveAt !== undefined) entry.approveAt = approveAt;
+		if (blockAt !== undefined) entry.blockAt = blockAt;
+		patch[id] = entry;
 	}
 	return patch;
 }

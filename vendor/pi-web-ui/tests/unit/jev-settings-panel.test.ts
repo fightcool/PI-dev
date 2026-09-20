@@ -224,6 +224,27 @@ const cards = (c: HTMLElement) =>
 		]),
 	);
 
+/* ---- 逐判定项阈值一节的定位：按 data-prop-id，不靠行序 ---- */
+type ClientSave = Extract<ClientMessage, { type: "jev_config_save" }>;
+/** 某个判定项那一行（.jev-prop-row；故意不是 .set-row，见组件头部 @GOTCHA）。 */
+const propRow = (c: HTMLElement, id: string) => c.querySelector(`.jev-prop-row[data-prop-id="${id}"]`) as HTMLElement;
+/** 那一行的两个数字输入：[放行, 拦截]。 */
+const propInputs = (c: HTMLElement, id: string) =>
+	[...propRow(c, id).querySelectorAll('input[type="number"]')] as HTMLInputElement[];
+const propClear = (c: HTMLElement, id: string) =>
+	propRow(c, id).querySelector("button.set-btn-mini") as HTMLButtonElement;
+/** 点一次「保存配置」并取出出站帧的 config（没有发出则返回 undefined）。 */
+const savePayload = (c: HTMLElement, sent: ClientMessage[]): ClientSave["config"] | undefined => {
+	sent.length = 0;
+	click(byText(c, "保存配置"));
+	return (sent.find((m) => m.type === "jev_config_save") as ClientSave | undefined)?.config;
+};
+
+/** 配置里带逐判定项独立阈值（键 = 判定项 id）。 */
+const configWithOverrides = (
+	perProposition: Record<string, { approveAt?: number; blockAt?: number }>,
+): UiJevGateConfig => ({ ...CONFIG, thresholds: { ...CONFIG.thresholds, perProposition } });
+
 describe("Jev 决策门禁分区（设置面板）", () => {
 	it("挂载即拉一次运行状态（jev_status，reqId 从 1 起）", () => {
 		const { sent } = mount();
@@ -507,5 +528,188 @@ describe("Jev 决策门禁分区（设置面板）", () => {
 		act(() => root?.unmount());
 		const withoutChannel = mount({ channels: [], accounts: [] });
 		expect(textOf(withoutChannel.container)).toContain("没有可用于余额查询的渠道");
+	});
+});
+
+describe("Jev 决策门禁：逐判定项阈值", () => {
+	const [API, AUTH] = ["change_preserves_public_api", "touches_auth"] as const;
+
+	it("逐一列出全部命题：判定语句 + 放行/拦截两个输入 + 清除，全局那节标注为全局默认", () => {
+		const { container } = mount();
+		const rows = [...container.querySelectorAll(".jev-prop-row")];
+		expect(rows.map((r) => (r as HTMLElement).dataset.propId)).toEqual([API, AUTH]);
+		expect(propRow(container, API).querySelector(".jev-prop-name")?.textContent).toBe(API);
+		// 判定语句 + title 放全文（整段英文说明不铺在面板上）。
+		const desc = propRow(container, API).querySelector(".jev-prop-desc") as HTMLElement;
+		expect(desc.getAttribute("title")).toBe(PROPOSITIONS[0].instructions);
+		expect(desc.textContent).toBe(PROPOSITIONS[0].instructions);
+		// 两个数字输入 + 一个清除按钮。
+		expect(propInputs(container, API).length).toBe(2);
+		expect(propClear(container, API).textContent).toContain("清除");
+		// 默认留空 = 继承全局（placeholder 说得清楚，不是让人猜空值是什么）。
+		expect(propInputs(container, API)[0].value).toBe("");
+		expect(propInputs(container, API)[0].placeholder).toContain("继承全局");
+		// 全局那一节被明确标注为「全局默认」（否则两节阈值看不出谁盖谁）。
+		expect(textOf(container)).toContain("全局默认");
+		// 每个项都显示了「生效阈值」（未覆盖 = 全局值）。
+		expect(propRow(container, API).textContent).toContain("继承全局");
+		expect(propRow(container, API).textContent).toContain("0.65 / 0.35");
+	});
+
+	it("判定语句超长时截断到一行，title 里保留全文（与命题清单同一份服务端文本）", () => {
+		const long = {
+			id: "long_proposition",
+			instructions: `Decide something long. ${"x".repeat(200)}`,
+			criteria: { true: "t", false: "f" },
+		};
+		const { container } = mount({
+			jev: {
+				status: {
+					type: "jev_status",
+					reqId: 7,
+					ok: true,
+					status: { config: CONFIG, runtime: RUNTIME, propositions: [long] },
+				},
+				config: null,
+				probe: null,
+			},
+		});
+		const desc = propRow(container, long.id).querySelector(".jev-prop-desc") as HTMLElement;
+		expect(desc.getAttribute("title")).toBe(long.instructions);
+		expect(desc.textContent).toContain("…");
+		expect((desc.textContent ?? "").length).toBeLessThan(long.instructions.length);
+	});
+
+	it("这节必须说明为什么需要独立阈值（实测分数区间错开）与空白带的含义", () => {
+		const { container } = mount();
+		const hint = textOf(container);
+		expect(hint).toContain("0.4");
+		expect(hint).toContain("0.7");
+		expect(hint).toContain("0.8");
+		expect(hint).toContain("转人工");
+		expect(hint).toContain("三态判定");
+	});
+
+	it("只改一项：提交的 payload 只含那一项（绝不整块回写别人的阈值）", () => {
+		const { container, sent } = mount();
+		type(propInputs(container, AUTH)[0], "0.4");
+		const payload = savePayload(container, sent);
+		expect(payload).toBeTruthy();
+		const per = payload!.thresholds?.perProposition as Record<string, unknown>;
+		expect(Object.keys(per)).toEqual([AUTH]);
+		expect(per[AUTH]).toEqual({ approveAt: 0.4 });
+		// 只填了一侧：另一侧**根本不带这个字段**（带 undefined 会把合并语义改掉）。
+		expect(Object.keys(per[AUTH] as object)).toEqual(["approveAt"]);
+		// 未改过的那一项根本不出现（否则会把别的客户端刚设的值覆盖掉）。
+		expect(per[API]).toBeUndefined();
+	});
+
+	it("留空 = 继承全局：留空的一侧不发字段，没碰过的项也不带出去", () => {
+		const { container, sent } = mount({
+			jev: statusOf(configWithOverrides({ [AUTH]: { approveAt: 0.5, blockAt: 0.2 } })),
+		});
+		// 回显的覆盖值已经在输入框里。
+		expect(propInputs(container, AUTH)[0].value).toBe("0.5");
+		// 把放行一侧清空（留空 = 继承全局），只改拦截：提交时放行字段整个不出现。
+		type(propInputs(container, AUTH)[0], "");
+		type(propInputs(container, AUTH)[1], "0.1");
+		const per = savePayload(container, sent)!.thresholds?.perProposition as Record<string, unknown>;
+		expect(Object.keys(per)).toEqual([AUTH]);
+		expect(per[AUTH]).toEqual({ blockAt: 0.1 });
+		expect(Object.keys(per[AUTH] as object)).toEqual(["blockAt"]);
+	});
+
+	it("清除 = 提交 { id: null }（删掉磁盘上的独立阈值，回到继承全局）", () => {
+		const { container, sent } = mount({
+			jev: statusOf(configWithOverrides({ [API]: { approveAt: 0.45 }, [AUTH]: { approveAt: 0.5, blockAt: 0.2 } })),
+		});
+		click(propClear(container, AUTH));
+		// 清除后输入框立刻为空（且生效值回到全局）。
+		expect(propInputs(container, AUTH)[0].value).toBe("");
+		expect(propInputs(container, AUTH)[1].value).toBe("");
+		expect(propRow(container, AUTH).textContent).toContain("继承全局");
+		const per = savePayload(container, sent)!.thresholds?.perProposition as Record<string, unknown>;
+		expect(per[AUTH]).toBeNull();
+		// 没碰过的另一项仍然不提交。
+		expect(Object.keys(per)).toEqual([AUTH]);
+	});
+
+	it("越界或拦截 ≥ 放行：就地拦下、保存禁用、一个请求都不发", () => {
+		const { container, sent } = mount();
+		const saveBtn = byText(container, "保存配置") as HTMLButtonElement;
+		// ① 越界（>1）。
+		type(propInputs(container, API)[0], "1.4");
+		expect(propRow(container, API).textContent).toContain("独立阈值不合法");
+		expect(saveBtn.disabled).toBe(true);
+		sent.length = 0;
+		click(saveBtn);
+		expect(sent.filter((m) => m.type === "jev_config_save").length).toBe(0);
+		// ② 拦截 ≥ 放行：留空的一侧按**全局**补齐后再判（全局 0.65 / 0.35）。
+		type(propInputs(container, API)[0], "");
+		type(propInputs(container, API)[1], "0.7");
+		expect(propRow(container, API).textContent).toContain("独立阈值不合法");
+		expect(saveBtn.disabled).toBe(true);
+		sent.length = 0;
+		click(saveBtn);
+		expect(sent.filter((m) => m.type === "jev_config_save").length).toBe(0);
+		// ③ 只把放行压到全局拦截值以下：生效是 0.35 ≥ 0.3，同样拦下。
+		type(propInputs(container, API)[1], "");
+		type(propInputs(container, API)[0], "0.3");
+		expect(propRow(container, API).textContent).toContain("独立阈值不合法");
+		// 修好之后立刻可以保存（就地提示不是永久禁用）。
+		type(propInputs(container, API)[0], "0.5");
+		expect(propRow(container, API).textContent).not.toContain("独立阈值不合法");
+		expect(saveBtn.disabled).toBe(false);
+	});
+
+	it("有 perProposition 时面板显示覆盖值（不是全局值），没覆盖的一侧走全局", () => {
+		const { container } = mount({
+			jev: statusOf(configWithOverrides({ [API]: { approveAt: 0.45 } })),
+		});
+		// 覆盖值回显到输入框（0.45，不是全局的 0.65）；没覆盖的一侧留空 = 继承。
+		expect(propInputs(container, API)[0].value).toBe("0.45");
+		expect(propInputs(container, API)[1].value).toBe("");
+		// 生效阈值一行写的是「独立阈值 0.45 / 0.35」（拦截侧回落全局，不是 0.35 就不会被看出来）。
+		const rowText = propRow(container, API).textContent ?? "";
+		expect(rowText).toContain("独立阈值");
+		expect(rowText).toContain("0.45 / 0.35");
+		// 没被覆盖的判定项如实显示「继承全局 0.65 / 0.35」。
+		const otherText = propRow(container, AUTH).textContent ?? "";
+		expect(otherText).toContain("继承全局");
+		expect(otherText).toContain("0.65 / 0.35");
+	});
+
+	it("保存生效后逐判定项输入回到回执里的权威值（草稿不残留）", () => {
+		const { container, sent, rerender } = mount();
+		type(propInputs(container, API)[0], "0.5");
+		sent.length = 0;
+		click(byText(container, "保存配置"));
+		const reqId = (sent.find((m) => m.type === "jev_config_save") as ClientSave).reqId;
+		// 服务端回一份归一化过的配置（0.5 → 0.45）：输入框跟着回执走。
+		rerender({
+			jev: {
+				...statusOf(configWithOverrides({ [API]: { approveAt: 0.45 } })),
+				config: {
+					type: "jev_config_result",
+					reqId,
+					ok: true,
+					phase: "applied",
+					config: configWithOverrides({ [API]: { approveAt: 0.45 } }),
+				},
+			},
+		});
+		expect(propInputs(container, API)[0].value).toBe("0.45");
+	});
+
+	it("「重新载入」丢弃本地逐判定项草稿（不只是拉一次状态）", () => {
+		// reqId 与服务端回包对齐，“重新载入”才不会被 busy 禁用（单测里没有真实往返）。
+		const base = statusOf();
+		const { container } = mount({ jev: { ...base, status: { ...base.status!, reqId: 1 } } });
+		type(propInputs(container, API)[0], "0.5");
+		expect(propInputs(container, API)[0].value).toBe("0.5");
+		// .chan-settings-head 的第一个按钮就是「重新载入」。
+		click(container.querySelector(".chan-settings-head button") as HTMLButtonElement);
+		// 服务端生效值里没有覆盖 → 重载后回到空（继承全局）。
+		expect(propInputs(container, API)[0].value).toBe("");
 	});
 });

@@ -556,7 +556,7 @@ export function JevSettings({
 									const hasOverride = !!config?.thresholds.perProposition?.[p.id];
 									const invalid = invalidPropositions.includes(p.id);
 									return (
-										<div className="jev-prop-row" key={p.id}>
+										<div className="jev-prop-row" key={p.id} data-prop-id={p.id}>
 											<div className="jev-prop-info">
 												{/* 判定语句截断到一行，title 放全文（与命题清单同一份服务端文本）。 */}
 												<div className="jev-prop-name" title={p.instructions}>
