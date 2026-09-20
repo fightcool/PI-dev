@@ -31,6 +31,12 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  SKIP_TEXT,
+  describeChecks,
+  skipReason,
+  verdictOf,
+} from "./jev-gate-verdict.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..");
@@ -44,9 +50,17 @@ const log = (msg) => process.stdout.write(`${msg}\n`);
 const annotate = (kind, msg) =>
   process.stdout.write(`::${kind}::${msg.replace(/\n/g, " ")}\n`);
 
+/**
+ * 出错一律**抛**，由最外层统一收口 —— 不在这里 `process.exit`。
+ * @GOTCHA `process.exit()` **不会执行 finally**（Node 直接终止）。临时 agentDir 里有密钥副本，
+ *   所以「出错就 exit」等于每次失败都往 /tmp 里留一份密钥 —— 2026-09-20 实测踩到，
+ *   现在改成抛异常 → finally 清理 → 最外层再 exit。
+ */
+class GateError extends Error {}
+
 function fail(message) {
   annotate("error", message);
-  process.exit(3);
+  throw new GateError(message);
 }
 
 /** 取一个 git 命令的 stdout（cwd = 仓库根；maxBuffer 给大，因为 diff 可能很大）。 */
@@ -151,32 +165,8 @@ function runGate(agentDir, statePath) {
   return { status: run.status, decision, stderr: (run.stderr ?? "").trim() };
 }
 
-function thresholdOf(config, proposition) {
-  const scoped = config?.thresholds?.perProposition?.[proposition];
-  const approveAt =
-    typeof scoped?.approveAt === "number"
-      ? scoped.approveAt
-      : config?.thresholds?.approveAt;
-  const blockAt =
-    typeof scoped?.blockAt === "number"
-      ? scoped.blockAt
-      : config?.thresholds?.blockAt;
-  return { approveAt, blockAt, scoped: Boolean(scoped) };
-}
-
-function summarize(decision, config) {
-  const lines = [];
-  for (const [name, score] of Object.entries(decision.checks ?? {})) {
-    const t = thresholdOf(config, name);
-    const scope = t.scoped ? "（独立阈值）" : "（全局）";
-    lines.push(
-      `- \`${name}\` = **${score}** — 放行 ≥ ${t.approveAt} / 阻断 ≤ ${t.blockAt}${scope}`,
-    );
-  }
-  return lines;
-}
-
-function main() {
+function run() {
+  // @CONTRACT 只返回退出码、绝不自己 exit：临时目录的清理必须在 finally 里跑完（见 fail 的 @GOTCHA）。
   const baseArg = (process.argv[2] ?? process.env.JEV_BASE_SHA ?? "").trim();
   if (baseArg.length === 0) {
     fail(
@@ -195,9 +185,7 @@ function main() {
   const apiKey = (process.env.JEV_OPENROUTER_KEY ?? "").trim();
   if (apiKey.length === 0) {
     // 没有凭据 = 门禁**没跑**。绝不假装通过：清楚地写「跳过」，并且不把它说成绿。
-    log(
-      "SKIPPED: 没有配 JEV_OPENROUTER_KEY —— 门禁这次没有运行（这不是通过）。",
-    );
+    log(SKIP_TEXT["no-credential"]);
     log(
       "  要让它真的跑：仓库 Settings → Secrets and variables → Actions 里加 JEV_OPENROUTER_KEY。",
     );
@@ -205,14 +193,18 @@ function main() {
       "warning",
       "Jev 门禁被跳过：未配置 JEV_OPENROUTER_KEY（跳过 ≠ 通过）",
     );
-    process.exit(0);
+    return 0;
   }
 
   const state = buildState(baseSha);
-  if (state.diff.trim().length === 0) {
-    log("SKIPPED: 这个 PR 相对 base 没有 diff（空改动），没有可判的内容。");
+  const postSkip = skipReason({
+    hasCredential: true,
+    diffChars: state.diff.trim().length,
+  });
+  if (postSkip === "empty-diff") {
+    log(SKIP_TEXT["empty-diff"]);
     annotate("notice", "Jev 门禁：空 diff，无需判定");
-    process.exit(0);
+    return 0;
   }
   log(
     `Jev 门禁：base=${baseSha.slice(0, 12)} diff=${state.diffChars} 字符${state.truncated ? "（已截断）" : ""}`,
@@ -228,9 +220,11 @@ function main() {
     );
     const { status, decision, stderr } = runGate(agentDir, statePath);
     const config = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+    const verdict = verdictOf({ decision, status });
 
-    if (!decision || decision.error) {
+    if (verdict.kind === "error") {
       log("门禁没有给出有效判定 —— 这不是通过。");
+      log(`原因：${verdict.error}`);
       if (decision?.error) log(`上游/配置问题：${decision.error}`);
       else if (stderr) log(`CLI 输出：${stderr.slice(0, 600)}`);
       fail(
@@ -240,7 +234,7 @@ function main() {
 
     const outcome = decision.outcome;
     log(`结论：${outcome}（score 表）`);
-    for (const line of summarize(decision, config)) log(line);
+    for (const line of describeChecks(decision, config)) log(line);
     log(`理由：${decision.reason || decision.reasonEn || "（无）"}`);
     if (decision.audit) {
       log(
@@ -252,7 +246,7 @@ function main() {
       `## Jev 门禁：${outcome}`,
       "",
       `- base: \`${baseSha.slice(0, 12)}\`，diff ${state.diffChars} 字符${state.truncated ? "（**已截断**）" : ""}`,
-      ...summarize(decision, config),
+      ...describeChecks(decision, config),
       `- 理由：${decision.reason || decision.reasonEn || "（无）"}`,
       "",
       "> 门槛：**只有 block 才让它变红**；review（灰区）只提醒。门禁抖动约 ±0.06，别当精确判决。",
@@ -261,27 +255,38 @@ function main() {
       appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${summary}\n`);
     }
 
-    if (status === 1 || outcome === "block") {
+    if (verdict.kind === "block") {
       annotate(
         "error",
         `Jev 门禁阻断：${decision.reason || decision.reasonEn || "见 job 输出"}`,
       );
-      process.exit(1);
+      return 1;
     }
-    if (outcome === "review")
+    if (verdict.kind === "review")
       annotate(
         "warning",
         `Jev 门禁转人工（未拦截）：${decision.reason || decision.reasonEn || ""}`,
       );
-    process.exit(0);
+    return 0;
   } finally {
-    // 临时 agentDir 里有密钥副本：无论成败都删掉（尽力而为）。
+    // 临时 agentDir 里有密钥副本：无论成败都删掉；删不掉必须说出来（不能静默留一份密钥）。
     try {
       rmSync(agentDir, { recursive: true, force: true });
-    } catch {
-      /* 删不掉也不能让 job 因为清理失败而变红 */
+    } catch (err) {
+      process.stderr.write(
+        `::warning::临时 agentDir 清理失败：${agentDir}（${err instanceof Error ? err.message : String(err)}）\n`,
+      );
     }
   }
 }
 
-main();
+try {
+  process.exit(run());
+} catch (err) {
+  if (!(err instanceof GateError)) {
+    process.stdout.write(
+      `::error::Jev 门禁脚本异常：${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  }
+  process.exit(3);
+}
