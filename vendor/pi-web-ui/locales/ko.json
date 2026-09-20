@@ -1262,10 +1262,21 @@
 		"settingsJevEndpointInvalid": "엔드포인트는 비워 둘 수 없고 https URL이어야 합니다(기본 https://openrouter.ai/api/alpha/decisions).",
 		"settingsJevModelRequired": "모델 ID는 비워 둘 수 없습니다(기본 typesafe/jev-1.13).",
 		"settingsJevKeyNameRequired": "공급자는 선택했지만 키 이름이 없습니다: 서버는 명시적 키 참조만 허용합니다. 하나 선택하세요.",
+		"settingsJevGlobalDefault": "전역 기본값",
+		"settingsJevPerPropositionTitle": "판정 항목별 임계값",
+		"settingsJevPerPropositionHint": "실측에서 세 명제의 점수 구간이 크게 어긋납니다(scope≈0.4 / api≈0.7 / test≈0.8+). 단일 전역 임계값으로는 구조적으로 동시에 맞출 수 없습니다. 개별 임계값도 삼상 판정에 참여합니다. 비워 둔 항목은 전역 값을 상속하고, 두 임계값 사이는 여전히 모델의 불확실 구간(사람 확인)입니다.",
+		"settingsJevPerPropositionApprove": "허용",
+		"settingsJevPerPropositionBlock": "차단",
+		"settingsJevPerPropositionInherit": "전역 상속",
+		"settingsJevPerPropositionClear": "지우기",
+		"settingsJevPerPropositionEffective": "실효 임계값",
+		"settingsJevPerPropositionScoped": "개별 임계값",
+		"settingsJevPerPropositionInvalid": "개별 임계값이 올바르지 않습니다: 빈칸을 전역 값으로 채운 뒤 0 ≤ 차단 < 허용 ≤ 1 이어야 합니다.",
 		"footerJev": "Jev",
 		"footerJevTip": "Jev 게이트: 허용 {approve} · 차단 {block} · 사람 이관 {review} · 실패 {failed}. 클릭하면 상세 정보.",
 		"footerJevEmpty": "Jev: 판정 없음",
 		"footerJevDetail": "최근 판정 항목별 점수는 설정의 “Jev 게이트” 섹션에 있습니다.",
-		"footerJevLastDecision": "최근 판정"
+		"footerJevLastDecision": "최근 판정",
+		"footerJevReason": "판정 이유(가장 최근에 받은 실제 판정 응답)"
 	}
 }

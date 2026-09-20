@@ -1262,10 +1262,21 @@
 		"settingsJevEndpointInvalid": "Der Endpunkt darf nicht leer sein und muss eine https-URL sein (Standard https://openrouter.ai/api/alpha/decisions).",
 		"settingsJevModelRequired": "Die Modell-ID darf nicht leer sein (Standard typesafe/jev-1.13).",
 		"settingsJevKeyNameRequired": "Anbieter gewählt, aber kein Schlüsselname: der Server akzeptiert nur eine eindeutige Schlüsselreferenz — bitte einen auswählen.",
+		"settingsJevGlobalDefault": "Globaler Standard",
+		"settingsJevPerPropositionTitle": "Schwellenwerte je Proposition",
+		"settingsJevPerPropositionHint": "Die drei Propositionen punkten in getrennten Bereichen (scope≈0,4 / api≈0,7 / test≈0,8+), daher kann ein einzelner globaler Schwellenwert strukturell nicht für alle passen. Overrides zählen ebenfalls für die Drei-Zustands-Entscheidung; ein leeres Feld erbt den globalen Wert, und das Band zwischen den beiden Schwellenwerten bleibt die Unsicherheitszone des Modells (die Lücke geht an einen Menschen).",
+		"settingsJevPerPropositionApprove": "Freigeben",
+		"settingsJevPerPropositionBlock": "Blockieren",
+		"settingsJevPerPropositionInherit": "Global erben",
+		"settingsJevPerPropositionClear": "Zurücksetzen",
+		"settingsJevPerPropositionEffective": "Wirksame Schwelle",
+		"settingsJevPerPropositionScoped": "Override",
+		"settingsJevPerPropositionInvalid": "Ungültiger Override: mit den aus dem globalen Wert ergänzten Lücken gilt 0 ≤ Blockieren < Freigeben ≤ 1.",
 		"footerJev": "Jev",
 		"footerJevTip": "Jev-Gate: Freigeben {approve} · Blockieren {block} · An Mensch {review} · Fehler {failed}. Klicken für Details.",
 		"footerJevEmpty": "Jev: keine Entscheidungen",
 		"footerJevDetail": "Die aktuellen Punktwerte je Proposition stehen im Abschnitt „Jev-Gate“ der Einstellungen.",
-		"footerJevLastDecision": "Letzte Entscheidung"
+		"footerJevLastDecision": "Letzte Entscheidung",
+		"footerJevReason": "Begründung (aus der zuletzt empfangenen echten Entscheidungsantwort)"
 	}
 }

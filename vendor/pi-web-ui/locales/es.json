@@ -1262,10 +1262,21 @@
 		"settingsJevEndpointInvalid": "El endpoint no puede estar vacío y debe ser una URL https (por defecto https://openrouter.ai/api/alpha/decisions).",
 		"settingsJevModelRequired": "El id del modelo no puede estar vacío (por defecto typesafe/jev-1.13).",
 		"settingsJevKeyNameRequired": "Hay un proveedor elegido pero ninguna clave: el servidor solo acepta una referencia de clave explícita; elige una.",
+		"settingsJevGlobalDefault": "Valor global",
+		"settingsJevPerPropositionTitle": "Umbrales por proposición",
+		"settingsJevPerPropositionHint": "Las tres proposiciones puntúan en rangos separados (scope≈0,4 / api≈0,7 / test≈0,8+), así que un único umbral global no puede servir para todas. Las excepciones también cuentan en la decisión de tres estados; un campo vacío hereda el valor global, y la banda entre ambos umbrales sigue siendo la zona de incertidumbre del modelo (el hueco va a una persona).",
+		"settingsJevPerPropositionApprove": "Permitir",
+		"settingsJevPerPropositionBlock": "Bloquear",
+		"settingsJevPerPropositionInherit": "Heredar global",
+		"settingsJevPerPropositionClear": "Borrar",
+		"settingsJevPerPropositionEffective": "Umbral efectivo",
+		"settingsJevPerPropositionScoped": "Excepción",
+		"settingsJevPerPropositionInvalid": "Excepción no válida: con los huecos completados desde el valor global, se necesita 0 ≤ bloqueo < permiso ≤ 1.",
 		"footerJev": "Jev",
 		"footerJevTip": "Puerta Jev: Permitir {approve} · Bloquear {block} · A persona {review} · Fallos {failed}. Haz clic para ver los detalles.",
 		"footerJevEmpty": "Jev: sin decisiones",
 		"footerJevDetail": "Las puntuaciones por proposición más recientes están en la sección «Puerta Jev» de los ajustes.",
-		"footerJevLastDecision": "Última decisión"
+		"footerJevLastDecision": "Última decisión",
+		"footerJevReason": "Motivo (de la respuesta de decisión real más reciente)"
 	}
 }

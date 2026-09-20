@@ -1262,11 +1262,22 @@
 		"settingsJevEndpointInvalid": "O endpoint não pode ficar vazio e deve ser uma URL https (padrão https://openrouter.ai/api/alpha/decisions).",
 		"settingsJevModelRequired": "O id do modelo não pode ficar vazio (padrão typesafe/jev-1.13).",
 		"settingsJevKeyNameRequired": "Provedor escolhido mas sem nome de chave: o servidor só aceita uma referência de chave explícita — escolha uma.",
+		"settingsJevGlobalDefault": "Padrão global",
+		"settingsJevPerPropositionTitle": "Limiares por proposição",
+		"settingsJevPerPropositionHint": "As três proposições pontuam em faixas separadas (scope≈0,4 / api≈0,7 / test≈0,8+), então um único limiar global não pode servir para todas. As exceções também contam na decisão de três estados; um campo vazio herda o valor global, e a faixa entre os dois limiares continua sendo a zona de incerteza do modelo (a lacuna vai para um humano).",
+		"settingsJevPerPropositionApprove": "Permitir",
+		"settingsJevPerPropositionBlock": "Bloquear",
+		"settingsJevPerPropositionInherit": "Herdar global",
+		"settingsJevPerPropositionClear": "Limpar",
+		"settingsJevPerPropositionEffective": "Limiar efetivo",
+		"settingsJevPerPropositionScoped": "Exceção",
+		"settingsJevPerPropositionInvalid": "Exceção inválida: com os vazios preenchidos pelo valor global, é preciso 0 ≤ bloqueio < permissão ≤ 1.",
 		"footerJev": "Jev",
 		"footerJevTip": "Portão Jev: Permitir {approve} · Bloquear {block} · Para pessoa {review} · Falhas {failed}. Clique para detalhes.",
 		"footerJevEmpty": "Jev: sem decisões",
 		"footerJevDetail": "As pontuações por proposição mais recentes estão na secção «Portão Jev» das configurações.",
-		"footerJevLastDecision": "Última decisão"
+		"footerJevLastDecision": "Última decisão",
+		"footerJevReason": "Motivo (da resposta de decisão real mais recente)"
 	},
 	"serverStrings": {
 		"agent.subagent.template.unavailable": "Template de subagente indisponível: {templateName} (ausente ou desativado)",

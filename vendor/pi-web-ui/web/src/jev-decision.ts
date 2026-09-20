@@ -165,7 +165,10 @@ function finiteOr(v: unknown, fallback: number): number {
  *   时一律回落全局，「宁可退回已验证的行为」。
  * @CONTRACT 数值一律取**服务端回显**的原值，客户端不重新推导任何东西；这里只做「哪一对在生效」的判定。
  */
-export function resolveEffectiveThresholds(scoped: UiJevPropositionThresholds, global: ThresholdPair): EffectiveThresholds {
+export function resolveEffectiveThresholds(
+	scoped: UiJevPropositionThresholds,
+	global: ThresholdPair,
+): EffectiveThresholds {
 	const approveAt = finiteOr(scoped.approveAt, global.approveAt);
 	const blockAt = finiteOr(scoped.blockAt, global.blockAt);
 	if (!(blockAt < approveAt)) return { ...global, scoped: false };
@@ -199,7 +202,8 @@ export type JevPropositionDrafts = Record<string, JevPropositionDraft>;
 /** 服务端回显的独立配置 → 输入框初值（没配的项两侧都是空串 = 继承全局）。 */
 export function propositionDraftOf(scoped: UiJevPropositionThresholds | undefined): JevPropositionDraft {
 	return {
-		approveAt: typeof scoped?.approveAt === "number" && Number.isFinite(scoped.approveAt) ? String(scoped.approveAt) : "",
+		approveAt:
+			typeof scoped?.approveAt === "number" && Number.isFinite(scoped.approveAt) ? String(scoped.approveAt) : "",
 		blockAt: typeof scoped?.blockAt === "number" && Number.isFinite(scoped.blockAt) ? String(scoped.blockAt) : "",
 	};
 }

@@ -1262,10 +1262,21 @@
 		"settingsJevEndpointInvalid": "Le point de terminaison ne doit pas être vide et doit être une URL https (par défaut https://openrouter.ai/api/alpha/decisions).",
 		"settingsJevModelRequired": "L’id du modèle ne doit pas être vide (par défaut typesafe/jev-1.13).",
 		"settingsJevKeyNameRequired": "Un fournisseur est choisi mais aucune clé : le serveur n’accepte qu’une référence de clé explicite — veuillez en choisir une.",
+		"settingsJevGlobalDefault": "Valeur globale",
+		"settingsJevPerPropositionTitle": "Seuils par proposition",
+		"settingsJevPerPropositionHint": "Les trois propositions se répartissent sur des plages distinctes (scope≈0,4 / api≈0,7 / test≈0,8+), donc un seuil global unique ne peut structurellement pas convenir à toutes. Les dérogations comptent aussi dans la décision à trois états ; un champ vide hérite de la valeur globale, et la bande entre les deux seuils reste la zone d'incertitude du modèle (l'écart part vers un humain).",
+		"settingsJevPerPropositionApprove": "Autoriser",
+		"settingsJevPerPropositionBlock": "Bloquer",
+		"settingsJevPerPropositionInherit": "Hériter du global",
+		"settingsJevPerPropositionClear": "Effacer",
+		"settingsJevPerPropositionEffective": "Seuil effectif",
+		"settingsJevPerPropositionScoped": "Dérogation",
+		"settingsJevPerPropositionInvalid": "Dérogation invalide : une fois les vides complétés par la valeur globale, il faut 0 ≤ blocage < autorisation ≤ 1.",
 		"footerJev": "Jev",
 		"footerJevTip": "Portail Jev : Autoriser {approve} · Bloquer {block} · Vers un humain {review} · Échecs {failed}. Cliquez pour les détails.",
 		"footerJevEmpty": "Jev : aucune décision",
 		"footerJevDetail": "Les derniers scores par proposition se trouvent dans la section « Portail Jev » des réglages.",
-		"footerJevLastDecision": "Dernière décision"
+		"footerJevLastDecision": "Dernière décision",
+		"footerJevReason": "Motif (de la réponse de décision réelle la plus récente)"
 	}
 }
