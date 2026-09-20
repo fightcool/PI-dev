@@ -249,13 +249,13 @@ function mergeFixtureThresholds(base, patch) {
 		delete merged.perProposition;
 		return merged;
 	}
-	const next = { ...(base.perProposition ?? {}) };
+	const next = { ...base.perProposition };
 	for (const [id, entry] of Object.entries(incoming)) {
 		if (entry === null) {
 			delete next[id];
 			continue;
 		}
-		next[id] = { ...(next[id] ?? {}), ...entry };
+		next[id] = { ...next[id], ...entry };
 	}
 	if (Object.keys(next).length === 0) delete merged.perProposition;
 	else merged.perProposition = next;
