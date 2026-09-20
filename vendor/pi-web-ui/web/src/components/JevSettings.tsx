@@ -38,6 +38,7 @@ import type {
 	ProviderStatus,
 	UiAccountStatus,
 	UiChannelInfo,
+	UiJevThresholds,
 	UiJevThresholdsInput,
 } from "../types";
 import { JevBalance, JevPropositionList, JevReceipts, JevRuntimeCards } from "./JevRuntimeView";
@@ -183,6 +184,16 @@ export function JevSettings({
 	const check = checkThresholds(approveAt, blockAt);
 	const propositions = status?.status?.propositions ?? [];
 	/**
+	 * 逐判定项的**回显底稿**：保存回执优先于 jev_status。
+	 * @GOTCHA 保存后服务端**不**补推 jev_status，回执才是刚生效的权威值（且可能被归一化过）；
+	 *   只读 status.config 的话，保存完输入框会退回保存前的值，连「清除」按钮的可用性也错了
+	 *   （明明有独立阈值却显示成没有）——与文件头那条 @GOTCHA 同一个坑，这里同样要避开。
+	 */
+	const appliedThresholds: UiJevThresholds | undefined =
+		jev.config?.ok && jev.config.phase === "applied" && jev.config.config
+			? jev.config.config.thresholds
+			: config?.thresholds;
+	/**
 	 * 逐判定项的就地校验：留空按**全局值补齐**后必须 0 ≤ 拦截 < 放行。
 	 * @WHY 全局阈值本身就不合法时这里不报（上面那条理由已经在说同一件事，不重复刷屏）。
 	 */
@@ -215,7 +226,9 @@ export function JevSettings({
 		setDraft({ ...view, ...p });
 	};
 	/** 服务端回显的独立阈值 → 输入框初值（没配的项两侧都是空串 = 继承全局）。 */
-	const serverPropRow = (id: string) => propositionDraftOf(config?.thresholds.perProposition?.[id]);
+	const serverPropRow = (id: string) => propositionDraftOf(appliedThresholds?.perProposition?.[id]);
+	/** 这一项当前有没有落盘的独立阈值（决定「清除」能不能点）。 */
+	const hasPropOverride = (id: string) => !!appliedThresholds?.perProposition?.[id];
 	/**
 	 * 逐判定项输入：首次编辑时以**服务端回显值**起底，之后跟着本地草稿走（与 JevDraft 同一策略）。
 	 * @GOTCHA 不要用「整个 propDrafts 置为回显值」的写法：那等于把全部项都标成「改过」，保存时就会整块回写。
@@ -235,7 +248,7 @@ export function JevSettings({
 		if (approveAt === null || blockAt === null) return null;
 		const local = propDrafts[id];
 		if (local) return effectiveDraftThresholds(local, { approveAt, blockAt });
-		return effectiveThresholds(id, config?.thresholds ?? { approveAt, blockAt });
+		return effectiveThresholds(id, appliedThresholds ?? { approveAt, blockAt });
 	};
 	/** 换服务商 = 旧密钥名无意义，必须清空（不做静默沿用）；有当前密钥就默认选上。 */
 	const selectProvider = (next: string) => {
@@ -553,7 +566,7 @@ export function JevSettings({
 									// 未编辑的项显示服务端回显值（有独立阈值就是覆盖值，否则就是空 = 继承）。
 									const row = local ?? serverPropRow(p.id);
 									const effective = effectiveFor(p.id);
-									const hasOverride = !!config?.thresholds.perProposition?.[p.id];
+									const hasOverride = hasPropOverride(p.id);
 									const invalid = invalidPropositions.includes(p.id);
 									return (
 										<div className="jev-prop-row" key={p.id} data-prop-id={p.id}>

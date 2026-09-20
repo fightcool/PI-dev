@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /* 🍞 AI Breadcrumb Navigation
  * @COUPLED vendor/pi-web-ui/web/src/components/JevSettings.tsx（设置面板「Jev 决策门禁」分区：总开关 /
- *   API KEY 选择 / 端点与模型 / 阈值 / 余额 / 运行状态 / 命题清单 / 测试连接 / 保存）,
+ *   API KEY 选择 / 端点与模型 / 阈值（全局默认）/ 逐判定项阈值 / 余额 / 运行状态 / 命题清单 / 测试连接 / 保存）,
  *   components/JevFooterItem.tsx + jev-footer.ts（底栏 Jev 门禁项：最简结论 + 点开浮层；
- *   浮层运行状态与设置面板同一 JevRuntimeCards）,
+ *   浮层运行状态与设置面板同一 JevRuntimeCards，并展示最近一次真实决策的理由与逐判定项**生效**阈值）,
  *   components/JevRuntimeView.tsx（运行状态卡 + 命题清单 + 余额行 + 三条回执）,
  *   jev-decision.ts（jev_status / jev_probe / jev_config_save 的出站构造与文案口径）,
  *   components/SettingsModal.tsx（data-tab="jev" 的分区注册 + chat.jev 传入）
@@ -16,6 +16,9 @@
  *   密钥正文的入口按「该服务商有没有密钥」分两种（本次修复后的契约）：已有密钥 → 面板里没有 password
  *   框（只按名引用）；一把都没有 → 面板就地给 .jev-newkey 表单（名 + 值 + 新建），值上行一次后立即清空。
  *   模型下拉只列 Jev 模型（JEV_KNOWN_MODELS ∪ 目录里像 Jev 的 id）：合成目录里的对话模型一个都不许出现。
+ *   逐判定项阈值（§11）走完整往返：面板只提交**改过的项**（留空 = 不带字段、清除 = `{id: null}`），
+ *   夹具侧的存储合并必须照抄 server/dev-con/jev-settings.ts 的 mergeThresholds（逐项），
+ *   否则测的是夹具的 bug（同一次保存会把没提到的判定项整体丢掉）。
  * @GOTCHA isolatedContext 的替身 socket 直接调用 fixtures.socketReply，而 socketReply 没有 jev_* 分支
  *   （jev 夹具只在本用例合成）。所以本用例在 isolatedContext **之后**注册自己的 routeWebSocket：
  *   同一份隔离底座（HTTP 白名单路由、pageerror 采集、断开外网），只是把每一帧都交给本文件的
@@ -231,6 +234,35 @@ const state = {
 let storedConfig = { ...JEV_CONFIG, thresholds: { ...JEV_CONFIG.thresholds } };
 
 /**
+ * thresholds 的保存合并：与 server/dev-con/jev-settings.ts 的 mergeThresholds **同口径**（不是简单展开）。
+ * @COUPLED jev-settings.ts mergeThresholds：perProposition 是**逐项**合并，`null` = 删这一项，
+ *   整块缺省 = 保留磁盘上的值（缺省 ≠ 删除）。
+ * @WHY 夹具里必须忠实照做：用 `{...base, ...patch}` 的话，同一次保存里没提到的判定项会被整体丢掉
+ *   （实测：先给两项设独立阈值、再单独清掉一项，另一项会从存储里消失，底栏浮层于是显示成「继承全局」）——
+ *   那是夹具的 bug，不是被测行为。
+ */
+function mergeFixtureThresholds(base, patch) {
+	const merged = { ...base, ...patch };
+	if (!("perProposition" in patch)) return merged;
+	const incoming = patch.perProposition;
+	if (incoming === null) {
+		delete merged.perProposition;
+		return merged;
+	}
+	const next = { ...(base.perProposition ?? {}) };
+	for (const [id, entry] of Object.entries(incoming)) {
+		if (entry === null) {
+			delete next[id];
+			continue;
+		}
+		next[id] = { ...(next[id] ?? {}), ...entry };
+	}
+	if (Object.keys(next).length === 0) delete merged.perProposition;
+	else merged.perProposition = next;
+	return merged;
+}
+
+/**
  * 服务端**主动推送**的运行态（reqId:0）：真实服务端在会话 ready 后推一次、之后**每次真实决策**
  * 再推一次（面板「测试连接」/ Agent 工具 jev_check）。夹具里每次推进 +1（total/approve 各 +1），
  * 这样底栏能靠前后两份计数的差认出「刚刚那次是放行」；
@@ -278,7 +310,7 @@ function jevReply(message, current) {
 			storedConfig = {
 				...storedConfig,
 				...message.config,
-				thresholds: { ...storedConfig.thresholds, ...message.config.thresholds },
+				thresholds: mergeFixtureThresholds(storedConfig.thresholds, message.config.thresholds ?? {}),
 			};
 			return [
 				...replies,
@@ -967,6 +999,128 @@ try {
 		await waitFor(async () => (await jevPanel.count()) === 0, 3000),
 	);
 	// 回到 Jev 分区，给文末的复核截图用。
+	await page.locator('.settings-rail .settings-tab[data-tab="jev"]').click();
+	await page.locator(".chan-settings .chan-enable input").waitFor({ state: "visible", timeout: options.stepTimeout });
+
+	// ---- 11) 逐判定项阈值：面板可改可清，出站帧只带改过的项，底栏浮层显示**生效**阈值 ----
+	// 真实服务端（a7121c4 起）支持 thresholds.perProposition（逐项合并 + null 删除）；这一节走完整往返。
+	const propSection = panel.locator(".chan-conn", { hasText: "Per-proposition thresholds" });
+	check(
+		"the Jev panel opens a per-proposition thresholds section",
+		(await propSection.count()) === 1,
+		`matching .chan-conn blocks: ${await propSection.count()}`,
+	);
+	const propRows = propSection.locator(".jev-prop-row");
+	const propIds = await propRows.evaluateAll((rows) => rows.map((row) => row.dataset.propId));
+	check(
+		"every proposition gets its own row (id + two number inputs + clear)",
+		propIds.join(",") === JEV_PROPOSITIONS.map((p) => p.id).join(",") &&
+			(await propRows.first().locator('input[type="number"]').count()) === 2 &&
+			has(await propRows.first().innerText(), "Clear"),
+		propIds.join(" | "),
+	);
+	const propHint = norm(await propSection.innerText());
+	check(
+		"the section says why per-proposition thresholds are needed and what the blank band means",
+		has(propHint, "scope≈0.4 / api≈0.7 / test≈0.8+") &&
+			has(propHint, "take part in the tri-state decision") &&
+			has(propHint, "the gap escalates to a human"),
+		propHint.slice(0, 240),
+	);
+	const scopeRow = propSection.locator('.jev-prop-row[data-prop-id="change_within_task_scope"]');
+	const testRow = propSection.locator('.jev-prop-row[data-prop-id="test_asserts_behavior"]');
+	const rulesRow = propSection.locator('.jev-prop-row[data-prop-id="change_preserves_public_api"]');
+	const scopeInputs = scopeRow.locator('input[type="number"]');
+	const testInputs = testRow.locator('input[type="number"]');
+	const saveButton = panel.locator(".chan-settings-head button", { hasText: "Save config" });
+	// 现状：三项都没有独立阈值 → 一律显示「继承全局」+ 全局值（§9 保存后的 0.95 / 0.1）。
+	check(
+		"without overrides every row reports the global values as inherited",
+		has(await rulesRow.innerText(), "Inherit global") && has(await rulesRow.innerText(), "0.95 / 0.1"),
+		norm(await rulesRow.innerText()),
+	);
+	// 就地校验：放行压到全局拦截阈值以下（留空的一侧按全局补齐）→ 保存禁用且一帧不发。
+	await scopeInputs.nth(0).fill("0.05");
+	const invalidShown = await waitFor(async () => has(await scopeRow.innerText(), "Invalid override"), 3000);
+	const saveDisabled = await saveButton.isDisabled();
+	sent.length = 0;
+	// @GOTCHA 按钮此时是 disabled 的：Playwright 的 click 会一直等它 enabled（跑成超时）。
+	//   这里要证的正好是「点也不发帧」，所以直接派发一个 click 事件（不经过可交互性检查）。
+	await saveButton.dispatchEvent("click");
+	await page.waitForTimeout(200);
+	check(
+		"an override that conflicts with the global fallback is rejected in place (no frame sent)",
+		invalidShown && saveDisabled && sent.filter((m) => m.type === "jev_config_save").length === 0,
+		`warning shown=${invalidShown} · save disabled=${saveDisabled} · frames=${JSON.stringify(sent.map((m) => m.type))}`,
+	);
+	// 两项设成有效独立阈值 → 保存：出站帧里只带这两项（第三项不能出现，否则会盖掉别人的值）。
+	await scopeInputs.nth(0).fill("0.5");
+	await scopeInputs.nth(1).fill("0.1");
+	await testInputs.nth(0).fill("0.7");
+	await testInputs.nth(1).fill("0.2");
+	sent.length = 0;
+	await saveButton.click();
+	await panel
+		.locator(".chan-receipt.ok", { hasText: "Config applied" })
+		.first()
+		.waitFor({ state: "visible", timeout: options.stepTimeout });
+	const propSave = (sent.find((m) => m.type === "jev_config_save")?.config ?? {}).thresholds?.perProposition ?? {};
+	check(
+		"saving sends only the edited propositions (untouched ones are not echoed back)",
+		Object.keys(propSave).sort().join(",") === "change_within_task_scope,test_asserts_behavior" &&
+			propSave.change_within_task_scope?.approveAt === 0.5 &&
+			propSave.change_within_task_scope?.blockAt === 0.1 &&
+			propSave.test_asserts_behavior?.approveAt === 0.7 &&
+			propSave.test_asserts_behavior?.blockAt === 0.2,
+		JSON.stringify(propSave),
+	);
+	// 清除一项 = { id: null }（只删这一项；另一项不在帧里，服务端逐项合并时不会被抹掉）。
+	await testRow.locator("button.set-btn-mini").click();
+	check(
+		"clearing a row empties its inputs (back to inheriting the global values)",
+		(await testInputs.nth(0).inputValue()) === "" && (await testInputs.nth(1).inputValue()) === "",
+		`approve=${JSON.stringify(await testInputs.nth(0).inputValue())} block=${JSON.stringify(await testInputs.nth(1).inputValue())}`,
+	);
+	sent.length = 0;
+	await saveButton.click();
+	await panel
+		.locator(".chan-receipt.ok", { hasText: "Config applied" })
+		.first()
+		.waitFor({ state: "visible", timeout: options.stepTimeout });
+	const clearSave = (sent.find((m) => m.type === "jev_config_save")?.config ?? {}).thresholds?.perProposition;
+	check(
+		"clearing sends { id: null } for that proposition only (the other override is not resent)",
+		JSON.stringify(clearSave) === JSON.stringify({ test_asserts_behavior: null }),
+		JSON.stringify(clearSave ?? null),
+	);
+	// 底栏浮层：生效阈值必须是**覆盖值 + 回落全局**（真实服务端保存后不补推 jev_status，点 Reload 才拿得到）。
+	sent.length = 0;
+	await panel.locator(".chan-settings-head button", { hasText: "Reload" }).click();
+	const reloaded = await waitFor(async () => sent.some((m) => m.type === "jev_status"), 5000);
+	await page.locator(".settings-modal .modal-close").click();
+	await page.locator(".settings-modal").waitFor({ state: "hidden", timeout: options.stepTimeout });
+	await jevItem.click();
+	await jevPanel.waitFor({ state: "visible", timeout: options.stepTimeout });
+	const footerText = norm(await jevPanel.innerText());
+	check(
+		"the footer panel shows the effective threshold per proposition (override vs inherited)",
+		reloaded &&
+			has(footerText, "Effective threshold") &&
+			has(footerText, "change_within_task_scope 0.5 / 0.1 Override") &&
+			has(footerText, "test_asserts_behavior 0.95 / 0.1 Inherit global") &&
+			has(footerText, "change_preserves_public_api 0.95 / 0.1 Inherit global"),
+		footerText.slice(-420),
+	);
+	check(
+		"the footer panel shows the reason of the most recent real decision",
+		has(footerText, "Reason (from the most recent real decision response)") && has(footerText, "every check clear"),
+		footerText.slice(-220),
+	);
+	// 恢复现场：关掉浮层、重新打开设置面板的 Jev 分区（给文末截图用）。
+	await page.locator(".status-cwd-backdrop").click({ position: { x: 10, y: 10 } });
+	await waitFor(async () => (await jevPanel.count()) === 0, 3000);
+	await settingsChip.click();
+	await page.locator(".settings-modal").waitFor({ state: "visible", timeout: options.stepTimeout });
 	await page.locator('.settings-rail .settings-tab[data-tab="jev"]').click();
 	await page.locator(".chan-settings .chan-enable input").waitFor({ state: "visible", timeout: options.stepTimeout });
 

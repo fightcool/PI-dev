@@ -701,6 +701,33 @@ describe("Jev 决策门禁：逐判定项阈值", () => {
 		expect(propInputs(container, API)[0].value).toBe("0.45");
 	});
 
+	it("只有保存回执里有独立阈值时也显示它（服务端保存后不补推 jev_status，不能退回旧值）", () => {
+		const { container, sent, rerender } = mount();
+		// 编辑后保存：回执带着刚生效的独立阈值，而 status.config 还是保存前的那份（没有覆盖）。
+		type(propInputs(container, API)[0], "0.45");
+		sent.length = 0;
+		click(byText(container, "保存配置"));
+		const reqId = (sent.find((m) => m.type === "jev_config_save") as ClientSave).reqId;
+		rerender({
+			jev: {
+				...statusOf(), // status 里的 config 仍然没有 perProposition
+				config: {
+					type: "jev_config_result",
+					reqId,
+					ok: true,
+					phase: "applied",
+					config: configWithOverrides({ [API]: { approveAt: 0.45 } }),
+				},
+			},
+		});
+		// 输入框显示回执里的值（不是退回空），清除按钮可用（确实有独立阈值可清）。
+		expect(propInputs(container, API)[0].value).toBe("0.45");
+		expect(propClear(container, API).disabled).toBe(false);
+		expect(propRow(container, API).textContent).toContain("独立阈值");
+		// 而没被覆盖的那一项仍然没得清（不发无意义的删除帧）。
+		expect(propClear(container, AUTH).disabled).toBe(true);
+	});
+
 	it("「重新载入」丢弃本地逐判定项草稿（不只是拉一次状态）", () => {
 		// reqId 与服务端回包对齐，“重新载入”才不会被 busy 禁用（单测里没有真实往返）。
 		const base = statusOf();
