@@ -70,6 +70,25 @@ export function isDriftingModelAlias(model: string): boolean {
 	return /(^|[-/:._])latest$/i.test(model.trim());
 }
 
+/**
+ * 看起来是 Typesafe Jev 模型（`typesafe/jev-1.13`、带日期的快照、或裸 `jev-1.x`）。
+ * @WHY 用于两件事：在「从既有模型中选择」里只列真能用 Decisions API 的条目（Jev 不在
+ *   服务商的对话模型目录里，那个目录里的 366 个 openrouter 模型一个都不是 Jev），
+ *   以及当手填的模型不是 Jev 时给出警告 —— 否则选了对话模型只会在调用时报错。
+ */
+export function isJevModelId(model: string): boolean {
+	return /(^|\/)jev[-.]?\d/i.test(model.trim());
+}
+
+/**
+ * 已知可用的 Jev 模型。
+ * @WHY Jev 是 Decisions API 专用模型，**不**出现在任何服务商的对话模型目录里
+ *   （实测 `models.json` 里 "jev" 零匹配），所以这份清单只能由产品维护，
+ *   不能从 models.json 推出来。下拉里永远至少有它，不会是个空壳。
+ *   带日期的快照（`typesafe/jev-1.13-20260917`）写进输入框即可，不在这里枚举。
+ */
+export const JEV_KNOWN_MODELS: readonly string[] = ["typesafe/jev-1.13"];
+
 export function parseThreshold(raw: string): number | null {
 	const trimmed = raw.trim();
 	if (trimmed === "") return null;
@@ -193,6 +212,9 @@ export function brief(text: string, max = 88): string {
 /* ------------------------------------------------------------------ */
 /* 草稿 ↔ 配置                                                        */
 /* ------------------------------------------------------------------ */
+
+/** Jev 的默认服务商：Decisions API 与 `typesafe/jev-*` 模型都只由 OpenRouter 提供。 */
+export const JEV_DEFAULT_PROVIDER_ID = "openrouter";
 
 /** 表单草稿：阈值用字符串（允许输到一半的 "0." / ""），提交时才解析。 */
 export interface JevDraft {

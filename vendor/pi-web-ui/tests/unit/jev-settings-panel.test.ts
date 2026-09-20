@@ -458,14 +458,29 @@ describe("Jev 决策门禁分区（设置面板）", () => {
 		expect(container.querySelector("pre")?.textContent).toContain('"outcome": "block"');
 	});
 
-	it("服务商还没存密钥时：仍能选到已注册的服务商，并给出「先建密钥」的一步", () => {
-		const { container } = mount({
+	it("服务商还没存密钥时：能选到已注册的服务商，并就地给出建密钥的一步（不把人推去别的面板）", () => {
+		const { container, sent } = mount({
 			providerKeys: {},
 			providers: [{ id: "openrouter", name: "OpenRouter", configured: false }],
 		});
 		const providerSelect = container.querySelector("select") as HTMLSelectElement;
 		expect([...providerSelect.options].map((o) => o.value)).toContain("openrouter");
-		expect(textOf(container)).toContain("请先在「内置服务商与密钥」里为它创建密钥");
+		// OpenRouter 排第一（否则要在 46 项里找它）
+		expect([...providerSelect.options][1].value).toBe("openrouter");
+		// 就地建密钥：名 + 值两个输入 + 新建按钮，且值框是 password
+		const pw = container.querySelector('.jev-newkey input[type="password"]') as HTMLInputElement;
+		expect(pw).not.toBeNull();
+		expect(textOf(container)).toContain("就在下面新建一把");
+		// 填完点创建 → 走既有 add_provider_key（同一份密钥库，不新增事实源）
+		const nameInput = container.querySelector('.jev-newkey input:not([type="password"])') as HTMLInputElement;
+		type(nameInput, "jev");
+		type(pw, "SYNTHETIC-NOT-A-REAL-KEY");
+		click(byText(container, "新建密钥"));
+		const add = sent.find((m) => m.type === "add_provider_key") as { provider: string; name?: string } | undefined;
+		expect(add?.provider).toBe("openrouter");
+		expect(add?.name).toBe("jev");
+		// 发完立刻清空值框：界面不再持有密钥正文
+		expect((container.querySelector('.jev-newkey input[type="password"]') as HTMLInputElement).value).toBe("");
 	});
 
 	it("保存生效后表单回到服务端权威值（草稿不一直是本地副本）", () => {

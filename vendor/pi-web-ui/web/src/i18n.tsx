@@ -1163,7 +1163,8 @@ export const zh = {
 	diagnosticsDownload: "下载 JSON",
 	diagnosticsUnavailable: "诊断不可用",
 	diagnosticsSummary: "提交 {commit} · 协议 v{protocol} · 引擎 {engine} · {units}",
-	diagnosticsPrivacy: "诊断包只含元数据（版本/路径/单位状态/资源与用量汇总量）；不含密钥值、会话内容、提示词或日志正文。",
+	diagnosticsPrivacy:
+		"诊断包只含元数据（版本/路径/单位状态/资源与用量汇总量）；不含密钥值、会话内容、提示词或日志正文。",
 	diagnosticsAlertsOn: "资源告警：已开启",
 	diagnosticsAlertsOff: "资源告警：已关闭",
 	channelUnknownTip: "该渠道当前不在渠道列表中（可能已删除／改名）；按记录的原渠道 id 展示，不猜测名称",
@@ -1257,7 +1258,8 @@ export const zh = {
 	channelModelsUnknown: "（不在当前模型列表中）",
 	channelModelsHint: "勾选后该渠道只出现选中的模型；一个都不勾 = 不限。按服务商内部 id 保存（如 deepseek-flash）。",
 	channelModelsFetch: "获取接口清单",
-	channelModelsFetchTip: "按该服务商的 baseUrl 请求 /models，把接口返回的模型并入下方候选（服务端请求，密钥不出服务端）",
+	channelModelsFetchTip:
+		"按该服务商的 baseUrl 请求 /models，把接口返回的模型并入下方候选（服务端请求，密钥不出服务端）",
 	channelModelsFetching: "获取中…",
 	channelModelsFetched: "已从 {baseUrl} 获取 {n} 个模型",
 	channelModelsFetchFailed: "获取失败：{msg}",
@@ -1288,9 +1290,12 @@ export const zh = {
 	channelAccountPresetPh: "选预设一键填充",
 	channelAccountJsonLabel: "配置模板（JSON）",
 	channelAccountJsonError: "JSON 格式有误：{err}",
-	channelAccountGatewayNote: "内置探测适配器：只用渠道那把 API key 自动探账单/额度接口，文本框留空就行（想固定单位或充值链接才需要填 unit / topupUrl）。",
-	channelAccountPlaceholders: "粘贴或选择预设后修改即可。占位符用单花括号 {baseUrl} / {apiKey}（不是双花括号）；map 的值是 JSON 路径，支持 a.b[0].c 与 x ?? y 回退链；map.extra 里可以用 ${path} 插值。",
-	channelAccountTemplateHint: "预设只是初始 JSON，选完还能接着改。账户查询只用于余额/配额（有界超时、限频、失败保留上次结果）；先保存，再用行内「查询账户」验证。",
+	channelAccountGatewayNote:
+		"内置探测适配器：只用渠道那把 API key 自动探账单/额度接口，文本框留空就行（想固定单位或充值链接才需要填 unit / topupUrl）。",
+	channelAccountPlaceholders:
+		"粘贴或选择预设后修改即可。占位符用单花括号 {baseUrl} / {apiKey}（不是双花括号）；map 的值是 JSON 路径，支持 a.b[0].c 与 x ?? y 回退链；map.extra 里可以用 ${path} 插值。",
+	channelAccountTemplateHint:
+		"预设只是初始 JSON，选完还能接着改。账户查询只用于余额/配额（有界超时、限频、失败保留上次结果）；先保存，再用行内「查询账户」验证。",
 	channelAccountUrlRequired: "JSON 模板必须给出 request.url（接口地址）",
 	channelTemplateOverwrite: "保存会用这份 JSON 整体覆盖该渠道已存的账户查询配置。",
 	// 渠道：命令回执与按渠道用量
@@ -1305,7 +1310,8 @@ export const zh = {
 	channelConnTitle: "服务商连接",
 	channelConnModeNew: "新建服务商",
 	channelConnModeExisting: "使用已有服务商",
-	channelConnHint: "Claude 系模型走 anthropic-messages（地址填站点根，不要带 /v1）；GPT/Codex 系走 openai-completions 或 openai-responses（地址通常要带 /v1）。",
+	channelConnHint:
+		"Claude 系模型走 anthropic-messages（地址填站点根，不要带 /v1）；GPT/Codex 系走 openai-completions 或 openai-responses（地址通常要带 /v1）。",
 	channelConnProviderId: "服务商 ID（留空自动生成）",
 	channelConnBaseUrl: "请求地址",
 	channelConnApi: "协议",
@@ -1319,7 +1325,8 @@ export const zh = {
 	channelModelsAdd: "添加",
 	channelModelsAddPh: "手动填模型 ID（如 claude-opus-5）",
 	customManagedInChannels: "在「设置 → 渠道」管理",
-	customAddInChannels: "新建/修改服务商请到「设置 → 渠道 → 新增渠道 → 服务商连接」：那里会把请求地址、协议、密钥与模型一并写入。",
+	customAddInChannels:
+		"新建/修改服务商请到「设置 → 渠道 → 新增渠道 → 服务商连接」：那里会把请求地址、协议、密钥与模型一并写入。",
 	channelAccountModeGateway: "内置网关探测（one-api / new-api，无需填 JSON）",
 	channelAccountUsed: "已用",
 	channelBalanceDerived: "(matched from the current model)",
@@ -1355,14 +1362,24 @@ export const zh = {
 	settingsJevCredentialKeyName: "密钥名称",
 	settingsJevCredentialBound: "当前绑定",
 	settingsJevCredentialNone: "未绑定（跟随该服务商的当前密钥）",
-	settingsJevCredentialMissing:
-		"该服务商还没有密钥：请先在「内置服务商与密钥」里为它创建密钥（例如 openrouter），再回来选择。",
+	settingsJevCredentialMissing: "该服务商还没有密钥：就在下面新建一把（或去「内置服务商与密钥」管理已有的）。",
+	settingsJevUseOpenRouter: "使用 OpenRouter",
+	settingsJevNewKeyName: "密钥名称",
+	settingsJevNewKeyNamePh: "例如 jev",
+	settingsJevNewKeyValue: "API KEY",
+	settingsJevNewKeyValuePh: "粘贴密钥正文",
+	settingsJevNewKeyCreate: "新建密钥",
+	settingsJevNewKeyHint: "正文只上行至服务端、存进既有的密钥库；界面不回显、不入日志。新建后会自动选上。",
 	settingsJevChannelTitle: "调用渠道",
 	settingsJevEndpoint: "端点",
 	settingsJevEndpointPh: "https://openrouter.ai/api/alpha/decisions（默认）",
 	settingsJevModel: "模型",
 	settingsJevModelPh: "typesafe/jev-1.13（默认）",
 	settingsJevModelPick: "从既有模型中选择",
+	settingsJevModelCatalogHint:
+		"Jev 是 Decisions API 专用模型，不在服务商的对话模型目录里（所以下拉里通常没有它）；直接填 typesafe/jev-<版本>。",
+	settingsJevModelNotJevWarn:
+		"该模型看起来不是 Typesafe Jev 模型：Decisions API 只服务 typesafe/jev-*，填对话模型会在调用时报错。",
 	settingsJevModelPinHint: "生产请 pin 版本号：别名（-latest）会随供应商漂移，概率口径跟着变，阈值会失准。",
 	settingsJevModelLatestWarn: "当前用的是 -latest 别名：判定口径可能在你不知道的时候变化，请换成固定版本。",
 	settingsJevThresholdsTitle: "阈值",
@@ -1431,7 +1448,6 @@ export async function loadEnglish(): Promise<void> {
 export function englishReady(): boolean {
 	return enDict !== undefined;
 }
-
 
 /* ------------------------------------------------------------------ */
 /* context + hook                                                      */
