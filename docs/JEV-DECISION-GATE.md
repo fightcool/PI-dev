@@ -18,6 +18,37 @@
 
 > Jev **不在 OpenRouter 的模型目录里**（`GET /api/v1/models` 查不到），所以模型选择器里不会出现它，只能按 id 硬编码调用。`client.models.list()` 会返回 OpenRouter 形状而报错，不要用它列模型。
 
+### 1.1 请求 / 响应形状（2026-09-20 用真实 key 实测）
+
+```jsonc
+// POST https://openrouter.ai/api/alpha/decisions
+// authorization: Bearer <openrouter key>
+{
+  "model": "typesafe/jev-1.13",
+  "state": { "objective": "…", "diff": "…" },   // string | record | array
+  "questions": {                                   // ← record（键 = 命题名），不是数组
+    "is_breaking_change": {
+      "type": "noul",                             // ← 判别字段，必填：noul | choice | score
+      "instructions": "Decide whether …",
+      "criteria": { "true": "Yes: …", "false": "No: …" }
+    }
+  }
+}
+```
+
+```jsonc
+// 200
+{
+  "model": "typesafe/jev-1.13-20260917",          // 实际服务的 pin 版本（审计要记）
+  "answers": { "is_breaking_change": { "type": "noul", "noul": 0.91 } },
+  "usage": { "input_tokens": 563, "output_tokens": 24, "cost": 0.000023646 },
+  "id": "gen-dec-…",
+  "provider": "TypeSafe"
+}
+```
+
+> **为什么写进文档**：这两个形状此前只按官方文档实现，与上游 zod 校验不一致，导致接入后**每次调用都 400**（`questions` 必须是 record；每个问题必须带 `type` 判别字段）。错误正文是唯一线索，所以 `JevGate` 现在会把上游错误正文（有界 300 字符、先抹掉本次密钥）拼进错误文案。
+
 **生产请 pin 版本号**（如 `typesafe/jev-1.13`），不要用 `-latest`：别名会漂移，而阈值是针对特定版本调出来的。响应里的 `model` 字段会回报实际服务的版本（如 `typesafe/jev-1.13-20260917`），审计要记下来。
 
 ---
@@ -129,7 +160,7 @@ p <= 0.1   → 明确为假  → block（自动阻断）
 1. **门禁坏掉 ≠ 通过。** 非 2xx、缺答、概率越界、非 JSON、超时、体积超限，一律记为 `review` 并带明确错误，**绝不降级为 approve**。`JevGate.evaluate` 永不抛出到编码路径。
 2. **密钥只以名字引用。** 正文由 `provider-keys.json`（`model-admin.ts`）独占；门禁只经 `resolveProviderKeyValue(providerId, keyName)` 在内存中取用，**不落盘、不回显、不进事件、不进错误文本**。
 3. **不新增第二份可写事实源。** 密钥归 `provider-keys.json`，模型目录归 `models.json`，用量归 `usage-history.jsonl`；门禁只新增自己的非密钥配置 `jev-settings.json`。
-4. **有界外部 HTTP。** 超时、响应体上限（64KiB）、`redirect: "manual"`（防 Authorization 被带到别的来源）、非 2xx 即失败、单飞去重。
+4. **有界外部 HTTP。** 超时、响应体上限（64KiB）、`redirect: "manual"`（防 Authorization 被带到别的来源）、非 2xx 即失败、单飞去重。错误响应体只在**明确开启**时读取（同样 64KiB 上限），且进文案前先抹掉本次密钥并截断 —— 上游正文是排障线索，不是决策依据。
 5. **审计留痕。** 每次决策记录 `requestId` / `model` / `provider` / 概率 / 阈值命中 / token / cost / 耗时 / 缓存命中。
 
 ---
@@ -208,7 +239,7 @@ npm run test:jev:browser
 
 ## 11. 已知限制 / 后续
 
-- **未做真实联网验收**：请求/响应形状按官方文档与 OpenRouter cookbook 实现，但**尚未用真实 key 跑通过一次成功决策**。首次接入请务必用 `probe` 验证（这是「非黑盒」的设计目的）。
+- **已做真实联网验收（2026-09-20）**：`probe` 实测 200（`is_breaking_change=0.91`，`model=typesafe/jev-1.13-20260917`，requestId/cost 齐全），三条命题并行求值也实测通过。这次验收顺带暴露并修掉了请求形状的 400（见 §1.1）。
 - **`alpha` 接口**：OpenRouter 的 Decisions 路由标注为 alpha，可能变更；所有调用已收敛到 `JevGate` 单一出口，便于切换。
 - **决策缓存已落盘但不是事实源**：`jev-decisions-cache.jsonl` 只存摘要/分数/审计元数据（不存 state、密钥、被审文本），派生可丢；它**不参与**用量与计费统计（计费仍以用量历史为准）。
 - **未做**：把门禁接进 CI 门禁流程（缓存已为它准备好确定性回放的数据基础）、以及按 `state` 做 redact 后再哈希（当前直接对 state canonicalize 后哈希，state 本身不落盘）。

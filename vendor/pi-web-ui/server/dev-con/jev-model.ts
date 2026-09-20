@@ -16,6 +16,10 @@
  *        否则提示注入只要让模型改口就能直接拿到 approve（官方 model-jaggedness 明确指出
  *        Jev 默认不把 state 当敌意输入，所以每个命题的判定标准里都要显式声明这一点）。
  *   @GOTCHA 空 checks 一律 review：`every()` 对空数组恒为真，会把「没有证据」当成放行。
+ *   @BUGFIX 2026-09-20: questions 曾按文档写成**数组** → 真实 Decisions 接口一律 400
+ *            （上游 zod：`expected record, received array`；且每个问题缺 `type` 判别字段会
+ *            报 `Invalid discriminator value. Expected 'noul' | 'choice' | 'score'`）。
+ *            正确形状 = **record**（键=命题名）+ value 带 `type:"noul"`，实测 200。
  *   @MAGIC 阈值/超时/缓存/限频默认值与区间见下方常量；环形事件容量见 jev-gate.ts。
  * ──────────────────────────────────────────────────
  */
@@ -464,26 +468,38 @@ export function propositionById(id: string): JevProposition | null {
 	return JEV_PROPOSITIONS.find((p) => p.id === key) ?? null;
 }
 
-/** 发给 Decisions 接口的 questions 元素（数组形状：name + 判定说明 + 判定标准）。 */
+/**
+ * 发给 Decisions 接口的单个问题（questions **record 的 value**）。
+ * @DEPENDS 上游 `POST /api/alpha/decisions` 用 zod 校验请求体：`questions` 必须是 **record**
+ *   （键 = 命题名），每个 value 是带 `type` 判别字段的联合（noul / choice / score）。
+ *   实测 2026-09-20：传数组 → 400 `expected record, received array`；value 缺 `type` →
+ *   400 `Invalid discriminator value. Expected 'noul' | 'choice' | 'score'`。
+ *   本实现只用 `noul`（是/否概率，**不带 confidence**），故 type 恒为 "noul"。
+ * @GOTCHA 命题名是**键**，不再是 value 里的字段：改名等于改问题身份，必须与 questionNamesOf 对齐。
+ */
 export interface JevQuestionPayload {
-	name: string;
+	type: "noul";
 	instructions: string;
 	criteria: { true: string; false: string };
 }
 
-/** 由命题 id 组装 questions 负载；未知 id 直接跳过（由调用方在更早处拒绝）。 */
-export function buildJevQuestions(ids: readonly string[]): JevQuestionPayload[] {
-	const out: JevQuestionPayload[] = [];
+/** Decisions 请求体的 questions 字段：**对象**（键 = 命题名），不是数组。 */
+export type JevQuestionsPayload = Record<string, JevQuestionPayload>;
+
+/** 由命题 id 组装 questions 负载（record 形状，见 JevQuestionPayload @DEPENDS）；未知 id 跳过（调用方在更早处已拒绝）。 */
+export function buildJevQuestions(ids: readonly string[]): JevQuestionsPayload {
+	const out: JevQuestionsPayload = {};
 	for (const id of ids) {
 		const p = propositionById(id);
-		if (p) out.push({ name: p.id, instructions: p.instructions, criteria: p.criteria });
+		if (p) out[p.id] = { type: "noul", instructions: p.instructions, criteria: p.criteria };
 	}
 	return out;
 }
 
 /**
  * 从 questions 负载里取「必须被回答」的命题名。
- * @CONTRACT 支持数组形状（元素带 name/id）与对象形状（键就是名字）；
+ * @CONTRACT 发往上游的形状是 **record**（键就是名字，见 buildJevQuestions）；
+ *   数组形状只用于**读**（容错旧数据/外部调用方），不代表它可用于出网请求。
  *   缺失/空 → 空数组 = 调用方必须当成失败，绝不能把「没问」当「都通过」。
  */
 export function questionNamesOf(questions: unknown): string[] {

@@ -8,8 +8,10 @@ import {
 	JEV_DEFAULT_ENDPOINT,
 	JEV_DEFAULT_MODEL,
 	JEV_PROPOSITIONS,
+	JEV_PROBE_PROPOSITION_ID,
 	JEV_STATE_NOT_EVIDENCE,
 	aggregateJevStatus,
+	buildJevQuestions,
 	cacheKey,
 	canonicalizeState,
 	decideOutcome,
@@ -231,6 +233,34 @@ describe("JEV_PROPOSITIONS", () => {
 		expect(questionNamesOf({ a: {}, b: {} })).toEqual(["a", "b"]);
 		expect(questionNamesOf(null)).toEqual([]);
 		expect(questionNamesOf([{ nope: 1 }])).toEqual([]);
+	});
+});
+
+describe("buildJevQuestions", () => {
+	// @BUGFIX 2026-09-20：真实 Decisions 接口用 zod 校验请求体，questions 必须是 record
+	// （键=命题名），每个 value 带 `type` 判别字段；数组/缺 type 一律 400（实测）。
+	it("builds the upstream record shape keyed by proposition name", () => {
+		const questions = buildJevQuestions([JEV_PROBE_PROPOSITION_ID]);
+		expect(Array.isArray(questions)).toBe(false);
+		expect(Object.keys(questions)).toEqual([JEV_PROBE_PROPOSITION_ID]);
+		expect(questions[JEV_PROBE_PROPOSITION_ID]).toEqual({
+			type: "noul",
+			instructions: expect.any(String),
+			criteria: { true: expect.any(String), false: expect.any(String) },
+		});
+		// record 的键必须与 questionNamesOf 读到的名字一致，否则缓存匹配与「缺答」判定会错位。
+		expect(questionNamesOf(questions)).toEqual([JEV_PROBE_PROPOSITION_ID]);
+	});
+
+	it("sends the proposition text verbatim and never invents unknown ids", () => {
+		const questions = buildJevQuestions(["is_breaking_change", "nope"]);
+		expect(Object.keys(questions)).toEqual(["is_breaking_change"]);
+		const source = JEV_PROPOSITIONS.find((p) => p.id === "is_breaking_change")!;
+		expect(questions.is_breaking_change).toEqual({
+			type: "noul",
+			instructions: source.instructions,
+			criteria: source.criteria,
+		});
 	});
 });
 

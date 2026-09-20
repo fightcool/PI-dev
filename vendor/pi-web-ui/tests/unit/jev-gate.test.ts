@@ -124,11 +124,13 @@ describe("JevGate.evaluate — happy path", () => {
 		expect(calls[0].init.method).toBe("POST");
 		expect(calls[0].init.redirect).toBe("manual");
 		expect((calls[0].init.headers as Record<string, string>).authorization).toBe(`Bearer ${SYNTHETIC_KEY}`);
-		expect(JSON.parse(String(calls[0].init.body))).toEqual({
-			model: "typesafe/jev-1.13",
-			state: STATE,
-			questions: QUESTIONS,
-		});
+		const sent = JSON.parse(String(calls[0].init.body)) as Record<string, unknown>;
+		expect(sent).toEqual({ model: "typesafe/jev-1.13", state: STATE, questions: QUESTIONS });
+		// @BUGFIX 2026-09-20：真实 Decisions 接口要求 questions 是 **record**（键=命题名），
+		// 每个 value 带 `type` 判别字段。写成数组/缺 type 会被上游 zod 直接 400。
+		expect(Array.isArray(sent.questions)).toBe(false);
+		expect(Object.keys(sent.questions as object)).toEqual([JEV_PROBE_PROPOSITION_ID]);
+		expect((sent.questions as Record<string, unknown>)[JEV_PROBE_PROPOSITION_ID]).toMatchObject({ type: "noul" });
 	});
 
 	it("blocks on a low score instead of approving", async () => {
@@ -232,6 +234,30 @@ describe("JevGate.evaluate — transport failures are normalized (bilingual)", (
 			expect(decision.error).toContain(item.zh);
 			expect(decision.errorEn).toBeTruthy();
 		}
+	});
+
+	it("surfaces the upstream error body (bounded, key-scrubbed) on 4xx", async () => {
+		// 真实上游 400 的正文才是排障唯一线索（实测：zod 校验错误），但不得包含本次密钥。
+		const upstream = {
+			error: { message: "Invalid input: expected record, received array", code: 400 },
+			leaked: SYNTHETIC_KEY,
+		};
+		const { impl } = stubFetch(() => jsonResponse(upstream, 400));
+		const decision = await gate(impl).evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		expect(decision.outcome).toBe("review");
+		expect(decision.error).toContain("expected record, received array");
+		expect(decision.error).not.toContain(SYNTHETIC_KEY);
+		expect(decision.errorEn).toContain("upstream:");
+		// 错误体不是决策依据：不得因此产生分数。
+		expect(decision.checks).toEqual({});
+	});
+
+	it("keeps the status-code message when the error body cannot be read", async () => {
+		const { impl } = stubFetch(() => response("", 400));
+		const decision = await gate(impl).evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		expect(decision.outcome).toBe("review");
+		expect(decision.error).toContain("HTTP 400");
+		expect(decision.error).not.toContain("上游");
 	});
 
 	it("rejects redirects instead of following them", async () => {

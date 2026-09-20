@@ -15,10 +15,13 @@
  *        绝不降级为 approve —— 门禁坏了是「转人工」，不是「放行」。
  *   @GOTCHA 只有「拿到全部命题的 0..1 分数」才算一次有效决策：缺答（answers 里没有该
  *        命题 / type !== "noul"）与越界（非数字或不在 0..1）必须失败，不能补 0、不能猜。
- *   @ASSUME 请求/响应形状按需求给定：请求 `{model, state, questions}`，响应
- *         `answers[name] = {type:"noul", noul: 0..1}`（外加可选的 id/model/provider/usage）。
- *         本仓库无法在离线单测里验证 alpha 接口的真实形状——因此解析器对未知字段容忍、
- *         对缺失字段**一律报错**（宁可不放行，也不猜），UI 的「测试连接」就是验证入口。
+ *   @ASSUME 请求/响应形状已用真实密钥验证（2026-09-20）：请求
+ *         `{model, state, questions}`（questions 是 **record**，value 带 `type:"noul"`），
+ *         响应 `answers[name] = {type:"noul", noul: 0..1}`（外加 id/model/provider/usage）。
+ *         解析器对未知字段容忍、对缺失字段**一律报错**（宁可不放行，也不猜）。
+ *   @BUGFIX 2026-09-20: 首次真实联网即 400（questions 写成数组 + 缺 type 判别字段）；
+ *            fix: buildJevQuestions 已改为 record + type（单一事实源，CLI/Web 共用）。
+ *            同时让失败文案带上游错误正文（否则 alpha 接口的 400 无法排障）。
  *   @COUPLED jev-cache.ts（持久决策缓存：CI 确定性回放的第二级缓存，派生可丢）。
  *   @MAGIC MAX_BODY_BYTES=64KiB（复用 fetchJson 的上限）/ 事件环形缓冲 200 / 缓存上限 200 /
  *         磁盘缓存 8MiB 轮转 + 20_000 条（见 jev-cache.ts）。
@@ -64,6 +67,23 @@ export interface JevGateError {
 	code: string;
 	error: string;
 	errorEn: string;
+}
+
+/** @MAGIC 上游错误正文的展示上限：错误文案只用于排障，不承载完整响应体。 */
+const JEV_ERROR_DETAIL_MAX = 300;
+
+/**
+ * 清洗上游错误正文后拼进错误文案。
+ * @CONTRACT 先抹掉**本次密钥**（上游不该回显密钥，但这是出网文案，不能指望上游）；
+ *   再去掉换行/多余空白并截断到 JEV_ERROR_DETAIL_MAX。
+ * @WHY alpha 接口的 400 只给状态码等于无法排障：实测形状错时，正文（zod 报错）才是唯一线索。
+ */
+function sanitizeUpstreamDetail(detail: string | undefined, apiKey: string): string | undefined {
+	if (!detail) return undefined;
+	let text = apiKey ? detail.split(apiKey).join("***") : detail;
+	text = text.replace(/\s+/g, " ").trim();
+	if (!text) return undefined;
+	return text.length > JEV_ERROR_DETAIL_MAX ? `${text.slice(0, JEV_ERROR_DETAIL_MAX)}…` : text;
 }
 
 export interface JevDecisionAudit {
@@ -365,11 +385,17 @@ export class JevGate {
 					body: JSON.stringify({ model: config.model, state: input.state, questions: input.questions }),
 				},
 				controller.signal,
+				// 错误响应体只用于排障文案（见 sanitizeUpstreamDetail），它**不是**决策依据。
+				{ captureErrorDetail: true },
 			);
 			const elapsedMs = this.now() - startedAt;
 			if (!res.ok) {
 				const failure = this.fetchFailure(res.kind, res.status, config.timeoutMs);
-				return this.finish(this.review(failure), { elapsedMs, cache: "miss" }, {});
+				return this.finish(
+					this.review(this.withUpstreamDetail(failure, sanitizeUpstreamDetail(res.detail, input.apiKey))),
+					{ elapsedMs, cache: "miss" },
+					{},
+				);
 			}
 			const parsed = this.parseAnswers(res.body, names);
 			if ("failure" in parsed) {
@@ -394,6 +420,16 @@ export class JevGate {
 			clearTimeout(timer);
 			input.signal?.removeEventListener("abort", onAbort);
 		}
+	}
+
+	/** 附加上游错误正文（拿不到就原样返回）：只改文案，不改错误种类/三态。 */
+	private withUpstreamDetail(failure: JevGateError, detail: string | undefined): JevGateError {
+		if (!detail) return failure;
+		return {
+			code: failure.code,
+			error: `${failure.error}（上游：${detail}）`,
+			errorEn: `${failure.errorEn} (upstream: ${detail})`,
+		};
 	}
 
 	/** fetchJson 的失败种类 → 双语归一化错误（不转发其账户查询语境的 error 文本）。 */
