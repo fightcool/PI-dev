@@ -24,16 +24,27 @@ CLI、配置缺失、超时、上游失败、意外退出码、损坏回包、�
 
 ## 安装、升级、关闭和卸载
 
-依据 Pi 官方 `docs/extensions.md` 的全局 `extensions/*.ts` 自动发现约定，安装脚本只创建一个入口文件，引用版本化源码的绝对路径，不改 `settings.json`。
+安装是**自包含**的：脚本把扩展本体**复制**到宿主目录，不改 `settings.json`，也不依赖仓库路径。
 
 ```bash
 cd /home/dev/jev-hook
 PI_CODING_AGENT_DIR=/home/dev/.local/share/pi-dev/agent node scripts/install-jev-hook.mjs install
 ```
 
-安装位置是 `/home/dev/.local/share/pi-dev/agent/extensions/jev-gate.ts`，源码仍在上述 checkout；必须保留该目录及两层 `node_modules`。
-用于长期运行时应安装到固定版本 checkout/release，避免 checkout 被切分支或删除。升级时先用旧目录的脚本卸载，再从新版本目录安装。
-脚本拒绝覆盖或删除不同来源的同名入口；相同版本重复安装幂等。
+| 装到哪                              | 内容                                                                                                       |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `<agentDir>/extensions/jev-gate.ts` | 入口 shim，内容固定为 `export { default } from "../hooks/jev-gate/index.ts"`（**相对**路径）               |
+| `<agentDir>/hooks/jev-gate/`        | 扩展本体（`index.ts` / `command.mjs` / `gate.mjs` / `state.mjs`），随 `.managed-by` 标记一起由本安装器管理 |
+
+> **为什么本体在 `hooks/` 而不在 `extensions/`**（`@GOTCHA`，都是实测踩出来的）：
+> ① pi 的全局发现规则有两条 —— `extensions/<文件名>.ts` 与 `extensions/<目录名>/index.ts`。
+> 把本体放进 `extensions/jev-gate/`，它**自己也会被当成一个扩展**发现，于是同一个钩子加载两次
+> （SDK 实测 `extensions.length === 2`）。
+> ② 第一版入口写的是「re-export 指向仓库里的绝对路径」，结果指向了一个**临时 worktree** —— 那个目录一删，
+> 所有会话加载扩展都会报错。现在入口是相对路径 + 本体内联在宿主里，**装完就与仓库位置无关**。
+
+**升级**：`git pull` 后重跑 `install`（会覆盖本体文件；旧版本入口带同一行管理标记，因此能直接升级，不会被当成别人的扩展拒掉）。
+**卸载**：
 
 新启动的 Pi 会话自动加载；**已经运行的会话不会自动热更新**。在 Pi TUI 执行 `/reload`，或在 Web 宿主中重新创建会话运行时，才会加载此入口。
 `--no-extensions`、宿主的资源过滤或扩展禁用配置仍可阻止加载。以会话启动的「Jev 提交钩子已启用」通知为准。
@@ -52,7 +63,7 @@ cd /home/dev/jev-hook
 PI_CODING_AGENT_DIR=/home/dev/.local/share/pi-dev/agent node scripts/install-jev-hook.mjs uninstall
 ```
 
-卸载后 `/reload` 或重建会话运行时。不删配置、缓存、样本或凭据；代码回滚可对本功能提交执行 `git revert <commit>`，应先卸载入口。
+卸载会删掉入口 shim 与 `<agentDir>/hooks/jev-gate/` 本体；之后 `/reload` 或重建会话运行时。不删配置、缓存、样本或凭据；代码回滚可对本功能提交执行 `git revert <commit>`，应先卸载入口。
 
 ## 检查范围与性能
 
