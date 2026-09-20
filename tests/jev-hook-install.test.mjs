@@ -3,40 +3,90 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { DefaultResourceLoader, SettingsManager, ExtensionRunner, SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+  DefaultResourceLoader,
+  SettingsManager,
+  ExtensionRunner,
+  SessionManager,
+} from "@earendil-works/pi-coding-agent";
 
-const installer = fileURLToPath(new URL("../scripts/install-jev-hook.mjs", import.meta.url));
+const installer = fileURLToPath(
+  new URL("../scripts/install-jev-hook.mjs", import.meta.url),
+);
 test("global entry auto-discovers, notifies via UI and uninstalls without touching settings", async (t) => {
   const cwd = mkdtempSync(join(tmpdir(), "jev-install-test-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   const agentDir = join(cwd, "agent");
-  const install = (action) => execFileSync(process.execPath, [installer, action], {
-    env: { ...process.env, PI_CODING_AGENT_DIR: agentDir }, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"],
+  const install = (action) =>
+    execFileSync(process.execPath, [installer, action], {
+      env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  install("install");
+  install("install");
+  const loader = new DefaultResourceLoader({
+    cwd,
+    agentDir,
+    settingsManager: SettingsManager.inMemory(),
+    noSkills: true,
+    noThemes: true,
+    noPromptTemplates: true,
   });
-  install("install"); install("install");
-  const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager: SettingsManager.inMemory(), noSkills: true, noThemes: true, noPromptTemplates: true });
   await loader.reload();
   const loaded = loader.getExtensions();
   assert.deepEqual(loaded.errors, []);
   assert.equal(loaded.extensions.length, 1);
   assert.ok(loaded.extensions[0].handlers.has("tool_call"));
-  const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, cwd, SessionManager.inMemory(cwd), {});
+  const runner = new ExtensionRunner(
+    loaded.extensions,
+    loaded.runtime,
+    cwd,
+    SessionManager.inMemory(cwd),
+    {},
+  );
   const notices = [];
-  runner.setUIContext({ notify: (message, level) => notices.push({ message, level }) }, "rpc");
+  runner.setUIContext(
+    { notify: (message, level) => notices.push({ message, level }) },
+    "rpc",
+  );
   await runner.emit({ type: "session_start", reason: "startup" });
   assert.match(notices[0].message, /Jev 提交钩子已/);
-  assert.equal(await runner.emitToolCall({ type: "tool_call", toolCallId: "no-io", toolName: "bash", input: { command: 'echo "git commit"' } }), undefined);
+  assert.equal(
+    await runner.emitToolCall({
+      type: "tool_call",
+      toolCallId: "no-io",
+      toolName: "bash",
+      input: { command: 'echo "git commit"' },
+    }),
+    undefined,
+  );
   assert.equal(existsSync(join(agentDir, "settings.json")), false);
+  // 兜底 CLI 路径必须随安装落盘（别的项目里提交时靠它找 CLI）。
+  const recorded = JSON.parse(
+    readFileSync(join(agentDir, "hooks/jev-gate/app.json"), "utf8"),
+  );
+  assert.match(recorded.app, /vendor\/pi-web-ui$/);
   install("uninstall");
   assert.equal(existsSync(join(agentDir, "extensions/jev-gate.ts")), false);
   // 本体目录也必须一起消失（自包含安装的代价是卸载要清两份）。
   assert.equal(existsSync(join(agentDir, "hooks/jev-gate")), false);
-  writeFileSync(join(agentDir, "extensions/jev-gate.ts"), "// someone else's extension\n");
+  writeFileSync(
+    join(agentDir, "extensions/jev-gate.ts"),
+    "// someone else's extension\n",
+  );
   assert.throws(() => install("install"));
   assert.throws(() => install("uninstall"));
 });
@@ -58,7 +108,10 @@ test("upgrades the first-generation (absolute-path) shim instead of refusing it"
     stdio: ["pipe", "pipe", "pipe"],
   });
   assert.match(out, /已安装/);
-  assert.match(readFileSync(join(agentDir, "extensions/jev-gate.ts"), "utf8"), /hooks\/jev-gate\/index\.ts/);
+  assert.match(
+    readFileSync(join(agentDir, "extensions/jev-gate.ts"), "utf8"),
+    /hooks\/jev-gate\/index\.ts/,
+  );
 });
 
 test("installed entry is self-contained: no absolute repo/worktree path in the shim or body", (t) => {
