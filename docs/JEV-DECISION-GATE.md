@@ -136,12 +136,12 @@ p <= 0.1   → 明确为假  → block（自动阻断）
 哪些档位会把该拦的放过去。
 
 ```bash
-npm run jev -- tune --corpus tests/jev/corpus.example.jsonl          # 6 条 => 6 次调用（约 $0.0002）
+npm run jev -- tune --corpus tests/jev/corpus.jsonl.example          # 6 条 => 6 次调用（约 $0.0002）
 npm run jev -- tune --corpus <你的语料>.jsonl --repeat 2            # 每条采 2 次，量抖动（自动禁缓存，花费翻倍）
 npm run jev -- tune --corpus <你的语料>.jsonl --from-cache          # 不联网，只回放磁盘缓存里已有分数
 ```
 
-语料是一行一条的 JSONL（`tests/jev/corpus.example.jsonl` 是六个取自本仓真实提交的样品）：
+语料是一行一条的 JSONL（`tests/jev/corpus.jsonl.example` 是六个取自本仓真实提交的样品）：
 
 ```json
 {"id":"jev-e2e-copy-followup","label":"should-pass","propositions":["change_preserves_public_api"],"state":{"objective":"…","diff":"…"}}
@@ -289,7 +289,7 @@ npm run jev -- status
 npm run jev -- probe
 
 # 阀值回放（真实联网，6 条语料约 $0.0002；详见 §4.1）
-npm run jev -- tune --corpus tests/jev/corpus.example.jsonl
+npm run jev -- tune --corpus tests/jev/corpus.jsonl.example
 
 # 真实浏览器验收（设置面板：配置项、余额、运行状态、命题清单、自检、
 # 保存出站帧；含「空闲不重复查询」等回归断言）。先 npm run build。

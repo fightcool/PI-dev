@@ -14,8 +14,6 @@ __pycache__/
 *.local.json
 *.log
 *.jsonl
-# 例外：Jev `tune` 的人工标注语料是**测试夹具**（不是运行数据），必须入库 —— 见 docs/JEV-DECISION-GATE.md §4.1
-!tests/jev/corpus.example.jsonl
 *.sqlite*
 *.db
 *.pem
