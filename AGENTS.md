@@ -104,6 +104,41 @@ SMOKE_JOBS=3 npm run test:smoke
 npm run test:performance
 ```
 
+## 门禁自检（Jev 决策门禁）
+
+**改完代码、`git commit` 之前，必须对本轮 diff 跑一次门禁。** 这是硬性纪律，不是可选建议。
+
+为什么必须写在这里：门禁**不会自己跑** —— 它没有 hook、没有定时器，唯一触发点就是（人或模型）主动调用。
+「跑了几小时一次没调用过」正是这么来的（2026-09-20 实测：除校准脚本外零调用）。详见
+[docs/JEV-DECISION-GATE.md](docs/JEV-DECISION-GATE.md)。
+
+**Agent 会话里**：直接调 `jev_check` 工具，`state` 传本轮改动（`{ objective, diff }`）。
+
+**终端里**（三条命题各问一次）：
+
+```bash
+git diff --cached > /tmp/jev-diff.txt          # 已暂存；未暂存用 git diff origin/HEAD...HEAD
+for p in change_preserves_public_api test_asserts_behavior change_within_task_scope; do
+  npm run jev -- check --proposition "$p" --state-file /tmp/jev-diff.txt
+done
+```
+
+**怎么读结论**：
+
+| 结论 | 该怎么做 |
+| --- | --- |
+| `approve` | 继续提交 |
+| `review`（灰区） | 自己判断；把分数与理由写进提交信息或 PR 说明，别装作没看见 |
+| `block` | **先修，别提交** —— CI 的 `jev-gate` job 会用同一口径在 PR 上再跑一遍，block 会让它变红 |
+
+**边界（别误用）**：
+
+- **它坏掉时返回 `review` + 错误码，绝不等于通过**（没配凭据、超时、上游 400 都落在这里）。
+- 抖动约 ±0.06，不要当精确判决；`test_asserts_behavior` 对「只断言 mock 调用次数」这类弱断言会误放行（已知限制，见文档 §12）。
+- **不要把密钥正文传进 `state`**：门禁本身不落盘密钥，但你也不该把密钥塞进被审文本。
+
+**绕过**：门禁自身故障时才允许临时绕开（用 pi 卡口扩展时设 `JEV_GATE_HOOK=off`），并在 PR 说明里写明原因 —— 不允许因为「结论不好看」而绕过。
+
 ## 测试与质量检查
 
 根据变更范围运行必要检查。常用检查包括：

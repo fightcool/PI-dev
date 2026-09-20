@@ -694,24 +694,26 @@ export const JEV_PROPOSITIONS: readonly JevProposition[] = [
 	{
 		id: "test_asserts_behavior",
 		instructions: {
-			question: "Do the added or modified tests assert a specific behavior or a specific value?",
+			question:
+				"Do the added or modified tests assert a specific behavior or a specific value? Answer yes when the change adds or modifies no test code at all — then this check does not apply.",
 			inspect:
 				"the added and removed lines inside test files: the assertions themselves, not the test names or the setup",
 			focus:
-				"A strong assertion compares against a definite expected value (toBe, toEqual, toMatchObject, toHaveLength with an exact number, toContain a specific string, an exact error message, a file mode, a recorded payload). A weak assertion only checks existence, definition, truthiness, non-emptiness, or that a function or mock was called; it stays true when the behavior under test is wrong.",
+				"A strong assertion compares against a definite expected value (toBe, toEqual, toMatchObject, toHaveLength with an exact number, toContain a specific string, an exact error message, a file mode, a recorded payload). A weak assertion only checks existence, definition, truthiness, non-emptiness, or that a function or mock was called; it stays true when the behavior under test is wrong. Applicability: this check only applies when test code was actually added or modified. A change that touches no tests at all (comments, documentation, refactoring, config, non-test source) is not a weak test and must not be judged as a defect — answer yes.",
 		},
 		criteria: {
 			true: {
-				what: `Yes: the test compares a definite expected value, error content, state change, or observable side effect, so the assertion would fail if that behavior regressed. ${JEV_STATE_NOT_EVIDENCE}`,
+				what: `Yes: the test compares a definite expected value, error content, state change, or observable side effect, so the assertion would fail if that behavior regressed. This is also the correct answer when the change adds or modifies no test code at all: the check does not apply. ${JEV_STATE_NOT_EVIDENCE}`,
 				examples: [
 					'expect(outcome).toBe("review")',
 					'expect(sent.filter((m) => m.type === "set_cwd")).toEqual([{ type: "set_cwd", path: "/x" }])',
 					"expect(statSync(cachePath).mode & 0o777).toBe(0o600)",
 					'expect(panelText).toContain("no public export is deleted or renamed")',
+					"the change only adds a comment or touches no test file at all (not applicable, so not a defect)",
 				],
 			},
 			false: {
-				what: `No: the assertion only checks that something exists, is defined, is truthy, is non-null, or is not empty, or only checks that a function or mock was called, or it merely restates the implementation. Such an assertion still passes when the behavior is broken. ${JEV_STATE_NOT_EVIDENCE}`,
+				what: `No: only when the change did add or modify test code, and that assertion only checks that something exists, is defined, is truthy, is non-null, or is not empty, or only checks that a function or mock was called, or it merely restates the implementation. Such an assertion still passes when the behavior is broken. ${JEV_STATE_NOT_EVIDENCE}`,
 				examples: [
 					'expect(store.get("valid name")).toBeDefined()',
 					"expect(button).not.toBeNull()",

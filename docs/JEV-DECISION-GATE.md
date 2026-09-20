@@ -91,6 +91,39 @@ jev_check({ state: { objective: "…", diff: "…" }, propositions?: ["…"], us
 - 只问语义判断（API 兼容 / 测试是否真断言 / 是否在任务范围内）；计数、日期先后、算术一律不要问它（§6）；`state` 只放与该命题相关的字段；
 - 每次真实判定后服务端会**主动推**一份 `jev_status`（`reqId: 0`），状态栏与设置面板因此能实时看到刚发生的那次决策。
 
+> **2026-09-20 实测的教训**：工具上线几小时后，真实调用数是 **0** —— 门禁不是 hook、没有定时器，
+> 没人（或没有模型）主动调它，它就永远是 0。所以又补了两层**机制**（不是纪律）：CI 卡口（本节下一小节）
+> 与 pi 卡口扩展；并在 `AGENTS.md` 里写死「改完代码、提交前必须跑一次」。
+
+### 2.2 PR 卡口：CI 上的 `jev-gate` job
+
+`.github/workflows/jev-gate.yml`：每个 PR 用它**自己的 diff** 真的问一遍门禁。
+
+| 项 | 做法 |
+| --- | --- |
+| 被审内容 | PR 的三点 diff（`base...HEAD`，即相对 merge-base 的改动，上限 60000 字符，超了截断并注明）+ PR 标题作为 `objective` |
+| 判定 | `npm run jev -- check --state-file <state> --json`（不给 `--proposition` = 问全部判定项） |
+| 门槛 | **只有 `block` 让它变红**；`review`（灰区）只打 warning 注解（依据：50 条真实语料实测里「转人工」不是错误，§4.4） |
+| 输出 | 分数表 + 生效阈值 + 理由 + 审计（model/cache/requestId）写进 job 日志与 `$GITHUB_STEP_SUMMARY` |
+| 凭据 | 仓库里**没有密钥**（`config/jev-settings.ci.json` 的 `credentialRef` 只有名字）；CI 从 secret `JEV_OPENROUTER_KEY` 读进内存 → 写临时 agentDir（**0600**）→ 跑完即删 |
+| 没配凭据 | **明确跳过并打 warning（跳过 ≠ 通过）**；fork PR 天然拿不到 secret，走同一条路 |
+| 出错 | CLI 非预期退出 / 上游 401 / 解析失败 → **job 变红**并写明「这不是通过」（门禁坏了不许伪装成门禁过了） |
+| 冻结配置 | `config/jev-settings.ci.json`：端点/模型/全局 0.9+0.1 与逐判定项阈值（api 0.7/0.15、test 0.95/0.15、scope 0.5/0.1）—— **改它等于改 PR 卡口的口径** |
+
+本地复现（不想开 PR 就想看结论）：
+
+```bash
+node scripts/ci/jev-gate-pr.mjs origin/feat/isolated-dev-environment        # 无密钥 → 跳过
+JEV_OPENROUTER_KEY=... node scripts/ci/jev-gate-pr.mjs origin/feat/isolated-dev-environment
+node --test tests/jev-gate-verdict.test.mjs                                # 判定映射的单测
+```
+
+边界（别把它当成万能卡口）：
+
+- **默认不是必过检查**：要在分支保护里把 `jev-gate` 勾成 required 才会真的拦住合并。
+- **只审 PR**：直接 push（仓库约定本来就不允许）、或本地没开 PR 的改动它看不到 —— 那一层交给 pi 卡口扩展与 `AGENTS.md`。
+- **门禁抖动 ±0.06**：卡口只拿 `block`（离阈值最远的那一侧）做红/绿，正是为了不让抖动变成日常摩擦。
+
 ---
 
 ## 3. 配置项
