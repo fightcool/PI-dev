@@ -1206,8 +1206,6 @@ export const en: EnDictionary = {
 	usageScopeRun: "Run",
 	usageScopeSession: "Session",
 	usageCacheRead: "Cache read",
-	usageCacheMiss: "Cache miss",
-	usageAvgCacheHitRate: "Average cache hit rate",
 	usageCacheWrite: "Cache write",
 	usageCost: "Estimated cost",
 	usageCostNote: "Cost is estimated with the price rules in effect at the time; unknown prices are not billed here",

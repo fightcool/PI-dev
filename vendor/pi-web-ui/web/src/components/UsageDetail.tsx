@@ -16,19 +16,11 @@
  * ──────────────────────────────────────────────────
  */
 import { useEffect, useRef } from "react";
-import { cacheMetrics } from "../cache-stats";
-import type { UiChannelInfo, UiState, UiUsageAttribution, UiUsageRecord } from "../types";
+import type { UiChannelInfo, UiState, UiUsageAttribution,
+	UiUsageRecord } from "../types";
 import { useT, type Translate } from "../i18n";
 import type { UsageHistoryMsg, UsageHistoryWindow } from "../use-chat";
-import {
-	accountStateView,
-	BALANCE_REFRESH_MS,
-	balanceTextOf,
-	isAccountQueryFailed,
-	type ChannelAccountView,
-	topupUrlOf,
-	usedTextOf,
-} from "../channel-account";
+import { accountStateView, BALANCE_REFRESH_MS, balanceTextOf, isAccountQueryFailed, type ChannelAccountView, topupUrlOf, usedTextOf } from "../channel-account";
 import { UsageHistory } from "./UsageHistory";
 
 /** 令牌数的人类可读格式（FooterBar 与明细表共用）。 */
@@ -116,8 +108,6 @@ export function UsageDetail({
 	}, [accountChannel]);
 	const request = tokens.request ?? tokens;
 	const run = tokens.run ?? tokens;
-	/** 会话级缓存指标：与底部状态栏同一个 cacheMetrics（单一口径，不另算一套）。 */
-	const sessionCache = cacheMetrics(tokens);
 	const rows = attribution ?? [];
 	const requests = recentRequests ?? [];
 	// A07：没有任何归属记录但会话有用量时，明确说明「这些历史用量没有渠道归属」，
@@ -245,19 +235,6 @@ export function UsageDetail({
 							{t("usageCacheWrite")} <b>{formatTokens(tokens.cacheWrite)}</b>
 						</span>
 					)}
-					{/* 命中率的忠实口径：read / (miss + read + write)，与底部状态栏同一个 cacheMetrics，
-					    不是「各来源百分比的算术平均」（后者会被小样本条目拉偏）。 */}
-					<span>
-						{t("usageCacheMiss")} <b>{formatTokens(sessionCache.miss)}</b>
-					</span>
-					<span className="usage-cache-rate">
-						{t("usageAvgCacheHitRate")}{" "}
-						<b
-							className={`cache-pct ${sessionCache.hitRate >= 0.7 ? "ok" : sessionCache.hitRate >= 0.4 ? "mid" : "warn"}`}
-						>
-							{(sessionCache.hitRate * 100).toFixed(1)}%
-						</b>
-					</span>
 				</div>
 			)}
 			<div className="usage-cost">
@@ -340,9 +317,7 @@ export function UsageDetail({
 					<div className="usage-cost-note">{t("usageCostBasisNote")}</div>
 				</>
 			)}
-			{onQueryUsageHistory && (
-				<UsageHistory history={usageHistory ?? null} channels={channels} onQuery={onQueryUsageHistory} />
-			)}
+			{onQueryUsageHistory && <UsageHistory history={usageHistory ?? null} channels={channels} onQuery={onQueryUsageHistory} />}
 		</div>
 	);
 }

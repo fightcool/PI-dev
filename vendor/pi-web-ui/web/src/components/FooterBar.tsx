@@ -15,7 +15,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import type { UiChannelBinding } from "../types";
-import type { ChatState, UsageHistoryMsg, UsageHistoryWindow } from "../use-chat";
+import type { ChatState , UsageHistoryMsg, UsageHistoryWindow } from "../use-chat";
 import { useT } from "../i18n";
 import { cacheMetrics, estimateStreamTokens, streamRate, trimRateSamples, type RateSample } from "../cache-stats";
 import { UsageDetail, formatTokens } from "./UsageDetail";
@@ -43,14 +43,7 @@ interface FooterBarProps {
  * workspace path — click the path to open a directory picker (browse into
  * folders, go up, create folders, or pick one as the working directory).
  */
-export function FooterBar({
-	chat,
-	send,
-	onQueryUsageHistory,
-	usageOpen: usageOpenProp,
-	onUsageOpenChange,
-	onRetryAccount,
-}: FooterBarProps) {
+export function FooterBar({ chat, send, onQueryUsageHistory, usageOpen: usageOpenProp, onUsageOpenChange, onRetryAccount }: FooterBarProps) {
 	const t = useT();
 	const state = chat.state;
 	const [editing, setEditing] = useState(false);
@@ -84,6 +77,8 @@ export function FooterBar({
 	const s = state.stats;
 
 	const cache = cacheMetrics(s.tokens);
+	const run = s.tokens.run ?? s.tokens;
+	const request = s.tokens.request ?? s.tokens;
 
 	const hitPct = cache.hitRate * 100;
 	const hitClass = cache.totalInput === 0 ? "" : cache.hitRate >= 0.7 ? "ok" : cache.hitRate >= 0.4 ? "mid" : "warn";
@@ -198,18 +193,27 @@ export function FooterBar({
 
 			<button
 				type="button"
-				className={`status-item status-cache status-item-clickable${usageOpen ? " active" : ""}`}
-				title={`${t("usageDetailTip")}\n${t("cacheHitTip", {
+				className={`status-item status-tokens${usageOpen ? " active" : ""}`}
+				title={t("usageDetailTip")}
+				onClick={() => setUsageOpen(!usageOpen)}
+			>
+				{t("tokensShort")} I/O/T {formatTokens(s.tokens.input)} / {formatTokens(s.tokens.output)} /{" "}
+				{formatTokens(s.tokens.total)} · R {formatTokens(request.total)} · Run {formatTokens(run.total)}
+			</button>
+			<span className="status-sep">·</span>
+
+			<span
+				className="status-item status-cache"
+				title={t("cacheHitTip", {
 					read: formatTokens(cache.read),
 					write: formatTokens(cache.write),
 					miss: formatTokens(cache.miss),
 					input: formatTokens(cache.totalInput),
-				})}`}
-				onClick={() => setUsageOpen(!usageOpen)}
+				})}
 			>
 				{t("cacheHit")}
 				<b className={`cache-pct ${hitClass}`}>{hitText}</b>
-			</button>
+			</span>
 			<span className="status-sep">·</span>
 
 			<span className="status-item" title={t("sessionMessages")}>

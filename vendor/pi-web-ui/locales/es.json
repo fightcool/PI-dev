@@ -1032,8 +1032,6 @@
 		"usageScopeRun": "Ejecución",
 		"usageScopeSession": "Sesión",
 		"usageCacheRead": "Lectura de caché",
-		"usageCacheMiss": "Cache miss",
-		"usageAvgCacheHitRate": "Average cache hit rate",
 		"usageCacheWrite": "Escritura de caché",
 		"usageCost": "Coste estimado",
 		"usageCostNote": "El coste se estima con las reglas de precio vigentes en ese momento; los precios desconocidos no se facturan",
