@@ -2773,7 +2773,8 @@ body.lp-resizing .lp-sash.dragging::after {
 	white-space: nowrap;
 }
 .jev-prop-field input {
-	width: 72px;
+	/* 宽度要装得下 placeholder「继承全局 / Inherit global」（窄了会被截成 “Inherit g…”）。 */
+	width: 104px;
 	background: var(--bg-elev);
 	border: 1px solid var(--border);
 	border-radius: 6px;
@@ -2787,6 +2788,11 @@ body.lp-resizing .lp-sash.dragging::after {
 }
 .jev-prop-row .set-btn-mini {
 	margin-left: 0;
+}
+/* 生效阈值一行不折行（折成两行读起来像两个值），让左侧判定语句先让位（它本来就是一行截断）。 */
+.jev-prop-row .chan-meta {
+	white-space: nowrap;
+	flex: none;
 }
 
 /* 浮层里的逐判定项生效阈值（组件 JevFooterItem）：只在真有独立阈值时才渲染。 */
