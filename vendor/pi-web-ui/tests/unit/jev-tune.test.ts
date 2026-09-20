@@ -833,3 +833,22 @@ describe("逐命题建议的渲染", () => {
 		expect(text).not.toContain("config --proposition");
 	});
 });
+
+describe("逐命题建议在没有分数时不编造", () => {
+	it("says there is nothing to override instead of claiming the base fits", () => {
+		const lines: string[] = [];
+		const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+			lines.push(args.map((arg) => String(arg)).join(" "));
+		});
+		try {
+			printTuneReport(buildReport([]));
+		} finally {
+			spy.mockRestore();
+		}
+		const text = lines.join("\n");
+		expect(text).toContain("（没有命题拿到分数：不出覆盖，也不编造窗口）");
+		// 空语料下不能出现「基档已经落在每个命题的可分窗口内」这种没证据的结论。
+		expect(text).not.toContain("基档已经落在每个命题的可分窗口内");
+		expect(text).toContain("这组阈值在语料上的四类统计（逐项生效后）: 正确放行 0");
+	});
+});

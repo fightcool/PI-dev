@@ -359,7 +359,11 @@ export function printTuneReport(report: JevTuneReport): void {
 	console.log(`  基档: 通过 ≥ ${formatScore(scoped.base.approveAt)} 阻断 ≤ ${formatScore(scoped.base.blockAt)}`);
 	const overrideIds = Object.keys(scoped.overrides);
 	if (overrideIds.length === 0) {
-		console.log("  （没有需要覆盖的判定项：基档已经落在每个命题的可分窗口内）");
+		console.log(
+			report.perProposition.length === 0
+				? "  （没有命题拿到分数：不出覆盖，也不编造窗口）"
+				: "  （没有需要覆盖的判定项：基档已经落在每个命题的可分窗口内）",
+		);
 	}
 	for (const id of overrideIds) {
 		const override = scoped.overrides[id]!;
