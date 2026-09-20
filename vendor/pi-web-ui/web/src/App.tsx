@@ -115,6 +115,7 @@ export function App() {
 						resetBalanceFailures(channelId);
 						connection.channelApi.queryChannelAccount(channelId);
 					}}
+					onOpenSettings={() => dialogs.setSettingsOpen(true)}
 				/>
 				<AppDialogs
 					connection={connection}

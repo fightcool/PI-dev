@@ -1477,4 +1477,13 @@ export const en: EnDictionary = {
 	settingsJevModelRequired: "The model id must not be empty (default typesafe/jev-1.13).",
 	settingsJevKeyNameRequired:
 		"A provider is selected but no key name: the server only accepts an explicit key reference — please pick one.",
+
+	/* Footer Jev gate item (components/JevFooterItem.tsx): minimal verdict + click-through panel.
+	   footerJevDetail = the note under "Latest decision" — status.runtime carries no per-proposition
+	   scores, so we show the tri-state counts and point at the settings section (no fabricated 0). */
+	footerJev: "Jev",
+	footerJevTip: "Jev gate: approve {approve} · block {block} · escalate {review} · failed {failed}. Click for details.",
+	footerJevEmpty: "Jev: no decisions",
+	footerJevDetail: "The latest per-proposition scores are in the Jev settings section.",
+	footerJevLastDecision: "Latest decision",
 };

@@ -1261,6 +1261,11 @@
 		"settingsJevCredentialStale": "Ce nom de clé n’existe plus chez le fournisseur (supprimé ou renommé) : les appels échoueront jusqu’à ce que vous en choisissiez un autre.",
 		"settingsJevEndpointInvalid": "Le point de terminaison ne doit pas être vide et doit être une URL https (par défaut https://openrouter.ai/api/alpha/decisions).",
 		"settingsJevModelRequired": "L’id du modèle ne doit pas être vide (par défaut typesafe/jev-1.13).",
-		"settingsJevKeyNameRequired": "Un fournisseur est choisi mais aucune clé : le serveur n’accepte qu’une référence de clé explicite — veuillez en choisir une."
+		"settingsJevKeyNameRequired": "Un fournisseur est choisi mais aucune clé : le serveur n’accepte qu’une référence de clé explicite — veuillez en choisir une.",
+		"footerJev": "Jev",
+		"footerJevTip": "Portail Jev : Autoriser {approve} · Bloquer {block} · Vers un humain {review} · Échecs {failed}. Cliquez pour les détails.",
+		"footerJevEmpty": "Jev : aucune décision",
+		"footerJevDetail": "Les derniers scores par proposition se trouvent dans la section « Portail Jev » des réglages.",
+		"footerJevLastDecision": "Dernière décision"
 	}
 }

@@ -1655,6 +1655,11 @@ wss.on("connection", (ws) => {
 						managed: MANAGED,
 						tabs: TABS ? [...TABS] : undefined,
 					});
+					// DEV-CON Jev：把权威门禁状态推一次（reqId: 0 = 主动推送）。
+					// @WHY 状态栏要能当仪表盘看：不推这一下，用户得先点开设置面板才会拉一次，
+					//   门禁在日常编码里就是黑盒；也不轮询 —— 空闲反复查是既有的回归禁忌。
+					// DSH 引擎没有密钥库（pushJevStatus 只回「不支持」），不推。
+					if (ENGINE === "pi") void cs.pushJevStatus(0);
 					// Open the gate and push the authoritative baseline. Plugin activation used to
 					// gate this (with a 5s fallback), so a slow/hung plugin showed the user an
 					// empty chat pane for seconds; renderer fences arrive later and

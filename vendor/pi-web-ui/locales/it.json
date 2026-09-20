@@ -1261,6 +1261,11 @@
 		"settingsJevCredentialStale": "Questo nome di chiave non esiste più per il provider (eliminato o rinominato): le chiamate falliranno finché non ne scegli un altro.",
 		"settingsJevEndpointInvalid": "L’endpoint non può essere vuoto e deve essere un URL https (predefinito https://openrouter.ai/api/alpha/decisions).",
 		"settingsJevModelRequired": "L’id del modello non può essere vuoto (predefinito typesafe/jev-1.13).",
-		"settingsJevKeyNameRequired": "Provider scelto ma nessun nome di chiave: il server accetta solo un riferimento esplicito — scegline uno."
+		"settingsJevKeyNameRequired": "Provider scelto ma nessun nome di chiave: il server accetta solo un riferimento esplicito — scegline uno.",
+		"footerJev": "Jev",
+		"footerJevTip": "Gate Jev: Consenti {approve} · Blocca {block} · A una persona {review} · Errori {failed}. Clicca per i dettagli.",
+		"footerJevEmpty": "Jev: nessuna decisione",
+		"footerJevDetail": "I punteggi per proposizione più recenti sono nella sezione «Gate Jev» delle impostazioni.",
+		"footerJevLastDecision": "Ultima decisione"
 	}
 }

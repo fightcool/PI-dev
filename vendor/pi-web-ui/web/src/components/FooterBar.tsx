@@ -6,11 +6,15 @@
  *
  * Breadcrumbs (changing this affects):
  *   @COUPLED components/UsageDetail.tsx (令牌项点开的用量/归属面板), use-chat.ts (channelState / state.channelBinding)
+ *   @COUPLED components/JevFooterItem.tsx（缓存命中项之后的 Jev 门禁项：最简结论 + 点开浮层，
+ *            浮层外壳与关闭行为与 UsageDetail 同口径）, jev-footer.ts（最近结论的推断）
  *   @COUPLED components/DirectoryPicker.tsx（工作目录选择器：浏览/新建/选定的唯一实现，
  *            左栏「＋ 新建项目」共用同一组件，行为不允许分叉）
  *   📖 docs/DEV-CON-PROPOSAL.md §6（状态栏：当前渠道/模型 + 用量）, §7（渠道归属）
  *   @CONTRACT 底栏只显示「有效」渠道与待生效标记；待生效不等于已生效，两者必须能同时看到。
  *   @GOTCHA 令牌项是按钮（点开明细），不要再把整行当成纯文本。
+ *   @GOTCHA Jev 项与用量面板都是 <footer> 的 position:fixed 子节点：整块 display:none 会连它们
+ *            一起藏掉（见下面 statusbar 不参与收起的 @WHY）。
  * ──────────────────────────────────────────────────
  */
 import { useEffect, useRef, useState } from "react";
@@ -19,6 +23,7 @@ import type { ChatState, UsageHistoryMsg, UsageHistoryWindow } from "../use-chat
 import { useT } from "../i18n";
 import { cacheMetrics, estimateStreamTokens, streamRate, trimRateSamples, type RateSample } from "../cache-stats";
 import { UsageDetail, formatTokens } from "./UsageDetail";
+import { JevFooterItem } from "./JevFooterItem";
 import { channelAccountView } from "../channel-account";
 import { bindingCoversActiveModel } from "../channel-models";
 import { DirectoryPicker } from "./DirectoryPicker";
@@ -32,6 +37,8 @@ interface FooterBarProps {
 	/** 用量明细面板开合（提到 App 层：输入框工具条的「渠道余额」chip 也会打开它）。 */
 	usageOpen?: boolean;
 	onUsageOpenChange?: (open: boolean) => void;
+	/** 打开设置面板（App 注入 dialogs.setSettingsOpen）；Jev 浮层的「设置」入口用。 */
+	onOpenSettings?: () => void;
 	send: (
 		msg:
 			{ type: "complete_path"; path: string } | { type: "set_cwd"; path: string } | { type: "make_dir"; path: string },
@@ -50,6 +57,7 @@ export function FooterBar({
 	usageOpen: usageOpenProp,
 	onUsageOpenChange,
 	onRetryAccount,
+	onOpenSettings,
 }: FooterBarProps) {
 	const t = useT();
 	const state = chat.state;
@@ -211,6 +219,8 @@ export function FooterBar({
 				<b className={`cache-pct ${hitClass}`}>{hitText}</b>
 			</button>
 			<span className="status-sep">·</span>
+
+			<JevFooterItem status={chat.jev.status} onOpenSettings={onOpenSettings} />
 
 			<span className="status-item" title={t("sessionMessages")}>
 				{t("messages")} {s.totalMessages}

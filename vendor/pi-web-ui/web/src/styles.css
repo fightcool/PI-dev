@@ -2700,6 +2700,33 @@ body.lp-resizing .lp-sash.dragging::after {
 	color: var(--red);
 }
 
+/* 底栏 Jev 门禁项的结论文字：三态上色（口径同 .cache-pct 的 ok/mid/warn）。 */
+.jev-verdict {
+	font-weight: 700;
+}
+.jev-verdict.ok {
+	color: var(--green);
+}
+.jev-verdict.mid {
+	color: var(--amber);
+}
+.jev-verdict.warn {
+	color: var(--red);
+}
+
+/* Jev 浮层：外壳复用 .usage-panel（fixed 定位 + .status-cwd-backdrop 点击关闭），
+   这里只补内容排版；只读配置行复用设置页的 .chan-account-row（不另写一套行样式）。 */
+.jev-panel .jev-verdicts {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+	margin-bottom: 6px;
+	font-variant-numeric: tabular-nums;
+}
+.jev-panel .chan-account-row {
+	margin-top: 6px;
+}
+
 /* 实时生成速率 (tokens/sec) */
 .status-rate {
 	color: var(--accent);

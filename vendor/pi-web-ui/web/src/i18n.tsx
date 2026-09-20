@@ -1430,6 +1430,16 @@ export const zh = {
 	settingsJevEndpointInvalid: "端点不能为空，且必须是 https 地址（默认 https://openrouter.ai/api/alpha/decisions）。",
 	settingsJevModelRequired: "模型 ID 不能为空（默认 typesafe/jev-1.13）。",
 	settingsJevKeyNameRequired: "已选服务商但没选密钥名：服务端只接受明确名称的密钥引用，请补选一个。",
+
+	/* 底栏 Jev 门禁项（components/JevFooterItem.tsx）：最简结论 + 点开浮层。
+	   四态占位符 {approve}/{block}/{review}/{failed} 对应运行态的三态计数与失败数。
+	   footerJevDetail 是浮层「最近结论」下方的说明：status.runtime 不带逐条命题分数，
+	   只报三态计数并把分数指向设置分区；逐条分数以设置面板为准。 */
+	footerJev: "Jev",
+	footerJevTip: "Jev 门禁：放行 {approve} · 拦下 {block} · 转人工 {review} · 失败 {failed}。点击查看详情。",
+	footerJevEmpty: "Jev 无决策",
+	footerJevDetail: "最近一次逐条分数见设置面板",
+	footerJevLastDecision: "最近结论",
 } as const;
 
 /* ------------------------------------------------------------------ */

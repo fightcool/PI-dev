@@ -399,6 +399,108 @@ function makeMarkersListTool(
 }
 
 /**
+ * Jev 门禁工具（`jev_check`）的一次判定结果。
+ * @CONTRACT `unsupported` 非空 = 输入本身不可判（未知命题/空命题），此时没有 decision；
+ *   `decision.error` 非空 = 门禁没拿到有效答案（未配凭据/超时/上游失败…），outcome 必为 review。
+ *   两者都必须**如实上报**，不得当成放行。
+ */
+export interface JevCheckResult {
+	ids: string[];
+	decision?: JevDecision;
+	unsupported?: { error: string; errorEn: string };
+}
+
+/**
+ * DEV-CON：Jev 门禁工具（标准 pi 引擎的 customTool，与 bash/edit 同机制）。
+ *
+ * @WHY 为什么需要它：Jev 不是对话模型（不生成文本、不写代码），它只对**二元命题**给出
+ *   0..1 的置信度，由服务端按阈值定三态。接入后一直只有「设置面板自检」与 CLI 两个入口，
+ *   日常编码路径上没人问它 —— 既拦不住东西，也攒不下真实分数（磁盘缓存长期 0 条，阈值无从校验）。
+ * @CONTRACT 判定完全在服务端（同一 JevGate 出口/阈值/缓存/限频）：本工具只传 state 与命题名，
+ *   **不自己算阈值、不自己下结论**；三态里 approve=放行、block=拦下、review=转人工。
+ *   门禁坏掉（未配凭据/超时/401/429/缺答）一律是 review，**绝不是放行**，工具会明确告知。
+ * @GOTCHA 只问「语义」判断（是否破坏公开 API / 测试是否真断言行为 / 改动是否在任务范围内）。
+ *   计数、日期先后、算术一律不要问它（官方 model-jaggedness）；state 也只放与该命题相关的字段——
+ *   大而杂的 state 是干扰项，会带 context rot。
+ */
+export function makeJevCheckTool(clientSession: {
+	checkJev: (input: { state: unknown; propositions?: string[]; useCache?: boolean }) => Promise<JevCheckResult>;
+}): ToolDefinition {
+	return {
+		name: "jev_check",
+		label: "Jev decision gate",
+		description: [
+			"Ask the Jev decision gate (a System One binary-judgment model — it does NOT generate text or code)",
+			"for calibrated 0..1 confidence on a few propositions, and get back the gate's three-state verdict:",
+			"approve (pass) / block (stop) / review (needs a human). The verdict is computed server-side from",
+			"thresholds you cannot influence — never treat a failed call as a pass.",
+			"Propositions: change_preserves_public_api (does the change keep the public API compatible),",
+			"test_asserts_behavior (do the added/modified tests assert specific behavior or values),",
+			"change_within_task_scope (does every part of the change stay inside the task objective).",
+			"Use it on semantic judgments only (API compatibility, test quality, scope) — never for counting,",
+			"date ordering or arithmetic. Keep `state` small and focused on the proposition: put the task",
+			"objective plus the relevant diff, not the whole repository.",
+		].join(" "),
+		parameters: Type.Object({
+			state: Type.Union(
+				[
+					Type.String({ description: "Material under review (raw text)." }),
+					Type.Object({}, { additionalProperties: true }),
+				],
+				{
+					description:
+						"Material under review: an object such as { objective, diff } or a plain string. Only include what the asked propositions need.",
+				},
+			),
+			propositions: Type.Optional(
+				Type.Array(Type.String(), {
+					description: "Proposition ids to judge (default: all). Unknown ids are rejected with the available list.",
+				}),
+			),
+			useCache: Type.Optional(
+				Type.Boolean({
+					description:
+						"Reuse an identical earlier decision (default true) — the decision is a pure function of model+propositions+state, so identical input should not be paid twice.",
+				}),
+			),
+		}),
+		execute: async (_id: string, params: unknown): Promise<unknown> => {
+			const input = params as { state?: unknown; propositions?: string[]; useCache?: boolean };
+			if (input?.state === undefined || input.state === null) {
+				throw new Error("jev_check requires `state` (the material under review).");
+			}
+			const result = await clientSession.checkJev({
+				state: input.state,
+				propositions: input.propositions,
+				useCache: input.useCache,
+			});
+			if (result.unsupported) {
+				const { error, errorEn } = result.unsupported;
+				return {
+					content: [{ type: "text", text: `${error}\n${errorEn}` }],
+					details: result,
+				} as never;
+			}
+			const decision = result.decision!;
+			const scores =
+				Object.entries(decision.checks)
+					.map(([name, score]) => `${name}=${score}`)
+					.join(", ") || "(no scores)";
+			const lines = [
+				`Jev outcome: ${decision.outcome} (approve=pass, block=stop, review=needs a human)`,
+				`scores: ${scores}`,
+				`reason: ${decision.reasonEn}`,
+				`理由（中文）: ${decision.reason}`,
+			];
+			if (decision.error) {
+				lines.push(`NOTE: this was not a valid decision (treatment: review, never pass). error: ${decision.errorEn}`);
+			}
+			return { content: [{ type: "text", text: lines.join("\n") }], details: result } as never;
+		},
+	} as unknown as ToolDefinition;
+}
+
+/**
  * 标准 pi 引擎的 ask_user_question 工具：模型调用时把问题桥到浏览器（复用 DSH
  * 引擎的 question_pending/question_answer 协议，前端 DshQuestionDialog 富渲染），
  * 阻塞 agent 循环直到用户在浏览器回答或取消。
@@ -1932,6 +2034,9 @@ export class ClientSession {
 					// 的 question_pending/question_answer 协议，前端 DshQuestionDialog）。
 					// DSH 引擎不经此（它走 goal-rpc 的 userQuestions provider）。
 					makeAskUserQuestionTool(this),
+					// DEV-CON Jev 门禁：让编码路径真的能问它（在此之前只有设置面板自检与 CLI，
+					// 既不拦东西也攒不下真实分数，见 makeJevCheckTool 头部 @WHY）。
+					makeJevCheckTool(this),
 				],
 			});
 			// 会话已建好：把阈值数据源接到这个 session 的活模型上（setModel 后读到的就是新窗口）。
@@ -6457,6 +6562,58 @@ export class ClientSession {
 	}
 
 	/**
+	 * 主动推一份门禁状态（reqId: 0 = 无请求来源，见 protocol.ts 的 jev_status @CONTRACT）。
+	 * @WHY 状态栏/面板要能在**决策刚发生**时就看见（否则得手动刷新 = 黑盒）；
+	 *   推而不是轮询：空闲反复查是既有回归禁忌（见 tests/jev/browser-ui.mjs 的「空闲不重复查询」）。
+	 * @CONTRACT 只推聚合与计数（调用数/三态/失败/费用/缓存），不含 state、不含密钥。
+	 */
+	private notifyJevStatus(): void {
+		void this.pushJevStatus(0);
+	}
+
+	/**
+	 * DEV-CON：跑一次真实门禁判定（Agent 工具 `jev_check` 的服务端实现）。
+	 * @CONTRACT 判定完全复用 `JevGate.evaluate`（同一出口、同一阈值、同一缓存、同一限频）；
+	 *   未知命题 / 未配凭据 / 上游失败一律**如实回**（error 非空 = 这次不是有效决策），
+	 *   绝不在工具层把失败降级成放行（同 JevGate 头部 @WHY）。
+	 * @WHY 门禁接入后一直只有「设置面板自检」与 CLI 两个入口，日常编码路径上没人问它：
+	 *   既拦不住东西，也攒不下真实分数（磁盘缓存长期为 0 条）。这是那个缺失的消费者。
+	 */
+	async checkJev(input: { state: unknown; propositions?: string[]; useCache?: boolean }): Promise<JevCheckResult> {
+		const ids =
+			Array.isArray(input.propositions) && input.propositions.length > 0
+				? input.propositions.map((id) => String(id).trim()).filter((id) => id.length > 0)
+				: JEV_PROPOSITIONS.map((p) => p.id);
+		const unknown = ids.filter((id) => !JEV_PROPOSITIONS.some((p) => p.id === id));
+		if (ids.length === 0 || unknown.length > 0) {
+			const available = JEV_PROPOSITIONS.map((p) => p.id).join(", ");
+			return {
+				ids,
+				unsupported: {
+					error:
+						ids.length === 0
+							? `没有要判定的命题（可用：${available}）`
+							: `未知命题：${unknown.join(", ")}（可用：${available}）`,
+					errorEn:
+						ids.length === 0
+							? `No proposition to judge (available: ${available})`
+							: `Unknown propositions: ${unknown.join(", ")} (available: ${available})`,
+				},
+			};
+		}
+		// 未配凭据时传空串：evaluate 会归一成 review + 「未配置可用凭据」，
+		// 比在工具层抛异常更容易让调用方看懂（门禁失败永远转人工）。
+		const decision = await this.jev.evaluate({
+			state: input.state,
+			questions: buildJevQuestions(ids),
+			apiKey: this.resolveJevApiKey() ?? "",
+			useCache: input.useCache !== false,
+		});
+		this.notifyJevStatus();
+		return { ids, decision };
+	}
+
+	/**
 	 * DEV-CON：门禁自检（非黑盒）：用一条内置命题真实打一次 Decisions 接口。
 	 * @CONTRACT ok=true 表示**真的拿到了有效决策**（哪怕结论是 block）；
 	 *   任何失败（未配凭据/超时/401/429/缺答/越界）都 rc ok=false 并把双语错误带回。
@@ -6505,6 +6662,8 @@ export class ClientSession {
 			error: decision.error,
 			errorEn: decision.errorEn,
 		});
+		// 自检也是一次真实决策：把新的聚合推给所有客户端（状态栏据此实时更新）。
+		this.notifyJevStatus();
 	}
 
 	/**
