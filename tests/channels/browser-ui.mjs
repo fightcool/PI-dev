@@ -265,8 +265,7 @@ try {
 
 	// 5) 用量详情展示归属，未归属行诚实标注（P2）。
 	await page.keyboard.press("Escape");
-	// 用量详情的入口现在是「缓存命中」（原「令牌 I/O/T」已移除）。
-	await page.locator(".status-cache, .footer-tokens").first().click().catch(() => undefined);
+	await page.locator(".status-tokens, .footer-tokens").first().click().catch(() => undefined);
 	const attr = page.locator(".usage-attr");
 	await attr.waitFor({ state: "visible", timeout: options.stepTimeout }).catch(() => undefined);
 	if (await attr.count()) {
@@ -274,17 +273,6 @@ try {
 		check("usage detail lists channel attribution", text.includes("渠道 A"), text.split("\n").slice(0, 4).join(" / "));
 		const unattributed = await page.locator(".usage-attr .usage-unattributed").count();
 		check("rows without a channel are labelled unattributed", unattributed === 1, `count=${unattributed}`);
-		// 平均缓存命中率：与底部状态栏同一个 cacheMetrics（同一口径），两处数字必须一致。
-		const footerPct = await page.locator(".status-cache .cache-pct").first().innerText();
-		const panelText = (await page.locator(".usage-panel").first().innerText()).replace(/\n/g, " / ");
-		check(
-			"usage detail shows the average cache hit rate, matching the footer number",
-			panelText.includes("Average cache hit rate") && panelText.includes(footerPct),
-			`footer=${footerPct} · panel has label=${panelText.includes("Average cache hit rate")} · panel: ${panelText.slice(0, 200)}`,
-		);
-		// 复核图：底部状态栏（已去掉「令牌 I/O/T…」）+ 用量详情里的平均缓存命中率。
-		await page.screenshot({ path: "/tmp/footer-usage-detail.png" });
-		console.log("screenshot: /tmp/footer-usage-detail.png");
 	} else {
 		check("usage detail opens from the footer", false, "selector .usage-attr not found");
 	}

@@ -1032,8 +1032,6 @@
 		"usageScopeRun": "Запуск",
 		"usageScopeSession": "Сессия",
 		"usageCacheRead": "Чтение кэша",
-		"usageCacheMiss": "Cache miss",
-		"usageAvgCacheHitRate": "Average cache hit rate",
 		"usageCacheWrite": "Запись кэша",
 		"usageCost": "Оценка затрат",
 		"usageCostNote": "Затраты оценены по действовавшим на тот момент правилам тарификации; неизвестные цены не учитываются",

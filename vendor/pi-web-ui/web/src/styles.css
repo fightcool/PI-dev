@@ -8641,8 +8641,8 @@ button.source-default-toggle {
 		gap: 16px;
 		box-shadow:
 			0 24px 64px rgba(0, 0, 0, 0.55),
-			/* fallback: 半透明/全透明主题没有 --glow-*（缺省时不能让整条 shadow 失效） */ inset 0 1px 0
-				var(--glow-05, transparent);
+			/* fallback: 半透明/全透明主题没有 --glow-*（缺省时不能让整条 shadow 失效） */
+			inset 0 1px 0 var(--glow-05, transparent);
 	}
 	.settings-modal .modal-head {
 		gap: 12px;
@@ -8977,6 +8977,7 @@ button.source-default-toggle {
 		color: var(--accent);
 		border-color: var(--accent);
 	}
+
 }
 
 /* 窄桌面窗口（641–1023px）：横向空间不够，字号回退一档（仍大于移动端），
@@ -9455,8 +9456,8 @@ button.source-default-toggle {
 		border-radius: 16px;
 		box-shadow:
 			0 24px 64px rgba(0, 0, 0, 0.55),
-			/* fallback: 半透明/全透明主题没有 --glow-*（缺省时不能让整条 shadow 失效） */ inset 0 1px 0
-				var(--glow-05, transparent);
+			/* fallback: 半透明/全透明主题没有 --glow-*（缺省时不能让整条 shadow 失效） */
+			inset 0 1px 0 var(--glow-05, transparent);
 	}
 	.model-modal .modal-head {
 		padding: 22px 26px 0;
@@ -11019,8 +11020,7 @@ button.source-default-toggle {
 .status-channel-pending {
 	color: var(--amber);
 }
-/* 可点的状态栏项（目前是「缓存命中」：点开用量详情）。保留状态栏的小字号与内边距。 */
-.status-item-clickable {
+.status-tokens {
 	border: none;
 	background: transparent;
 	font: inherit;
@@ -11029,8 +11029,8 @@ button.source-default-toggle {
 	padding: 1px 4px;
 	border-radius: 4px;
 }
-.status-item-clickable:hover,
-.status-item-clickable.active {
+.status-tokens:hover,
+.status-tokens.active {
 	color: var(--accent);
 	background: var(--bg-elev2);
 }
@@ -11198,10 +11198,6 @@ button.source-default-toggle {
 .usage-cache b,
 .usage-cost b {
 	color: var(--text);
-}
-/* 平均缓存命中率：整行最后一个，与前面几个原始计数拉开一点。 */
-.usage-cache-rate {
-	margin-left: auto;
 }
 .usage-cost-note {
 	font-size: 10.5px;

@@ -1032,8 +1032,6 @@
 		"usageScopeRun": "この実行",
 		"usageScopeSession": "セッション",
 		"usageCacheRead": "キャッシュ読み取り",
-		"usageCacheMiss": "Cache miss",
-		"usageAvgCacheHitRate": "Average cache hit rate",
 		"usageCacheWrite": "キャッシュ書き込み",
 		"usageCost": "推定コスト",
 		"usageCostNote": "コストはその時点の料金ルールによる概算です。不明な価格は課金計算に含めません",

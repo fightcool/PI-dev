@@ -1032,8 +1032,6 @@
 		"usageScopeRun": "이번 실행",
 		"usageScopeSession": "세션",
 		"usageCacheRead": "캐시 읽기",
-		"usageCacheMiss": "Cache miss",
-		"usageAvgCacheHitRate": "Average cache hit rate",
 		"usageCacheWrite": "캐시 쓰기",
 		"usageCost": "예상 비용",
 		"usageCostNote": "비용은 당시 요금 규칙에 따른 추정치예요. 알 수 없는 가격은 비용에 넣지 않아요",
