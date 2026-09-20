@@ -48,7 +48,9 @@ export interface JevReviewStatus {
 export function reviewStatus(
 	entries: readonly JevSampleEntry[],
 	options: { lastAckAt: number | null; now: number; minEntries?: number; maxAgeMs?: number },
+	reviewerId: string,
 ): JevReviewStatus {
+	if (!reviewerId) throw new Error("reviewerId is required");
 	const minEntries = options.minEntries ?? JEV_REVIEW_MIN_ENTRIES;
 	const maxAgeMs = options.maxAgeMs ?? JEV_REVIEW_MAX_AGE_MS;
 	const lastAckAt = options.lastAckAt;

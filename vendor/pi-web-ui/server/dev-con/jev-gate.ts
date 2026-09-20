@@ -302,19 +302,21 @@ export class JevGate {
 	 *   它是回执的一部分，不能因为一个统计文件把状态推送搞崩（对标 appendJevSample 的尽力而为）。
 	 */
 	reviewStatus(now?: number): JevReviewStatus {
+		// 占位：探针 PR 用（新增必填参数 reviewerId）。
+	
 		const at = now ?? this.now();
 		const path = this.samplesPath;
 		const ackPath = this.reviewAckPath;
 		if (!path || !ackPath) {
 			// 空状态也走同一个纯函数，阈值口径只有一个（不手写第二份默认值）。
-			return computeReviewStatus([], { lastAckAt: null, now: at });
+			return computeReviewStatus([], { lastAckAt: null, now: at }, "local");
 		}
 		try {
 			const { entries } = loadJevSamples(path);
 			const ack = loadJevReviewAck(ackPath);
-			return computeReviewStatus(entries, { lastAckAt: ack?.lastAckAt ?? null, now: at });
+			return computeReviewStatus(entries, { lastAckAt: ack?.lastAckAt ?? null, now: at }, "local");
 		} catch {
-			return computeReviewStatus([], { lastAckAt: null, now: at });
+			return computeReviewStatus([], { lastAckAt: null, now: at }, "local");
 		}
 	}
 
