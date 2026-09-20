@@ -10,6 +10,7 @@ PI-dev 是以 Pi 为核心的个人远程开发环境，保留定制 pi-web-ui �
 
 | 路径 | 维护内容 | 不应放入 |
 | --- | --- | --- |
+| `extensions/` | 版本化的 Pi 扩展（Jev 提交钩子见 [JEV-HOOK.md](JEV-HOOK.md)） | 全局 live 配置、凭据或缓存 |
 | `scripts/` | 根安装、构建、开发、诊断及发布入口 | 被应用通过包外路径引用的业务模块 |
 | `vendor/pi-web-ui/` | 保留来源和上游布局的定制 UI 应用 | 根环境的私有配置或其他 Agent 数据 |
 | `vendor/pi-web-ui/lib/usage/` | 用量与策略模块的唯一源码 | 手工维护的构建目录副本 |
