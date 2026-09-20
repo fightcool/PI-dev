@@ -408,7 +408,9 @@ env -u PI_WEB_TOKEN -u PI_WEB_MANAGED node vendor/pi-web-ui/tests/channel-isolat
 
 **顺带修掉的测试替身假象**：`channel-isolation-test.mjs` 的替身模型端点每次复用 `id: "chan"`，而用量记录按响应 id 去重 → 同一对话的第二轮用量永远不落盘（原先被「只看第一轮」的断言掩盖）。改为每次唯一响应 id。
 
-**未做 / 不计入验收**：历史那 1214 条假归属**未改写**（当时确实按旧口径落盘，改写需要单独授权；修复后新记录不再产生）；`DrainHolder`/排空语义与本次无关；真实供应商侧的双标签页人工验证未做（有真实 dist server 的双客户端用例代替）。
+**历史假归属已清理**（2026-09-20 修复上线后，经操作人授权执行）：`scripts/maintenance/reattribute-stale-channel-usage.mjs --apply` 把 **1388 条**「渠道服务商 ≠ 记录服务商」的历史行改成「未归属」（当时按旧口径落盘，确实不是渠道绑定请求；token/费用/时间/模型/providerId 一律不动），备份 `usage-history.jsonl.bak-2026-09-20T09-21-31-627Z`，复核后 0 条不匹配、0 坏行；脚本默认只预演，写盘走「取样 → 读 → 算 → 写临时文件 → 紧贴 rename 前再确认 → 原子替换」+ 3 次重试。
+
+**未做 / 不计入验收**：`channels.json` 里仍有 3 条**测试客户端**留下的白名单外绑定（`real-chain-acceptance::c2`、`real-min2::c3/c4`）——那是本轮 e2e 的 `clientId`，对应对话不会再被激活，所以按「快照构造时对账」的惰性自愈策略一直留着（不影响界面与用量）；真实浏览器双标签页人工验证未做（有真实 dist server 的双客户端用例代替）。
 
 ## 复现方式与本次实测结果
 
