@@ -191,9 +191,7 @@ function propositionWindowLines(analyses: readonly JevTunePropositionAnalysis[])
 			//   代价是落在重叠区的那几条转人工（比误放行安全，比全局阈值的转人工少）。
 			//   只有连这档都不存在时，才该说「改判据」而不是继续调阈值。
 			if (clean) {
-				lines.push(
-					`    → 仍可用：零误放行零误拦档位存在（代价是重叠区转人工；不改判据也能用，只是偏保守）`,
-				);
+				lines.push(`    → 仍可用：零误放行零误拦档位存在（代价是重叠区转人工；不改判据也能用，只是偏保守）`);
 			} else {
 				lines.push("    → 阈值解决不了这条命题：需要改判据（把命题写得更可判）或接受更多转人工");
 			}
@@ -311,17 +309,20 @@ export function printTuneReport(report: JevTuneReport): void {
 	const thresholds = report.current.thresholds;
 	console.log(`\n当前阈值（通过 ≥ ${thresholds.approveAt} / 阻断 ≤ ${thresholds.blockAt} / 其余转人工）`);
 	// 逐判定项独立阈值：不说清楚就会让人拿全局值去解释逐命题的结论（实测数字对不上）。
+	// @WHY 生效值一律问 resolvePropositionThresholds（含「配置自相矛盾 → 回落全局」这条规则）：
+	//   渲染层再拼一份回落逻辑就长出了第二份阈值事实源。
 	const per = thresholds.perProposition;
 	if (per && Object.keys(per).length > 0) {
 		for (const [id, entry] of Object.entries(per)) {
-			const approveAt = entry.approveAt ?? thresholds.approveAt;
-			const blockAt = entry.blockAt ?? thresholds.blockAt;
+			const resolved = resolvePropositionThresholds(id, thresholds);
 			const inherited = [
 				entry.approveAt === undefined ? "放行继承全局" : null,
 				entry.blockAt === undefined ? "拦截继承全局" : null,
 			].filter(Boolean);
+			const note = !resolved.scoped ? "独立配置自相矛盾（阻断 ≥ 放行），已回落全局" : inherited.join("、");
 			console.log(
-				`  · ${id}: 通过 ≥ ${approveAt} / 阻断 ≤ ${blockAt}${inherited.length ? `（${inherited.join("、")}）` : ""}`,
+				`  · ${id}: 通过 ≥ ${formatScore(resolved.approveAt)} / 阻断 ≤ ${formatScore(resolved.blockAt)}` +
+					(note ? `（${note}）` : ""),
 			);
 		}
 	}
@@ -349,6 +350,36 @@ export function printTuneReport(report: JevTuneReport): void {
 				"（改配置：`npm run jev -- config --approve <值> --block <值>`）",
 		);
 	}
+
+	// 逐命题建议：最终交给人的**不是一个数**，而是「基档 + 覆盖」，并且必须给出它自己的四类统计。
+	// @WHY 单看全局档位永远看不出逐项阈值的价值：同一份语料下逐项阈值能把误放行 1 → 0，
+	//   而这只有「按逐项生效」重新统计一遍四类之后才看得出来（退出码也看这一行）。
+	const scoped = report.propositionRecommendation;
+	console.log("\n逐命题建议（全局基档 + 逐项覆盖；阈值解决不了的判定项保持全局值）");
+	console.log(`  基档: 通过 ≥ ${formatScore(scoped.base.approveAt)} 阻断 ≤ ${formatScore(scoped.base.blockAt)}`);
+	const overrideIds = Object.keys(scoped.overrides);
+	if (overrideIds.length === 0) {
+		console.log("  （没有需要覆盖的判定项：基档已经落在每个命题的可分窗口内）");
+	}
+	for (const id of overrideIds) {
+		const override = scoped.overrides[id]!;
+		console.log(`  · ${id}: 通过 ≥ ${formatScore(override.approveAt)} 阻断 ≤ ${formatScore(override.blockAt)}`);
+	}
+	for (const entry of scoped.unresolved) {
+		console.log(`  · ${entry.proposition}: 保持全局值（${entry.reason}）`);
+	}
+	if (overrideIds.length > 0) {
+		console.log(
+			"  写入方式：`npm run jev -- config --proposition <判定项> --approve <值> --block <值>`" +
+				"（逐项清除用 --unset-proposition <判定项>）",
+		);
+	}
+	console.log(
+		`  这组阈值在语料上的四类统计（逐项生效后）: 正确放行 ${scoped.confusion.correctPass}  ` +
+			`正确拦下 ${scoped.confusion.correctBlock}  误放行 ${scoped.confusion.falsePass}  ` +
+			`误拦 ${scoped.confusion.falseBlock}  转人工 ${scoped.confusion.review}（共 ${scoped.confusion.total} 条）` +
+			(scoped.confusion.falsePass > 0 ? "  ⚠ 仍有误放行" : ""),
+	);
 	if (report.current.confusion.flips.length > 0) {
 		console.log("注: 出现翻转说明这些条目的分数离阈值太近 —— 抖动 ~0.08 会把它们从「通过」推到「转人工」。");
 	}

@@ -47,6 +47,7 @@ import {
 	analyzePropositionWindows,
 	confusionAt,
 	parseJevCorpus,
+	recommendPropositionThresholds,
 	suggestThresholds,
 	summarizeScores,
 } from "../server/dev-con/jev-tune.js";
@@ -502,6 +503,13 @@ async function runTune(
 	// 逐命题窗口（加宽网格）：只增不改 —— 全局建议（suggestions/recommended）仍用窄网格。
 	const perProposition = analyzePropositionWindows(scoredItems);
 	const top = suggestions[0];
+	// 落地的建议形态：全局基档（窄网格 top）+ 逐项覆盖，并给出它自己的四类统计。
+	// @WHY 全局档位单独看永远看不出逐项阈值的价值；退出码也看这一组（见文件尾）。
+	const propositionRecommendation = recommendPropositionThresholds(
+		scoredItems,
+		top ?? config.thresholds,
+		perProposition,
+	);
 	const report: JevTuneReport = {
 		corpus,
 		model: config.model,
@@ -514,6 +522,7 @@ async function runTune(
 		summaries,
 		current: { thresholds: config.thresholds, confusion: current },
 		perProposition,
+		propositionRecommendation,
 		recommended: top ? { approveAt: top.approveAt, blockAt: top.blockAt } : null,
 		suggestions,
 		evaluated,
@@ -534,8 +543,9 @@ async function runTune(
 		console.error("没有任何合法候选档位（blockAt 必须小于 approveAt）：检查网格。");
 		return 3;
 	}
-	// 退出码 1 = 连最优档位都存在误放行：需要人看，不能当「阈值没问题」。
-	return top.confusion.falsePass > 0 ? 1 : 0;
+	// 退出码 1 = 要落地的建议（全局基档 + 逐项覆盖，按**逐项阈值生效**）仍存在误放行：需要人看，不能当「阈值没问题」。
+	// @WHY 只看全局档位会把「逐项阈值已经把误放行降到 0」的情况误报成有问题（反之亦然）。
+	return propositionRecommendation.confusion.falsePass > 0 ? 1 : 0;
 }
 
 async function main(): Promise<number> {
