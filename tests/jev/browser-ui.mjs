@@ -34,6 +34,8 @@ const check = (name, ok, extra = "") => {
 
 /** 人工复核用截图（整段 Jev 分区，见文末截图前的说明）。 */
 const SCREENSHOT = "/tmp/jev-settings-panel.png";
+/** 「key 正文到底在哪填」的复核图：内置服务商与密钥面板，openrouter 行的两个输入框。 */
+const KEY_ENTRY_SCREENSHOT = "/tmp/jev-key-entry.png";
 
 /** 归一化空白：innerText 会把相邻 span 拆行，断言按词而不是按行。 */
 const norm = (value) =>
@@ -339,6 +341,29 @@ try {
 		sent.some((m) => m.type === "list_provider_keys") && sent.some((m) => m.type === "list_providers"),
 		JSON.stringify(sent.map((m) => m.type)),
 	);
+	// ---- 「KEY 到底在哪配」的硬证据 ------------------------------------------
+	// Jev 面板本身**不**接收密钥正文（只按名引用，见前面 @CONTRACT）；正文的录入在
+	// 「内置服务商与密钥」里：每个服务商一行 = key 名输入框 + password 正文输入框。
+	// 这两条断言把上手路径钉死，避免以后改版把入口悄悄搬走。
+	const orRow = modelsModal.locator(".provider-row.provider-key-row", { hasText: "openrouter" }).first();
+	const keyValueInput = orRow.locator("input.key-input-value");
+	const keyNameInput = orRow.locator("input.key-input-name");
+	const orRowText = (await orRow.count()) > 0 ? norm(await orRow.innerText()) : "";
+	const valueType = (await keyValueInput.count()) > 0 ? await keyValueInput.getAttribute("type") : null;
+	const nameType = (await keyNameInput.count()) > 0 ? await keyNameInput.getAttribute("type") : null;
+	check(
+		"the built-in provider panel really lets you enter a key for openrouter",
+		orRowText.includes("openrouter") && valueType === "password" && nameType === "text",
+		`row=${JSON.stringify(orRowText.slice(0, 60))} · key-value input type=${JSON.stringify(valueType)} · key-name input type=${JSON.stringify(nameType)}`,
+	);
+	check(
+		"the Jev panel itself accepts no key material (names only, value entered elsewhere)",
+		(await panel.locator('input[type="password"]').count()) === 0,
+		`password inputs in the Jev panel: ${await panel.locator('input[type="password"]').count()}`,
+	);
+	// 复核图：面板打开、openrouter 行的输入框可见（密码框必须是**空**的，不留任何真实凭据）。
+	await modelsModal.screenshot({ path: KEY_ENTRY_SCREENSHOT });
+	console.log(`screenshot: ${KEY_ENTRY_SCREENSHOT}`);
 	await modelsModal.locator(".modal-close").click();
 	await modelsModal.waitFor({ state: "hidden", timeout: options.stepTimeout });
 	const keyReady = await page
