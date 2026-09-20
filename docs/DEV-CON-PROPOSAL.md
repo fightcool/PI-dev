@@ -119,6 +119,17 @@ SDK 的 `ModelRuntime` **只在构造时读一次 `models.json`**，之后仅显
 2. **目录变更广播**：保存/删除服务商后，新目录要推给**所有**已连接会话（各会话先自愈再列），不能只推给发起写入的那个会话。
 3. **`{baseUrl}` 按会话解析**：账户查询必须用**本会话** runtime 回答服务商地址；跨会话共用一个进程级 lookup 会让旧会话借到别人已热加载的地址，用一个 bug 掩盖另一个。
 
+### 绑定与当下模型的对齐（2026-09-20 定）
+
+绑定记的是**选择那一刻**的渠道 + 凭据 + 模型，但模型还有渠道以外的改动入口：`channel_state` 到达前用非渠道模式列表发的 `set_model`、`cycle_model`、项目默认模型恢复、扩展直接换模型。这些路径都不碰绑定，于是对话会出现「绑定 ch-3（uu-api）/ 实际在跑 deepseek」的状态：渠道切换器把旧渠道标成「正在使用」、输入的 `set_model` 之后的用量记在旧渠道名下（实测线上 1214 条这样的假归属，如 `ch-3 ← deepseek/deepseek-flash` 386 条、`ch-cctq ← deepseek/deepseek-flash` 702 条）。
+
+约定：
+
+1. **绑定是否算数看「当下模型」**（`channel-model.ts#bindingCoversModel` / 前端同口径的 `channel-models.ts#bindingCoversActiveModel`）：判定用**服务商 + 渠道白名单**，不是「模型 id 相等」——同一渠道白名单内换模型（`ch-2` 的 `gpt-5.6-sol` ↔ `gpt-6-astra`）绑定依然成立；实际模型未知时一律保留（缺信息不替用户做决定）。
+2. **服务端对账自愈**：每次构造状态快照前对账一次（`ChannelService.reconcileBinding` → `ChannelState.reconcileBindingModel`），不再覆盖当下模型的绑定被**从磁盘清掉**并广播新状态（幂等，无漂移时不写盘）。只“拒用”不够：留着旧绑定会被新对话继承、被当成「已绑定」拦住项目默认模型。
+3. **用量归属只认服务商对得上的绑定**（`Agent.getApiKey(provider)` 里校验）：绑定服务商 ≠ 本次真正要调用的服务商时，请求快照按 null 处理 → 用量记「未归属」，同时渠道凭据也绝不会被借给别的服务商（`credentialFor` 原有校验）。
+4. **界面不替服务端说谎**：切换器的「正在使用」/✓、输入区渠道 chip、状态栏渠道项、渠道余额（`channelAccountView`）都用同一条规则过滤绑定；拒绝后回退到「用实际生效模型反推唯一渠道」（`inferChannelIdByModel`）。
+
 ## 5. 热切换与会话语义
 
 目标：用户在编码界面切换已配置渠道，保留Pi对话、上下文、工作区及工具状态，正常路径不重启Web/PM2。

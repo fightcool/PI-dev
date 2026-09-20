@@ -338,6 +338,33 @@ export function makeBinding(input: {
 	};
 }
 
+/**
+ * 绑定是否仍然描述「这个模型」的请求（§4：模型被渠道以外的路径换掉后绑定就不成立了）。
+ * @WHY 绑定 = 渠道 + 凭据 + 模型集合的一次选择，但模型还有别的改动入口：切换器读取
+ *   channel_state 之前的 `set_model`（非渠道模式列表）、`cycle_model`、项目默认模型、
+ *   扩展直接换模型。这些路径都不会碰绑定，于是对话会出现「绑定 ch-3 / 实际 deepseek」
+ *   的状态：切换器把旧渠道标成「正在使用」，用量记到旧渠道名下（用户看到的「乱」）。
+ * @CONTRACT 判定用「服务商 + 渠道白名单」，不是「模型 id 相等」：同一渠道白名单内换模型
+ *   （ch-2 的 gpt-5.6-sol ↔ gpt-6-astra）绑定依然成立，不该被清掉。
+ * @GOTCHA 实际模型未知（null/undefined）时一律返回 true：缺信息不判负，宁可保留绑定，
+ *   也不要在拿不到模型时把用户显式选的渠道悄悄清掉。
+ */
+export function bindingCoversModel(
+	binding: Pick<ChannelBinding, "channelId" | "modelId">,
+	channel: Pick<ChannelRecord, "providerId" | "models"> | undefined,
+	actualModelRef: string | null | undefined,
+): boolean {
+	if (!actualModelRef) return true;
+	if (!binding.channelId) return false;
+	if (!channel) return false;
+	const slash = actualModelRef.indexOf("/");
+	const provider = slash > 0 ? actualModelRef.slice(0, slash) : "";
+	const modelId = slash > 0 ? actualModelRef.slice(slash + 1) : actualModelRef;
+	if (provider && channel.providerId !== provider) return false;
+	const whitelist = channel.models ?? [];
+	return whitelist.length === 0 || whitelist.includes(modelId);
+}
+
 /** 裁剪持久化绑定：保留最近使用的 N 条。 */
 export function pruneBindings(
 	bindings: Record<string, ChannelBinding>,

@@ -20,6 +20,7 @@ import { useT } from "../i18n";
 import { cacheMetrics, estimateStreamTokens, streamRate, trimRateSamples, type RateSample } from "../cache-stats";
 import { UsageDetail, formatTokens } from "./UsageDetail";
 import { channelAccountView } from "../channel-account";
+import { bindingCoversActiveModel } from "../channel-models";
 import { DirectoryPicker } from "./DirectoryPicker";
 
 interface FooterBarProps {
@@ -106,9 +107,20 @@ export function FooterBar({ chat, send, onQueryUsageHistory, usageOpen: usageOpe
 	});
 
 	// -- DEV-CON 渠道：只显示有效绑定（与待生效标记分开），名字从 channel_state 解析。
+	// 绑定要与**实际在跑的模型**对得上才算生效（同口径见 channel-models.ts 的
+	// bindingCoversActiveModel）：模型被渠道以外的路径换掉后，旧绑定不得继续冒充当前渠道。
 	const channels = chat.channelState?.channels ?? [];
 	const channelBinding = state.channelBinding ?? null;
-	const effectiveBinding = channelBinding?.effective ?? null;
+	const storedBinding = channelBinding?.effective ?? null;
+	const effectiveBinding =
+		storedBinding &&
+		bindingCoversActiveModel(
+			channels.find((c) => c.id === storedBinding.channelId),
+			storedBinding,
+			state.model ? `${state.model.provider}/${state.model.id}` : null,
+		)
+			? storedBinding
+			: null;
 	const pendingBinding = channelBinding?.pending ?? null;
 	const channelName = (sel: UiChannelBinding): string =>
 		channels.find((c) => c.id === sel.channelId)?.displayName ?? sel.channelName ?? sel.channelId;

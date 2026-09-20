@@ -343,6 +343,19 @@ export class ChannelService {
 		});
 	}
 
+	/**
+	 * 自愈：对话现在的模型已经不被绑定覆盖时（渠道以外的路径换了模型，见 state 层
+	 * reconcileBindingModel 的 @WHY）清掉该绑定，并把纠正后的状态广播出去。幂等。
+	 * @CONTRACT 不排队、不发回执：这是状态对账，不是用户命令（用户命令走 clearBinding）。
+	 *   在快照构造过程中调用也安全：内存态已经先改好，后续构造读到的是纠正后的值。
+	 * @return 真的改了返回 true。
+	 */
+	reconcileBinding(conversationId: string, actualModelRef: string | null): boolean {
+		if (!this.state.reconcileBindingModel(conversationId, actualModelRef)) return false;
+		this.pushState();
+		return true;
+	}
+
 	/** 新增/更新渠道档案（见 channel-config.ts；本层只负责串行化）。 */
 	saveChannel(input: SaveChannelInput): Promise<void> {
 		return this.enqueue(() => saveChannelCommand(this.configPort(), input));

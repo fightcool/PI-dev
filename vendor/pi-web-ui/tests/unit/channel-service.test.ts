@@ -21,6 +21,8 @@ function makeHost(dir: string, clientId = "test-client") {
 	const queued = new Set<string>();
 	const messages = new Map<string, number>();
 	const conversations = new Set(["c1", "c2"]);
+	/** 各对话“当下实际在用”的模型（`provider/id`）——绑定是否还成立只看它。 */
+	const modelRefs = new Map<string, string>();
 	const models: Record<string, string> = { "main/m1": "Model 1", "main/m2": "Model 2", "other/x": "X" };
 	const applied: { conversationId: string; modelId: string }[] = [];
 	/** 渠道表单写入服务商的调用记录（验证顺序与 payload）。 */
@@ -75,6 +77,8 @@ function makeHost(dir: string, clientId = "test-client") {
 		isBusy: (id) => busy.has(id),
 		hasQueue: (id) => queued.has(id),
 		conversationHasMessages: (id) => (messages.get(id) ?? 0) > 0,
+		// 缺省 null = 模型未知（绑定一律保留）；测试用 setModelRef 控制。
+		conversationModelRef: (id) => modelRefs.get(id) ?? null,
 		cwd: () => "/proj",
 	};
 	const receipts = () => emitted.filter((m): m is Receipt => m.type === "channel_command_result");
@@ -94,6 +98,7 @@ function makeHost(dir: string, clientId = "test-client") {
 		setBusy: (id: string, value: boolean) => (value ? busy.add(id) : busy.delete(id)),
 		setQueued: (id: string, value: boolean) => (value ? queued.add(id) : queued.delete(id)),
 		setMessages: (id: string, count: number) => messages.set(id, count),
+		setModelRef: (id: string, ref: string | null) => (ref === null ? modelRefs.delete(id) : modelRefs.set(id, ref)),
 	};
 }
 
@@ -452,6 +457,68 @@ describe("channel service — defaults, persistence and requests", () => {
 			bindingRevision: 1,
 		});
 		expect(svc.bindingSnapshotFor("c2")).toBeNull();
+	});
+
+	it("模型被渠道以外的路径换掉后：绑定不再生效、凭据不再借用、对账后清掉并落盘", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
+		await svc.select({ commandId: "a", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m1" } });
+		expect(svc.bindingSnapshotFor("c1")?.channelId).toBe("ch-1");
+
+		// 真实事故：channel_state 还没到就用非渠道模式列表 set_model 换了别的服务商的模型。
+		h.setModelRef("c1", "other/x");
+		expect(svc.bindingSnapshotFor("c1")).toBeNull();
+		expect(svc.bindingViewMessage("c1").effective).toBeNull();
+		// 白名单/服务商不符时连渠道凭据都不该借出去（否则等于绕过渠道配置）。
+		expect(svc.credentialFor("c1", "main")).toBeUndefined();
+		// 对话本身还在，绑定只是在读口上被拒用。
+		expect(svc.hasConversationBinding("c1")).toBe(true);
+
+		// 对账：清掉并落盘；再调一次是幂等的 no-op。
+		expect(svc.reconcileBinding("c1", "other/x")).toBe(true);
+		expect(svc.reconcileBinding("c1", "other/x")).toBe(false);
+		expect(svc.hasConversationBinding("c1")).toBe(false);
+		const persisted = loadCatalog(dir).catalog.bindings ?? {};
+		expect(Object.values(persisted).some((b) => b?.channelId === "ch-1")).toBe(false);
+	});
+
+	it("同一渠道白名单内换模型不算漂移：绑定与凭据都保留", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({
+			commandId: "s",
+			channel: { ...channelDraft("ch-2", "密钥 1"), models: ["m1", "m2"] },
+		});
+		await svc.select({ commandId: "a", conversationId: "c1", selection: { channelId: "ch-2", modelId: "main/m1" } });
+		h.setModelRef("c1", "main/m2");
+		expect(svc.bindingSnapshotFor("c1")?.channelId).toBe("ch-2");
+		expect(svc.credentialFor("c1", "main")).toBe("sk-one");
+		expect(svc.reconcileBinding("c1", "main/m2")).toBe(false);
+	});
+
+	it("模型未知时不判负：绑定保留，对账不写盘", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({ commandId: "s", channel: channelDraft("ch-1", "密钥 1") });
+		await svc.select({ commandId: "a", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m1" } });
+		h.setModelRef("c1", null);
+		expect(svc.bindingViewMessage("c1").effective?.channelId).toBe("ch-1");
+		expect(svc.reconcileBinding("c1", null)).toBe(false);
+	});
+
+	it("白名单挡住的同服务商模型：不借凭据、对账清掉", async () => {
+		const h = makeHost(dir);
+		const svc = new ChannelService(h.host);
+		await svc.saveChannel({
+			commandId: "s",
+			channel: { ...channelDraft("ch-1", "密钥 1"), models: ["m1"] },
+		});
+		await svc.select({ commandId: "a", conversationId: "c1", selection: { channelId: "ch-1", modelId: "main/m1" } });
+		h.setModelRef("c1", "main/m2");
+		expect(svc.credentialFor("c1", "main")).toBeUndefined();
+		expect(svc.reconcileBinding("c1", "main/m2")).toBe(true);
+		expect(svc.hasConversationBinding("c1")).toBe(false);
 	});
 
 	it("never writes key material into channels.json", async () => {
