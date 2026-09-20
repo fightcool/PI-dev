@@ -332,18 +332,18 @@ export interface UiState {
 			cacheRead: number;
 			cacheWrite: number;
 			total: number;
-				/** Tokens consumed by the current request/run. */
-				request?: { input: number; output: number; total: number };
-				run?: { input: number; output: number; total: number };
-			};
-			/** 按来源/渠道/模型归组的累计用量（§7）。缺省 = 未提供归属。 */
-			attribution?: UiUsageAttribution[];
-			/** 本次 run 的标识（服务端生成；用于把晚到事件归回原运行）。 */
-			runId?: string | null;
-			/** 最近若干条逐请求记录（新→旧，有界；含时间与计价依据）。 */
-			recentRequests?: UiUsageRecord[];
-			cost: number;
-			contextUsage: {
+			/** Tokens consumed by the current request/run. */
+			request?: { input: number; output: number; total: number };
+			run?: { input: number; output: number; total: number };
+		};
+		/** 按来源/渠道/模型归组的累计用量（§7）。缺省 = 未提供归属。 */
+		attribution?: UiUsageAttribution[];
+		/** 本次 run 的标识（服务端生成；用于把晚到事件归回原运行）。 */
+		runId?: string | null;
+		/** 最近若干条逐请求记录（新→旧，有界；含时间与计价依据）。 */
+		recentRequests?: UiUsageRecord[];
+		cost: number;
+		contextUsage: {
 			tokens: number | null;
 			contextWindow: number;
 			percent: number | null;
@@ -442,13 +442,43 @@ export interface UiOpsThresholds {
 export interface UiDiagnostics {
 	generatedAt: number;
 	app: { node: string; pid: number; uptimeSec: number; engine: string; protocolVersion: number };
-	release: { commit: string | null; appVersion: string | null; protocolVersion: number | null; builtAt: string | null; source: string | null };
-	instance: { configDir: string; dataDir: string; agentDir: string; workspaceDir: string; host: string | null; port: number | null; profile: string | null };
+	release: {
+		commit: string | null;
+		appVersion: string | null;
+		protocolVersion: number | null;
+		builtAt: string | null;
+		source: string | null;
+	};
+	instance: {
+		configDir: string;
+		dataDir: string;
+		agentDir: string;
+		workspaceDir: string;
+		host: string | null;
+		port: number | null;
+		profile: string | null;
+	};
 	units: { unit: string; active: string; enabled: string }[];
 	resources: UiResourceSnapshot;
 	storage: UiStorageSnapshot;
-	channels: { configRevision: number; count: number; enabledCount: number; bindings: number; pending: number; accounts: number; brokenRefs: number };
-	usage: { windowDays: number; requests: number; totalTokens: number; cost: number; unpricedRequests: number; bySource: Record<string, number>; byChannel: Record<string, number> };
+	channels: {
+		configRevision: number;
+		count: number;
+		enabledCount: number;
+		bindings: number;
+		pending: number;
+		accounts: number;
+		brokenRefs: number;
+	};
+	usage: {
+		windowDays: number;
+		requests: number;
+		totalTokens: number;
+		cost: number;
+		unpricedRequests: number;
+		bySource: Record<string, number>;
+		byChannel: Record<string, number>;
+	};
 	environment: { platform: string; cpuCount: number; totalMemBytes: number };
 	warnings: string[];
 }
@@ -544,10 +574,26 @@ export interface PromptAttachment {
  */
 export type UiJevOutcome = "approve" | "block" | "review";
 
-/** 门禁阈值：全部判定项 >= approveAt 放行；任一 <= blockAt 拦截；其余转人工。 */
+/** 单个判定项的独立阈值（字段缺省 = 回落全局）。 */
+export interface UiJevPropositionThresholds {
+	approveAt?: number;
+	blockAt?: number;
+}
+
+/** 门禁阈值：全部判定项 >= approveAt 放行；任一 <= blockAt 拦截；其余转人工。
+ *  `perProposition`（可选）：按判定项覆盖上面的全局值（键 = UiJevProposition.id）。
+ *  实测三个命题的分数区间整体错开，单一全局阈值不可能同时合适（docs/JEV-DECISION-GATE.md §4.3）。 */
 export interface UiJevThresholds {
 	approveAt: number;
 	blockAt: number;
+	perProposition?: Record<string, UiJevPropositionThresholds>;
+}
+
+/** 保存时的 thresholds 补丁：`null` 表示删除（整块 perProposition 或单个判定项）。 */
+export interface UiJevThresholdsInput {
+	approveAt?: number;
+	blockAt?: number;
+	perProposition?: Record<string, UiJevPropositionThresholds | null> | null;
 }
 
 /**
@@ -568,7 +614,7 @@ export interface UiJevGateConfig {
 
 /** 保存配置的输入：允许只给要改的字段（服务端读-合并-写，不会把未给字段清空）。 */
 export type UiJevGateConfigInput = Partial<Omit<UiJevGateConfig, "thresholds">> & {
-	thresholds?: Partial<UiJevThresholds>;
+	thresholds?: UiJevThresholdsInput;
 };
 
 /** 一次决策事件的审计摘要（不含被审内容、不含密钥）。 */
@@ -1759,7 +1805,7 @@ export type ServerMessage =
 				total: number;
 				request?: { input: number; output: number; total: number };
 				run?: { input: number; output: number; total: number };
-		} | null;
+			} | null;
 			assistantMessageEvent: { type: string; contentIndex?: number; delta?: string };
 	  }
 	/** A tool FINISHED executing (SDK tool_execution_end). Unlike toolResult
@@ -1876,7 +1922,15 @@ export type ServerMessage =
 			accountPresets?: { id: string; label: string; description: string; template: Record<string, unknown> }[];
 	  }
 	/** P4 运维：诊断包（只含元数据）+ 当前告警开关与阈值。 */
-	| { type: "diagnostics"; reqId: number; ok: boolean; error?: string; bundle?: UiDiagnostics; alertsEnabled?: boolean; thresholds?: UiOpsThresholds }
+	| {
+			type: "diagnostics";
+			reqId: number;
+			ok: boolean;
+			error?: string;
+			bundle?: UiDiagnostics;
+			alertsEnabled?: boolean;
+			thresholds?: UiOpsThresholds;
+	  }
 	/** DEV-CON Jev 门禁状态（config 已清洗：只回密钥**名**，绝不回密钥值）。 */
 	| {
 			type: "jev_status";
