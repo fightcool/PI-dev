@@ -74,6 +74,16 @@ describe("redactSecretTokens", () => {
 		expect(text).toBe(src);
 	});
 
+	it("@CONTRACT 误抹长标识符/长 hex 是**刻意的**（宁可误抹，绝不泄漏）", () => {
+		// 代价：diff 里 ≥32 位的连续标识符/哈希会被换成 «redacted»。这是明确接受的取舍 ——
+		// 只丢一个词、diff 结构仍在，比漏一个真密钥便宜得多。
+		const longIdentifier = "shouldPreserveThePublicApiContractForHelpers";
+		const { text, hits } = redactSecretTokens(`+function ${longIdentifier}() {}`);
+		expect(hits).toBe(1);
+		expect(text).not.toContain(longIdentifier);
+		expect(text).toContain("+function «redacted»() {}");
+	});
+
 	it("占位符不误杀（{apiKey} 是模板，不是密钥）", () => {
 		const { hits } = redactSecretTokens('headers: { Authorization: "Bearer {apiKey}" }');
 		expect(hits).toBe(0);
@@ -115,6 +125,17 @@ describe("captureJevSample", () => {
 		expect(entry.propositions).toEqual(["a_prop", "b_prop"]);
 		expect(entry.checks).toEqual({ a_prop: 0.5 });
 		expect(entry.error?.code).toBe("400");
+	});
+
+	it("截断之外的密钥形状不落盘，且不计入 stateRedacted（先截断再抹）", () => {
+		// filler 必须**不含** ≥32 位连续不透明串，否则它自己就被当成密钥抹了（见下一条用例）。
+		const filler = "-line\n".repeat(JEV_SAMPLE_STATE_MAX_CHARS / 6);
+		const entry = captureJevSample({ ...BASE, state: `${filler}\napiKey = "${SYNTHETIC_KEY}"` });
+		// 越界部分压根没入盘：既没正文，也不算「抹过」（stateRedacted 只描述**真正落盘的那段**）。
+		expect(entry.state).toHaveLength(JEV_SAMPLE_STATE_MAX_CHARS);
+		expect(entry.state).not.toContain(SYNTHETIC_KEY);
+		expect(entry.stateRedacted).toBeUndefined();
+		expect(entry.stateChars).toBeGreaterThan(JEV_SAMPLE_STATE_MAX_CHARS);
 	});
 
 	it("来源白名单之外的取值回落 unknown", () => {

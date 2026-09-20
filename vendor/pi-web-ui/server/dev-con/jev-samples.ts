@@ -196,9 +196,11 @@ export function captureJevSample(input: JevSampleInput): JevSampleEntry {
 		};
 	}
 	if (rawState.length > 0) {
-		const { text, hits } = redactSecretTokens(rawState);
+		// @WHY 先截断再抹：截断之外的内容本来就不入盘，先抹等于为马上要丢掉的部分白扫一遍
+		//   （state 是整份 diff，可能上 MB）；而且越界的密钥形状连抹都不必抹 —— 它压根没落盘。
+		const { text, hits } = redactSecretTokens(rawState.slice(0, JEV_SAMPLE_STATE_MAX_CHARS));
 		if (hits > 0) entry.stateRedacted = hits;
-		entry.state = text.slice(0, JEV_SAMPLE_STATE_MAX_CHARS);
+		entry.state = text;
 	}
 	return entry;
 }
