@@ -7,10 +7,9 @@
  * Breadcrumbs (changing this affects):
  *   @COUPLED components/SettingsModal.tsx（挂载为「Jev 决策门禁」分区 + 传 chat.jev）,
  *            components/JevRuntimeView.tsx（运行状态 / 命题 / 余额 / 自检回包展示）,
- *            components/JevReviewSection.tsx（样本留痕的复盘状态 + 导出/ack 命令，与底栏浮层同一份）,
+ *            components/JevReviewSection.tsx（样本留痕的复盘状态 + 导出/ack 命令，与底栏浮层同一份；
+ *             字段是 runtime.reviewStatus —— `runtime.review` 是转人工的**调用条数**，不是它）,
  *            jev-decision.ts（视图模型 + 解码 + 出站消息）,
- *   @COUPLED components/JevReviewSection.tsx（留痕开关下方的复盘状态 + 导出/ack 命令；字段是
- *             runtime.reviewStatus —— `runtime.review` 是转人工的**调用条数**，不是它）,
  *            use-chat.ts（jev_* 回包 → ChatState.jev）,
  *            server/dev-con/jev-*.ts（服务端权威：jev_status / jev_config_save / jev_probe）
  *   @CONTRACT 密钥只按名称引用：下拉来源是既有的 providerKeys（provider-keys.json），本组件
