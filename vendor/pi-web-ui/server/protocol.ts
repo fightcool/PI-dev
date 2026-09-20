@@ -538,6 +538,89 @@ export interface PromptAttachment {
 	size?: number;
 }
 
+/**
+ * Jev 决策门禁（DEV-CON）：把「改动是否可放行」交给外部 Decisions 接口的二元命题打分。
+ * 三态：approve=放行；block=拦截；review=转人工（**门禁失败也走 review**：坏了不等于放行）。
+ */
+export type UiJevOutcome = "approve" | "block" | "review";
+
+/** 门禁阈值：全部判定项 >= approveAt 放行；任一 <= blockAt 拦截；其余转人工。 */
+export interface UiJevThresholds {
+	approveAt: number;
+	blockAt: number;
+}
+
+/**
+ * 门禁配置（回显形状）。
+ * @CONTRACT credentialRef 只含**密钥名引用**（provider-keys.json 里的名字）；
+ *   密钥正文永不进入 wire，也不进入本结构。
+ */
+export interface UiJevGateConfig {
+	enabled: boolean;
+	endpoint: string;
+	model: string;
+	credentialRef: { providerId: string; keyName: string } | null;
+	thresholds: UiJevThresholds;
+	timeoutMs: number;
+	cacheTtlMs: number;
+	minIntervalMs: number;
+}
+
+/** 保存配置的输入：允许只给要改的字段（服务端读-合并-写，不会把未给字段清空）。 */
+export type UiJevGateConfigInput = Partial<Omit<UiJevGateConfig, "thresholds">> & {
+	thresholds?: Partial<UiJevThresholds>;
+};
+
+/** 一次决策事件的审计摘要（不含被审内容、不含密钥）。 */
+export interface UiJevDecisionAudit {
+	requestId?: string;
+	model?: string;
+	provider?: string;
+	cost?: number;
+	inputTokens?: number;
+	outputTokens?: number;
+	elapsedMs: number;
+	/** hit=进程内 TTL 缓存；disk=磁盘持久缓存（跨进程/CI 的确定性回放）；miss=真实调用。 */
+	cache: "hit" | "disk" | "miss";
+}
+
+/** 一次决策结果。error 非空时 outcome 必为 "review"（门禁失败 → 转人工）。 */
+export interface UiJevDecision {
+	outcome: UiJevOutcome;
+	reason: string;
+	reasonEn: string;
+	checks: Record<string, number>;
+	audit: UiJevDecisionAudit;
+	error?: string;
+	errorEn?: string;
+}
+
+/** 运行态聚合（内存态，服务重启归零；不伪造历史）。 */
+export interface UiJevRuntimeStatus {
+	total: number;
+	approve: number;
+	block: number;
+	review: number;
+	/** 未拿到有效答案的调用数（这些事件的 outcome 记 review）。 */
+	failed: number;
+	inputTokens: number;
+	outputTokens: number;
+	cost: number;
+	/** hit 与 disk **合计**的命中数。 */
+	cacheHits: number;
+	/** 其中来自磁盘持久缓存的命中数（服务重启不清零的只有它）。 */
+	diskHits: number;
+	avgElapsedMs: number;
+	lastError: { at: number; code: string; error: string; errorEn: string } | null;
+}
+
+/** 可用命题（只读元数据，供 UI 展示判定标准）。 */
+export interface UiJevProposition {
+	id: string;
+	instructions: string;
+	criteria: { true: string; false: string };
+}
+
 export type ClientMessage =
 	| { type: "hello"; clientId: string; protocolVersion?: number; locale?: string }
 	/** Browser UI language changed (or first report after hello) — server
@@ -780,6 +863,20 @@ export type ClientMessage =
 	  }
 	/** 查询渠道账户余额/配额（有界超时、限频、缓存；不支持时明确报 unsupported）。 */
 	| { type: "channel_query_account"; commandId: string; channelId: string }
+	// -- DEV-CON Jev 决策门禁 -------------------------------------------------
+	/** 只读：门禁状态（清洗后的配置 + 运行聚合 + 可用命题）。reqId 回显在 jev_status 里。 */
+	| { type: "jev_status"; reqId: number }
+	/**
+	 * 写：保存门禁配置（服务端读-合并-写；只接受密钥**名**引用，明文密钥一律拒绝）。
+	 * reqId 回显在 jev_config_result 里。
+	 */
+	| { type: "jev_config_save"; reqId: number; config: UiJevGateConfigInput }
+	/**
+	 * 自检：「测试连接」——用一条内置命题真实打一次 Decisions 接口，验证 key/路由/模型可用。
+	 * state 省略时用内置的合成样本。reqId 回显在 jev_probe_result 里。
+	 * 这是「非黑盒」的关键：UI 一个按钮就能拿到真实回包（或真实错误）。
+	 */
+	| { type: "jev_probe"; reqId: number; state?: Record<string, unknown> }
 	/** P4 候选：请求一次系统资源快照（只读；reqId 回显在 resources 里）。 */
 	| { type: "list_resources"; reqId: number }
 	/** P4 运维：请求一次存储占用明细（只读；有界遍历，reqId 回显在 storage 里）。 */
@@ -1778,6 +1875,31 @@ export type ServerMessage =
 	  }
 	/** P4 运维：诊断包（只含元数据）+ 当前告警开关与阈值。 */
 	| { type: "diagnostics"; reqId: number; ok: boolean; error?: string; bundle?: UiDiagnostics; alertsEnabled?: boolean; thresholds?: UiOpsThresholds }
+	/** DEV-CON Jev 门禁状态（config 已清洗：只回密钥**名**，绝不回密钥值）。 */
+	| {
+			type: "jev_status";
+			reqId: number;
+			ok: boolean;
+			status?: {
+				config: UiJevGateConfig;
+				runtime: UiJevRuntimeStatus;
+				propositions: UiJevProposition[];
+			};
+			error?: string;
+			errorEn?: string;
+	  }
+	/** Jev 门禁配置保存回执（applied=已生效；rejected=校验/写盘失败，原配置保留）。 */
+	| {
+			type: "jev_config_result";
+			reqId: number;
+			ok: boolean;
+			phase: "applied" | "rejected";
+			error?: string;
+			errorEn?: string;
+			config?: UiJevGateConfig;
+	  }
+	/** Jev 自检回执：ok=true 表示真的拿到了有效决策（哪怕结论是 block）。 */
+	| { type: "jev_probe_result"; reqId: number; ok: boolean; decision?: UiJevDecision; error?: string; errorEn?: string }
 	/** P4 运维：存储占用明细 + 保留策略（ok=false 时 storage 为空并带 error）。 */
 	| { type: "storage"; reqId: number; ok: boolean; error?: string; storage?: UiStorageSnapshot }
 	/** P4 候选：系统资源快照（ok=false 时 snapshot 为空并带 error）。 */

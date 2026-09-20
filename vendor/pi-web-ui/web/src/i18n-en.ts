@@ -1367,4 +1367,87 @@ export const en: EnDictionary = {
 		"This channel's gateway account is out of credit. Top up that account or switch to another channel.",
 	channelErrorDetail: "Details",
 	channelErrorDetailHide: "Hide details",
+
+	/* Jev 决策门禁（设置面板分区；服务端 jev_status / jev_config_save / jev_probe）。 */
+	settingsJev: "Jev decision gate",
+	settingsJevDesc:
+		"Ask Jev once before coding: approve / block / escalate to a human. Configure its key reference, endpoint and thresholds here, and see its recent runtime data and self-test result directly.",
+	settingsJevEnable: "Enable the Jev decision gate",
+	settingsJevEnableHint:
+		"When off, Jev is no longer consulted (every request passes straight through); existing statistics are kept.",
+	settingsJevStatusMissing: "No runtime status yet (press Reload to retry)",
+	settingsJevStatusFailed: "Failed to read the runtime status",
+	settingsJevReload: "Reload",
+	settingsJevCredentialTitle: "API KEY (referenced by name)",
+	settingsJevCredentialHint:
+		"Only the key name is stored here: the key itself is resolved on the server, never echoed or sent up by the UI.",
+	settingsJevCredentialProvider: "Provider",
+	settingsJevCredentialKeyName: "Key name",
+	settingsJevCredentialBound: "Currently bound",
+	settingsJevCredentialNone: "Not bound (follows the provider's active key)",
+	settingsJevCredentialMissing:
+		"This provider has no key yet: create one under “Built-in providers & keys” (for example openrouter), then come back to select it.",
+	settingsJevChannelTitle: "Endpoint & model",
+	settingsJevEndpoint: "Endpoint",
+	settingsJevEndpointPh: "https://openrouter.ai/api/alpha/decisions (default)",
+	settingsJevModel: "Model",
+	settingsJevModelPh: "typesafe/jev-1.13 (default)",
+	settingsJevModelPick: "Pick from existing models",
+	settingsJevModelPinHint:
+		"Pin the version in production: aliases (-latest) drift with the vendor, the probability scale changes with them, and your thresholds become wrong.",
+	settingsJevModelLatestWarn:
+		"This is a -latest alias: the decision scale may change without you noticing — switch to a pinned version.",
+	settingsJevThresholdsTitle: "Thresholds",
+	settingsJevApproveAt: "approve threshold (≥ passes through)",
+	settingsJevBlockAt: "block threshold (≤ blocked outright)",
+	settingsJevThresholdsHint:
+		"Jev's output probability for the same input can jitter by ~0.08: the band between the two thresholds is where requests go to a human. Narrowing it around 0.5 makes the same request pass or fail at random — keep the band (e.g. 0.35 / 0.65).",
+	settingsJevThresholdsInvalid:
+		"Invalid thresholds: need 0 ≤ block < approve ≤ 1, with the jitter band left between them.",
+	settingsJevLimitsTitle: "Server limits (read-only)",
+	settingsJevTimeout: "Per-call timeout",
+	settingsJevCacheTtl: "Result cache",
+	settingsJevMinInterval: "Min interval",
+	settingsJevBalanceTitle: "Balance (reuses the channel account query)",
+	settingsJevBalanceNoChannel:
+		"No channel available for the balance query: configure one with an account query for this provider under “Channels”.",
+	settingsJevRuntimeTitle: "Runtime",
+	settingsJevRuntimeEmpty: "No calls recorded yet",
+	settingsJevTotalCalls: "Total calls",
+	settingsJevOutcomeApprove: "Approve",
+	settingsJevOutcomeBlock: "Block",
+	settingsJevOutcomeReview: "Escalate",
+	settingsJevFailures: "Failures",
+	settingsJevCacheHits: "Cache hits",
+	settingsJevAvgElapsed: "Avg. latency",
+	settingsJevLastError: "Last error",
+	settingsJevPropositionsTitle: "Available propositions",
+	settingsJevPropositionsHint:
+		"Each proposition is one thing it can judge; expand to read the instructions and what counts as true/false.",
+	settingsJevPropositionsEmpty: "The server returned no proposition list",
+	settingsJevPropositionInstructions: "Instructions",
+	settingsJevPropositionTrue: "True",
+	settingsJevPropositionFalse: "False",
+	settingsJevProbe: "Test connection",
+	settingsJevProbeRunning: "Testing…",
+	settingsJevProbeHint:
+		"“Test connection” sends one real decision request (it counts in the statistics above): a result means the key, endpoint and model are all fine. You can also test before saving.",
+	settingsJevProbeOk: "Connection OK",
+	settingsJevProbeDecision: "Decision",
+	settingsJevSave: "Save config",
+	settingsJevSaved: "Config applied",
+	settingsJevRejected: "The server rejected this config",
+	settingsJevProbeChecks: "Check scores",
+	settingsJevProbeAudit: "This call",
+	settingsJevCacheMiss: "Cache miss",
+	settingsJevCredentialKeyPlaceholder: "Pick a key name",
+	settingsJevCredentialUnset:
+		"No key bound: the gate cannot call Jev (saving is allowed, but probe and decisions will fail).",
+	settingsJevCredentialStale:
+		"This key name no longer exists for the provider (deleted or renamed): calls will fail until you pick another.",
+	settingsJevEndpointInvalid:
+		"The endpoint must not be empty and must be an https URL (default https://openrouter.ai/api/alpha/decisions).",
+	settingsJevModelRequired: "The model id must not be empty (default typesafe/jev-1.13).",
+	settingsJevKeyNameRequired:
+		"A provider is selected but no key name: the server only accepts an explicit key reference — please pick one.",
 };

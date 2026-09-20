@@ -8,6 +8,7 @@ import {
 	AccountRegistry,
 	accountQueryConfig,
 	deepSeekAdapter,
+	openRouterAdapter,
 	templateAdapter,
 	topupUrlOf,
 	setProviderBaseUrlLookup,
@@ -715,5 +716,91 @@ describe("充值直达链接（用量面板标题右侧）", () => {
 		expect(topupUrlOf(channel("https://openrouter.ai/api/v1", { kind: "openrouter" }))).toBe(
 			"https://openrouter.ai/settings/credits",
 		);
+	});
+});
+
+/*
+ * OpenRouter 余额：普通**推理 key** 只能查 /api/v1/key（该 key 的额度与用量）；
+ * 账户总余额 /api/v1/credits 需要 management key。旧实现只打 /credits，导致普通 key 永远查不到余额。
+ * 下面钉死「/key 优先、/credits 补充」的四种组合，并确认失败不显示为 0。
+ */
+describe("openRouterAdapter 余额查询（/key 优先，/credits 补充）", () => {
+	const signal = () => new AbortController().signal;
+	const orChannel = (base: string) => channel(base, { kind: "openrouter", unit: "USD" });
+
+	it("普通推理 key：/key 返回额度上限时，用 key 级额度与用量", async () => {
+		let seenAuth = "";
+		let hits: string[] = [];
+		const base = await stub((url, res) => {
+			hits.push(url.pathname);
+			seenAuth = String(res.req.headers.authorization ?? "");
+			res.writeHead(url.pathname.endsWith("/key") ? 200 : 404, { "content-type": "application/json" });
+			res.end(
+				url.pathname.endsWith("/key")
+					? JSON.stringify({ data: { usage: 3.5, limit: 10, limit_remaining: 6.5 } })
+					: "{}",
+			);
+		});
+		const result = await openRouterAdapter.query({ channel: orChannel(base), apiKey: "sk-normal", signal: signal() });
+		expect(seenAuth).toBe("Bearer sk-normal");
+		expect(hits).toEqual(["/key"]);
+		expect(result).toMatchObject({
+			status: "ok",
+			unit: "USD",
+			balance: 6.5,
+			quota: { used: 3.5, limit: 10, remaining: 6.5 },
+		});
+	});
+
+	it("key 无额度上限时，回落 /credits 取账户总余额", async () => {
+		let hits: string[] = [];
+		const base = await stub((url, res) => {
+			hits.push(url.pathname);
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(
+				url.pathname.endsWith("/key")
+					? JSON.stringify({ data: { usage: 1.25 } })
+					: JSON.stringify({ data: { total_credits: 50, total_usage: 20 } }),
+			);
+		});
+		const result = await openRouterAdapter.query({ channel: orChannel(base), apiKey: "sk-normal", signal: signal() });
+		expect(hits).toEqual(["/key", "/credits"]);
+		expect(result).toMatchObject({ status: "ok", balance: 30, quota: { used: 20, limit: 50, remaining: 30 } });
+	});
+
+	it("management key 场景：/key 不可用时仍能用 /credits 拿到账户余额", async () => {
+		const base = await stub((url, res) => {
+			if (url.pathname.endsWith("/key")) {
+				res.writeHead(401, { "content-type": "application/json" });
+				res.end(JSON.stringify({ error: { message: "No auth" } }));
+				return;
+			}
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ data: { total_credits: 12, total_usage: 2 } }));
+		});
+		const result = await openRouterAdapter.query({ channel: orChannel(base), apiKey: "sk-mgmt", signal: signal() });
+		expect(result).toMatchObject({ status: "ok", balance: 10 });
+	});
+
+	it("两个端点都不可用 → failed，绝不把失败显示为 0", async () => {
+		const base = await stub((_url, res) => {
+			res.writeHead(500, { "content-type": "application/json" });
+			res.end("{}");
+		});
+		const result = await openRouterAdapter.query({ channel: orChannel(base), apiKey: "sk-bad", signal: signal() });
+		expect(result.status).toBe("failed");
+		expect(result.balance).toBeUndefined();
+		expect(result.error).toBeTruthy();
+	});
+
+	it("/key 返回的数据无法识别额度时，退回 /credits（不静默成 0）", async () => {
+		const base = await stub((url, res) => {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(url.pathname.endsWith("/key") ? JSON.stringify({ data: {} }) : "{}");
+		});
+		const result = await openRouterAdapter.query({ channel: orChannel(base), apiKey: "sk-x", signal: signal() });
+		expect(result.status).toBe("ok");
+		expect(result.balance).toBeUndefined();
+		expect(result.note).toContain("management key");
 	});
 });

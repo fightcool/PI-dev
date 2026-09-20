@@ -826,6 +826,13 @@ export interface DispatchSession {
 		expectedConfigRevision?: number;
 	}): Promise<void>;
 	queryChannelAccount(commandId: string, channelId: string): Promise<void>;
+	// -- DEV-CON Jev 决策门禁（接口由 ClientSession 实现；DSH 引擎给出显式不支持回执） --
+	/** 只读：门禁状态（清洗后的配置 + 运行聚合 + 可用命题），reqId 回显。 */
+	pushJevStatus(reqId: number): Promise<void>;
+	/** 写：保存门禁配置（读-合并-写；明文密钥一律拒绝）。 */
+	saveJevConfig(reqId: number, config: Extract<ClientMessage, { type: "jev_config_save" }>["config"]): Promise<void>;
+	/** 自检：用内置命题真实打一次 Decisions 接口（非黑盒：key/路由/模型可验证）。 */
+	probeJev(reqId: number, state?: Record<string, unknown>): Promise<void>;
 	/** P4 候选：系统资源只读快照。 */
 	listResources(reqId: number): Promise<void>;
 	/** P4 运维：存储占用明细（只读、有界遍历）。 */
@@ -1558,6 +1565,15 @@ wss.on("connection", (ws) => {
 				break;
 			case "channel_query_account":
 				void cs.queryChannelAccount(msg.commandId, msg.channelId);
+				break;
+			case "jev_status":
+				void cs.pushJevStatus(msg.reqId);
+				break;
+			case "jev_config_save":
+				void cs.saveJevConfig(msg.reqId, msg.config);
+				break;
+			case "jev_probe":
+				void cs.probeJev(msg.reqId, msg.state);
 				break;
 			case "usage_history_query":
 				void cs.queryUsageHistory(msg.reqId, { groupBy: msg.groupBy, from: msg.from, to: msg.to });

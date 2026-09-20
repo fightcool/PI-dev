@@ -136,24 +136,41 @@ function isCctqUrl(raw: string): boolean {
 	}
 }
 
-/** 有界 JSON 读取：超时、体积上限、禁止重定向、非 2xx 即失败。 */
-async function fetchJson(
+/**
+ * 有界 JSON 读取的失败种类。
+ * @WHY error 文本是**账户查询语境**的中文（“账户接口…”）：复用方（jev-gate）需要按种类
+ *   生成自己的双语文案，所以这里额外给出机器可读的 kind，而不是让调用方去匹配中文串。
+ *   `http` 需结合 status 判断（401/402/429/5xx），`status` 恒为真实 HTTP 状态。
+ */
+export type FetchJsonFailureKind = "timeout" | "network" | "redirect" | "http" | "no-body" | "too-large" | "not-json";
+
+/** 有界 JSON 读取：超时、体积上限、禁止重定向、非 2xx 即失败。
+ *  @CONTRACT 导出供 jev-gate 复用（单一有界传输实现，安全修复只需改一处）；
+ *  调用方自己持有 AbortController 与超时定时器，这里只发一次请求、**绝不重试**。
+ */
+export async function fetchJson(
 	fetchImpl: typeof fetch,
 	url: string,
 	init: RequestInit,
 	signal: AbortSignal,
-): Promise<{ ok: boolean; status: number; body?: unknown; error?: string }> {
+): Promise<{ ok: boolean; status: number; body?: unknown; error?: string; kind?: FetchJsonFailureKind }> {
 	let res: Response;
 	try {
 		res = await fetchImpl(url, { ...init, redirect: "manual", signal });
 	} catch (err) {
-		return { ok: false, status: 0, error: (err as Error).name === "AbortError" ? "查询超时" : (err as Error).message };
+		const aborted = (err as Error).name === "AbortError";
+		return {
+			ok: false,
+			status: 0,
+			kind: aborted ? "timeout" : "network",
+			error: aborted ? "查询超时" : (err as Error).message,
+		};
 	}
 	if (res.status >= 300 && res.status < 400)
-		return { ok: false, status: res.status, error: "账户接口返回重定向，已按策略拒绝" };
-	if (!res.ok) return { ok: false, status: res.status, error: `账户接口返回 HTTP ${res.status}` };
+		return { ok: false, status: res.status, kind: "redirect", error: "账户接口返回重定向，已按策略拒绝" };
+	if (!res.ok) return { ok: false, status: res.status, kind: "http", error: `账户接口返回 HTTP ${res.status}` };
 	const reader = res.body?.getReader();
-	if (!reader) return { ok: false, status: res.status, error: "账户接口无响应体" };
+	if (!reader) return { ok: false, status: res.status, kind: "no-body", error: "账户接口无响应体" };
 	const chunks: Uint8Array[] = [];
 	let total = 0;
 	try {
@@ -164,23 +181,25 @@ async function fetchJson(
 				total += value.byteLength;
 				if (total > MAX_BODY_BYTES) {
 					await reader.cancel();
-					return { ok: false, status: res.status, error: "账户接口响应体超出上限" };
+					return { ok: false, status: res.status, kind: "too-large", error: "账户接口响应体超出上限" };
 				}
 				chunks.push(value);
 			}
 		}
 	} catch (err) {
+		const aborted = (err as Error).name === "AbortError";
 		return {
 			ok: false,
 			status: res.status,
-			error: (err as Error).name === "AbortError" ? "查询超时" : (err as Error).message,
+			kind: aborted ? "timeout" : "network",
+			error: aborted ? "查询超时" : (err as Error).message,
 		};
 	}
 	const text = Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
 	try {
 		return { ok: true, status: res.status, body: JSON.parse(text) };
 	} catch {
-		return { ok: false, status: res.status, error: "账户接口返回非 JSON" };
+		return { ok: false, status: res.status, kind: "not-json", error: "账户接口返回非 JSON" };
 	}
 }
 
@@ -543,33 +562,79 @@ export function topupUrlOf(channel: ChannelRecord): string | null {
 	return /^https?:\/\//i.test(rendered) ? rendered : null;
 }
 
-/** OpenRouter：/api/v1/key 给出该 key 的限额与用量，/api/v1/credits 给出账户余额。 */
+/**
+ * OpenRouter 余额查询。
+ * @WHY 普通**推理 key** 只能查 `/api/v1/key`（该 key 的额度与用量）；`/api/v1/credits`
+ *   （账户总余额）需要 **management key**。旧实现只打 `/credits`，于是普通 key 一律查不到余额。
+ *   现在以 `/key` 为主、`/credits` 为可选补充：任一可用即有值，两个都不可用才算失败。
+ */
 export const openRouterAdapter: AccountAdapter = {
 	kind: "openrouter",
 	match: (channel) => accountConfig(channel)?.kind === "openrouter",
 	async query({ channel, apiKey, signal }) {
 		const cfg = accountConfig(channel);
 		const base = (cfg?.url ?? "https://openrouter.ai/api/v1").replace(/\/+$/, "");
-		const credits = await fetchJson(
-			fetch,
-			`${base}/credits`,
-			{ headers: { authorization: `Bearer ${apiKey}` } },
-			signal,
-		);
-		if (!credits.ok) return { status: "failed", error: credits.error };
-		const cdata = ((credits.body ?? {}) as Record<string, unknown>).data as Record<string, unknown> | undefined;
-		const total = num(cdata?.total_credits);
-		const used = num(cdata?.total_usage);
-		if (total === undefined) return { status: "failed", error: "账户接口未返回可识别的额度字段" };
-		return {
-			status: "ok",
-			unit: "USD",
-			balance: used === undefined ? undefined : total - used,
-			quota: { used, limit: total, remaining: used === undefined ? undefined : total - used, unit: "USD" },
-			checkedAt: Date.now(),
-		};
+		const headers = { authorization: `Bearer ${apiKey}` };
+
+		// 1) key 级额度与用量：任何 key 都能查（含普通推理 key）。
+		const keyRes = await fetchJson(fetch, `${base}/key`, { headers }, signal);
+		if (keyRes.ok) {
+			const kdata = ((keyRes.body ?? {}) as Record<string, unknown>).data as Record<string, unknown> | undefined;
+			const usage = num(kdata?.usage);
+			const limit = num(kdata?.limit);
+			const remaining = num(kdata?.limit_remaining);
+			// 2) key 没有额度上限时，剩余额度信息不足 → 尝试账户总余额补位（需 management key）。
+			if (limit === undefined || remaining === undefined) {
+				const account = await openRouterAccountBalance(base, headers, signal);
+				if (account) return account;
+				return {
+					status: "ok",
+					unit: "USD",
+					balance: remaining,
+					quota: { used: usage, unit: "USD" },
+					checkedAt: Date.now(),
+					note: "该 key 未设置额度上限；账户总余额需要 management key，可在 openrouter.ai/settings/credits 查看",
+				};
+			}
+			return {
+				status: "ok",
+				unit: "USD",
+				balance: remaining,
+				quota: { used: usage, limit, remaining, unit: "USD" },
+				checkedAt: Date.now(),
+				note: "该 API key 的额度",
+			};
+		}
+
+		// 3) key 接口不可用（权限或路径差异）→ 退回账户总余额端点。
+		const account = await openRouterAccountBalance(base, headers, signal);
+		if (account) return account;
+		return { status: "failed", error: keyRes.error ?? "账户接口查询失败" };
 	},
 };
+
+/** OpenRouter 账户总余额（需 management key）。不可用时返回 null，由调用方决定降级。 */
+async function openRouterAccountBalance(
+	base: string,
+	headers: Record<string, string>,
+	signal: AbortSignal,
+): Promise<Omit<AccountQueryResult, "accountRef" | "kind"> | null> {
+	const res = await fetchJson(fetch, `${base}/credits`, { headers }, signal);
+	if (!res.ok) return null;
+	const cdata = ((res.body ?? {}) as Record<string, unknown>).data as Record<string, unknown> | undefined;
+	const total = num(cdata?.total_credits);
+	const used = num(cdata?.total_usage);
+	if (total === undefined) return null;
+	const remaining = used === undefined ? undefined : total - used;
+	return {
+		status: "ok",
+		unit: "USD",
+		balance: remaining,
+		quota: { used, limit: total, remaining, unit: "USD" },
+		checkedAt: Date.now(),
+		note: "账户总余额",
+	};
+}
 
 export interface AccountRegistryOptions {
 	adapters?: AccountAdapter[];

@@ -21,6 +21,7 @@ import {
 	FiRefreshCw,
 	FiSend,
 	FiSettings,
+	FiShield,
 	FiSliders,
 	FiTag,
 	FiTerminal,
@@ -46,8 +47,18 @@ import type {
 	UiSkillInfo,
 	UiSubagentTemplate,
 } from "../types";
-import type { ChannelApi, ChannelCommandResult, ChannelStateMsg, DiagnosticsMsg, ResourcesMsg, StorageMsg, UsageHistoryMsg } from "../use-chat";
+import type {
+	ChannelApi,
+	ChannelCommandResult,
+	ChannelStateMsg,
+	DiagnosticsMsg,
+	JevUiState,
+	ResourcesMsg,
+	StorageMsg,
+	UsageHistoryMsg,
+} from "../use-chat";
 import { ChannelSettings, type ChannelModelsResult } from "./ChannelSettings";
+import { JevSettings } from "./JevSettings";
 import { SystemResources } from "./SystemResources";
 import {
 	clearPromptHistory,
@@ -105,6 +116,8 @@ interface SettingsModalProps {
 		activeConversationId?: string | null;
 		/** DEV-CON 渠道快照（channel_state）+ 回执（按 commandId）。 */
 		channelState: ChannelStateMsg | null;
+		/** Jev 决策门禁：最近一次 status / 配置保存 / 自检结果（按 reqId 匹配）。 */
+		jev: JevUiState;
 		/** P4 候选：最近一次系统资源快照（只读）。 */
 		resources?: ResourcesMsg | null;
 		/** P4 运维：最近一次存储占用明细（只读）。 */
@@ -240,6 +253,7 @@ type SettingsTab =
 	| "presets"
 	| "subagent-templates"
 	| "channels"
+	| "jev"
 	| "system";
 
 export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerminal, onOpenProviderKeys, onClose }: SettingsModalProps) {
@@ -432,6 +446,8 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 		{ id: "presets", icon: <FiSliders />, label: t("settingsPresets"), count: settings.presets.length },
 		// DEV-CON 渠道：没有渠道配置的实例也显示（这是唯一的渠道配置入口）。
 		{ id: "channels", icon: <FiRadio />, label: t("settingsChannels"), count: chat.channelState?.channels.length ?? 0 },
+		// Jev 决策门禁：凭据/渠道/阈值 + 运行状态与自检（与渠道相邻：两者共用服务商与密钥）。
+		{ id: "jev", icon: <FiShield />, label: t("settingsJev") },
 		{ id: "system", icon: <FiHardDrive />, label: t("settingsSystem") },
 		// DSH：无子代理概念，隐藏该分区。
 		...(isDsh
@@ -2445,6 +2461,28 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 									onSaveModelConfig={(config) =>
 										send({ type: "save_model_config", providerId: config.providerId, config })
 									}
+									onOpenProviderKeys={onOpenProviderKeys}
+								/>
+							</div>
+						)}
+
+						{/* ---- Jev 决策门禁（凭据/渠道/阈值 + 运行状态与自检） -------------- */}
+						{tab === "jev" && (
+							<div className="set-section">
+								<div className="set-section-title">
+									<FiShield className="set-section-icon" />
+									{t("settingsJev")}
+								</div>
+								<p className="set-hint">{t("settingsJevDesc")}</p>
+								<JevSettings
+									jev={chat.jev}
+									send={send}
+									channelApi={channelApi}
+									providerKeys={chat.providerKeys}
+									providers={chat.providers}
+									models={chat.models}
+									channels={chat.channelState?.channels ?? []}
+									accounts={chat.channelState?.accounts ?? []}
 									onOpenProviderKeys={onOpenProviderKeys}
 								/>
 							</div>
