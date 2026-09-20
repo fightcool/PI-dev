@@ -164,7 +164,7 @@ journalctl --user -u pi-dev-switch.service --no-pager
 | 切换验收（第一次） | 先被排空门禁**正确拦下**一次：`FAILED: 排空停滞 5.0 分钟：active=2 drainable=1 orphaned=0；持有者：对话 c1（流式中，已 5.0 分钟 无输出，排队 1 条）、对话 c4（流式中）` → `aborted before touching managers; instance resumed`（服务与 `current` 均未变）。改用 `SWITCH_DRAIN_TOLERATE=2` 后：`drained (active=2 drainable=1 orphaned=0, tolerate<=2)` → `DEPLOYED f157a8a55863 → 28fad6fffc1d pid=3398124 commit=28fad6fffc1d protocol=33 entry=/assets/index-CUpkaG2A.js`（07:59:11.203Z） | `DEPLOYED 28fad6fffc1d → a028fc476398 pid=3411990 commit=a028fc476398 protocol=33`（09:16:28.443Z） |
 | 在线核对 | `current/vendor/pi-web-ui/dist/server/dev-con/channel-model.js` 含 `bindingCoversModel`、`channel-state.js` 4 处、`agent-service.js` 含 `reconcileBinding`、`channel-service.js` 3 处 → 新代码在线；`channels.json` 里原先「绑定 ch-3(uu-api) / 实际 deepseek」的条目**已自动消失**（快照构造时对账自愈） | `/api/health` 200（公网亦 200）；`pi-dev-pm2.service=active` |
 | 附带数据迁移 | 修复上线后跑 `reattribute-stale-channel-usage.mjs --apply`：**1388 条**「渠道服务商 ≠ 记录服务商」的历史假归属改为「未归属」（备份 `usage-history.jsonl.bak-2026-09-20T09-21-31-627Z`；只改归属字段，token/费用/时间/模型不动；复核后 0 条不匹配、0 坏行） | — |
-| 回滚 | `f157a8a55863`（完整保留） | `28fad6fffc1d`（完整保留） |
+| 回滚 | 切换时的回滚点是 `f157a8a55863`，但**第二次切换的 prune 已按「current + 回滚点 + keep=2」把它回收**；当前磁盘上只剩 `a028fc476398`（current）与 `28fad6fffc1d`（回滚点）。要回到更早版本需按提交重建候选（`prepare-release.mjs f157a8a`） | `28fad6fffc1d`（完整保留，当前回滚点） |
 
 > 第一次升级的两次派发正是**排空门禁修复（§16）**想要的形态：旧实现会闷等 45 分钟才报「active work did not drain」，新实现在第 5 分钟就带**持有者名单**早退，并给出可选项（界面上中止那条对话 / `SWITCH_DRAIN_TOLERATE=<n>`）。这次两个持有者都是真实的在飞回合（其中一个已 5 分钟无输出），因此按规程用 tolerate 显式放宽。
 
