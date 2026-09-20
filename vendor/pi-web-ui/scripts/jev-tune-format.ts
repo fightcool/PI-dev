@@ -110,6 +110,16 @@ function formatOutcomes(summary: JevTuneScoreSummary): string {
 	return summary.outcomes.join(",");
 }
 
+/** 差值写法（+12 / -6）：净收益一行里要一眼看出方向。 */
+function formatDelta(delta: number): string {
+	return delta > 0 ? `+${delta}` : String(delta);
+}
+
+/** 两边没变就写「不变」：这一行最该一眼看到的是「误放行/误拦到底变没变」。 */
+function paired(before: number, after: number): string {
+	return before === after ? "不变" : formatDelta(after - before);
+}
+
 /** 分数区间 `[0.39 … 0.71]`（空数组写 `[]`：没样本就不编造范围）。 */
 function formatRange(scores: readonly number[]): string {
 	if (scores.length === 0) return "[]";
@@ -305,6 +315,8 @@ export function printTuneReport(report: JevTuneReport): void {
 			"**真正的代价是重叠区转人工**（逐命题阈值的主要收益就是把这个代价压下来）；" +
 			"只有连零错档都不存在（分数越过网格上下限）时，才该改判据而不是继续调阈值。",
 	);
+	console.log("  严格不可分 ≠ 无零错档；逐项覆盖的收益就是把重叠区转人工压下来。");
+	console.log("  逐项覆盖能不能用，看的是下面「逐命题建议」里该判定项自己的两项：误放行/误拦不增加、且转人工减少。");
 
 	const thresholds = report.current.thresholds;
 	console.log(`\n当前阈值（通过 ≥ ${thresholds.approveAt} / 阻断 ≤ ${thresholds.blockAt} / 其余转人工）`);
@@ -352,38 +364,57 @@ export function printTuneReport(report: JevTuneReport): void {
 	}
 
 	// 逐命题建议：最终交给人的**不是一个数**，而是「基档 + 覆盖」，并且必须给出它自己的四类统计。
-	// @WHY 单看全局档位永远看不出逐项阈值的价值：同一份语料下逐项阈值能把误放行 1 → 0，
-	//   而这只有「按逐项生效」重新统计一遍四类之后才看得出来（退出码也看这一行）。
+	// @WHY 单看全局档位永远看不出逐项阈值的价值：同一份语料下逐项阈值能把转人工 33 → 21
+	//   （误放行/误拦不变），而这只有「按逐项生效」重新统计一遍四类之后才看得出来（退出码也看它）。
 	const scoped = report.propositionRecommendation;
-	console.log("\n逐命题建议（全局基档 + 逐项覆盖；阈值解决不了的判定项保持全局值）");
-	console.log(`  基档: 通过 ≥ ${formatScore(scoped.base.approveAt)} 阻断 ≤ ${formatScore(scoped.base.blockAt)}`);
 	const overrideIds = Object.keys(scoped.overrides);
-	if (overrideIds.length === 0) {
-		console.log(
-			report.perProposition.length === 0
-				? "  （没有命题拿到分数：不出覆盖，也不编造窗口）"
-				: "  （没有需要覆盖的判定项：基档已经落在每个命题的可分窗口内）",
-		);
+	console.log("\n逐命题建议（基档 + 逐项覆盖；采用条件：该判定项自己的误放行/误拦不变、转人工变少）");
+	console.log(`  基档: 通过 ≥ ${formatScore(scoped.base.approveAt)} 阻断 ≤ ${formatScore(scoped.base.blockAt)}`);
+	for (const decision of scoped.decisions) {
+		if (decision.decision === "override" && decision.candidate) {
+			console.log(
+				`  · ${decision.proposition}: 采用 通过 ≥ ${formatScore(decision.candidate.approveAt)} ` +
+					`阻断 ≤ ${formatScore(decision.candidate.blockAt)}（${decision.reason}）`,
+			);
+		} else {
+			// 原因里的结尾「：保持全局值」在报告里是重复的（前缀已经说了），JSON 里则要自包含 → 渲染时去掉。
+			const reason = decision.reason.replace(/：保持全局值$/, "");
+			console.log(`  · ${decision.proposition}: 保持全局值（${reason}）`);
+		}
 	}
-	for (const id of overrideIds) {
-		const override = scoped.overrides[id]!;
-		console.log(`  · ${id}: 通过 ≥ ${formatScore(override.approveAt)} 阻断 ≤ ${formatScore(override.blockAt)}`);
-	}
-	for (const entry of scoped.unresolved) {
-		console.log(`  · ${entry.proposition}: 保持全局值（${entry.reason}）`);
-	}
+	if (scoped.decisions.length === 0) console.log("  （没有命题拿到分数：不出覆盖，也不编造窗口）");
 	if (overrideIds.length > 0) {
 		console.log(
 			"  写入方式：`npm run jev -- config --proposition <判定项> --approve <值> --block <值>`" +
 				"（逐项清除用 --unset-proposition <判定项>）",
 		);
 	}
+	// 基档 vs 基档+覆盖 两组总统计必须同时出现：净收益要有对照，不能只报好看的那一组。
+	const baseCounts = scoped.baseConfusion;
+	const applied = scoped.confusion;
 	console.log(
-		`  这组阈值在语料上的四类统计（逐项生效后）: 正确放行 ${scoped.confusion.correctPass}  ` +
-			`正确拦下 ${scoped.confusion.correctBlock}  误放行 ${scoped.confusion.falsePass}  ` +
-			`误拦 ${scoped.confusion.falseBlock}  转人工 ${scoped.confusion.review}（共 ${scoped.confusion.total} 条）` +
-			(scoped.confusion.falsePass > 0 ? "  ⚠ 仍有误放行" : ""),
+		`  基档四类（不加任何覆盖）: 正确放行 ${baseCounts.correctPass}  正确拦下 ${baseCounts.correctBlock}  ` +
+			`误放行 ${baseCounts.falsePass}  误拦 ${baseCounts.falseBlock}  转人工 ${baseCounts.review}（共 ${baseCounts.total} 条）`,
 	);
+	console.log(
+		`  基档+覆盖四类（逐项生效）: 正确放行 ${applied.correctPass}  正确拦下 ${applied.correctBlock}  ` +
+			`误放行 ${applied.falsePass}  误拦 ${applied.falseBlock}  转人工 ${applied.review}（共 ${applied.total} 条）`,
+	);
+	console.log(
+		`  净收益: 转人工 ${baseCounts.review} → ${applied.review}（${formatDelta(applied.review - baseCounts.review)}）；` +
+			`误放行 ${baseCounts.falsePass} → ${applied.falsePass}（${paired(baseCounts.falsePass, applied.falsePass)}）、` +
+			`误拦 ${baseCounts.falseBlock} → ${applied.falseBlock}（${paired(baseCounts.falseBlock, applied.falseBlock)}）；` +
+			`正确放行 ${baseCounts.correctPass} → ${applied.correctPass}（${formatDelta(applied.correctPass - baseCounts.correctPass)}）` +
+			(applied.falsePass > 0 ? "  ⚠ 仍有误放行" : ""),
+	);
+	if (!scoped.adopted && scoped.decisions.length > 0) {
+		console.log(
+			overrideIds.length > 0
+				? `  诚实回退：采用覆盖会让总误放行/误拦变差（误放行 ${baseCounts.falsePass} → ${applied.falsePass}、` +
+						`误拦 ${baseCounts.falseBlock} → ${applied.falseBlock}），保持基档`
+				: "  未采用任何覆盖：没有判定项能同时做到「不增加误放行/误拦」且「减少转人工」，保持基档",
+		);
+	}
 	if (report.current.confusion.flips.length > 0) {
 		console.log("注: 出现翻转说明这些条目的分数离阈值太近 —— 抖动 ~0.08 会把它们从「通过」推到「转人工」。");
 	}

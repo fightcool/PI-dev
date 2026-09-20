@@ -568,16 +568,29 @@ describe("tune 报告（逐命题一节 + JSON 字段）", () => {
 		const recommendation = json.propositionRecommendation as {
 			base: unknown;
 			overrides: Record<string, unknown>;
-			unresolved: { proposition: string }[];
+			keptGlobal: { proposition: string; reason: string }[];
+			decisions: { proposition: string; decision: string; candidate: unknown }[];
+			adopted: boolean;
 			thresholds: { perProposition?: Record<string, unknown> };
-			confusion: { falsePass: number; correctPass: number; correctBlock: number };
+			baseConfusion: { falsePass: number; correctPass: number; correctBlock: number; review: number };
+			confusion: { falsePass: number; correctPass: number; correctBlock: number; review: number };
 		};
 		expect(recommendation.base).toEqual({ approveAt: 0.95, blockAt: 0.1 });
+		// P 的窗口 (0.6, 0.73] 装不下基档 0.95，且该命题自己的转人工 2 → 1 → 采用覆盖。
 		expect(recommendation.overrides).toEqual({ [P]: { approveAt: 0.7, blockAt: 0.1 } });
+		expect(recommendation.adopted).toBe(true);
 		expect(recommendation.thresholds.perProposition).toEqual(recommendation.overrides);
-		expect(recommendation.unresolved.map((entry) => entry.proposition)).toEqual([S]);
+		// scope 严格不可分且覆盖换不到收益 → 保持全局值，原因是数字（不是「不可分」）。
+		expect(recommendation.keptGlobal.map((entry) => entry.proposition)).toEqual([S]);
+		expect(recommendation.keptGlobal[0]!.reason).toContain("不能减少该判定项的转人工（5 → 5）");
+		expect(recommendation.decisions).toEqual([
+			expect.objectContaining({ proposition: P, decision: "override", candidate: { approveAt: 0.7, blockAt: 0.1 } }),
+			expect.objectContaining({ proposition: S, decision: "keep" }),
+		]);
+		// 两组总统计都在 JSON 里：基档 1/1/0/0/7 → 基档+覆盖 2/1/0/0/6。
+		expect(recommendation.baseConfusion).toMatchObject({ correctPass: 1, correctBlock: 1, falsePass: 0, review: 7 });
 		// 逐项生效后的四类：全局只能拿 1 个正确放行，逐项拿 2（p-api2 0.73 被 P 的覆盖放行）。
-		expect(recommendation.confusion).toMatchObject({ correctPass: 2, correctBlock: 1, falsePass: 0 });
+		expect(recommendation.confusion).toMatchObject({ correctPass: 2, correctBlock: 1, falsePass: 0, review: 6 });
 	});
 
 	it("renders the per-proposition section without touching the existing sections", () => {
@@ -715,59 +728,141 @@ describe("recommendPropositionThresholds", () => {
 	const P = "change_preserves_public_api";
 	const S = "change_within_task_scope";
 
-	it("overrides only the propositions the base cannot separate", () => {
+	it("adopts the proposition's own best tier when it cuts that proposition's review count", () => {
 		const items = [
-			scored("p-api", "should-pass", { [P]: [0.95] }),
-			scored("b-api", "should-block", { [P]: [0.6] }),
+			// S 的窗口 (0.05, 0.5] 与基档 0.95 无关：基档下两个 S 样本都只能转人工。
 			scored("p-scope", "should-pass", { [S]: [0.5] }),
 			scored("b-scope", "should-block", { [S]: [0.05] }),
+			// P 的样本在基档下已经是「一放行一转人工」：候选覆盖换不到收益 → 不该多配一项。
+			scored("p-api", "should-pass", { [P]: [0.95] }),
+			scored("b-api", "should-block", { [P]: [0.6] }),
 		];
 		const rec = recommendPropositionThresholds(items, { approveAt: 0.95, blockAt: 0.1 });
-		// P 的窗口是 (0.6, 0.95]，基档 0.95 正好落在窗口**上界（含）** → 不需要覆盖。
+		// 采用：S 的最佳档 (0.5, 0.05)，该命题自己的转人工 2 → 0。
+		expect(rec.overrides[S]).toEqual({ approveAt: 0.5, blockAt: 0.05 });
+		expect(rec.adopted).toBe(true);
+		const scopeDecision = rec.decisions.find((decision) => decision.proposition === S)!;
+		expect(scopeDecision.decision).toBe("override");
+		expect(scopeDecision.baseCounts.review).toBe(1);
+		expect(scopeDecision.candidateCounts!.review).toBe(0);
+		expect(scopeDecision.reason).toContain("转人工 1 → 0（-1）");
+		// 不采用：P 的候选覆盖（0.95/0.02）换不到转人工收益 → 保持全局值并写清数字。
 		expect(rec.overrides[P]).toBeUndefined();
-		// S 的窗口是 (0.05, 0.5]，基档 0.95 落不进去 → 覆盖：approveAt = 0.5 下取整。
-		expect(rec.overrides[S]!.approveAt).toBe(0.5);
-		expect(rec.overrides[S]!.blockAt).toBeLessThan(0.5);
+		expect(rec.keptGlobal.map((entry) => entry.proposition)).toEqual([P]);
+		expect(rec.keptGlobal[0]!.reason).toContain("不能减少该判定项的转人工");
+		// 两组总统计都要有：基档 1/1/0/0/2 → 基档+覆盖 2/1/0/0/1。
+		expect(rec.baseConfusion).toMatchObject({ correctPass: 1, correctBlock: 1, review: 2, falsePass: 0 });
+		expect(rec.confusion).toMatchObject({ correctPass: 2, correctBlock: 1, review: 1, falsePass: 0 });
 		expect(rec.thresholds).toMatchObject({ approveAt: 0.95, blockAt: 0.1, perProposition: rec.overrides });
-		// 四类统计按逐项生效：0.95（P）与 0.5（S）都正确放行，0.05 被正确拦下。
-		expect(rec.confusion).toMatchObject({ correctPass: 2, correctBlock: 1, falsePass: 0, falseBlock: 0 });
-		expect(rec.confusion.total).toBe(4);
 	});
 
-	it("keeps the global base for a proposition thresholds cannot fix, with the reason", () => {
-		const items = [scored("p", "should-pass", { [S]: [0.39] }), scored("b", "should-block", { [S]: [0.79] })];
+	it("adopts an override even when the proposition is strictly inseparable (no single window)", () => {
+		// 实测形状：scope 的 block 最高 0.79 > pass 最低 0.39 —— 「严格不可分」，但不等于没有零错档。
+		// @WHY 中间那几条 pass 样本是关键：没有它们，宽网格扫描会因「空白带更宽」把 approveAt 顶到 0.95，
+		//   覆盖就换不到任何收益（真语料里正是这些中间样本带来收益）。
+		const items = [
+			scored("p-1", "should-pass", { [S]: [0.39] }),
+			scored("p-2", "should-pass", { [S]: [0.5] }),
+			scored("p-3", "should-pass", { [S]: [0.6] }),
+			scored("p-4", "should-pass", { [S]: [0.7] }),
+			scored("p-5", "should-pass", { [S]: [0.85] }),
+			scored("p-6", "should-pass", { [S]: [0.97] }),
+			scored("b-1", "should-block", { [S]: [0.79] }),
+			scored("b-2", "should-block", { [S]: [0.03] }),
+		];
 		const rec = recommendPropositionThresholds(items, { approveAt: 0.95, blockAt: 0.1 });
-		expect(rec.overrides).toEqual({});
-		// 没有覆盖项时不写一个空的 perProposition（形状与「从未配过」完全一致）。
-		expect(rec.thresholds.perProposition).toBeUndefined();
-		expect(rec.unresolved).toEqual([{ proposition: S, reason: "分数分布重叠（重叠 0.4）：任何阈值都只能二选一" }]);
-		// 四类统计按逐项生效：0.79 转人工（不是误放行）—— 「阈值解决不了」等于保守，不等于放行。
-		expect(rec.confusion).toMatchObject({ falsePass: 0, review: 2 });
+		const [analysis] = analyzePropositionWindows(items);
+		expect(analysis!.separable).toBe(false);
+		// 严格不可分，但零误放行零误拦档位仍然存在：approveAt 提到拦截侧最高分（0.79）之上。
+		expect(analysis!.best!.confusion.falsePass).toBe(0);
+		expect(analysis!.best!.confusion.falseBlock).toBe(0);
+		expect(analysis!.best!.approveAt).toBeGreaterThan(0.79);
+		// 覆盖 = 该判定项自己的最佳档，且该判定项自己的转人工变少（误放行/误拦仍是 0）。
+		expect(rec.overrides[S]).toEqual({ approveAt: analysis!.best!.approveAt, blockAt: analysis!.best!.blockAt });
+		expect(rec.adopted).toBe(true);
+		const decision = rec.decisions[0]!;
+		expect(decision.baseCounts.falsePass).toBe(0);
+		expect(decision.candidateCounts!.falsePass).toBe(0);
+		expect(decision.candidateCounts!.falseBlock).toBe(0);
+		expect(decision.candidateCounts!.review).toBeLessThan(decision.baseCounts.review);
+		// 全语料对照：转人工严格变少，误放行/误拦不变（这就是「严格不可分也能用」的证据）。
+		expect(rec.confusion.review).toBeLessThan(rec.baseConfusion.review);
+		expect(rec.confusion.falsePass).toBe(rec.baseConfusion.falsePass);
+		expect(rec.confusion.falseBlock).toBe(rec.baseConfusion.falseBlock);
 	});
 
-	it("names the sample-shortage and too-narrow-window cases instead of guessing", () => {
-		const short = recommendPropositionThresholds([scored("p", "should-pass", { [S]: [0.9] })], {
+	it("keeps the global value when the candidate would add false passes for that proposition", () => {
+		// 拦截侧分数 0.99 越过宽网格上限 0.98：候选覆盖最低只能做到 1 个误放行，
+		// 而基档（approveAt 1）在该判定项上零误放行 → (a) 不通过，不采用。
+		const items = [scored("p", "should-pass", { [S]: [0.5] }), scored("b", "should-block", { [S]: [0.99] })];
+		const rec = recommendPropositionThresholds(items, { approveAt: 1, blockAt: 0.15 });
+		expect(rec.overrides).toEqual({});
+		expect(rec.adopted).toBe(false);
+		expect(rec.keptGlobal[0]!.reason).toContain("会增加该判定项的误放行（0 → 1）");
+		// 诚实：保持基档后该判定项零误放行，代价是转人工。
+		expect(rec.baseConfusion).toMatchObject({ falsePass: 0, review: 2 });
+		expect(rec.confusion).toEqual(rec.baseConfusion);
+	});
+
+	it("keeps the global value when the candidate would add false blocks for that proposition", () => {
+		// should-pass 0.01 低于宽网格最小的 blockAt 0.02：候选覆盖一定会把它拦下来（误拦 +1），
+		// 而基档（blockAt 0.005）不会 → (a) 不通过。
+		const items = [scored("p", "should-pass", { [S]: [0.01] }), scored("b", "should-block", { [S]: [0.4] })];
+		const rec = recommendPropositionThresholds(items, { approveAt: 0.6, blockAt: 0.005 });
+		expect(rec.overrides).toEqual({});
+		expect(rec.keptGlobal[0]!.reason).toContain("会增加该判定项的误拦（0 → 1）");
+	});
+
+	it("says why an unusable or benefit-free proposition keeps the global value", () => {
+		// 0.2 低于宽网格最小的 approveAt（0.3）：该判定项无论怎么配都换不到收益。
+		const short = recommendPropositionThresholds([scored("p", "should-pass", { [S]: [0.2] })], {
 			approveAt: 0.95,
 			blockAt: 0.1,
 		});
-		expect(short.unresolved[0]!.reason).toContain("样本不足");
 		expect(short.overrides).toEqual({});
-		// 窗口 (0.6, 0.61] 只有 0.01 宽：下取整到 0.05 会落在窗口下界（不含），不能拿它当建议。
-		const narrowItems = [scored("p", "should-pass", { [P]: [0.61] }), scored("b", "should-block", { [P]: [0.6] })];
-		const [analysis] = analyzePropositionWindows(narrowItems);
-		expect(analysis!.separable).toBe(true);
-		expect(analysis!.windowLo).toBe(0.6);
-		expect(analysis!.windowHi).toBe(0.61);
-		expect(analysis!.recommended).toBeNull();
-		const narrow = recommendPropositionThresholds(narrowItems, { approveAt: 0.9, blockAt: 0.1 });
-		expect(narrow.overrides).toEqual({});
-		expect(narrow.unresolved[0]!.reason).toContain("窄于 0.05 步长");
+		expect(short.keptGlobal[0]!.reason).toContain("不能减少该判定项的转人工（1 → 1）");
+		const empty = recommendPropositionThresholds([scored("e", "should-pass", { [S]: [] })], {
+			approveAt: 0.95,
+			blockAt: 0.1,
+		});
+		expect(empty.keptGlobal[0]!.reason).toContain("没有可用分数");
+	});
+
+	it("rolls back every override when the combined set would make the corpus worse (defensive gate)", () => {
+		// @GOTCHA 这道总体门在正常路径下不可达（候选覆盖的 approveAt 必然高于该判定项 should-block 的最高分，
+		//   所以 should-block 条目在覆盖下不可能被放行）。这里注入一份**伪造**的分析结果把它逼出来：
+		//   候选在该判定项自己的样本上看着零误放行，合起来却多放行了一条 should-block。
+		const items = [scored("p", "should-pass", { [S]: [0.5] }), scored("b", "should-block", { [S]: [0.9] })];
+		const honest = analyzePropositionWindows(items);
+		const faked = honest.map((entry) => ({
+			...entry,
+			// 伪造：「该判定项自己的样本」看不出问题（零误放行、零转人工），实际这条 0.9 会被放行。
+			best: {
+				...entry.best!,
+				approveAt: 0.05,
+				blockAt: 0.02,
+				confusion: { ...entry.best!.confusion, falsePass: 0, review: 0 },
+			},
+		}));
+		const base = { approveAt: 0.95, blockAt: 0.1 };
+		const rec = recommendPropositionThresholds(items, base, faked);
+		// 伪造的候选过了逐项门（该判定项转人工 2 → 0），但语料总误放行 0 → 1 → 整体回退。
+		expect(rec.adopted).toBe(false);
+		expect(rec.overrides).toEqual({});
+		expect(rec.thresholds).toEqual(base);
+		expect(rec.confusion).toEqual(rec.baseConfusion);
+		expect(rec.baseConfusion.falsePass).toBe(0);
+		expect(rec.keptGlobal[0]!.reason).toContain("整体回退：采用覆盖后语料总误放行 0 → 1");
+		// decision 与 overrides 必须一致（JSON 不能自相矛盾）。
+		expect(rec.decisions.every((decision) => decision.decision === "keep")).toBe(true);
 	});
 
 	it("returns the base itself for an empty corpus (no invented overrides)", () => {
 		const rec = recommendPropositionThresholds([], { approveAt: 0.9, blockAt: 0.1 });
-		expect(rec).toMatchObject({ overrides: {}, unresolved: [], thresholds: { approveAt: 0.9, blockAt: 0.1 } });
+		expect(rec).toMatchObject({ overrides: {}, keptGlobal: [], decisions: [], adopted: false });
+		expect(rec.thresholds).toEqual({ approveAt: 0.9, blockAt: 0.1 });
 		expect(rec.confusion.total).toBe(0);
+		expect(rec.baseConfusion.total).toBe(0);
 	});
 });
 
@@ -800,18 +895,20 @@ describe("逐命题建议的渲染", () => {
 		return lines.join("\n");
 	}
 
-	it("prints the base, the overrides, the unresolved propositions and their own four classes", () => {
+	it("prints the base, the adopted/kept decisions and both four-class rows", () => {
 		const text = render(buildReport(items));
-		expect(text).toContain("逐命题建议（全局基档 + 逐项覆盖；阈值解决不了的判定项保持全局值）");
-		// 基档 = 窄网格 top 档；P 的窗口 (0.6, 0.73] 装不下 0.95 → 给覆盖。
+		expect(text).toContain("逐命题建议（基档 + 逐项覆盖；采用条件：该判定项自己的误放行/误拦不变、转人工变少）");
+		// 基档 = 窄网格 top 档；P 的窗口 (0.6, 0.73] 装不下 0.95，且该命题转人工 2 → 1 → 采用覆盖。
 		expect(text).toContain("基档: 通过 ≥ 0.95 阻断 ≤ 0.1");
-		expect(text).toContain(`· ${P}: 通过 ≥ 0.7 阻断 ≤ 0.1`);
-		// scope 严格不可分 → 保持全局值，并把原因写清楚（不硬凑一对会误放行的值）。
-		expect(text).toContain(`· ${S}: 保持全局值（分数分布重叠（重叠 0.4）：任何阈值都只能二选一）`);
+		expect(text).toContain(`· ${P}: 采用 通过 ≥ 0.7 阻断 ≤ 0.1（该判定项自己：转人工 2 → 1（-1）`);
+		// scope 严格不可分，但保持全局值的理由是「覆盖换不到收益」，不是「不可分」本身。
+		expect(text).toContain(`· ${S}: 保持全局值（候选覆盖 0.98/0.02 不能减少该判定项的转人工（5 → 5））`);
 		expect(text).toContain("config --proposition <判定项> --approve <值> --block <值>");
-		// 逐项生效后的四类统计：相对于「当前阈值」那一节，转人工 7 → 6、正确放行 1 → 2。
+		// 两组总统计必须同时出现：基档 1/1/0/0/7 → 基档+覆盖 2/1/0/0/6。
+		expect(text).toContain("基档四类（不加任何覆盖）: 正确放行 1  正确拦下 1  误放行 0  误拦 0  转人工 7（共 9 条）");
+		expect(text).toContain("基档+覆盖四类（逐项生效）: 正确放行 2  正确拦下 1  误放行 0  误拦 0  转人工 6（共 9 条）");
 		expect(text).toContain(
-			"这组阈值在语料上的四类统计（逐项生效后）: 正确放行 2  正确拦下 1  误放行 0  误拦 0  转人工 6（共 9 条）",
+			"净收益: 转人工 7 → 6（-1）；误放行 0 → 0（不变）、误拦 0 → 0（不变）；正确放行 1 → 2（+1）",
 		);
 		expect(text).not.toContain("⚠ 仍有误放行");
 	});
@@ -824,13 +921,15 @@ describe("逐命题建议的渲染", () => {
 		expect(text).toContain("⚠ 仍有误放行");
 	});
 
-	it("says no override is needed when the base already separates every proposition", () => {
-		// 只有一个命题，且它的窗口含基档 0.95（0.6, 0.95] → 不需要任何覆盖。
+	it("says why nothing was overridden when no proposition can win anything", () => {
+		// 只有一个命题，且它的窗口 (0.6, 0.95] 正好含基档 0.95：覆盖（0.95/0.02）换不到任何转人工收益。
 		const text = render(
 			buildReport([scored("p", "should-pass", { [P]: [0.95] }), scored("b", "should-block", { [P]: [0.6] })]),
 		);
-		expect(text).toContain("（没有需要覆盖的判定项：基档已经落在每个命题的可分窗口内）");
+		expect(text).toContain("未采用任何覆盖：没有判定项能同时做到「不增加误放行/误拦」且「减少转人工」，保持基档");
 		expect(text).not.toContain("config --proposition");
+		// 一条不能少的实话：严格不可分 ≠ 无零错档（判据说明就写在窗口一节里）。
+		expect(text).toContain("严格不可分 ≠ 无零错档；逐项覆盖的收益就是把重叠区转人工压下来。");
 	});
 });
 
@@ -847,8 +946,9 @@ describe("逐命题建议在没有分数时不编造", () => {
 		}
 		const text = lines.join("\n");
 		expect(text).toContain("（没有命题拿到分数：不出覆盖，也不编造窗口）");
-		// 空语料下不能出现「基档已经落在每个命题的可分窗口内」这种没证据的结论。
-		expect(text).not.toContain("基档已经落在每个命题的可分窗口内");
-		expect(text).toContain("这组阈值在语料上的四类统计（逐项生效后）: 正确放行 0");
+		// 空语料下不能出现「覆盖换不到收益」这种其实没比较过的结论。
+		expect(text).not.toContain("没有判定项能同时做到");
+		expect(text).toContain("基档+覆盖四类（逐项生效）: 正确放行 0");
+		expect(text).toContain("净收益: 转人工 0 → 0（0）；误放行 0 → 0（不变）、误拦 0 → 0（不变）；正确放行 0 → 0（0）");
 	});
 });
