@@ -30,6 +30,7 @@ import { jevCachePath } from "./dev-con/jev-cache.js";
 import {
 	JEV_PROBE_PROPOSITION_ID,
 	JEV_PROPOSITIONS,
+	formatJevProse,
 	JEV_PROVIDER_ID,
 	buildJevQuestions,
 	redactJevGateConfigForEcho,
@@ -6506,10 +6507,12 @@ export class ClientSession {
 				status: {
 					config: redactJevGateConfigForEcho(this.jev.config()),
 					runtime: this.jev.snapshotStatus(),
+					// 展示面拿"已展平的字符串"：发往模型的原始值现在是结构化判据（见 JevProse），
+					// 在服务端用**同一个** formatJevProse 渲染，web 与 CLI 就不会各自再拼一份。
 					propositions: JEV_PROPOSITIONS.map((p) => ({
 						id: p.id,
-						instructions: p.instructions,
-						criteria: { ...p.criteria },
+						instructions: formatJevProse(p.instructions),
+						criteria: { true: formatJevProse(p.criteria.true), false: formatJevProse(p.criteria.false) },
 					})),
 				},
 			});
