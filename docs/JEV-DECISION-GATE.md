@@ -103,13 +103,54 @@ jev_check({ state: { objective: "…", diff: "…" }, propositions?: ["…"], us
 | `endpoint` | `https://openrouter.ai/api/alpha/decisions` | 必须是 https |
 | `model` | `typesafe/jev-1.13` | **pin 版本**，不要 `-latest` |
 | `credentialRef` | `null` | **只存 `{providerId, keyName}` 引用**，正文归 `provider-keys.json` |
-| `thresholds.approveAt` | `0.9` | ≥ 此值判为「真」 |
-| `thresholds.blockAt` | `0.1` | ≤ 此值判为「假」 |
+| `thresholds.approveAt` | `0.9` | ≥ 此值判为「真」（**全局默认**，可被 `perProposition` 覆盖） |
+| `thresholds.blockAt` | `0.1` | ≤ 此值判为「假」（**全局默认**，可被 `perProposition` 覆盖） |
+| `thresholds.perProposition` | 无 | 逐个判定项的独立阈值（见下） |
 | `timeoutMs` | `8000` | 单次请求超时 |
 | `cacheTtlMs` | `300000` | 决策缓存时效 |
 | `minIntervalMs` | `1000` | 最小调用间隔（限频） |
 
 约束：`0 <= blockAt < approveAt <= 1`；`endpoint` 必须 `https`；配置里**不允许出现明文密钥**（写入前会拒绝）。
+
+### 3.1 逐判定项独立阈值 `thresholds.perProposition`
+
+实测三个命题的分数区间整体错开（`scope` ≈ 0.5、`public-api` ≈ 0.7、`test` ≈ 0.85，见 §4.4），
+**单一全局阈值在结构上不可能同时合适**。因此每个判定项可以单独配一对阈值：
+
+```json
+{
+  "thresholds": {
+    "approveAt": 0.9,
+    "blockAt": 0.1,
+    "perProposition": {
+      "change_within_task_scope": { "approveAt": 0.5 },
+      "change_preserves_public_api": { "approveAt": 0.7, "blockAt": 0.15 },
+      "test_asserts_behavior": { "approveAt": 0.95, "blockAt": 0.15 }
+    }
+  }
+}
+```
+
+- **缺的一侧继承全局**（上例的 `change_within_task_scope` 拦截侧就是全局 `0.1`）。
+- **没配的判定项完全走全局** —— 不配 `perProposition` 时行为与加本字段之前**逐字节一致**。
+- 键必须是已有的判定项 id（拼错会被校验拒绝并列出可用值）；条目上限 32；
+  空对象 `{}` 与空 map 会被归一成「未配」，不往磁盘上留噪声。
+- 磁盘上出现**自相矛盾**的独立配置（`blockAt >= approveAt`，比如手工改坏）时，该判定项**回落全局**：
+  宁可退回已验证的行为，也不拿一对没验证过的阈值做放行判断。
+- 一条调用带多个判定项时：任一项 ≤ 它自己的 `blockAt` → block；否则任一项 < 它自己的 `approveAt` → review；
+  全部达标 → approve。理由文案会写出**实际生效**的阈值（`…=0.4（独立阈值 0.5/0.1）`），不是黑盒。
+
+CLI：
+
+```bash
+npm run jev -- config --proposition change_within_task_scope --approve 0.5 --block 0.1
+npm run jev -- config --unset-proposition change_within_task_scope   # 只删这一项
+npm run jev -- config --clear-propositions                          # 全清
+npm run jev -- config                                              # 逐项列出生效阈值
+```
+
+设置面板里同样可改（只提交你动过的项；留空 = 继承全局）——
+保存路径是**两层合并**，改一项不会把其它项的独立阈值抹掉。
 
 ---
 
@@ -182,7 +223,7 @@ npm run jev -- tune --corpus <你的语料>.jsonl --from-cache          # 不联
 > 但 25 条里有 **16 条**离阀值不到 0.08，且有两条恰好落在 `0.900`（`approveAt` 是闭区间 `>=`）。
 > 所以「算一次就定调」仍然不成立：定阈值前至少 `--repeat 3`，并把「最近阈值余量」当期指标看。
 
-### 4.2 首次校准实测（2026-09-20，25 条真实改动）
+### 4.3 首次校准实测（2026-09-20，25 条真实改动）
 
 把小语料扩到 25 条（从最近 70 个真实非 merge 提交里挑，三个命题大致各半）后，跑出的结果**推翻了"调阈值"这个默认动作**：
 
@@ -213,6 +254,53 @@ npm run jev -- tune --corpus <你的语料>.jsonl --from-cache          # 不联
 > "中等把握"的条目决定（例：一个测试文件里**混有**强断言与弱断言时，命题该按最强断言还是
 > 关键断言判；测试只改端口、**一个断言都没加**算不算 false；同一 fallback 链里的附带改动算不算越界）。
 > 这些是**政策空白**，必须由人写下来 —— 否则调阈值调的是噪声。
+
+### 4.4 语料扩到 50 条后：24 条时的窗口是乐观的，但**逐命题阈值真的有用**（2026-09-20）
+
+上一节的「可分/不可分」是在 24–25 条上量的。按「每类只有 3–5 条，一个灰区标签就能拉动结论」
+的担心把语料扩到 **50 条**（再挑 26 条真实提交，行级证据，避开已用过的）、并按 §4.5 的标签政策
+重标了 3 条 scope 之后：
+
+| 命题 | `should-pass`（n） | `should-block`（n） | 结论 |
+| --- | --- | --- | --- |
+| `change_preserves_public_api` | 0.54–0.95（8） | 0.08–0.60（8） | 重叠 0.06（`0.60` 那条是公开行为变更） |
+| `test_asserts_behavior` | 0.77–0.98（12） | 0.14–**0.94**（5） | 重叠 0.17 |
+| `change_within_task_scope` | **0.39**–0.97（10） | 0.03–0.42（7） | 重叠 0.03（差一线） |
+
+**但要区分「严格可分」和「阈值可用」**：三态判定里 **review（转人工）不是错误**。
+把低分的 pass 条目推进 review、把高分 block 条目推出 approve，就得到真正可用的阈值：
+
+| 配置 | 误放行 | 误拦 | 正确放行 | 正确拦下 | 转人工 |
+| --- | --- | --- | --- | --- | --- |
+| 全局 `0.90 / 0.10`（加本特性之前的线上值） | **1** | 0 | 15 | 5 | 29 |
+| 全局 `0.95 / 0.15`（`tune` 的全局建议） | 0 | 0 | 9 | 8 | 33 |
+| **逐命题 `scope .50` / `api .70` / `test .95`** | **0** | 0 | **21** | 8 | **21** |
+| 上一行各再 +0.03（留抖动余量） | 0 | 0 | 21 | 8 | 21 |
+
+三条可操作的结论：
+
+1. **逐命题阈值不是「更细的调参」，是唯一能同时降错误与降转人工的形状**：同一份语料、同样的零错误，
+   逐命题比全局多做出 12 条决定（21 vs 9），比现状少 8 条转人工。
+2. **网格与工具必须够宽**：`scope` 的窗口在 **0.5 附近**，而 `tune` 原来的默认网格从 `0.8` 起步 ——
+   扫不到就等于「工具说没有解」。现在逐命题分析用 `0.30–0.98` 的宽网格，并在报告里直接给出
+   「pass/block 区间 + 可分窗口 + 挡住可分性的具体条目」。
+3. **仍有命题是阈值解决不了的**：`test_asserts_behavior` 的 block 侧存在 0.94（只断言 mock 调用计数）
+   这种条目，它比一半的 pass 条目还高 —— 靠阈值只能把它推成转人工，属于**判据/标签**层面的事（§5.2）。
+
+### 4.5 标签政策：scope 什么时候才算「越界」（2026-09-20 定稿）
+
+扩样后最集中的争议是 `change_within_task_scope`：一批分数 0.42–0.79 的条目全是「顺带做的额外东西」。
+逐条看下来，模型不是判错，而是**判定边界没写清**。政策定为：
+
+- **在范围内**（→ `should-pass`）：同一功能/同一目标内的连带修正（顺手修掉一处会误导人的记账、
+  验收时发现同一面板的第三处缺陷、为目标那个 bug 写的一次性修复脚本）。
+- **越界**（→ `should-block`）：目标从未提到的新交付物或无关改动（新脚本/新文件、与症状无关的 CSS
+  媒体块搬移、**本次改动之前就已经是死的代码**的清理）。
+
+据此重标 3 条（`jev-tune-replay-accounting-extra` 0.79、`jev-reattribute-script-extra` 0.71、
+`jev-jev-panel-third-fix-extra` 0.53 → `should-pass`），保留 `jev-dialog-css-media-move-extra`（0.42）
+与 `alert-billing-incidental-cleanup`（0.42）为 `should-block`。
+重标**不改模型分数**（分数按内容缓存），所以这是一次零成本的政策修正 —— 这正是把标签政策写下来的价值。
 
 ---
 
@@ -386,11 +474,14 @@ npm --prefix vendor/pi-web-ui run check:protocol
 # 类型检查
 npm run typecheck
 
+# 逐判定项独立阈值（解析/校验/两层合并/CLI 真进程/磁盘往返，含「无配置时逐字节等旧行为」回归护栏）
+NODE_ENV=test npm --prefix vendor/pi-web-ui exec vitest run tests/unit/jev-per-proposition-thresholds.test.ts
+
 # CLI 冒烟（无密钥时应得到 review + 鉴权错误，而不是 approve）
 npm run jev -- status
 npm run jev -- probe
 
-# 阀值回放（真实联网，6 条语料约 $0.0002；详见 §4.1）
+# 阀值回放（真实联网，6 条语料约 $0.0002；详见 §4.1）；报告会额外给出逐命题可分窗口
 npm run jev -- tune --corpus tests/jev/corpus.jsonl.example
 
 # 真实浏览器验收（设置面板：配置项、余额、运行状态、命题清单、自检、
