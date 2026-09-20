@@ -3545,6 +3545,38 @@ export class DshClientSession {
 		this.channelUnsupported(commandId);
 	}
 
+	/** DEV-CON：DSH 引擎没有渠道/密钥库，Jev 门禁无凭据可解析，因此明确回不支持。 */
+	async pushJevStatus(reqId: number): Promise<void> {
+		this.emit({
+			type: "jev_status",
+			reqId,
+			ok: false,
+			error: "DSH 引擎不支持 Jev 决策门禁",
+			errorEn: "The DSH engine does not support the Jev decision gate",
+		});
+	}
+
+	async saveJevConfig(reqId: number): Promise<void> {
+		this.emit({
+			type: "jev_config_result",
+			reqId,
+			ok: false,
+			phase: "rejected",
+			error: "DSH 引擎不支持 Jev 决策门禁",
+			errorEn: "The DSH engine does not support the Jev decision gate",
+		});
+	}
+
+	async probeJev(reqId: number): Promise<void> {
+		this.emit({
+			type: "jev_probe_result",
+			reqId,
+			ok: false,
+			error: "DSH 引擎不支持 Jev 决策门禁",
+			errorEn: "The DSH engine does not support the Jev decision gate",
+		});
+	}
+
 	/** P4 候选：系统资源与引擎无关（只读采集宿主信息）。 */
 	async listResources(reqId: number): Promise<void> {
 		try {

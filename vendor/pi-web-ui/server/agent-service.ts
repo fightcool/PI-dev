@@ -25,6 +25,15 @@ import { isFailedStopReason, normalizeUsageEvent, TokenUsageTracker } from "#usa
 import { PROTOCOL_VERSION } from "./protocol-version.js";
 import { ChannelService } from "./dev-con/channel-service.js";
 import { AccountRegistry } from "./dev-con/channel-accounts.js";
+import { JevGate, type JevDecision } from "./dev-con/jev-gate.js";
+import {
+	JEV_PROBE_PROPOSITION_ID,
+	JEV_PROPOSITIONS,
+	JEV_PROVIDER_ID,
+	buildJevQuestions,
+	redactJevGateConfigForEcho,
+} from "./dev-con/jev-model.js";
+import { loadJevSettings, saveJevSettings } from "./dev-con/jev-settings.js";
 import type { ChannelRecord, RequestBindingSnapshot } from "./dev-con/channel-model.js";
 import type { ChannelServiceHost } from "./dev-con/channel-service.js";
 import { UsageHistoryStore, type UsageHistoryRecord } from "./dev-con/usage-history.js";
@@ -125,6 +134,7 @@ import {
 import type {
 	BgServer,
 	ChannelProviderInput,
+	ClientMessage,
 	CommandDef,
 	ConversationSummary,
 	GoalStatus,
@@ -177,6 +187,21 @@ const OPS_ALERT_CHECK_MS = (() => {
 	const v = Number(process.env.PI_WEB_OPS_ALERT_MS);
 	return Number.isFinite(v) && v >= 1000 ? v : 60_000;
 })();
+/**
+ * Jev 自检（jev_probe）的内置合成样本：一段极小的代码改动描述。
+ * @WHY 自检的目的是证明「key / 路由 / 模型可用」，不能依赖用户仓库内容：
+ *   固定样本不进磁盘、不含任何真实代码，也保证同一部署下自检结果可对比。
+ */
+const JEV_PROBE_STATE: Record<string, unknown> = {
+	note: "内置自检样本（不是真实代码）",
+	diff: [
+		"--- a/src/api.ts",
+		"+++ b/src/api.ts",
+		"@@ -1,3 +1,3 @@",
+		"-export function parse(input: string): Result { return parseStrict(input); }",
+		"+export function parse(input: string, opts?: { lenient?: boolean }): Result { return parseStrict(input, opts); }",
+	].join("\n"),
+};
 /** Preview panel cap: only the first 512KB of a file is ever read/sent. */
 
 /** Thrown when the service is quiesced (draining) and the request is NEW work
@@ -1633,6 +1658,8 @@ export class ClientSession {
 		this.alertTimer.unref?.();
 		this.accounts = new AccountRegistry();
 		this.channels = new ChannelService(this.makeChannelHost(agentDir), this.accounts);
+		// Jev 门禁：配置在装配时读一次（损坏则回落默认值 + parseError，不阻塞启动）。
+		this.jev = new JevGate({ config: loadJevSettings(agentDir).config });
 		this.usageHistory = new UsageHistoryStore(join(agentDir, "dev-con", "usage-history.jsonl"));
 		// 模板里的 {baseUrl} 取自运行时模型目录（服务商 baseUrl 由 models.json 拥有）。
 		setProviderBaseUrlLookup((providerId) => {
@@ -3882,6 +3909,11 @@ export class ClientSession {
 	private readonly channels!: ChannelService;
 	/** 账户查询注册表（有界超时/限频/缓存）；默认适配器见 channel-accounts.ts。 */
 	private readonly accounts!: AccountRegistry;
+	/**
+	 * Jev 决策门禁（有界 HTTP + TTL 缓存 + 单飞去重 + 事件计数）。
+	 * 见 dev-con/jev-gate.ts；配置落盘在 <agentDir>/dev-con/jev-settings.json（只存密钥**名**）。
+	 */
+	private readonly jev!: JevGate;
 	/**
 	 * P4 首个切片：逐请求用量历史的实例私有存储（append-only JSONL）。
 	 * 写入只发生在 recordUsage()；查询是只读聚合，不参与计费、不改写会话。
@@ -6333,6 +6365,136 @@ export class ClientSession {
 
 	async queryChannelAccount(commandId: string, channelId: string): Promise<void> {
 		await this.channels.queryAccount({ commandId, channelId });
+	}
+
+	/** DEV-CON：Jev 门禁只读状态（配置已清洗：只回密钥名 + 运行聚合 + 可用命题）。 */
+	async pushJevStatus(reqId: number): Promise<void> {
+		try {
+			this.emit({
+				type: "jev_status",
+				reqId,
+				ok: true,
+				status: {
+					config: redactJevGateConfigForEcho(this.jev.config()),
+					runtime: this.jev.snapshotStatus(),
+					propositions: JEV_PROPOSITIONS.map((p) => ({
+						id: p.id,
+						instructions: p.instructions,
+						criteria: { ...p.criteria },
+					})),
+				},
+			});
+		} catch (err) {
+			this.emit({
+				type: "jev_status",
+				reqId,
+				ok: false,
+				error: `读取 Jev 门禁状态失败：${(err as Error).message}`,
+				errorEn: `Failed to read the Jev gate status: ${(err as Error).message}`,
+			});
+		}
+	}
+
+	/**
+	 * DEV-CON：保存 Jev 门禁配置（读-合并-写；明文密钥一律拒绝）。
+	 * @CONTRACT 写盘成功后才 applyConfig（与渠道层同口径：先落盘再生效），
+	 *   且改动会在下一条命令的 evaluate 里生效；已发出的调用不受影响。
+	 */
+	async saveJevConfig(
+		reqId: number,
+		config: Extract<ClientMessage, { type: "jev_config_save" }>["config"],
+	): Promise<void> {
+		const result = saveJevSettings(this.agentDir, config);
+		if (!result.ok) {
+			this.emit({
+				type: "jev_config_result",
+				reqId,
+				ok: false,
+				phase: "rejected",
+				error: result.error,
+				errorEn: result.errorEn,
+			});
+			return;
+		}
+		this.jev.applyConfig(result.config);
+		this.emit({
+			type: "jev_config_result",
+			reqId,
+			ok: true,
+			phase: "applied",
+			config: redactJevGateConfigForEcho(result.config),
+		});
+		this.emit({
+			type: "notice",
+			level: "info",
+			text: "Jev 决策门禁配置已保存",
+			textEn: "Jev decision-gate settings saved",
+		});
+	}
+
+	/**
+	 * DEV-CON：门禁自检（非黑盒）：用一条内置命题真实打一次 Decisions 接口。
+	 * @CONTRACT ok=true 表示**真的拿到了有效决策**（哪怕结论是 block）；
+	 *   任何失败（未配凭据/超时/401/429/缺答/越界）都 rc ok=false 并把双语错误带回。
+	 *   密钥只在服务端解析，绝不进回包/日志/notice。
+	 */
+	async probeJev(reqId: number, state?: Record<string, unknown>): Promise<void> {
+		let decision: JevDecision;
+		try {
+			const apiKey = this.resolveJevApiKey();
+			if (!apiKey) {
+				const error = "未配置可用的 Jev 凭据：请在门禁设置里选择一个密钥名（provider-keys.json）";
+				this.emit({
+					type: "jev_probe_result",
+					reqId,
+					ok: false,
+					error,
+					errorEn: "No usable Jev credential: pick a key name (provider-keys.json) in the gate settings",
+				});
+				return;
+			}
+			decision = await this.jev.evaluate({
+				state: state ?? JEV_PROBE_STATE,
+				questions: buildJevQuestions([JEV_PROBE_PROPOSITION_ID]),
+				apiKey,
+			});
+		} catch (err) {
+			// evaluate 本就永不抛；这里是兵底（例如 keyName 解析器抛错），同样不能冒泡到 dispatch。
+			this.emit({
+				type: "jev_probe_result",
+				reqId,
+				ok: false,
+				error: `门禁自检失败：${(err as Error).message}`,
+				errorEn: `Gate probe failed: ${(err as Error).message}`,
+			});
+			return;
+		}
+		this.emit({
+			type: "jev_probe_result",
+			reqId,
+			ok: !decision.error,
+			decision,
+			error: decision.error,
+			errorEn: decision.errorEn,
+		});
+	}
+
+	/**
+	 * 解析 Jev 凭据正文（只在服务端内部流转，绝不落日志/回显）。
+	 * @CONTRACT 用配置里的 credentialRef（providerId + keyName）；未绑定命名凭据时回落到
+	 *   该服务商当前 **active** 密钥（与模型调用同一套优先级），两处都取不到则返回 null。
+	 * @WHY 不把 name 包一层“默认密钥”：resolveProviderKeyValue 只認名字，
+	 *   “有名字但名字不存在”与“根本没配”都应当如实报「未配置可用凭据」。
+	 */
+	private resolveJevApiKey(): string | null {
+		try {
+			const ref = this.jev.config().credentialRef;
+			if (ref) return this.modelAdmin.resolveProviderKeyValue(ref.providerId, ref.keyName);
+			const active = this.modelAdmin.keyNameList(JEV_PROVIDER_ID).find((k) => k.active);
+			return active ? this.modelAdmin.resolveProviderKeyValue(JEV_PROVIDER_ID, active.keyName) : null;
+		} catch {
+			return null;
+		}
 	}
 
 	/** Set the thinking level for future turns. */

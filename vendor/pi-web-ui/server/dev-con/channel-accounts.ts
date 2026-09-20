@@ -136,24 +136,41 @@ function isCctqUrl(raw: string): boolean {
 	}
 }
 
-/** 有界 JSON 读取：超时、体积上限、禁止重定向、非 2xx 即失败。 */
-async function fetchJson(
+/**
+ * 有界 JSON 读取的失败种类。
+ * @WHY error 文本是**账户查询语境**的中文（“账户接口…”）：复用方（jev-gate）需要按种类
+ *   生成自己的双语文案，所以这里额外给出机器可读的 kind，而不是让调用方去匹配中文串。
+ *   `http` 需结合 status 判断（401/402/429/5xx），`status` 恒为真实 HTTP 状态。
+ */
+export type FetchJsonFailureKind = "timeout" | "network" | "redirect" | "http" | "no-body" | "too-large" | "not-json";
+
+/** 有界 JSON 读取：超时、体积上限、禁止重定向、非 2xx 即失败。
+ *  @CONTRACT 导出供 jev-gate 复用（单一有界传输实现，安全修复只需改一处）；
+ *  调用方自己持有 AbortController 与超时定时器，这里只发一次请求、**绝不重试**。
+ */
+export async function fetchJson(
 	fetchImpl: typeof fetch,
 	url: string,
 	init: RequestInit,
 	signal: AbortSignal,
-): Promise<{ ok: boolean; status: number; body?: unknown; error?: string }> {
+): Promise<{ ok: boolean; status: number; body?: unknown; error?: string; kind?: FetchJsonFailureKind }> {
 	let res: Response;
 	try {
 		res = await fetchImpl(url, { ...init, redirect: "manual", signal });
 	} catch (err) {
-		return { ok: false, status: 0, error: (err as Error).name === "AbortError" ? "查询超时" : (err as Error).message };
+		const aborted = (err as Error).name === "AbortError";
+		return {
+			ok: false,
+			status: 0,
+			kind: aborted ? "timeout" : "network",
+			error: aborted ? "查询超时" : (err as Error).message,
+		};
 	}
 	if (res.status >= 300 && res.status < 400)
-		return { ok: false, status: res.status, error: "账户接口返回重定向，已按策略拒绝" };
-	if (!res.ok) return { ok: false, status: res.status, error: `账户接口返回 HTTP ${res.status}` };
+		return { ok: false, status: res.status, kind: "redirect", error: "账户接口返回重定向，已按策略拒绝" };
+	if (!res.ok) return { ok: false, status: res.status, kind: "http", error: `账户接口返回 HTTP ${res.status}` };
 	const reader = res.body?.getReader();
-	if (!reader) return { ok: false, status: res.status, error: "账户接口无响应体" };
+	if (!reader) return { ok: false, status: res.status, kind: "no-body", error: "账户接口无响应体" };
 	const chunks: Uint8Array[] = [];
 	let total = 0;
 	try {
@@ -164,23 +181,25 @@ async function fetchJson(
 				total += value.byteLength;
 				if (total > MAX_BODY_BYTES) {
 					await reader.cancel();
-					return { ok: false, status: res.status, error: "账户接口响应体超出上限" };
+					return { ok: false, status: res.status, kind: "too-large", error: "账户接口响应体超出上限" };
 				}
 				chunks.push(value);
 			}
 		}
 	} catch (err) {
+		const aborted = (err as Error).name === "AbortError";
 		return {
 			ok: false,
 			status: res.status,
-			error: (err as Error).name === "AbortError" ? "查询超时" : (err as Error).message,
+			kind: aborted ? "timeout" : "network",
+			error: aborted ? "查询超时" : (err as Error).message,
 		};
 	}
 	const text = Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
 	try {
 		return { ok: true, status: res.status, body: JSON.parse(text) };
 	} catch {
-		return { ok: false, status: res.status, error: "账户接口返回非 JSON" };
+		return { ok: false, status: res.status, kind: "not-json", error: "账户接口返回非 JSON" };
 	}
 }
 

@@ -9,6 +9,8 @@
 //   读取 input.channel.models，且 channel_state 已下发 UiChannelInfo.models。这里在**前端局部**
 //   补上可选的 models，否则提交白名单会被 TS 的 excess property 检查拒掉。
 //   一旦 server/protocol.ts 的 channel_save 补上该字段，下面的交叉类型即为恒等，可删。
+// @ASSUME Jev 决策门禁（jev_status / jev_config_result / jev_probe_result）回包存在 ChatState.jev 里，
+//   按 reqId 与提交匹配（与渠道回执同一口径）。
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { randomUuid } from "./uuid";
 import { withToken } from "./auth-token";
@@ -86,6 +88,18 @@ export interface Notice {
 export type ChannelStateMsg = Extract<ServerMessage, { type: "channel_state" }>;
 /** 渠道命令回执（`channel_command_result`）—— 按 commandId 与提交匹配。 */
 export type ChannelCommandResult = Extract<ServerMessage, { type: "channel_command_result" }>;
+/** Jev 决策门禁回包：状态（`jev_status`）、配置保存回执（`jev_config_result`）、自检（`jev_probe_result`）。 */
+export type JevStatusMsg = Extract<ServerMessage, { type: "jev_status" }>;
+export type JevConfigResultMsg = Extract<ServerMessage, { type: "jev_config_result" }>;
+export type JevProbeResultMsg = Extract<ServerMessage, { type: "jev_probe_result" }>;
+
+/** Jev 门禁的最近一次 status / 配置保存 / 自检结果（按 reqId 与提交匹配）。 */
+export interface JevUiState {
+	status: JevStatusMsg | null;
+	config: JevConfigResultMsg | null;
+	probe: JevProbeResultMsg | null;
+}
+
 export type UsageHistoryMsg = Extract<ServerMessage, { type: "usage_history" }>;
 export type ResourcesMsg = Extract<ServerMessage, { type: "resources" }>;
 export type StorageMsg = Extract<ServerMessage, { type: "storage" }>;
@@ -239,6 +253,8 @@ export interface ChatState {
 	diagnostics: DiagnosticsMsg | null;
 	/** 渠道命令回执，按 commandId 保留最近一条，供 UI 显示最新一次结果。 */
 	channelResults: Record<string, ChannelCommandResult>;
+	/** Jev 门禁：最近一次 status / 配置保存 / 自检结果（按 reqId 与提交匹配）。 */
+	jev: JevUiState;
 	/** Result of the last install_pi_agent run (null while not started/running). */
 	installResult: { ok: boolean; detail: string } | null;
 	/** Path completions for the cwd input. */
@@ -378,6 +394,9 @@ type Action =
 	| { type: "tool_status"; status: ToolStatus }
 	| { type: "notice"; notice: Notice }
 	| { type: "dismiss_notice"; id: number }
+	| { type: "jev_status"; msg: JevStatusMsg }
+	| { type: "jev_config_result"; msg: JevConfigResultMsg }
+	| { type: "jev_probe_result"; msg: JevProbeResultMsg }
 	| {
 			type: "ready";
 			serverVersion: string;
@@ -802,6 +821,12 @@ function reducer(state: ChatState, action: Action): ChatState {
 			return { ...state, diagnostics: action.diagnostics };
 		case "channel_command_result":
 			return { ...state, channelResults: rememberChannelResult(state.channelResults, action.result) };
+		case "jev_status":
+			return { ...state, jev: { ...state.jev, status: action.msg } };
+		case "jev_config_result":
+			return { ...state, jev: { ...state.jev, config: action.msg } };
+		case "jev_probe_result":
+			return { ...state, jev: { ...state.jev, probe: action.msg } };
 		case "fetch_models_result":
 			return { ...state, fetchModelsResult: action.result };
 		case "channel_models_result":
@@ -1014,6 +1039,7 @@ export function useChat() {
 		bgServers: [],
 		settings: null,
 		fetchModelsResult: null,
+		jev: { status: null, config: null, probe: null },
 		channelModelsResult: null,
 		refreshProviderResult: null,
 		cloneProviderResult: null,
@@ -1284,6 +1310,15 @@ export function useChat() {
 					break;
 				case "channel_command_result":
 					dispatch({ type: "channel_command_result", result: msg });
+					break;
+				case "jev_status":
+					dispatch({ type: "jev_status", msg });
+					break;
+				case "jev_config_result":
+					dispatch({ type: "jev_config_result", msg });
+					break;
+				case "jev_probe_result":
+					dispatch({ type: "jev_probe_result", msg });
 					break;
 				case "fetch_models_result":
 					dispatch({
