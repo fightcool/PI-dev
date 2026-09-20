@@ -1,6 +1,6 @@
 # Jev 决策门禁（Jev Decision Gate）
 
-<!-- 🍞 AI Breadcrumb — @COUPLED ../vendor/pi-web-ui/server/dev-con/jev-model.ts, ../vendor/pi-web-ui/server/dev-con/jev-gate.ts, ../vendor/pi-web-ui/server/dev-con/jev-settings.ts, ../vendor/pi-web-ui/scripts/jev-gate.ts, ../vendor/pi-web-ui/server/protocol.ts, ./MODEL-ROUTING.md -->
+<!-- 🍞 AI Breadcrumb — @COUPLED ../vendor/pi-web-ui/server/dev-con/jev-model.ts, ../vendor/pi-web-ui/server/dev-con/jev-gate.ts, ../vendor/pi-web-ui/server/dev-con/jev-cache.ts, ../vendor/pi-web-ui/server/dev-con/jev-settings.ts, ../vendor/pi-web-ui/scripts/jev-gate.ts, ../vendor/pi-web-ui/server/protocol.ts, ./MODEL-ROUTING.md -->
 
 用 TypeSafe **Jev**（System One 模型）在编码过程中处理**二元判断类事务**：给出「是 / 否」的概率，由代码按阈值决定「通过 / 阻断 / 转人工」。
 
@@ -37,6 +37,11 @@ npm run jev -- propositions
 
 # 4) 跑一次门禁
 npm run jev -- check --proposition is_breaking_change --state-file -   # 从 stdin 读被审内容
+
+# 5) 缓存（派生数据，可丢）
+npm run jev -- cache              # 概览：条目数 / 占用 / 时间范围
+npm run jev -- cache clear        # 清空（只损失一次调用费用）
+npm run jev -- probe --no-cache   # 跳过缓存，强制一次新鲜判定
 ```
 
 Web 端同样可配置与观测：**设置 → Jev 决策门禁**（开关、密钥、端点/模型、阈值、余额、运行状态、测试连接）。
@@ -133,12 +138,15 @@ p <= 0.1   → 明确为假  → block（自动阻断）
 
 | 看什么 | 在哪 |
 | --- | --- |
-| 运行状态（调用数、三态分布、失败、token、费用、缓存命中、平均耗时、最近错误） | 设置面板「Jev 决策门禁」；CLI `status`（**仅本进程**） |
-| 决策审计（每条概率 + requestId + model + cost） | `check` / `probe` 的 `--json` 输出；服务端决策事件（内存有界环形缓冲，容量 200） |
+| 运行状态（调用数、三态分布、失败、token、费用、缓存命中（含磁盘）、平均耗时、最近错误） | 设置面板「Jev 决策门禁」；CLI `status`（**仅本进程**） |
+| 决策审计（每条概率 + requestId + model + cost + 缓存来源 `hit`/`disk`/`miss`） | `check` / `probe` 的 `--json` 输出；服务端决策事件（内存有界环形缓冲，容量 200） |
+| 持久决策缓存（条目数 / 占用 / 时间范围 / 损坏行） | CLI `cache`（`--json` 机器可读）；清空用 `cache clear` |
 | 余额 / 额度 | 复用**既有 OpenRouter 账户查询适配器**（`/api/v1/credits`、`/api/v1/key`），不新增余额事实源 |
 | 命题清单（判定句 + 真/假标准） | 设置面板；CLI `propositions` |
 
 > 决策事件**刻意只存内存、不落盘**，以免出现第二份用量/费用事实源。因此 CLI 的 `status` 只反映它自己那个进程；在线实例的运行态以设置面板为准。
+>
+> 与之相对，**决策缓存**（`<agentDir>/dev-con/jev-decisions-cache.jsonl`）是落盘的 —— 但它是**派生、可丢**的数据，不是事实源：只存 `cacheKey` 的 sha256 摘要、命题名与 0..1 分数、以及审计元数据，**绝不存 `state` 正文 / 密钥 / 被审文本**（有单测断言）。删掉它只损失一次调用费用。
 
 ---
 
@@ -152,7 +160,20 @@ p <= 0.1   → 明确为假  → block（自动阻断）
 | 限流 | 250,000 tok/s、1,200 rpm；超限 `429`（SDK 默认退避重试；直连需自行处理 `retry-after`） |
 | 并行 | 一个请求里多条命题**并行隔离求值**，加问题几乎不增加耗时，也不产生 context-rot |
 
-**省钱的正确做法是缓存，不是少问。** 决策近似是 `(model, schema, state)` 的纯函数，可 memoize（社区实现 `hyperspaceai/jevcache` 的思路：redact + canonicalize 后再 hash，CI 里还能拿到确定性回放）。当前实现有进程内 TTL 缓存；**跨进程/CI 的持久化缓存尚未做**（见第 11 节）。
+**省钱的正确做法是缓存，不是少问。** 决策近似是 `(model, schema, state)` 的纯函数，可 memoize（社区实现 `hyperspaceai/jevcache` 的思路：redact + canonicalize 后再 hash，CI 里还能拿到确定性回放）。
+
+当前实现有两级缓存：
+
+| 级别 | 位置 | 存活范围 | 失效条件 |
+| --- | --- | --- | --- |
+| 内存 TTL | `JevGate.cache`（上限 200 条） | 本进程 | `cacheTtlMs` 到期 / 改配置（`applyConfig` 清空） |
+| **磁盘持久** | `<agentDir>/dev-con/jev-decisions-cache.jsonl`（8 MiB 轮转只留一代，上限 20 000 条） | **跨进程 / 跨重启 / CI 重放** | `cache clear`、条目 `model` 与本次不一致、命题集合与本次不一致 |
+
+`evaluate` 的查找顺序是 **内存 → 磁盘 → 网络**，审计里的 `cache` 分别记 `hit` / `disk` / `miss`；`--no-cache`（或 `useCache: false`）会同时跳过两级缓存且不写回，用于排障与验证上游。
+**只写成功判定**：超时 / 401 / 限流 / 缺答一律不落盘（否则一次网络抖动会被固化成「以后都算它」）。
+**命中复用分数、不用旧结论**：磁盘条目里的 0..1 分数会拿**当前**阈值重新判定三态，所以调阈值不会被旧标准放行。
+
+为何磁盘缓存不设 TTL：它的目的之一是 **CI 确定性回放**（官方实测同一输入的概率抖动可达 ~0.08，同一提交在两次运行里可能给出不同结论）。按时间过期的缓存会把抖动放回 CI。要清理就用 `cache clear`。
 
 ---
 
@@ -185,6 +206,7 @@ npm run jev -- probe
 
 - **未做真实联网验收**：请求/响应形状按官方文档与 OpenRouter cookbook 实现，但**尚未用真实 key 跑通过一次成功决策**。首次接入请务必用 `probe` 验证（这是「非黑盒」的设计目的）。
 - **`alpha` 接口**：OpenRouter 的 Decisions 路由标注为 alpha，可能变更；所有调用已收敛到 `JevGate` 单一出口，便于切换。
-- **决策事件不落盘**：跨进程/CI 的持久化决策缓存、以及把门禁接进 CI 门禁流程，尚未实现。
-- **中文准确率**：官方称英文最优、CJK 可用但不保证。内置命题为中文，需在真实内容上自测；关键门禁可考虑改用英文命题。
+- **决策缓存已落盘但不是事实源**：`jev-decisions-cache.jsonl` 只存摘要/分数/审计元数据（不存 state、密钥、被审文本），派生可丢；它**不参与**用量与计费统计（计费仍以用量历史为准）。
+- **未做**：把门禁接进 CI 门禁流程（缓存已为它准备好确定性回放的数据基础）、以及按 `state` 做 redact 后再哈希（当前直接对 state canonicalize 后哈希，state 本身不落盘）。
+- **中文准确率**：官方称英文最优、CJK 可用但不保证；因此内置命题的 `instructions`/`criteria` 都是**英文**（送进模型的就是它们），给人的中文说明走双语的 `reason`/`reasonEn` 与 CLI/UI 文案。
 - **仅 Noul**：当前只用 `noul`（是/否概率）。`noul` **不带 confidence**（官方明确：confidence 只在 `choice` / `score` 上）。若某场景需要 confidence，应改用二元 `choice`，并**单独调阈值**（不可沿用 Noul 的阈值）。

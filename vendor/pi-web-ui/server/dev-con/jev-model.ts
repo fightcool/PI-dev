@@ -6,7 +6,8 @@
  *
  * Breadcrumbs (changing this affects):
  *   @COUPLED jev-gate.ts（配置/判定/缓存键的消费者）, jev-settings.ts（持久化同一 shape）,
- *            ../protocol.ts（UiJevGateConfig / UiJevDecision / UiJevRuntimeStatus 的镜像）,
+ *            jev-cache.ts（把 JevDecisionEvent 的 cache 三态与 checks 摘要落盘）,
+ *            ../protocol.ts（UiJevGateConfig / UiJevDecision / UiJevRuntimeStatus 的镜像），
  *            ../agent-service.ts（ClientSession 接线）, ../index.ts（dispatch）
  *   @CONTRACT 纯逻辑模块：禁止 fs / 网络 / SDK 导入（只允许 node:crypto 做哈希），
  *             便于 vitest 单测直接覆盖规格；密钥正文永不进入本模块的数据结构。
@@ -517,7 +518,8 @@ export interface JevDecisionEvent {
 	inputTokens: number;
 	outputTokens: number;
 	cost: number;
-	cache: "hit" | "miss";
+	/** hit=进程内 TTL 缓存；disk=磁盘持久缓存（跨进程/CI）；miss=真实调用。 */
+	cache: "hit" | "disk" | "miss";
 	elapsedMs: number;
 	error?: { code: string; error: string; errorEn: string };
 }
@@ -542,7 +544,7 @@ export function normalizeJevDecisionEvent(raw: unknown): JevDecisionEvent | null
 	const outcome = raw.outcome;
 	if (at === undefined) return null;
 	if (outcome !== "approve" && outcome !== "block" && outcome !== "review") return null;
-	const cache = raw.cache === "hit" ? "hit" : raw.cache === "miss" ? "miss" : null;
+	const cache = raw.cache === "hit" ? "hit" : raw.cache === "disk" ? "disk" : raw.cache === "miss" ? "miss" : null;
 	if (!cache) return null;
 	const elapsedMs = finiteNumber(raw.elapsedMs);
 	if (elapsedMs === undefined) return null;
@@ -582,7 +584,10 @@ export interface JevRuntimeStatus {
 	inputTokens: number;
 	outputTokens: number;
 	cost: number;
+	/** hit 与 disk **合计**的命中数（命中率口径不变，见 diskHits 单独列）。 */
 	cacheHits: number;
+	/** 其中来自**磁盘持久缓存**的命中数（CI 确定性回放靠它；内存命中不算）。 */
+	diskHits: number;
 	/** 平均耗时（ms，四舍五入）；无事件为 0。 */
 	avgElapsedMs: number;
 	/** 最近一次错误（按 at 最大者）；无错误为 null。 */
@@ -601,6 +606,7 @@ export function aggregateJevStatus(events: readonly JevDecisionEvent[]): JevRunt
 		outputTokens: 0,
 		cost: 0,
 		cacheHits: 0,
+		diskHits: 0,
 		avgElapsedMs: 0,
 		lastError: null,
 	};
@@ -613,7 +619,8 @@ export function aggregateJevStatus(events: readonly JevDecisionEvent[]): JevRunt
 		status.inputTokens += event.inputTokens;
 		status.outputTokens += event.outputTokens;
 		status.cost += event.cost;
-		if (event.cache === "hit") status.cacheHits += 1;
+		if (event.cache === "hit" || event.cache === "disk") status.cacheHits += 1;
+		if (event.cache === "disk") status.diskHits += 1;
 		elapsedSum += event.elapsedMs;
 		if (event.error) {
 			status.failed += 1;

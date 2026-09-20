@@ -30,7 +30,18 @@ import {
 } from "../channel-account";
 import type { UiAccountStatus, UiChannelInfo, UiJevDecision, UiJevProposition, UiJevRuntimeStatus } from "../types";
 import type { JevConfigResultMsg, JevProbeResultMsg, JevStatusMsg } from "../use-chat";
-import { brief, formatMs, formatScore, outcomeLabelKey, pickError, pickReason, prettyJson } from "../jev-decision";
+import {
+	brief,
+	cacheClearHint,
+	cacheSourceLabel,
+	diskHitLabel,
+	formatMs,
+	formatScore,
+	outcomeLabelKey,
+	pickError,
+	pickReason,
+	prettyJson,
+} from "../jev-decision";
 
 /** 运行状态：总调用 / 三分支 / 失败 / token / 费用 / 缓存 / 平均耗时 + 最近一次错误。 */
 export function JevRuntimeCards({
@@ -52,6 +63,8 @@ export function JevRuntimeCards({
 		{ title: t("settingsJevOutcomeReview"), value: String(runtime.review) },
 		{ title: t("settingsJevFailures"), value: String(runtime.failed) },
 		{ title: t("settingsJevCacheHits"), value: String(runtime.cacheHits) },
+		// 磁盘命中单列：进程内命中与跨进程/CI 的持久命中不是一件事（协议里 diskHits 是必填字段）。
+		{ title: diskHitLabel(locale), value: String(runtime.diskHits ?? 0) },
 		{ title: t("usageColInput"), value: String(runtime.inputTokens) },
 		{ title: t("usageColOutput"), value: String(runtime.outputTokens) },
 		{ title: t("usageColCost"), value: cost || "—" },
@@ -82,6 +95,8 @@ export function JevRuntimeCards({
 					{new Date(runtime.lastError.at).toLocaleString()}
 				</div>
 			)}
+			{/* 清空缓存的入口只有 CLI：缓存是派生数据，不为它新开一条 WS 消息/服务端接口。 */}
+			<p className="set-hint">{cacheClearHint(locale)}</p>
 		</>
 	);
 }
@@ -264,8 +279,7 @@ function JevDecisionView({ decision, locale }: { decision: UiJevDecision; locale
 				<span className="chan-meta">
 					{audit.model ?? "—"} · {audit.provider ?? "—"} · {formatMs(audit.elapsedMs)} · {t("usageColInput")}{" "}
 					{audit.inputTokens ?? "—"} / {t("usageColOutput")} {audit.outputTokens ?? "—"} · {t("usageColCost")}{" "}
-					{formatAmount(audit.cost) || "—"} ·{" "}
-					{audit.cache === "hit" ? t("settingsJevCacheHits") : t("settingsJevCacheMiss")}
+					{formatAmount(audit.cost) || "—"} · {cacheSourceLabel(audit.cache, locale, t)}
 				</span>
 			</div>
 		</>

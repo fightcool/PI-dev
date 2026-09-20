@@ -64,7 +64,7 @@ Node `#usage` / `#governance` package imports 让源码与编译产物引用同�
 
 ## 渠道模块的落位
 
-当前功能（含 P0 结论）的唯一依据为 [DEV-CON-PROPOSAL.md](DEV-CON-PROPOSAL.md) 与 [P0-VERIFICATION.md](P0-VERIFICATION.md)。渠道元数据落在实例私有目录 `<agentDir>/dev-con/channels.json`（0600，只存 providerId/keyName/modelId 引用）；用量历史落在同目录的 `usage-history.jsonl`（append-only、0600、超过 8 MiB 轮转保留一代，保留天数在 `usage-settings.json`），告警开关在 `ops-settings.json`；密钥仍由 `provider-keys.json`/`auth.json` 拥有，模型目录仍由 `models.json` 拥有，不新增第二份可写事实源。历史 `dev-con/` 只读原型及其专用测试已移除，记录留在 [历史归档](history/dev-con/readonly-prototype.md)。
+当前功能（含 P0 结论）的唯一依据为 [DEV-CON-PROPOSAL.md](DEV-CON-PROPOSAL.md) 与 [P0-VERIFICATION.md](P0-VERIFICATION.md)。渠道元数据落在实例私有目录 `<agentDir>/dev-con/channels.json`（0600，只存 providerId/keyName/modelId 引用）；用量历史落在同目录的 `usage-history.jsonl`（append-only、0600、超过 8 MiB 轮转保留一代，保留天数在 `usage-settings.json`），告警开关在 `ops-settings.json`；Jev 决策门禁的配置在 `jev-settings.json`、决策缓存在 `jev-decisions-cache.jsonl`（两者均 0600；缓存是**派生可丢**数据，只存 cacheKey 摘要/命题分数/审计元数据，不含 `state`、密钥或被审文本，见 [JEV-DECISION-GATE.md](JEV-DECISION-GATE.md)）；密钥仍由 `provider-keys.json`/`auth.json` 拥有，模型目录仍由 `models.json` 拥有，不新增第二份可写事实源。历史 `dev-con/` 只读原型及其专用测试已移除，记录留在 [历史归档](history/dev-con/readonly-prototype.md)。
 
 端口约定：8788在线UI、8790发布候选、8791后续运维预留、8890开发后端；协议/浏览器测试使用独立空闲端口或完全模拟网络。
 

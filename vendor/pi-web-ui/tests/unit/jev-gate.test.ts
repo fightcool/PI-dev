@@ -1,14 +1,21 @@
-/* 🍞 AI Breadcrumb — @COUPLED ../../server/dev-con/jev-gate.ts
+/* 🍞 AI Breadcrumb — @COUPLED ../../server/dev-con/jev-gate.ts, ../../server/dev-con/jev-cache.ts
  * 📖 docs/DEV-CON-PROPOSAL.md §7（有界外部调用、失败转人工、可观测）
  * 全部用例注入 fetchImpl / now，**绝不真联网**：
  * 成功路径、缺答/越界必须失败、超时、非 JSON、体积超限、401/402/429、缓存命中、
- * 单飞去重、限频、失败不污染缓存也不把计数清零、密钥绝不出现在回显/诊断里。
+ * 单飞去重、限频、失败不污染缓存也不把计数清零、密钥绝不出现在回显/诊断里；
+ * 磁盘持久缓存（cachePath + mkdtempSync 隔离）：跨进程命中、useCache:false、不写失败、
+ * model/命题集合错配一律当 miss、diskHits 计数。
  */
-import { describe, expect, it } from "vitest";
+import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { JevGate } from "../../server/dev-con/jev-gate.js";
+import { JEV_CACHE_VERSION, appendJevCacheEntry, clearJevCache, jevCachePath } from "../../server/dev-con/jev-cache.js";
 import {
 	JEV_PROBE_PROPOSITION_ID,
 	buildJevQuestions,
+	cacheKey,
 	defaultJevGateConfig,
 	type JevGateConfig,
 } from "../../server/dev-con/jev-model.js";
@@ -65,6 +72,11 @@ function config(overrides: Partial<JevGateConfig> = {}): JevGateConfig {
 
 const noul = (score: number, type = "noul"): Record<string, unknown> => ({
 	answers: { [JEV_PROBE_PROPOSITION_ID]: { type, noul: score } },
+});
+
+/** 同上，但能答多条命题（磁盘缓存的命题集合校验用）。 */
+const noulMany = (scores: Record<string, number>): Record<string, unknown> => ({
+	answers: Object.fromEntries(Object.entries(scores).map(([name, score]) => [name, { type: "noul", noul: score }])),
 });
 
 const gate = (
@@ -392,5 +404,213 @@ describe("JevGate — secrets never surface", () => {
 		await g.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
 		expect(JSON.stringify(g.recentEvents())).not.toContain(SYNTHETIC_KEY);
 		expect(JSON.stringify(g.snapshotStatus())).not.toContain(SYNTHETIC_KEY);
+	});
+});
+
+/**
+ * 磁盘持久缓存：目的有两个 —— ① CI 确定性回放（同一提交得到同一结论，消掉 ~0.08 的概率抖动）；
+ * ② 省钱（决策近似是 (model, questions, state) 的纯函数，可 memoize）。
+ * 全部用 mkdtempSync 隔离的临时文件，零真实网络。
+ */
+describe("JevGate — 磁盘持久缓存（cachePath）", () => {
+	let dir = "";
+	let cachePath = "";
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "jev-gate-cache-"));
+		cachePath = jevCachePath(dir);
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	/** 带磁盘缓存的 gate（每调用一次模拟一个新进程）。 */
+	const diskGate = (
+		impl: typeof fetch,
+		overrides: Partial<JevGateConfig> = {},
+		extra: { now?: () => number; cacheTtlMs?: number } = {},
+	): JevGate =>
+		new JevGate({
+			fetchImpl: impl,
+			config: config(overrides),
+			now: extra.now,
+			cacheTtlMs: extra.cacheTtlMs ?? overrides.cacheTtlMs ?? 300_000,
+			cachePath,
+		});
+
+	it("第一次 miss → 网络；换一个进程（同一 cachePath）第二次同输入 → 不发起网络且 cache=disk", async () => {
+		const { impl, calls } = stubFetch(() => jsonResponse(noul(0.95)));
+		const first = await diskGate(impl).evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		expect(first.audit.cache).toBe("miss");
+		expect(calls).toHaveLength(1);
+
+		// 第二个实例 = 一次 CI 重放：只有磁盘缓存能救它。
+		const second = await diskGate(impl).evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		expect(calls).toHaveLength(1);
+		expect(second.audit.cache).toBe("disk");
+		expect(second.outcome).toBe("approve");
+		expect(second.checks).toEqual({ [JEV_PROBE_PROPOSITION_ID]: 0.95 });
+		expect(second.error).toBeUndefined();
+		// 写盘一律 0600（缓存里没有密钥，但也不该给同机其他用户读）。
+		expect(statSync(cachePath).mode & 0o777).toBe(0o600);
+	});
+
+	it("同一进程内内存 TTL 过期后落到磁盘（磁盘缓存不随 cacheTtlMs 过期）", async () => {
+		let clock = 1_000_000;
+		const { impl, calls } = stubFetch(() => jsonResponse(noul(0.95)));
+		const g = diskGate(impl, { cacheTtlMs: 1_000 }, { now: () => clock, cacheTtlMs: 1_000 });
+		const first = await g.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		expect(first.audit.cache).toBe("miss");
+		clock += 5_000;
+		const second = await g.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		expect(calls).toHaveLength(1);
+		expect(second.audit.cache).toBe("disk");
+		expect(second.outcome).toBe("approve");
+	});
+
+	it("useCache:false 每次都走网络，且不读不写磁盘缓存", async () => {
+		const { impl, calls } = stubFetch(() => jsonResponse(noul(0.95)));
+		const g = diskGate(impl);
+		const a = await g.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY, useCache: false });
+		const b = await g.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY, useCache: false });
+		expect(calls).toHaveLength(2);
+		expect([a.audit.cache, b.audit.cache]).toEqual(["miss", "miss"]);
+		expect(existsSync(cachePath)).toBe(false);
+	});
+
+	it("已有缓存时 useCache:false 仍然强制新鲜判定（不能让旧答案冒充新调用）", async () => {
+		const { impl, calls } = stubFetch(() => jsonResponse(noul(0.95)));
+		const g = diskGate(impl);
+		await g.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		const fresh = await g.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY, useCache: false });
+		expect(calls).toHaveLength(2);
+		expect(fresh.audit.cache).toBe("miss");
+	});
+
+	it("失败的判定一律不入缓存（401 / 缺答 / 超时），失败后再调用仍走网络", async () => {
+		const http401 = stubFetch(() => jsonResponse({ error: "nope" }, 401));
+		const g401 = diskGate(http401.impl);
+		await g401.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		await g401.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		expect(http401.calls).toHaveLength(2);
+
+		const missing = stubFetch(() => jsonResponse({ id: "gen-2" }));
+		const gMissing = diskGate(missing.impl);
+		await gMissing.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		await gMissing.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		expect(missing.calls).toHaveLength(2);
+
+		const timeout = stubFetch(
+			(_url, init) =>
+				new Promise<Response>((_resolve, reject) => {
+					init.signal?.addEventListener("abort", () => {
+						const err = new Error("aborted");
+						err.name = "AbortError";
+						reject(err);
+					});
+				}),
+		);
+		const gTimeout = diskGate(timeout.impl, { timeoutMs: 20 });
+		await gTimeout.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		await gTimeout.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		expect(timeout.calls).toHaveLength(2);
+
+		// 三种失败都不该在磁盘上留下任何东西。
+		expect(existsSync(cachePath)).toBe(false);
+	});
+
+	it("model 变更后旧条目失效（换 model 会 miss）", async () => {
+		const { impl, calls } = stubFetch(() => jsonResponse(noul(0.95)));
+		await diskGate(impl).evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		const other = await diskGate(impl, { model: "typesafe/jev-1.14" }).evaluate({
+			state: STATE,
+			questions: QUESTIONS,
+			apiKey: SYNTHETIC_KEY,
+		});
+		expect(calls).toHaveLength(2);
+		expect(other.audit.cache).toBe("miss");
+	});
+
+	it("条目的 model 与本次不一致 → 当 miss（即使 cacheKey 相同）", async () => {
+		const { impl, calls } = stubFetch(() => jsonResponse(noul(0.95)));
+		const key = cacheKey({ model: defaultJevGateConfig().model, questions: QUESTIONS, state: STATE });
+		appendJevCacheEntry(cachePath, {
+			v: JEV_CACHE_VERSION,
+			key,
+			at: 1,
+			model: "typesafe/jev-0.1",
+			outcome: "approve",
+			checks: { [JEV_PROBE_PROPOSITION_ID]: 0.99 },
+			audit: { elapsedMs: 1 },
+		});
+		const decision = await diskGate(impl).evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		expect(calls).toHaveLength(1);
+		expect(decision.audit.cache).toBe("miss");
+	});
+
+	it("命题集合变化后旧条目失效（checks 键集合必须与本次问的命题完全一致）", async () => {
+		const two = buildJevQuestions([JEV_PROBE_PROPOSITION_ID, "test_asserts_behavior"]);
+		const scores = { [JEV_PROBE_PROPOSITION_ID]: 0.95, test_asserts_behavior: 0.95 };
+		const { impl, calls } = stubFetch(() => jsonResponse(noulMany(scores)));
+		const model = defaultJevGateConfig().model;
+
+		// 少一条（旧答案只覆盖了一个命题）与多一条（旧答案覆盖了这次没问的命题）都必须 miss。
+		const stale: Record<string, number>[] = [
+			{ [JEV_PROBE_PROPOSITION_ID]: 0.99 },
+			{ [JEV_PROBE_PROPOSITION_ID]: 0.99, change_out_of_scope: 0.99 },
+		];
+		for (const checks of stale) {
+			clearJevCache(cachePath);
+			appendJevCacheEntry(cachePath, {
+				v: JEV_CACHE_VERSION,
+				key: cacheKey({ model, questions: two, state: STATE }),
+				at: 1,
+				model,
+				outcome: "approve",
+				checks,
+				audit: { elapsedMs: 1 },
+			});
+			const decision = await diskGate(impl).evaluate({ state: STATE, questions: two, apiKey: SYNTHETIC_KEY });
+			expect(decision.audit.cache).toBe("miss");
+		}
+		// 两次都是真实调用（错配的旧条目一次都没被当答案）。
+		expect(calls).toHaveLength(2);
+
+		// 反证：键集合一致时确实能命中（否则上面的「miss」可能只是因为缓存根本没生效）。
+		clearJevCache(cachePath);
+		const hit = await diskGate(impl).evaluate({ state: STATE, questions: two, apiKey: SYNTHETIC_KEY });
+		const again = await diskGate(impl).evaluate({ state: STATE, questions: two, apiKey: SYNTHETIC_KEY });
+		expect(hit.audit.cache).toBe("miss");
+		expect(again.audit.cache).toBe("disk");
+		expect(again.checks).toEqual(scores);
+	});
+
+	it("换了命题集合（cacheKey 也变了）不会串答案：仍是真实调用", async () => {
+		const two = buildJevQuestions([JEV_PROBE_PROPOSITION_ID, "test_asserts_behavior"]);
+		const scores = { [JEV_PROBE_PROPOSITION_ID]: 0.95, test_asserts_behavior: 0.2 };
+		const { impl, calls } = stubFetch(() => jsonResponse(noulMany(scores)));
+		const first = await diskGate(impl).evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		expect(first.audit.cache).toBe("miss");
+		const second = await diskGate(impl).evaluate({ state: STATE, questions: two, apiKey: SYNTHETIC_KEY });
+		expect(calls).toHaveLength(2);
+		expect(second.audit.cache).toBe("miss");
+		expect(second.checks).toEqual(scores);
+		// 两个命题集合现在各有自己的条目：两边都能命中。
+		const again = await diskGate(impl).evaluate({ state: STATE, questions: two, apiKey: SYNTHETIC_KEY });
+		expect(again.audit.cache).toBe("disk");
+	});
+
+	it("diskHits 单独计数，cacheHits 仍是 hit + disk 之和", async () => {
+		let clock = 1_000_000;
+		const { impl, calls } = stubFetch(() => jsonResponse(noul(0.95)));
+		const g = diskGate(impl, { cacheTtlMs: 1_000 }, { now: () => clock, cacheTtlMs: 1_000 });
+		await g.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY }); // miss（网络）
+		await g.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY }); // 内存 hit
+		clock += 5_000;
+		await g.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY }); // 磁盘 hit
+		expect(calls).toHaveLength(1);
+		expect(g.snapshotStatus()).toMatchObject({ total: 3, cacheHits: 2, diskHits: 1, approve: 3 });
+		// diskHits 必须能从事件缓冲单独取出来（设置面板/CLI 的「磁盘命中」就是它）。
+		expect(g.recentEvents().filter((e) => e.cache === "disk")).toHaveLength(1);
 	});
 });

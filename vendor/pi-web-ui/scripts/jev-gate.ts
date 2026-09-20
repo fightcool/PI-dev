@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /*
  * 🍞 AI Breadcrumb — @COUPLED ../server/dev-con/jev-model.ts, ../server/dev-con/jev-gate.ts,
- *   ../server/dev-con/jev-settings.ts, ../server/model-admin.ts,
+ *   ../server/dev-con/jev-cache.ts, ../server/dev-con/jev-settings.ts, ../server/model-admin.ts,
  *   ../server/dev-con/channel-accounts.ts（openRouterAdapter）, ./jev-gate-format.ts
  * 📖 ../../../docs/JEV-DECISION-GATE.md §「CLI」
  *
@@ -9,10 +9,11 @@
  *
  * 设计约束（与 Web 端共用同一份内核，绝不重复实现判断逻辑）：
  *   - 配置读/写走 dev-con/jev-settings.ts（0600 原子写、读-合并-写）；
- *   - 判断执行走 dev-con/jev-gate.ts 的 JevGate（有界 HTTP、TTL 缓存、单飞去重）；
+ *   - 判断执行走 dev-con/jev-gate.ts 的 JevGate（有界 HTTP、内存 TTL 缓存、持久缓存、单飞去重）；
  *   - 三态判定与命题定义走 dev-con/jev-model.ts（阈值不可在 CLI 里另定一套）；
  *   - 密钥只按名字引用，经 model-admin 解析，**任何输出都不含密钥正文**；
- *   - 额度查询复用既有的 OpenRouter 账户查询适配器，不新增第二份余额事实源。
+ *   - 额度查询复用既有的 OpenRouter 账户查询适配器，不新增第二份余额事实源；
+ *   - 持久决策缓存（jev-cache.ts）是派生可丢的：`cache stats` / `cache clear` 只看/只删它。
  *
  * Usage: node --import tsx scripts/jev-gate.ts <command> [options]
  * 退出码：0 通过 / 1 阻断 / 2 转人工 / 3 出错（仅 check、probe 使用）
@@ -20,6 +21,7 @@
 import { readFileSync } from "node:fs";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { JevGate } from "../server/dev-con/jev-gate.js";
+import { clearJevCache, jevCachePath, jevCacheStats } from "../server/dev-con/jev-cache.js";
 import { JEV_PROPOSITIONS, buildJevQuestions, redactJevGateConfigForEcho } from "../server/dev-con/jev-model.js";
 import { jevSettingsPath, loadJevSettings, saveJevSettings } from "../server/dev-con/jev-settings.js";
 import { ModelAdminService, type ModelAdminHost } from "../server/model-admin.js";
@@ -27,6 +29,8 @@ import { openRouterAdapter } from "../server/dev-con/channel-accounts.js";
 import type { ChannelRecord } from "../server/dev-con/channel-model.js";
 import {
 	PROBE_STATE,
+	printCacheClear,
+	printCacheStats,
 	printConfig,
 	printDecision,
 	printPropositions,
@@ -40,12 +44,17 @@ const CREDENTIAL_PROVIDER = "openrouter";
 
 type Flags = Map<string, string | boolean>;
 
-function parseArgs(argv: string[]): { command: string; flags: Flags } {
+function parseArgs(argv: string[]): { command: string; flags: Flags; positional: string[] } {
 	const [command = "help", ...rest] = argv;
 	const flags: Flags = new Map();
+	const positional: string[] = [];
 	for (let i = 0; i < rest.length; i++) {
 		const token = rest[i]!;
-		if (!token.startsWith("--")) continue;
+		if (!token.startsWith("--")) {
+			// 位置参数（目前只有 `cache stats|clear` 用）：不是 flag 的值就收进 positional。
+			positional.push(token);
+			continue;
+		}
 		const eq = token.indexOf("=");
 		if (eq > 0) {
 			flags.set(token.slice(2, eq), token.slice(eq + 1));
@@ -60,7 +69,7 @@ function parseArgs(argv: string[]): { command: string; flags: Flags } {
 			flags.set(name, true);
 		}
 	}
-	return { command, flags };
+	return { command, flags, positional };
 }
 
 function agentDirOf(flags: Flags): string {
@@ -129,8 +138,10 @@ async function runDecision(
 	ids: string[],
 	apiKey: string,
 	asJson: boolean,
+	/** false = --no-cache：强制新鲜判定（内存与磁盘缓存都不读也不写）。 */
+	useCache: boolean,
 ): Promise<number> {
-	const decision = await gate.evaluate({ state, questions: questionsFor(ids), apiKey });
+	const decision = await gate.evaluate({ state, questions: questionsFor(ids), apiKey, useCache });
 	if (asJson) console.log(JSON.stringify(decision, null, 2));
 	else printDecision(decision);
 	if (decision.error) return 3;
@@ -226,7 +237,7 @@ async function runBalance(
 }
 
 async function main(): Promise<number> {
-	const { command, flags } = parseArgs(process.argv.slice(2));
+	const { command, flags, positional } = parseArgs(process.argv.slice(2));
 	const asJson = flags.get("json") === true;
 	const agentDir = agentDirOf(flags);
 	const loaded = loadJevSettings(agentDir);
@@ -262,12 +273,33 @@ async function main(): Promise<number> {
 		timeoutMs: config.timeoutMs,
 		cacheTtlMs: config.cacheTtlMs,
 		minIntervalMs: config.minIntervalMs,
+		// 磁盘持久缓存：CLI 与在线实例共用同一份（同一 agentDir），CI 回放靠它保证同结论。
+		cachePath: jevCachePath(agentDir),
 	});
 
 	if (command === "status") {
 		if (asJson) console.log(JSON.stringify(gate.snapshotStatus(), null, 2));
 		else printStatus(gate);
 		return 0;
+	}
+
+	if (command === "cache") {
+		const sub = positional[0] ?? "stats";
+		const path = jevCachePath(agentDir);
+		if (sub === "stats") {
+			const stats = jevCacheStats(path);
+			if (asJson) console.log(JSON.stringify(stats, null, 2));
+			else printCacheStats(stats);
+			return 0;
+		}
+		if (sub === "clear") {
+			const cleared = clearJevCache(path);
+			if (asJson) console.log(JSON.stringify({ path, ...cleared }, null, 2));
+			else printCacheClear(path, cleared);
+			return 0;
+		}
+		console.error(`未知子命令: cache ${sub}（可用: cache stats / cache clear）`);
+		return 3;
 	}
 
 	if (command === "propositions") {
@@ -284,7 +316,7 @@ async function main(): Promise<number> {
 		const ids =
 			command === "probe" ? (single ?? [JEV_PROPOSITIONS[0]!.id]) : (single ?? JEV_PROPOSITIONS.map((p) => p.id));
 		const state = command === "probe" ? PROBE_STATE : await readState(flags);
-		return await runDecision(gate, state, ids, apiKey, asJson);
+		return await runDecision(gate, state, ids, apiKey, asJson, flags.get("no-cache") !== true);
 	}
 
 	if (command === "balance") return await runBalance(agentDir, config, asJson);

@@ -19,10 +19,22 @@
  *         `answers[name] = {type:"noul", noul: 0..1}`（外加可选的 id/model/provider/usage）。
  *         本仓库无法在离线单测里验证 alpha 接口的真实形状——因此解析器对未知字段容忍、
  *         对缺失字段**一律报错**（宁可不放行，也不猜），UI 的「测试连接」就是验证入口。
- *   @MAGIC MAX_BODY_BYTES=64KiB（复用 fetchJson 的上限）/ 事件环形缓冲 200 / 缓存上限 200。
+ *   @COUPLED jev-cache.ts（持久决策缓存：CI 确定性回放的第二级缓存，派生可丢）。
+ *   @MAGIC MAX_BODY_BYTES=64KiB（复用 fetchJson 的上限）/ 事件环形缓冲 200 / 缓存上限 200 /
+ *         磁盘缓存 8MiB 轮转 + 20_000 条（见 jev-cache.ts）。
  * ──────────────────────────────────────────────────
  */
 import { fetchJson } from "./channel-accounts.js";
+import {
+	JEV_CACHE_MAX_ENTRIES as JEV_DISK_MAX_ENTRIES,
+	JEV_CACHE_VERSION,
+	appendJevCacheEntry,
+	cacheEntryMatches,
+	capJevCacheEntries,
+	loadJevCache,
+	type JevCacheAudit,
+	type JevCacheEntry,
+} from "./jev-cache.js";
 import {
 	JEV_PROVIDER_ID,
 	aggregateJevStatus,
@@ -41,6 +53,11 @@ import {
 export const JEV_EVENT_CAPACITY = 200;
 /** @MAGIC 决策缓存条数上限：state 不可预测地多，不设上限就是内存泄漏。 */
 export const JEV_CACHE_MAX_ENTRIES = 200;
+/**
+ * @MAGIC 磁盘镜像的修剪余量：到上限后每多这么多条才重建一次（摊薄排序成本）。
+ * 镜像丢掉的条目仍在磁盘上，最坏代价是重启前多花一次调用。
+ */
+const DISK_MIRROR_SLACK = 256;
 
 /** 归一化错误（用户可见文案中文 + errorEn 英文；不含任何密钥内容）。 */
 export interface JevGateError {
@@ -57,7 +74,8 @@ export interface JevDecisionAudit {
 	inputTokens?: number;
 	outputTokens?: number;
 	elapsedMs: number;
-	cache: "hit" | "miss";
+	/** hit=进程内 TTL 缓存；disk=磁盘持久缓存（CI 回放靠它）；miss=真实调用。 */
+	cache: "hit" | "disk" | "miss";
 }
 
 export interface JevDecision {
@@ -72,7 +90,10 @@ export interface JevDecision {
 }
 
 export interface JevEvaluateInput {
-	/** 被审查的内容（原样放进请求体 state 字段；本地不做任何判定）。 */
+	/**
+	 * 被审查的内容（原样放进请求体 state 字段；本地不做任何判定）。
+	 * @CONTRACT state 只参与 cacheKey 的哈希，**绝不落盘**（磁盘缓存里只有摘要，见 jev-cache.ts）。
+	 */
 	state: unknown;
 	/** 命题负载（buildJevQuestions 的产物）；决定必须被回答的命题名。 */
 	questions: unknown;
@@ -80,6 +101,11 @@ export interface JevEvaluateInput {
 	apiKey: string;
 	/** 调用方的取消信号（与超时叠加）。 */
 	signal?: AbortSignal;
+	/**
+	 * false = 强制新鲜判定：内存与磁盘缓存都不读、本次结果也不写（CLI 的 --no-cache）。
+	 * @WHY 排障/验证上游时必须能绕过缓存，否则「看起来通过」可能只是一周前的那次答案。
+	 */
+	useCache?: boolean;
 }
 
 /** 构造选项逐字对标 AccountRegistryOptions（见 channel-accounts.ts）。 */
@@ -94,6 +120,11 @@ export interface JevGateOptions {
 	config?: JevGateConfig;
 	/** 最近决策事件的环形缓冲容量。 */
 	eventCapacity?: number;
+	/**
+	 * 持久决策缓存文件路径（jevCachePath(agentDir)）。
+	 * @CONTRACT 不传/null = **关闭**磁盘缓存（测试与旧调用完全不受影响）。
+	 */
+	cachePath?: string | null;
 }
 
 interface CacheEntry {
@@ -117,6 +148,10 @@ export class JevGate {
 	private readonly inFlight = new Map<string, Promise<JevDecision>>();
 	private readonly events: JevDecisionEvent[] = [];
 	private lastCallAt: number | null = null;
+	/** 磁盘决策缓存的路径（null = 关闭）。 */
+	private readonly cachePath: string | null;
+	/** 惰性加载的磁盘缓存镜像（key → entry）；useCache:false 时连读都不读。 */
+	private diskMirror: Map<string, JevCacheEntry> | null = null;
 
 	constructor(opts: JevGateOptions = {}) {
 		this.now = opts.now ?? (() => Date.now());
@@ -131,6 +166,7 @@ export class JevGate {
 			minIntervalMs: opts.minIntervalMs ?? base.minIntervalMs,
 		};
 		this.eventCapacity = Math.max(1, opts.eventCapacity ?? JEV_EVENT_CAPACITY);
+		this.cachePath = opts.cachePath ?? null;
 	}
 
 	/** 当前配置（副本，避免调用方改到内部状态）。 */
@@ -161,12 +197,24 @@ export class JevGate {
 		return this.events.map((event) => ({ ...event, checks: { ...event.checks } }));
 	}
 
-	/** 测试/维护用：清空缓存、限频游标与事件缓冲。 */
+	/** 测试/维护用：清空缓存、限频游标与事件缓冲（磁盘镜像只丢弃、**不删文件**）。 */
 	reset(): void {
 		this.cache.clear();
 		this.inFlight.clear();
 		this.events.length = 0;
 		this.lastCallAt = null;
+		this.diskMirror = null;
+	}
+
+	/** 磁盘缓存可用吗（未配置路径 = 关闭；cacheTtlMs=0 = 「不缓存」，两份都关）。 */
+	private diskEnabled(): boolean {
+		return this.cachePath !== null && this.configValue.cacheTtlMs > 0;
+	}
+
+	/** 磁盘缓存镜像（首次访问才读盘；读盘失败 loadJevCache 已兜底为空表）。 */
+	private diskCache(): Map<string, JevCacheEntry> {
+		if (!this.diskMirror) this.diskMirror = this.cachePath ? loadJevCache(this.cachePath) : new Map();
+		return this.diskMirror;
 	}
 
 	/**
@@ -227,7 +275,9 @@ export class JevGate {
 		}
 
 		const key = cacheKey({ model: config.model, questions: input.questions, state: input.state });
-		const cached = this.cache.get(key);
+		// useCache:false = 两级缓存都不读（排障/验证上游时的强制新鲜判定）。
+		const useCache = input.useCache !== false;
+		const cached = useCache ? this.cache.get(key) : undefined;
 		if (cached && config.cacheTtlMs > 0 && startedAt - cached.at < config.cacheTtlMs) {
 			// 缓存命中：结论复用，审计标明 hit，耗时记本次（不含网络）。
 			// 命中同样进事件缓冲，否则运行态的「缓存命中数」永远是 0（假可观测）。
@@ -238,6 +288,24 @@ export class JevGate {
 			};
 			this.record({ at: this.now(), result: hit, error: undefined });
 			return hit;
+		}
+
+		if (useCache && this.diskEnabled()) {
+			const entry = this.diskCache().get(key);
+			// 同构校验（model + 命题集合）：错配的旧条目必须当 miss，不能当答案。
+			if (entry && cacheEntryMatches(entry, config.model, names)) {
+				// @WHY 只复用**分数**，结论用**当前**阈值重算：阈值改了之后旧答案不会被旧标准放行。
+				const decision = decideOutcome(entry.checks, config.thresholds);
+				const diskHit: JevDecision = {
+					outcome: decision.outcome,
+					reason: decision.reason,
+					reasonEn: decision.reasonEn,
+					checks: { ...entry.checks },
+					audit: { ...entry.audit, elapsedMs: this.now() - startedAt, cache: "disk" },
+				};
+				this.record({ at: this.now(), result: diskHit, error: undefined });
+				return diskHit;
+			}
 		}
 
 		const pending = this.inFlight.get(key);
@@ -316,7 +384,10 @@ export class JevGate {
 				checks: parsed.checks,
 				audit,
 			};
-			this.rememberDecision(key, startedAt, result);
+			if (input.useCache !== false) {
+				this.rememberDecision(key, startedAt, result);
+				this.rememberDecisionOnDisk(key, startedAt, result, config.model);
+			}
 			this.record({ at: this.now(), result, error: undefined });
 			return result;
 		} finally {
@@ -556,5 +627,46 @@ export class JevGate {
 			if (oldestKey !== null) this.cache.delete(oldestKey);
 		}
 		this.cache.set(key, { at, decision });
+	}
+
+	/**
+	 * 把一次**成功**判定写进磁盘缓存（派生、可丢：失败静默，绝不阻塞判定）。
+	 * @CONTRACT 只有 `error` 为空且 `checks` 非空才写：超时/401/限流/缺答一律不落盘，
+	 *   否则一次网络抖动会被固化成「以后都算它」。
+	 * @GOTCHA 写进去的只有 cacheKey 摘要 + 元数据 + 分数：state、密钥、被审文本都不落盘。
+	 */
+	private rememberDecisionOnDisk(key: string, at: number, decision: JevDecision, model: string): void {
+		if (!this.cachePath || !this.diskEnabled()) return;
+		if (decision.error || Object.keys(decision.checks).length === 0) return;
+		const audit: JevCacheAudit = { elapsedMs: decision.audit.elapsedMs };
+		if (decision.audit.requestId) audit.requestId = decision.audit.requestId;
+		if (decision.audit.model) audit.model = decision.audit.model;
+		if (decision.audit.provider) audit.provider = decision.audit.provider;
+		if (decision.audit.inputTokens !== undefined) audit.inputTokens = decision.audit.inputTokens;
+		if (decision.audit.outputTokens !== undefined) audit.outputTokens = decision.audit.outputTokens;
+		if (decision.audit.cost !== undefined) audit.cost = decision.audit.cost;
+		const entry: JevCacheEntry = {
+			v: JEV_CACHE_VERSION,
+			key,
+			at,
+			model,
+			outcome: decision.outcome,
+			checks: { ...decision.checks },
+			audit,
+		};
+		// 镜像同步更新（同一进程里的下一次同 key 调用即可命中，不必等重新读盘）。
+		// `JEV_CACHE_MAX_ENTRIES`（200）是**内存 TTL 缓存**的上限；磁盘那一份叫 `JEV_DISK_MAX_ENTRIES`
+		// （20_000，与磁盘文件同口径）。两者不是一个东西，不要互相顶替。
+		this.rememberInDiskMirror(key, entry);
+		appendJevCacheEntry(this.cachePath, entry);
+	}
+
+	/** 镜像写入 + 有界修剪（长期运行的实例不能因为 state 多样而无限长内存）。 */
+	private rememberInDiskMirror(key: string, entry: JevCacheEntry): void {
+		const mirror = this.diskCache();
+		mirror.set(key, entry);
+		if (mirror.size > JEV_DISK_MAX_ENTRIES + DISK_MIRROR_SLACK) {
+			this.diskMirror = capJevCacheEntries(mirror.values());
+		}
 	}
 }

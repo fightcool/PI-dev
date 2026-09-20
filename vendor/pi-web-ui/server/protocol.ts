@@ -580,7 +580,8 @@ export interface UiJevDecisionAudit {
 	inputTokens?: number;
 	outputTokens?: number;
 	elapsedMs: number;
-	cache: "hit" | "miss";
+	/** hit=进程内 TTL 缓存；disk=磁盘持久缓存（跨进程/CI 的确定性回放）；miss=真实调用。 */
+	cache: "hit" | "disk" | "miss";
 }
 
 /** 一次决策结果。error 非空时 outcome 必为 "review"（门禁失败 → 转人工）。 */
@@ -605,7 +606,10 @@ export interface UiJevRuntimeStatus {
 	inputTokens: number;
 	outputTokens: number;
 	cost: number;
+	/** hit 与 disk **合计**的命中数。 */
 	cacheHits: number;
+	/** 其中来自磁盘持久缓存的命中数（服务重启不清零的只有它）。 */
+	diskHits: number;
 	avgElapsedMs: number;
 	lastError: { at: number; code: string; error: string; errorEn: string } | null;
 }

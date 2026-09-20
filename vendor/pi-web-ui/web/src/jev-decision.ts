@@ -23,6 +23,7 @@
 import type {
 	ClientMessage,
 	UiJevDecision,
+	UiJevDecisionAudit,
 	UiJevGateConfig,
 	UiJevGateConfigInput,
 	UiJevOutcome,
@@ -138,6 +139,32 @@ export function pickError(res: { error?: string; errorEn?: string }, locale: str
 /** 判定理由（UiJevDecision 自带双语）。 */
 export function pickReason(decision: UiJevDecision, locale: string): string {
 	return locale !== "zh" && decision.reasonEn ? decision.reasonEn : decision.reason;
+}
+
+/**
+ * 磁盘持久缓存命中的标签（zh/en）。
+ * @WHY 不往 i18n 词典里加键：`web/src/i18n*.ts` 与 `locales/` 由翻译流程拥有，
+ *   本切片（缓存持久化）不碰它们；这里与 pickError / pickReason 同一双语选词口径。
+ */
+export function diskHitLabel(locale: string): string {
+	return locale === "zh" ? "磁盘命中（持久缓存）" : "Disk hits (persistent)";
+}
+
+/** 清空磁盘缓存的操作提示（CLI 命令，服务端没开新接口）。 */
+export function cacheClearHint(locale: string): string {
+	return locale === "zh"
+		? "决策缓存会落盘（跨进程/CI 复用）；清空：npm run jev -- cache clear"
+		: "Decisions are cached on disk (reused across processes/CI); clear with: npm run jev -- cache clear";
+}
+
+/** 审计里的缓存来源文案：miss / hit 用既有词典键，disk 走本模块的双语常量。 */
+export function cacheSourceLabel(
+	cache: UiJevDecisionAudit["cache"],
+	locale: string,
+	t: (key: "settingsJevCacheHits" | "settingsJevCacheMiss") => string,
+): string {
+	if (cache === "disk") return diskHitLabel(locale);
+	return cache === "hit" ? t("settingsJevCacheHits") : t("settingsJevCacheMiss");
 }
 
 /** 三态 → i18n key（放行 / 拦下 / 转人工）。 */

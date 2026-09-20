@@ -60,6 +60,7 @@ const RUNTIME: UiJevRuntimeStatus = {
 	outputTokens: 310,
 	cost: 0.4213,
 	cacheHits: 4,
+	diskHits: 3,
 	avgElapsedMs: 812,
 	lastError: { at: 1758000000000, code: "E_TIMEOUT", error: "上游超时", errorEn: "upstream timeout" },
 };
@@ -74,6 +75,7 @@ const EMPTY_RUNTIME: UiJevRuntimeStatus = {
 	outputTokens: 0,
 	cost: 0,
 	cacheHits: 0,
+	diskHits: 0,
 	avgElapsedMs: 0,
 	lastError: null,
 };
@@ -319,6 +321,12 @@ describe("Jev 决策门禁分区（设置面板）", () => {
 		expect(c["输出"]).toBe("310");
 		expect(c["费用"]).toBe("0.42");
 		expect(c["平均耗时"]).toBe("812 ms");
+	});
+
+	it("磁盘命中单列一栏，并给出 CLI 清缓存的提示（缓存是派生数据，不开新接口）", () => {
+		const { container } = mount();
+		expect(cards(container)["磁盘命中（持久缓存）"]).toBe("3");
+		expect(textOf(container)).toContain("npm run jev -- cache clear");
 	});
 
 	it("最近一次错误保留原始 code 与原文（不吞掉服务端事实）", () => {

@@ -26,6 +26,7 @@ import { PROTOCOL_VERSION } from "./protocol-version.js";
 import { ChannelService } from "./dev-con/channel-service.js";
 import { AccountRegistry } from "./dev-con/channel-accounts.js";
 import { JevGate, type JevDecision } from "./dev-con/jev-gate.js";
+import { jevCachePath } from "./dev-con/jev-cache.js";
 import {
 	JEV_PROBE_PROPOSITION_ID,
 	JEV_PROPOSITIONS,
@@ -1659,8 +1660,9 @@ export class ClientSession {
 		this.alertTimer.unref?.();
 		this.accounts = new AccountRegistry();
 		this.channels = new ChannelService(this.makeChannelHost(agentDir), this.accounts);
-		// Jev 门禁：配置在装配时读一次（损坏则回落默认值 + parseError，不阻塞启动）。
-		this.jev = new JevGate({ config: loadJevSettings(agentDir).config });
+		// Jev 门禁：配置在装配时读一次（损坏则回落默认值 + parseError，不阻塞启动）；
+		// cachePath = 磁盘持久决策缓存（派生、可丢：删了只损失一次调用费用，见 jev-cache.ts）。
+		this.jev = new JevGate({ config: loadJevSettings(agentDir).config, cachePath: jevCachePath(agentDir) });
 		this.usageHistory = new UsageHistoryStore(join(agentDir, "dev-con", "usage-history.jsonl"));
 		// 模板里的 {baseUrl} 取自运行时模型目录（服务商 baseUrl 由 models.json 拥有）。
 		setProviderBaseUrlLookup((providerId) => {
@@ -6438,6 +6440,8 @@ export class ClientSession {
 	 * @CONTRACT ok=true 表示**真的拿到了有效决策**（哪怕结论是 block）；
 	 *   任何失败（未配凭据/超时/401/429/缺答/越界）都 rc ok=false 并把双语错误带回。
 	 *   密钥只在服务端解析，绝不进回包/日志/notice。
+	 * @CONTRACT `useCache: false`：自检必须**真的打一次接口**，否则按钮会变成「读上一次的缓存」，
+	 *   而它就断言“测试连接”是验证门禁可否用的唯一入口（磁盘缓存对固定自检样本必然命中）。
 	 */
 	async probeJev(reqId: number, state?: Record<string, unknown>): Promise<void> {
 		let decision: JevDecision;
@@ -6458,6 +6462,8 @@ export class ClientSession {
 				state: state ?? JEV_PROBE_STATE,
 				questions: buildJevQuestions([JEV_PROBE_PROPOSITION_ID]),
 				apiKey,
+				// 自检必须真的打一次接口（见上方 @CONTRACT）。
+				useCache: false,
 			});
 		} catch (err) {
 			// evaluate 本就永不抛；这里是兵底（例如 keyName 解析器抛错），同样不能冒泡到 dispatch。
