@@ -534,7 +534,7 @@ try {
 	const NOKEY_PROVIDER = "anthropic";
 	const NEW_KEY_NAME = "jev";
 	// 合成值（不是真凭据）：用来验证「上行一次、不残留」这条口径。
-	const NEW_KEY_VALUE = "sk-or-v1-SYNTHETIC-NOT-A-REAL-KEY";
+	const NEW_KEY_VALUE = "SYNTHETIC-NOT-A-REAL-KEY";
 	await providerSelect.selectOption(NOKEY_PROVIDER);
 	const newKeyForm = panel.locator(".jev-newkey");
 	await newKeyForm.waitFor({ state: "visible", timeout: options.stepTimeout });
@@ -602,7 +602,7 @@ try {
 	);
 	const domAfterCreate = await page.content();
 	check(
-		"the key value never lands in the page DOM (no sk-… string after creating it)",
+		"the key value never lands in the page DOM (checked against the exact value, not a shape)",
 		!domAfterCreate.includes(NEW_KEY_VALUE),
 		domAfterCreate.includes(NEW_KEY_VALUE) ? "the sent value is still in the DOM" : "no match for the sent value",
 	);

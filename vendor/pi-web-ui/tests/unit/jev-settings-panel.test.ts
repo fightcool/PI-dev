@@ -474,7 +474,7 @@ describe("Jev 决策门禁分区（设置面板）", () => {
 		// 填完点创建 → 走既有 add_provider_key（同一份密钥库，不新增事实源）
 		const nameInput = container.querySelector('.jev-newkey input:not([type="password"])') as HTMLInputElement;
 		type(nameInput, "jev");
-		type(pw, "sk-or-v1-SYNTHETIC-NOT-A-REAL-KEY");
+		type(pw, "SYNTHETIC-NOT-A-REAL-KEY");
 		click(byText(container, "新建密钥"));
 		const add = sent.find((m) => m.type === "add_provider_key") as { provider: string; name?: string } | undefined;
 		expect(add?.provider).toBe("openrouter");
