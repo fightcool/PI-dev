@@ -8,7 +8,12 @@
  * 避免 CLI 里出现第二套阈值或第二套命题定义。
  * `--json` 输出不经本模块，直接序列化内核对象。
  */
-import { JEV_PROPOSITIONS, redactJevGateConfigForEcho, type JevGateConfig } from "../server/dev-con/jev-model.js";
+import {
+	JEV_PROPOSITIONS,
+	formatJevProse,
+	redactJevGateConfigForEcho,
+	type JevGateConfig,
+} from "../server/dev-con/jev-model.js";
 import type { JevCacheStats } from "../server/dev-con/jev-cache.js";
 import { JEV_CACHE_MAX_BYTES, JEV_CACHE_MAX_ENTRIES } from "../server/dev-con/jev-cache.js";
 import type { JevDecision, JevDecisionAudit, JevGate } from "../server/dev-con/jev-gate.js";
@@ -130,9 +135,9 @@ export function printCacheClear(path: string, cleared: { removed: string[]; byte
 export function printPropositions(): void {
 	for (const p of JEV_PROPOSITIONS) {
 		console.log(`\n[${p.id}]`);
-		console.log(`  判定: ${p.instructions}`);
-		console.log(`  为真: ${p.criteria.true}`);
-		console.log(`  为假: ${p.criteria.false}`);
+		console.log(`  判定: ${formatJevProse(p.instructions)}`);
+		console.log(`  为真: ${formatJevProse(p.criteria.true)}`);
+		console.log(`  为假: ${formatJevProse(p.criteria.false)}`);
 	}
 	console.log(
 		"\n提示: 一次请求可同时问多条命题（并行隔离求值，几乎不增加耗时）；任何一条为假即应阻断。" +

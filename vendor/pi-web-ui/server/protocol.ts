@@ -617,6 +617,8 @@ export interface UiJevRuntimeStatus {
 /** 可用命题（只读元数据，供 UI 展示判定标准）。 */
 export interface UiJevProposition {
 	id: string;
+	/** 展示用文本：服务端已用 `formatJevProse` 展平（发往模型的原始值可能是 JSON 结构）。
+	 *  @CONTRACT 线上传的是**已渲染字符串**，客户端直接显示即可，不要自己再拼一份。 */
 	instructions: string;
 	criteria: { true: string; false: string };
 }

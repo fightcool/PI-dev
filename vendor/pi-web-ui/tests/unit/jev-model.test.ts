@@ -16,6 +16,7 @@ import {
 	canonicalizeState,
 	decideOutcome,
 	defaultJevGateConfig,
+	formatJevProse,
 	normalizeJevDecisionEvent,
 	propositionById,
 	questionNamesOf,
@@ -208,17 +209,18 @@ describe("JEV_PROPOSITIONS", () => {
 			"change_within_task_scope",
 		]);
 		for (const proposition of JEV_PROPOSITIONS) {
-			expect(proposition.instructions.trim().length).toBeGreaterThan(0);
+			expect(formatJevProse(proposition.instructions).trim().length).toBeGreaterThan(0);
 			// 官方 model-jaggedness：Jev 默认不把 state 当敌意输入 → 判定标准里必须显式声明。
-			expect(proposition.criteria.true).toContain(JEV_STATE_NOT_EVIDENCE);
-			expect(proposition.criteria.false).toContain(JEV_STATE_NOT_EVIDENCE);
+			// 判据现在是结构化的（{what, examples}）：声明收在 what 里，渲染出来仍须在场。
+			expect(formatJevProse(proposition.criteria.true)).toContain(JEV_STATE_NOT_EVIDENCE);
+			expect(formatJevProse(proposition.criteria.false)).toContain(JEV_STATE_NOT_EVIDENCE);
 			// 语义方向一致：true = 「是」，false = 「否」。模型输入文本是英文（官方：Jev 英文准确率最优）。
-			expect(proposition.criteria.true.startsWith("Yes:")).toBe(true);
-			expect(proposition.criteria.false.startsWith("No:")).toBe(true);
+			expect(formatJevProse(proposition.criteria.true).startsWith("Yes:")).toBe(true);
+			expect(formatJevProse(proposition.criteria.false).startsWith("No:")).toBe(true);
 			// 送进模型的文本不得含中文：CJK 可用但不保证准确率。
-			expect(`${proposition.instructions}${proposition.criteria.true}${proposition.criteria.false}`).not.toMatch(
-				/[\u4e00-\u9fff]/,
-			);
+			expect(
+				`${formatJevProse(proposition.instructions)}${formatJevProse(proposition.criteria.true)}${formatJevProse(proposition.criteria.false)}`,
+			).not.toMatch(/[\u4e00-\u9fff]/);
 		}
 	});
 
@@ -229,7 +231,33 @@ describe("JEV_PROPOSITIONS", () => {
 		const defectWording = /\b(breaking|out_of_scope|unsafe|violat|breaks)\b/i;
 		for (const proposition of JEV_PROPOSITIONS) {
 			expect(proposition.id).not.toMatch(defectWording);
-			expect(proposition.criteria.true).not.toMatch(defectWording);
+			expect(formatJevProse(proposition.criteria.true)).not.toMatch(defectWording);
+		}
+	});
+
+	it("pins the boundary cases the 2026-09-20 calibration run exposed", () => {
+		// @WHY docs/JEV-DECISION-GATE.md §4.2：纯文本判据下，弱断言拿到 0.89–0.94，
+		// 与合格断言完全重叠——该轮证明「拧阈值救不了」，只能把边界写进判据。
+		// 下列四条政策必须一直显式在场；删掉任何一条都是把那次实测的教训丢了。
+		const byId = (id: string) => propositionById(id)!;
+		const testFalse = formatJevProse(byId("test_asserts_behavior").criteria.false);
+		// 弱断言的具体形状（真实误放行样本用的就是这几种）必须在 false 侧逐一点名。
+		for (const weak of ["toBeDefined", "toBeNull", "toHaveBeenCalled", "exists", "is truthy"]) {
+			expect(testFalse).toContain(weak);
+		}
+		expect(testFalse).toContain("examples");
+
+		const apiFalse = formatJevProse(byId("change_preserves_public_api").criteria.false);
+		// 两条实测拿不准的政策：新增**必填**参数/prop = 破坏；改名已发布 id = 破坏。
+		expect(apiFalse).toContain("REQUIRED");
+		expect(apiFalse).toContain("renames");
+		// 反向：新增可选参数仍算保持（避免矫枉过正把它判成破坏）。
+		expect(formatJevProse(byId("change_preserves_public_api").criteria.true)).toContain("OPTIONAL");
+
+		const scopeFalse = formatJevProse(byId("change_within_task_scope").criteria.false);
+		// 顺带清理、无关修复、重排版都属于越界（实测这三类都被正确拦下，判据要继续写明）。
+		for (const out of ["incidental refactor", "unrelated fix", "reformat"]) {
+			expect(scopeFalse).toContain(out);
 		}
 	});
 
@@ -259,8 +287,9 @@ describe("buildJevQuestions", () => {
 		expect(Object.keys(questions)).toEqual([JEV_PROBE_PROPOSITION_ID]);
 		expect(questions[JEV_PROBE_PROPOSITION_ID]).toEqual({
 			type: "noul",
-			instructions: expect.any(String),
-			criteria: { true: expect.any(String), false: expect.any(String) },
+			// 判据现在可以是结构化文本（JevProse）：这里只钉「两项都在场」，逐字不变由下一条断言负责。
+			instructions: expect.anything(),
+			criteria: { true: expect.anything(), false: expect.anything() },
 		});
 		// record 的键必须与 questionNamesOf 读到的名字一致，否则缓存匹配与「缺答」判定会错位。
 		expect(questionNamesOf(questions)).toEqual([JEV_PROBE_PROPOSITION_ID]);

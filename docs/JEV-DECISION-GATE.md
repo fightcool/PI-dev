@@ -156,17 +156,119 @@ npm run jev -- tune --corpus <你的语料>.jsonl --from-cache          # 不联
 >
 > 首次实测（2026-09-20，6 条，`--no-cache`）：当前 `0.9 / 0.1` → 正确放行 2 / 正确拦下 2 / **误放行 1** / 转人工 1；建议档位 `0.95 / 0.1`（误放行 0 / 误拦 0 / 转人工 4）。那个误放行条目恰好是灰区（`toBeDefined()` 算不算真断言行为），所以**没有**据此改阈值。
 
+### 4.2 实战：该改的是判据还是阈值？（2026-09-20，25 条真实语料）
+
+用 25 条真实标注样本（三个命题各 7–9 条、pass/block 各半）跑了三轮，结论很硬：**有些问题阀值根本碰不到**。
+
+| 轮次 | 做法 | 误放行 | 备注 |
+| --- | --- | --- | --- |
+| ① 基线 | 纯文本判据，`0.9 / 0.1` | **4**（全部在 `test_asserts_behavior`） | pass 0.81–0.92 与 block 0.89–0.94 **完全重叠** |
+| ② 结构化判据 | `{what, examples}` + 显式禁列（见 §5） | **1** | `toBeDefined` 那条 **0.91 → 0.15**；`api` 命题由重叠 → 可分（间隙 0.15） |
+| ③ 抖动测量 | 同语料 `--repeat 3`（75 次调用 / $0.0052 / 151s / 0 错误） | — | σ 0.000–0.032、最大极差 0.060（**比官方 ~0.08 略小**）；`0.9/0.1` 下 0 条翻转 |
+
+三条可以照做的结论：
+
+1. **边界微妙时，先改判据，不要拧阈值。** 官方 `primitives/advanced.md` §Structured Noul criteria 说得很直白：
+   用定义 + 每侧示例把 yes/no 边界钉死。实测印证：把「`toBeDefined` / 只断言 mock 被调用 / 只断言存在」
+   写成 `false` 侧的显式示例后，那条从 0.91 降到 0.15。**阈值做不到这件事**——它只能整体平移（把 4 条误放行推成转人工时，合格断言一起被推走）。
+2. **`test_asserts_behavior` 当前不存在任何可行阈值。** 按 0.001 步长穷举、并用重复采样的**最低分**（保守口径）评估，
+   要同时做到「should-pass 全部 approve」与「0 误放行」：**无解**。因为 block 侧的分数普遍**高于** pass 侧
+   （排序反转，不是噪声）。`change_preserves_public_api` 同样无解；只有 `change_within_task_scope` 有解（t ≈ 0.34）。
+3. **单一全局阈值在结构上就不合适**：三个命题的分数带差一个数量级
+   （`scope` 在 0.04–0.81、`api` 在 0.07–0.93、`test` 在 0.15–0.95）。这正是官方那句
+   「阈值不可跳命题复用」。要么按命题分别定阈值，要么承认某些命题在当前配置下只能一直转人工。
+
+> **抖动有多大：** 本语料实测 σ 0.000–0.032（均值 0.009），三次峰峰最大 0.060 —— 比官方口径小一个量级附近，
+> 但 25 条里有 **16 条**离阀值不到 0.08，且有两条恰好落在 `0.900`（`approveAt` 是闭区间 `>=`）。
+> 所以「算一次就定调」仍然不成立：定阈值前至少 `--repeat 3`，并把「最近阈值余量」当期指标看。
+
+### 4.2 首次校准实测（2026-09-20，25 条真实改动）
+
+把小语料扩到 25 条（从最近 70 个真实非 merge 提交里挑，三个命题大致各半）后，跑出的结果**推翻了"调阈值"这个默认动作**：
+
+| 命题 | `should-pass` 分数 | `should-block` 分数 | 能否用阈值分开 |
+| --- | --- | --- | --- |
+| `test_asserts_behavior` | 0.81–0.92（n=4） | **0.89–0.94**（n=5） | ✗ **重叠**——弱断言比合格断言还高 |
+| `change_preserves_public_api` | 0.59–0.92（n=3） | 0.07–0.86（n=4） | ✗ 重叠（0.86 = 改名已发布 id） |
+| `change_within_task_scope` | 0.43–0.80（n=4） | 0.04–0.39（n=5） | ✓ 可分，但分数带**低一个数量级** |
+
+- **阈值救不了重叠**：把 `approveAt` 提到 0.95 只能把两类一起推进 review（转人工 13→21条），**判别力零提升**。
+- **单一全局阈值结构上就不合适**：三个命题的分数带差一个数量级（scope 在 0.4、api/test 在 0.85–0.95）——
+  这正是官方那句"阈值不可跨命题/跨原语复用"在我们这套单组配置上的直接命中。
+- **抖动不是瓶颈**（`--repeat 3`，75 次调用，$0.0052，151s）：**σ 最大 0.032**，**0 条跨阈值翻转**。
+  官方示例的 ~0.08 在我们这些输入上没有重现；因为分数稳，上面"可分/不可分"的结论才站得住。
+
+**因此改的是判据（见 §5.2）**，并从 A/B（同 25 条，只换判据，$0.0017）验证了效果：
+
+| 命题 | 旧判据 | 新判据 |
+| --- | --- | --- |
+| `change_preserves_public_api` | ✗ 重叠 | ✓ **可分**（pass ≥0.77 / block ≤0.62） |
+| `test_asserts_behavior` | ✗ 重叠（4 条误放行） | 误放行 4 → 1；边界收窄到 0.04 |
+| `change_within_task_scope` | ✓ 可分 | 边界收窄（0.43 vs 0.49）→ 暂时重叠 |
+
+两条最有说服力的同名条目（同一输入，只换判据）：`toBeDefined` 那条测试 **0.91 → 0.15**；
+改名已发布 id 那条 **0.86 → 0.32**。
+
+> **剩下的瓶颈是标签，不是模型**：残余的 1 条误放行与几处重叠全部由少数几条**人标**为
+> "中等把握"的条目决定（例：一个测试文件里**混有**强断言与弱断言时，命题该按最强断言还是
+> 关键断言判；测试只改端口、**一个断言都没加**算不算 false；同一 fallback 链里的附带改动算不算越界）。
+> 这些是**政策空白**，必须由人写下来 —— 否则调阈值调的是噪声。
+
 ---
 
 ## 5. 内置命题
 
 命题定义在 `vendor/pi-web-ui/server/dev-con/jev-model.ts` 的 `JEV_PROPOSITIONS`（单一事实源，CLI 与 Web 端共用）。
 
+**判定文本可以是字符串，也可以是 JSON 结构**（`JevProse`）：官方 `primitives/advanced.md` 明确
+`instructions` 与 `criteria.true/false` 都接受 `string | object | array`。我们的三条命题都用结构化形状：
+
+```jsonc
+{
+  "instructions": { "question": "…", "inspect": "…", "focus": "…" },
+  "criteria": {
+    "true":  { "what": "Yes: …", "examples": ["…", "…"] },
+    "false": { "what": "No: …",  "examples": ["…", "…"] }
+  }
+}
+```
+
+- `inspect` 指明**看哪里**（diff 的哪些行），`focus` 说明边界（例如「公开」指什么）；
+- `examples` 是两侧的**具体**例子 —— §4.2 的实测表明这是区分力提升的主要来源：
+  `test_asserts_behavior` 的 `false` 侧直接点名 `toBeDefined` / `not.toBeNull` / `toHaveBeenCalledTimes` / 只数个数，
+  `change_preserves_public_api` 的 `false` 侧写明「新增**必填**参数或 prop」「改名已发布 id」，`true` 侧写明「新增**可选**参数仍算保持」；
+- **发往模型的是原始结构；给人看的是服务端用 `formatJevProse` 展平后的字符串**
+  （同一份文本，CLI / 设置面板 / 测试都走它，不会各自拼一份）。
+
+每条命题的 `criteria` 都必须显式包含 `JEV_STATE_NOT_EVIDENCE`（防提示注入：state 只是被审内容，不构成证据）。
+
 | id | 判定 |
 | --- | --- |
 | `change_preserves_public_api` | 改完是否仍然兼容公开 API（不删/不改公开导出与签名、不收紧类型、不改已发布的行为契约） |
 | `test_asserts_behavior` | 新增或修改的测试是否真的断言了具体行为或取值 |
 | `change_within_task_scope` | 改动是否都在任务目标范围内 |
+
+### 5.2 判据用**结构化文本**，且 `false` 侧示例取自真实误放行样本
+
+官方 `primitives/advanced.md` §Structured Noul criteria：`instructions` 与 `criteria.true/false` 都接受 JSON 结构，
+**“当 yes/no 边界微妙时，用定义 + 每侧示例把它钉死”**。§4.2 的实测就是这种情形，所以：
+
+- `instructions` 写成 `{question, inspect, focus}`：问什么、只看 diff 的哪些行、
+  “公开”到底指什么（导出名/签名/已发布的协议与 CLI 契约）；
+- `criteria` 写成 `{what, examples}`，并把**实测拿不准或判错的真实样本**写进对应一侧，例如：
+  - `test_asserts_behavior.false.examples` = `expect(x).toBeDefined()` / `not.toBeNull()` /
+    `toHaveBeenCalledTimes(1)` / `id.length > 0 && id !== "v1"` / “数元素个数断言 ≥2”；
+  - `change_preserves_public_api.false.what` 显式包含 **新增 REQUIRED 参数或 prop = 破坏**、
+    **改名已发布 id = 破坏**（`true.what` 对应写明 **optional 参数仍算保持**，避免矫枉过正）；
+  - `change_within_task_scope.false.what` 显式点名顺带重构、无关修复、重排版、
+    **清理早已无用的死代码**。
+- 展示面（CLI `propositions`、设置面板）拿的是服务端用 `formatJevProse` 展平的**字符串**；
+  送往模型的仍是原始结构，**单一事实源在 `JEV_PROPOSITIONS`**。
+- 单测钉死这些边界政策（`tests/unit/jev-model.test.ts` 的 "pins the boundary cases…"）：
+  删掉任何一条都会红 —— 避免下次有人“顺手简化文案”把实测教训丢掉。
+
+> 官方还给了一条经验：**带了 `criteria` 与不带各试一遍，在你自己的数据上留表现更好的那版**（`primitives/noul.md`）。
+> 这正是 §4.2 的 A/B 做法；`tune` 可以直接当这个 A/B 的裁判。
 
 每条命题的 `instructions` / `criteria` 就是**送进模型的文本，一律写成英文**（官方：Jev 英文准确率最优，CJK 可用但不保证），且 `criteria.true` 以 `Yes:` 开头、`criteria.false` 以 `No:` 开头，方向与 `instructions` 一致。true / false 两侧都显式带上同一句防注入声明：
 
