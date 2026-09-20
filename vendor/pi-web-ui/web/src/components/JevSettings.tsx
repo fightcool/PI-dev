@@ -356,7 +356,7 @@ export function JevSettings({
 					<p className="set-hint">{t("settingsJevEnableHint")}</p>
 
 					{/* ---- 真实样本留痕：唯一会落盘被审内容的东西，所以代价与边界写全（不写「恕不详解」） ---- */}
-					<label className="chan-enable">
+					<label className="chan-enable jev-samples-toggle">
 						<input
 							type="checkbox"
 							checked={view.recordSamples}

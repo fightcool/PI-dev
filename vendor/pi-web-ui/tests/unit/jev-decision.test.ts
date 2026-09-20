@@ -13,13 +13,15 @@
 import { describe, expect, it } from "vitest";
 import {
 	checkPropositionDraft,
+	configInputOf,
+	draftOf,
 	effectiveDraftThresholds,
 	effectiveThresholds,
 	propositionDraftOf,
 	propositionThresholdsPatch,
 	type JevPropositionDrafts,
 } from "../../web/src/jev-decision.js";
-import type { UiJevThresholds } from "../../web/src/types.js";
+import type { UiJevGateConfig, UiJevThresholds } from "../../web/src/types.js";
 
 const GLOBAL = { approveAt: 0.9, blockAt: 0.1 };
 const withOverrides = (perProposition: UiJevThresholds["perProposition"]): UiJevThresholds => ({
@@ -149,5 +151,49 @@ describe("propositionThresholdsPatch（保存补丁）", () => {
 
 	it("非法数字不会变成 NaN 混进补丁：当作留空（被 checkPropositionDraft 拦下的输入本来也不该走到保存）", () => {
 		expect(propositionThresholdsPatch({ scope: { approveAt: "abc", blockAt: "" } })).toEqual({ scope: null });
+	});
+});
+
+/* ------------------------------------------------------------------ */
+/* 草稿 ↔ 配置（含 recordSamples 的「只提交改过的字段」口径）             */
+/* ------------------------------------------------------------------ */
+
+const SAMPLE_CONFIG: UiJevGateConfig = {
+	enabled: true,
+	endpoint: "https://openrouter.ai/api/alpha/decisions",
+	model: "typesafe/jev-1.13",
+	credentialRef: { providerId: "openrouter", keyName: "prod" },
+	thresholds: GLOBAL,
+	timeoutMs: 8000,
+	cacheTtlMs: 300000,
+	minIntervalMs: 1000,
+	recordSamples: true,
+};
+const THRESHOLDS_INPUT = { approveAt: 0.9, blockAt: 0.1 };
+
+describe("draftOf / configInputOf（留痕开关的读与提交）", () => {
+	it("recordSamples 缺字段时按「开着」读（旧服务端不能显示成「留痕已关」）", () => {
+		const { recordSamples: _omitted, ...legacy } = SAMPLE_CONFIG;
+		expect(draftOf(legacy as UiJevGateConfig).recordSamples).toBe(true);
+		expect(draftOf({ ...SAMPLE_CONFIG, recordSamples: false }).recordSamples).toBe(false);
+	});
+
+	it("没改过就不上行（缺省 = 服务端保留磁盘上的值）", () => {
+		const draft = draftOf(SAMPLE_CONFIG);
+		expect("recordSamples" in configInputOf(draft, THRESHOLDS_INPUT, SAMPLE_CONFIG)).toBe(false);
+	});
+
+	it("改过就上行，且带的是新值（开 → 关、关 → 开都要发）", () => {
+		const off = { ...draftOf(SAMPLE_CONFIG), recordSamples: false };
+		expect(configInputOf(off, THRESHOLDS_INPUT, SAMPLE_CONFIG).recordSamples).toBe(false);
+		const appliedOff = { ...SAMPLE_CONFIG, recordSamples: false };
+		const backOn = { ...draftOf(appliedOff), recordSamples: true };
+		expect(configInputOf(backOn, THRESHOLDS_INPUT, appliedOff).recordSamples).toBe(true);
+	});
+
+	it("拿不到已生效基线时照发（不猜一个默认值替服务端做决定）", () => {
+		const draft = { ...draftOf(SAMPLE_CONFIG), recordSamples: false };
+		expect(configInputOf(draft, THRESHOLDS_INPUT).recordSamples).toBe(false);
+		expect(configInputOf(draft, THRESHOLDS_INPUT, null).recordSamples).toBe(false);
 	});
 });

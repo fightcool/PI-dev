@@ -2846,9 +2846,16 @@ body.lp-resizing .lp-sash.dragging::after {
 	opacity: 0.9;
 }
 
-/* 复盘事实行（待复盘条数 / 转人工条数 / 最老一条）复用 .jev-verdicts 的排布。 */
-.jev-panel .jev-review-facts {
+/* 复盘事实行（待复盘条数 / 转人工条数 / 最老一条）。
+   @GOTCHA 不能依赖 `.jev-verdicts` 的 flex+gap（那条规则写在 `.jev-panel .jev-verdicts` 下）：
+     设置面板里这一行不在 .jev-panel 外壳内，实测那一行会被当成纯文本连成
+     「Review due: 123 of them escalated」（条数与下一句粘在一起 = 读错一个数量级）。 */
+.jev-review-facts {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 2px 14px;
 	margin-bottom: 2px;
+	font-variant-numeric: tabular-nums;
 }
 
 /* 实时生成速率 (tokens/sec) */
