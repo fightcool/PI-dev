@@ -44,9 +44,13 @@ PI_CODING_AGENT_DIR=/home/dev/.local/share/pi-dev/agent node scripts/install-jev
 > ② 第一版入口写的是「re-export 指向仓库里的绝对路径」，结果指向了一个**临时 worktree** —— 那个目录一删，
 > 所有会话加载扩展都会报错。现在入口是相对路径 + 本体内联在宿主里，**装完就与仓库位置无关**。
 
-| `<agentDir>/hooks/jev-gate/app.json` | **兜底**：安装时记下的「门禁 CLI 在哪个 checkout」（`vendor/pi-web-ui`）。会话在**别的项目**里提交时（cwd 不含 `vendor/pi-web-ui`）靠它找到 CLI；换兜底 checkout 就在那个 checkout 里重跑 install |
+| `<agentDir>/hooks/jev-gate-<hash>/app.json` | **兜底**：安装时记下的「门禁 CLI 在哪个 checkout」（`vendor/pi-web-ui`）。会话在**别的项目**里提交时（cwd 不含 `vendor/pi-web-ui`）靠它找到 CLI；换兜底 checkout 就在那个 checkout 里重跑 install |
 
-**升级**：`git pull` 后重跑 `install`（会覆盖本体文件；旧版本入口带同一行管理标记，因此能直接升级，不会被当成别人的扩展拒掉）。
+> ④ **同名覆盖会跑旧代码**：宿主进程按扩展**路径**缓存已加载的 factory。实测：重装同名入口后，
+> 新会话（cwd=`/tmp`）里提交时钩子仍旧行为不变 —— 服务进程里跑的还是旧副本。所以入口名带**内容哈希**：
+> 代码一变路径就变，缓存自然失效，不用重启宿主。重装会自动清理旧版本（安装日志里会写「已清理 N 个旧版本」）。
+
+**升级**：`git pull` 后重跑 `install`（写入新的内容哈希入口并清掉旧的；旧版本入口带同一行管理标记，因此能直接升级，不会被当成别人的扩展拒掉）。
 **卸载**：
 
 新启动的 Pi 会话自动加载；**已经运行的会话不会自动热更新**。在 Pi TUI 执行 `/reload`，或在 Web 宿主中重新创建会话运行时，才会加载此入口。
