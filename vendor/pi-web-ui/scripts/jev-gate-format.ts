@@ -141,9 +141,7 @@ export function printStatus(gate: JevGate): void {
 	console.log(
 		"注: 磁盘决策缓存是跨进程的（`cache` 查看概览，`cache clear` 清空）；命中会分别记在「缓存命中/磁盘命中」里。",
 	);
-	console.log(
-		"注: 「待复盘样本」看的是落盘样本（`samples` 看概览，`review` 看是否到期，`review export` 导语料）。",
-	);
+	console.log("注: 「待复盘样本」看的是落盘样本（`samples` 看概览，`review` 看是否到期，`review export` 导语料）。");
 }
 
 /** 磁盘缓存概览（只读；条目里没有 state/密钥，这里也只显示计数与时间）。 */

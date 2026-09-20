@@ -704,9 +704,7 @@ describe("JevGate — 真实样本（samplesPath）", () => {
 		expect(entry.state).toBe('{"zeta":1,"alpha":2}');
 		expect(entry.stateChars).toBe(entry.state.length);
 		// stateHash 复用本次 cacheKey 的 sha256 摘要（不另算第二个摘要）。
-		expect(entry.stateHash).toBe(
-			cacheKey({ model: defaultJevGateConfig().model, questions: QUESTIONS, state }),
-		);
+		expect(entry.stateHash).toBe(cacheKey({ model: defaultJevGateConfig().model, questions: QUESTIONS, state }));
 		expect(entry.error).toBeUndefined();
 		// 样本 0600（同机其他用户不该读到你审过的代码）。
 		expect(statSync(samplesPath).mode & 0o777).toBe(0o600);

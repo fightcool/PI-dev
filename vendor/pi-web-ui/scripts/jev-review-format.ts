@@ -12,7 +12,9 @@
  * @GOTCHA `review export` 的正文走 **stdout**（必须是纯 JSONL：能直接重定向成语料文件），
  *   于是本模块所有「给人看」的话都必须走 **stderr**（console.error）—— 混进 stdout 就毁了那次重定向。
  * @WHY 为什么样本也要有「概览」命令：样本是本项目**唯一**会落盘被审文本的地方，
- *   必须能一眼看出「攒了多少 / 有多老 / 截断或省略了几条 / 删掉会损失什么」，否则没人敢开它。
+ *   必须能一眼看出「攒了多少 / 有多老 / 截断或抹除了几条 / 删掉会损失什么」，否则没人敢开它。
+ * @GOTCHA 用法文本不在这里：`samples` / `review` 两条命令写在 printUsage（jev-gate-format.ts）里，
+ *   与 check/cache 同一份清单 —— 只有 tune 因为参数多才另开一块（printTuneUsage）。
  */
 import type { JevReviewStatus } from "../server/dev-con/jev-review.js";
 import type { JevSampleSource, JevSamplesStats } from "../server/dev-con/jev-samples.js";
@@ -52,25 +54,6 @@ function formatSourceCounts(bySource: Record<string, number>): string {
 	return all.map((name) => `${name} ${bySource[name]}`).join(" / ");
 }
 
-export function printSamplesUsage(): void {
-	console.log(
-		[
-			"  samples [--json]             真实样本概览（条数 / 占用 / 时间范围 / 结论与来源分布 / 截断与抹除）",
-			"  samples clear [--json]       删除样本（当前 + 上一代；删了就再也复盘不了，先 export 再删）",
-		].join("\n"),
-	);
-}
-
-export function printReviewUsage(): void {
-	console.log(
-		[
-			"  review [--json]              是否该复盘了（到期退出码 0 / 未到期 1）",
-			"  review export [--since <7d|24h|30m|ISO>] [--out <path|->]   导出 tune 语料草稿（stdout 是纯 JSONL）",
-			"  review ack [--at <ISO>]      确认已复盘（写 lastAckAt；默认 now）",
-		].join("\n"),
-	);
-}
-
 /** 样本概览（只读；条目里虽然存着被审内容，这里也只显示计数与时间）。 */
 export function printSamplesStats(
 	stats: JevSamplesStats,
@@ -97,9 +80,7 @@ export function printSamplesStats(
 		`截断: ${stats.truncated} 条（内容不完整，只能看前半段）  抹掉密钥形状: ${stats.redacted} 条（原地抹成 «redacted»）`,
 	);
 	if (stats.skipped > 0) console.log(`损坏行（已跳过）: ${stats.skipped}`);
-	console.log(
-		"\n注: 样本是本项目**唯一**落盘被审内容的地方（截断 + 密钥形状检测 + 单文件轮转）；",
-	);
+	console.log("\n注: 样本是本项目**唯一**落盘被审内容的地方（截断 + 密钥形状检测 + 单文件轮转）；");
 	console.log("    复盘完请 `samples clear`，日常看是否到期用 `review`。");
 }
 
@@ -115,23 +96,21 @@ export function printSamplesClear(path: string, cleared: { removed: string[]; by
 }
 
 /** 复盘状态（人类可读；退出码由调用方按 `due` 决定：到期 0 / 未到期 1）。 */
-export function printReviewStatus(
-	status: JevReviewStatus,
-	paths: { samplesPath: string; ackPath: string },
-): void {
+export function printReviewStatus(status: JevReviewStatus, paths: { samplesPath: string; ackPath: string }): void {
 	const { minEntries, maxAgeMs } = status.thresholds;
 	console.log(`样本文件: ${paths.samplesPath}`);
 	console.log(`确认文件: ${paths.ackPath}`);
 	console.log(`阈值: 攒够 ${minEntries} 条 或 最早一条等满 ${formatDuration(maxAgeMs)}（先到先触发）`);
-	console.log(`上次确认: ${formatTime(status.lastAckAt)}${status.lastAckAt === null ? "（从未确认，从最早的样本算起）" : ""}`);
+	console.log(
+		`上次确认: ${formatTime(status.lastAckAt)}${status.lastAckAt === null ? "（从未确认，从最早的样本算起）" : ""}`,
+	);
 	console.log(`待复盘: ${status.pending} 条`);
 	if (status.pending > 0) {
 		console.log(`待复盘时间范围: ${formatTime(status.oldestPendingAt)} → ${formatTime(status.newestPendingAt)}`);
 		console.log(`其中转人工（没有真值，只能人判）: ${status.needsHumanLabel} 条`);
 	}
 	if (status.due) {
-		const reason =
-			status.reason === "entries" ? `攒够 ${minEntries} 条` : `最早一条已等满 ${formatDuration(maxAgeMs)}`;
+		const reason = status.reason === "entries" ? `攒够 ${minEntries} 条` : `最早一条已等满 ${formatDuration(maxAgeMs)}`;
 		console.log(`状态: **该复盘了**（${reason}）`);
 		console.log("");
 		console.log("下一步:");
@@ -173,8 +152,6 @@ export function printReviewAck(input: {
 	previousAckAt: number | null;
 }): void {
 	console.log(`已确认复盘: lastAckAt = ${formatTime(input.lastAckAt)}（${input.ackPath}）`);
-	console.log(
-		`本次确认掉 ${input.acknowledged} 条待复盘样本（上次确认: ${formatTime(input.previousAckAt)}）`,
-	);
+	console.log(`本次确认掉 ${input.acknowledged} 条待复盘样本（上次确认: ${formatTime(input.previousAckAt)}）`);
 	console.log("注: 样本**没有**被删除，只是不再计入「待复盘」；要真要留就把语料导出去，要清就 `samples clear`。");
 }

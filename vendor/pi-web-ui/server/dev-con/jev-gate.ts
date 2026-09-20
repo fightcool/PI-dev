@@ -45,10 +45,7 @@ import {
 	loadJevSamples,
 	type JevSampleSource,
 } from "./jev-samples.js";
-import {
-	reviewStatus as computeReviewStatus,
-	type JevReviewStatus,
-} from "./jev-review.js";
+import { reviewStatus as computeReviewStatus, type JevReviewStatus } from "./jev-review.js";
 import {
 	JEV_CACHE_MAX_ENTRIES as JEV_DISK_MAX_ENTRIES,
 	JEV_CACHE_VERSION,

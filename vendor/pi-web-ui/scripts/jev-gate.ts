@@ -84,10 +84,8 @@ import {
 	printReviewAck,
 	printReviewExportSummary,
 	printReviewStatus,
-	printReviewUsage,
 	printSamplesClear,
 	printSamplesStats,
-	printSamplesUsage,
 } from "./jev-review-format.js";
 import {
 	type JevTuneFailure,
@@ -239,7 +237,9 @@ function parseSince(raw: string, now: number): number | null {
 	const text = raw.trim();
 	const relative = /^(\d+)([dhms])$/i.exec(text);
 	if (relative) {
-		const unit = { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1_000 }[relative[2]!.toLowerCase() as "d" | "h" | "m" | "s"];
+		const unit = { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1_000 }[
+			relative[2]!.toLowerCase() as "d" | "h" | "m" | "s"
+		];
 		return now - Number(relative[1]) * unit;
 	}
 	const stamp = Date.parse(text);
@@ -297,9 +297,7 @@ function runReview(gate: JevGate, agentDir: string, flags: Flags, sub: string, a
 			}
 			since = parseSince(sinceRaw, now);
 			if (since === null) {
-				console.error(
-					`无法解析 --since ${sinceRaw}：用 7d / 24h / 30m / 90s 或 ISO 时间戳（如 2026-09-20T00:00:00Z）`,
-				);
+				console.error(`无法解析 --since ${sinceRaw}：用 7d / 24h / 30m / 90s 或 ISO 时间戳（如 2026-09-20T00:00:00Z）`);
 				return 3;
 			}
 		}
@@ -728,8 +726,6 @@ async function main(): Promise<number> {
 	if (command === "help" || flags.get("help")) {
 		printUsage(CREDENTIAL_PROVIDER);
 		printTuneUsage();
-		printSamplesUsage();
-		printReviewUsage();
 		return 0;
 	}
 	if (loaded.parseError && !asJson) {
@@ -813,10 +809,17 @@ async function main(): Promise<number> {
 		const rawIds = flags.get("proposition");
 		const single = typeof rawIds === "string" ? [rawIds] : null;
 		const isProbe = command === "probe";
-		const ids =
-			isProbe ? (single ?? [JEV_PROPOSITIONS[0]!.id]) : (single ?? JEV_PROPOSITIONS.map((p) => p.id));
+		const ids = isProbe ? (single ?? [JEV_PROPOSITIONS[0]!.id]) : (single ?? JEV_PROPOSITIONS.map((p) => p.id));
 		const state = isProbe ? PROBE_STATE : await readState(flags);
-		return await runDecision(gate, state, ids, apiKey, asJson, flags.get("no-cache") !== true, isProbe ? "probe" : "cli");
+		return await runDecision(
+			gate,
+			state,
+			ids,
+			apiKey,
+			asJson,
+			flags.get("no-cache") !== true,
+			isProbe ? "probe" : "cli",
+		);
 	}
 
 	if (command === "tune") return await runTune(gate, agentDir, config, flags, asJson);
@@ -826,8 +829,6 @@ async function main(): Promise<number> {
 	console.error(`未知命令: ${command}\n`);
 	printUsage(CREDENTIAL_PROVIDER);
 	printTuneUsage();
-	printSamplesUsage();
-	printReviewUsage();
 	return 3;
 }
 
