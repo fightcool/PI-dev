@@ -62,12 +62,12 @@ describe("decideOutcome", () => {
 		const exactly = decideOutcome({ a: 0.1 }, THRESHOLDS);
 		expect(exactly.outcome).toBe("block");
 
-		const withLow = decideOutcome({ a: 0.95, is_breaking_change: 0.02 }, THRESHOLDS);
+		const withLow = decideOutcome({ a: 0.95, change_preserves_public_api: 0.02 }, THRESHOLDS);
 		expect(withLow.outcome).toBe("block");
 		// reason 必须列出 name=score 形式的失败项，且 failed 点名该判定项。
-		expect(withLow.reason).toContain("is_breaking_change=0.02");
-		expect(withLow.failed).toEqual(["is_breaking_change"]);
-		expect(withLow.reasonEn).toContain("is_breaking_change=0.02");
+		expect(withLow.reason).toContain("change_preserves_public_api=0.02");
+		expect(withLow.failed).toEqual(["change_preserves_public_api"]);
+		expect(withLow.reasonEn).toContain("change_preserves_public_api=0.02");
 	});
 
 	it("falls back to review in the middle band", () => {
@@ -203,9 +203,9 @@ describe("canonicalizeState / cacheKey", () => {
 describe("JEV_PROPOSITIONS", () => {
 	it("ships the three coding propositions with explicit injection guards", () => {
 		expect(JEV_PROPOSITIONS.map((p) => p.id)).toEqual([
-			"is_breaking_change",
+			"change_preserves_public_api",
 			"test_asserts_behavior",
-			"change_out_of_scope",
+			"change_within_task_scope",
 		]);
 		for (const proposition of JEV_PROPOSITIONS) {
 			expect(proposition.instructions.trim().length).toBeGreaterThan(0);
@@ -222,10 +222,24 @@ describe("JEV_PROPOSITIONS", () => {
 		}
 	});
 
+	it("phrases every proposition positively, because a high score means approve", () => {
+		// @BUGFIX 2026-09-20：命题若写成缺陷式（true = 坏事），就与「高分→放行」方向相反——
+		// 实测把破坏性变更判成 approve、把干净改动判成 block。新增命题必须遵守同一条：
+		// true 侧必须是「好事」（安全 / 达标），所以 id 与 true 标准只能用正向措辞。
+		const defectWording = /\b(breaking|out_of_scope|unsafe|violat|breaks)\b/i;
+		for (const proposition of JEV_PROPOSITIONS) {
+			expect(proposition.id).not.toMatch(defectWording);
+			expect(proposition.criteria.true).not.toMatch(defectWording);
+		}
+	});
+
 	it("resolves ids exactly and refuses unknown ones", () => {
-		expect(propositionById("is_breaking_change")?.id).toBe("is_breaking_change");
+		expect(propositionById("change_preserves_public_api")?.id).toBe("change_preserves_public_api");
 		expect(propositionById("nope")).toBeNull();
 		expect(propositionById("")).toBeNull();
+		// 退场的缺陷式 id 不得再存在（否则门禁方向又反了）。
+		expect(propositionById("is_breaking_change")).toBeNull();
+		expect(propositionById("change_out_of_scope")).toBeNull();
 	});
 
 	it("extracts question names from arrays and records, and never invents them", () => {
@@ -253,10 +267,10 @@ describe("buildJevQuestions", () => {
 	});
 
 	it("sends the proposition text verbatim and never invents unknown ids", () => {
-		const questions = buildJevQuestions(["is_breaking_change", "nope"]);
-		expect(Object.keys(questions)).toEqual(["is_breaking_change"]);
-		const source = JEV_PROPOSITIONS.find((p) => p.id === "is_breaking_change")!;
-		expect(questions.is_breaking_change).toEqual({
+		const questions = buildJevQuestions(["change_preserves_public_api", "nope"]);
+		expect(Object.keys(questions)).toEqual(["change_preserves_public_api"]);
+		const source = JEV_PROPOSITIONS.find((p) => p.id === "change_preserves_public_api")!;
+		expect(questions.change_preserves_public_api).toEqual({
 			type: "noul",
 			instructions: source.instructions,
 			criteria: source.criteria,

@@ -583,7 +583,7 @@ describe("JevGate — 磁盘持久缓存（cachePath）", () => {
 		// 少一条（旧答案只覆盖了一个命题）与多一条（旧答案覆盖了这次没问的命题）都必须 miss。
 		const stale: Record<string, number>[] = [
 			{ [JEV_PROBE_PROPOSITION_ID]: 0.99 },
-			{ [JEV_PROBE_PROPOSITION_ID]: 0.99, change_out_of_scope: 0.99 },
+			{ [JEV_PROBE_PROPOSITION_ID]: 0.99, change_within_task_scope: 0.99 },
 		];
 		for (const checks of stale) {
 			clearJevCache(cachePath);

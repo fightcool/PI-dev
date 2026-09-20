@@ -27,7 +27,7 @@
   "model": "typesafe/jev-1.13",
   "state": { "objective": "…", "diff": "…" },   // string | record | array
   "questions": {                                   // ← record（键 = 命题名），不是数组
-    "is_breaking_change": {
+    "change_preserves_public_api": {
       "type": "noul",                             // ← 判别字段，必填：noul | choice | score
       "instructions": "Decide whether …",
       "criteria": { "true": "Yes: …", "false": "No: …" }
@@ -40,7 +40,7 @@
 // 200
 {
   "model": "typesafe/jev-1.13-20260917",          // 实际服务的 pin 版本（审计要记）
-  "answers": { "is_breaking_change": { "type": "noul", "noul": 0.91 } },
+  "answers": { "change_preserves_public_api": { "type": "noul", "noul": 0.91 } },
   "usage": { "input_tokens": 563, "output_tokens": 24, "cost": 0.000023646 },
   "id": "gen-dec-…",
   "provider": "TypeSafe"
@@ -67,7 +67,7 @@ npm run jev -- probe
 npm run jev -- propositions
 
 # 4) 跑一次门禁
-npm run jev -- check --proposition is_breaking_change --state-file -   # 从 stdin 读被审内容
+npm run jev -- check --proposition change_preserves_public_api --state-file -   # 从 stdin 读被审内容
 
 # 5) 缓存（派生数据，可丢）
 npm run jev -- cache              # 概览：条目数 / 占用 / 时间范围
@@ -107,6 +107,9 @@ p <= 0.1   → 明确为假  → block（自动阻断）
 0.1 < p < 0.9 → 模型不确定 → review（转人工 / 转强模型 / 记录待判）
 ```
 
+> `p` 是「命题为真」的置信度，而**放行 = 命题为真**。所以每条命题的 `true` 必须是好事，
+> 否则门禁方向就反了（见 §5.1）。
+
 **这不是保守，是必须的。** 官方与 OpenRouter 实测：同一输入重复调用，Jev 的概率**可移动约 0.08**（示例：某命题在 0.35–0.43 之间浮动）。因此：
 
 - **禁止单阈值**（如 0.5）——抖动会让同一提交时而通过时而失败；
@@ -121,9 +124,9 @@ p <= 0.1   → 明确为假  → block（自动阻断）
 
 | id | 判定 |
 | --- | --- |
-| `is_breaking_change` | 是否引入破坏性 API 变更（删公开导出 / 改公开签名 / 收紧类型 / 改公开行为契约） |
+| `change_preserves_public_api` | 改完是否仍然兼容公开 API（不删/不改公开导出与签名、不收紧类型、不改已发布的行为契约） |
 | `test_asserts_behavior` | 新增或修改的测试是否真的断言了具体行为或取值 |
-| `change_out_of_scope` | 是否触碰任务目标之外的模块 |
+| `change_within_task_scope` | 改动是否都在任务目标范围内 |
 
 每条命题的 `instructions` / `criteria` 就是**送进模型的文本，一律写成英文**（官方：Jev 英文准确率最优，CJK 可用但不保证），且 `criteria.true` 以 `Yes:` 开头、`criteria.false` 以 `No:` 开头，方向与 `instructions` 一致。true / false 两侧都显式带上同一句防注入声明：
 
@@ -131,7 +134,19 @@ p <= 0.1   → 明确为假  → block（自动阻断）
 
 这是必须的 —— 官方 `model-jaggedness` 明确指出 Jev **默认不把 state 当敌意输入**，被审代码里的注释足以左右结论。给人看的中文说明走 `decideOutcome` 的双语 `reason` / `reasonEn` 与 CLI、UI 的 i18n 文案，**不要**把这些英文判定标准翻回中文再发给模型。
 
-新增命题：往 `JEV_PROPOSITIONS` 加一条（`id` + `instructions` + `criteria.{true,false}`），CLI 与设置面板会自动列出。**不要**在 CLI 或 UI 里另写一份命题或阈值。
+新增命题：往 `JEV_PROPOSITIONS` 加一条（`id` + `instructions` + `criteria.{true,false}`），CLI 与设置面板会自动列出。**不要**在 CLI 或 UI 里另写一份命题或阈值；**新增命题必须是正向表述**（见 §5.1）。
+
+### 5.1 命题必须写成「正向表述」（否则门禁方向反了）
+
+判定规则是 **分数高 → 放行**（`decideOutcome`），所以每条命题的 `true` 必须是**好事**（安全 / 达标）：
+
+| 正确（正向） | 错的（缺陷式） |
+| --- | --- |
+| `change_preserves_public_api`：改完还兼容公开 API？ | ~~`is_breaking_change`~~：是不是破坏性变更？ |
+| `test_asserts_behavior`：测试真的断言了行为？ | —— |
+| `change_within_task_scope`：改动都在任务目标内？ | ~~`change_out_of_scope`~~：是否越出目标？ |
+
+方向写反的后果不是「保守」而是**恰好相反**：实测（2026-09-20）破坏性变更得 `0.91` → 放行，而一个非破坏、在范围内的干净改动（`0.09` / `0.08`）→ 拦下。所以初始版本的 `is_breaking_change` / `change_out_of_scope` 已全部改写为正向命题；单测里有一条结构性断言：`id` 与 `criteria.true` 不得出现 `breaking` / `out_of_scope` 一类缺陷措辞。`probe` 的合成样本也同步换成了「加可选参数」的兼容改动（正向命题下应为 approve，否则自检退出码会是 1）。
 
 ---
 
@@ -239,7 +254,7 @@ npm run test:jev:browser
 
 ## 11. 已知限制 / 后续
 
-- **已做真实联网验收（2026-09-20）**：`probe` 实测 200（`is_breaking_change=0.91`，`model=typesafe/jev-1.13-20260917`，requestId/cost 齐全），三条命题并行求值也实测通过。这次验收顺带暴露并修掉了请求形状的 400（见 §1.1）。
+- **已做真实联网验收（2026-09-20）**：`probe` 实测 200（`change_preserves_public_api=0.93`，`model=typesafe/jev-1.13-20260917`，requestId/cost 齐全），三条命题并行求值也实测通过。这次验收顺带暴露并修掉了两个问题：请求形状的 400（§1.1）与命题方向（§5.1）。
 - **`alpha` 接口**：OpenRouter 的 Decisions 路由标注为 alpha，可能变更；所有调用已收敛到 `JevGate` 单一出口，便于切换。
 - **决策缓存已落盘但不是事实源**：`jev-decisions-cache.jsonl` 只存摘要/分数/审计元数据（不存 state、密钥、被审文本），派生可丢；它**不参与**用量与计费统计（计费仍以用量历史为准）。
 - **未做**：把门禁接进 CI 门禁流程（缓存已为它准备好确定性回放的数据基础）、以及按 `state` 做 redact 后再哈希（当前直接对 state canonicalize 后哈希，state 本身不落盘）。
