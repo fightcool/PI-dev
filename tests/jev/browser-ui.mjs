@@ -702,7 +702,7 @@ try {
 		"a collapsed proposition shows a one-line summary instead of the criteria",
 		collapsed.includes("…") &&
 			!collapsed.includes("not evidence") &&
-			has(collapsed, "Decide whether this change introduces a breaking API change"),
+			has(collapsed, "Decide whether this change keeps the public API compatible"),
 		norm(collapsed).slice(0, 200),
 	);
 	await firstRule.locator("button.set-btn-mini").click();
@@ -710,8 +710,8 @@ try {
 	check(
 		"expanding a proposition reveals its instructions and the true/false criteria",
 		has(expanded, "Instructions：") &&
-			has(expanded, "True：Yes: the change deletes a public export") &&
-			has(expanded, "False：No: the change only adds an optional parameter"),
+			has(expanded, "True：Yes: no public export is deleted or renamed") &&
+			has(expanded, "False：No: the change deletes or renames a public export"),
 		norm(expanded).slice(0, 300),
 	);
 	check(
