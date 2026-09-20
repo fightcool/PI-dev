@@ -1277,6 +1277,18 @@
 		"footerJevEmpty": "Jev: sin decisiones",
 		"footerJevDetail": "Las puntuaciones por proposición más recientes están en la sección «Puerta Jev» de los ajustes.",
 		"footerJevLastDecision": "Última decisión",
-		"footerJevReason": "Motivo (de la respuesta de decisión real más reciente)"
+		"footerJevReason": "Motivo (de la respuesta de decisión real más reciente)",
+		"footerJevReviewTitle": "Revisión",
+		"footerJevReviewPending": "Revisión pendiente: {pending}",
+		"footerJevReviewNeedsHuman": "de ellos {needsHuman} escalados: sin verdad de referencia, solo un humano puede etiquetarlos",
+		"footerJevReviewOldest": "Más antiguo",
+		"footerJevReviewRule": "Se activa cada {entries} muestras o cada {days} días",
+		"footerJevReviewExportHint": "Exportar el corpus (ejecútalo en la raíz del proyecto):",
+		"footerJevReviewAckHint": "Confirma después de exportar (código de salida 0 = toca / 1 = no toca):",
+		"settingsJevRecordSamples": "Registrar muestras de decisiones reales (rastro completo)",
+		"settingsJevRecordSamplesHint": "Cada decisión real se escribe como una muestra (las repeticiones desde caché no): el contenido revisado (recortado a 4000 caracteres), las puntuaciones por proposición, el resultado y el motivo. Los tokens con forma de secreto se reescriben como «redacted», pero esto no es anonimización: el contenido puede incluir tu código y tus rutas. Apagarlo detiene la escritura; las muestras ya escritas siguen ahí hasta samples clear.",
+		"settingsJevSamplesPrivacy": "Se guarda en <agentDir>/dev-con/jev-samples.jsonl (modo 0600, rotación a las 2000 entradas / 8 MB). Solo en esta máquina: nunca se sube ni contiene claves.",
+		"settingsJevSamplesReview": "Revisión de muestras",
+		"settingsJevSamplesDue": "Ya toca: exporta el corpus, etiquétalo a mano y confirma con ack (si no, el aviso vuelve)"
 	}
 }

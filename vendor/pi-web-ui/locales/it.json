@@ -1277,6 +1277,18 @@
 		"footerJevEmpty": "Jev: nessuna decisione",
 		"footerJevDetail": "I punteggi per proposizione più recenti sono nella sezione «Gate Jev» delle impostazioni.",
 		"footerJevLastDecision": "Ultima decisione",
-		"footerJevReason": "Motivo (dall'ultima risposta di decisione reale ricevuta)"
+		"footerJevReason": "Motivo (dall'ultima risposta di decisione reale ricevuta)",
+		"footerJevReviewTitle": "Revisione",
+		"footerJevReviewPending": "Revisione dovuta: {pending}",
+		"footerJevReviewNeedsHuman": "di cui {needsHuman} escalati: senza verità di riferimento può etichettarli solo un umano",
+		"footerJevReviewOldest": "Il più vecchio",
+		"footerJevReviewRule": "Si attiva ogni {entries} campioni o ogni {days} giorni",
+		"footerJevReviewExportHint": "Esporta il corpus (eseguilo nella radice del progetto):",
+		"footerJevReviewAckHint": "Conferma dopo l'esportazione (exit code 0 = dovuta / 1 = non dovuta):",
+		"settingsJevRecordSamples": "Registra campioni di decisioni reali (traccia completa)",
+		"settingsJevRecordSamplesHint": "Ogni decisione reale viene scritta come un campione (le ripetizioni dalla cache no): il contenuto esaminato (troncato a 4000 caratteri), i punteggi per proposizione, l'esito e il motivo. I token a forma di segreto vengono riscritti come «redacted», ma non è anonimizzazione: il contenuto può includere codice e percorsi. Disattivarlo ferma la scrittura; i campioni già scritti restano finché non esegui samples clear.",
+		"settingsJevSamplesPrivacy": "Salvato in <agentDir>/dev-con/jev-samples.jsonl (modo 0600, rotazione a 2000 voci / 8 MB). Resta su questa macchina: mai caricato, mai chiavi.",
+		"settingsJevSamplesReview": "Revisione dei campioni",
+		"settingsJevSamplesDue": "Ora è dovuta: esporta il corpus, etichettalo a mano, poi ack (altrimenti il promemoria torna)"
 	}
 }

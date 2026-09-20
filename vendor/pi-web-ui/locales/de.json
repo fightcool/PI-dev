@@ -1277,6 +1277,18 @@
 		"footerJevEmpty": "Jev: keine Entscheidungen",
 		"footerJevDetail": "Die aktuellen Punktwerte je Proposition stehen im Abschnitt „Jev-Gate“ der Einstellungen.",
 		"footerJevLastDecision": "Letzte Entscheidung",
-		"footerJevReason": "Begründung (aus der zuletzt empfangenen echten Entscheidungsantwort)"
+		"footerJevReason": "Begründung (aus der zuletzt empfangenen echten Entscheidungsantwort)",
+		"footerJevReviewTitle": "Review",
+		"footerJevReviewPending": "Review fällig: {pending}",
+		"footerJevReviewNeedsHuman": "davon {needsHuman} eskaliert – ohne Wahrheit kann nur ein Mensch sie labeln",
+		"footerJevReviewOldest": "Ältester",
+		"footerJevReviewRule": "Auslöser: alle {entries} Einträge oder alle {days} Tage",
+		"footerJevReviewExportHint": "Korpus exportieren (im Projektstamm ausführen):",
+		"footerJevReviewAckHint": "Nach dem Export bestätigen (Exit-Code 0 = fällig / 1 = nicht fällig):",
+		"settingsJevRecordSamples": "Echte Entscheidungs-Samples aufzeichnen (vollständige Spur)",
+		"settingsJevRecordSamplesHint": "Jede echte Entscheidung wird als ein Sample geschrieben (Cache-Wiederholungen nicht): der geprüfte Inhalt (auf 4000 Zeichen gekürzt), die Scores je Proposition, das Ergebnis und die Begründung. Token in Schlüsselform werden zu «redacted» umgeschrieben, das ist aber keine Anonymisierung – der Inhalt kann Code und Pfade enthalten. Ausschalten stoppt das Schreiben; bereits geschriebene Samples bleiben bis samples clear.",
+		"settingsJevSamplesPrivacy": "Ablage: <agentDir>/dev-con/jev-samples.jsonl (Modus 0600, Rotation bei 2000 Einträgen / 8 MB). Bleibt lokal, wird nie hochgeladen und enthält keine Schlüssel.",
+		"settingsJevSamplesReview": "Sample-Review",
+		"settingsJevSamplesDue": "Jetzt fällig: Korpus exportieren, von Hand labeln, dann ack (sonst kommt die Erinnerung wieder)"
 	}
 }

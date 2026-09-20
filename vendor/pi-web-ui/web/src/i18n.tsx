@@ -1452,6 +1452,24 @@ export const zh = {
 	footerJevDetail: "最近一次逐条分数见设置面板",
 	footerJevLastDecision: "最近结论",
 	footerJevReason: "判定理由（最近一次收到的真实决策回包）",
+
+	/* 样本复盘（components/JevReviewSection.tsx，底栏浮层与设置面板共用）：一周真实使用后的校准入口。
+	   {pending}/{needsHuman} 是条数；{entries}/{days} 是服务端回包里的触发阈值（40 条 / 7 天），
+	   不在客户端写死。两条命令只有 CLI 这一条路（被审内容不上行，见 jev-samples.ts）。 */
+	footerJevReviewTitle: "复盘",
+	footerJevReviewPending: "待复盘 {pending} 条",
+	footerJevReviewNeedsHuman: "其中 {needsHuman} 条转人工，没有真值只能人判",
+	footerJevReviewOldest: "最老一条",
+	footerJevReviewRule: "触发条件：每 {entries} 条或每 {days} 天",
+	footerJevReviewExportHint: "导出语料（项目根目录执行）：",
+	footerJevReviewAckHint: "导出后确认（退出码 0=到期 / 1=未到期）：",
+	settingsJevRecordSamples: "记录真实决策样本（全量留痕）",
+	settingsJevRecordSamplesHint:
+		"每次「真实」决策（缓存回放不记）写一条样本：被审内容（截断到 4000 字符）+ 各项分数 + 结论 + 理由。密钥形状的 token 会被抹成 «redacted»，但这不是匿名化——被审内容里可能有你的代码与路径。关掉即停止写入，已写的仍可用 samples clear 清空。",
+	settingsJevSamplesPrivacy:
+		"落盘位置 <agentDir>/dev-con/jev-samples.jsonl（权限 0600，单文件 2000 条 / 8MB 轮转）；只留在本机，不随任何请求上行，也不存密钥正文。",
+	settingsJevSamplesReview: "样本复盘",
+	settingsJevSamplesDue: "已到期：导出语料、人判之后用 ack 确认（否则会一直提醒）",
 } as const;
 
 /* ------------------------------------------------------------------ */

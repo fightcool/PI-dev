@@ -1277,7 +1277,19 @@
 		"footerJevEmpty": "Jev: 判定なし",
 		"footerJevDetail": "直近の判定項目ごとのスコアは設定の「Jev ゲート」セクションにあります。",
 		"footerJevLastDecision": "最新の判定",
-		"footerJevReason": "判定理由（最後に受信した実際の判定応答）"
+		"footerJevReason": "判定理由（最後に受信した実際の判定応答）",
+		"footerJevReviewTitle": "レビュー",
+		"footerJevReviewPending": "要レビュー {pending} 件",
+		"footerJevReviewNeedsHuman": "うち {needsHuman} 件はエスカレーション済みで、正解がないため人がラベル付けするしかありません",
+		"footerJevReviewOldest": "最も古いもの",
+		"footerJevReviewRule": "発動条件：{entries} 件ごと、または {days} 日ごと",
+		"footerJevReviewExportHint": "コーパスを書き出す（プロジェクトのルートで実行）：",
+		"footerJevReviewAckHint": "書き出した後に確認する（終了コード 0=該当 / 1=未該当）：",
+		"settingsJevRecordSamples": "実際の判断サンプルを記録する（全量の痕跡）",
+		"settingsJevRecordSamplesHint": "実際の判断（キャッシュ再生は記録しません）ごとに 1 件のサンプルを書き出します：審査対象の内容（4000 文字で打ち切り）+ 各スコア + 結論 + 理由。鍵の形をしたトークンは «redacted» に置き換えますが、匿名化ではありません（内容にコードやパスが含まれることがあります）。オフにすると書き込みを停止し、既存分は samples clear で消せるまで残ります。",
+		"settingsJevSamplesPrivacy": "保存先 <agentDir>/dev-con/jev-samples.jsonl（0600、2000 件 / 8 MB でローテーション）。このマシン内のみで、送信も鍵の保存もありません。",
+		"settingsJevSamplesReview": "サンプルのレビュー",
+		"settingsJevSamplesDue": "期限が来ています：コーパスを書き出して人がラベル付けし、ack で確認してください（確認しないと再び通知されます）"
 	},
 	"serverStrings": {
 		"agent.subagent.stop.user": "ユーザーがサブエージェントを停止しました",
