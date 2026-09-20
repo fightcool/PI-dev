@@ -191,9 +191,10 @@ const OPS_ALERT_CHECK_MS = (() => {
  * Jev 自检（jev_probe）的内置合成样本：一段极小的代码改动描述。
  * @WHY 自检的目的是证明「key / 路由 / 模型可用」，不能依赖用户仓库内容：
  *   固定样本不进磁盘、不含任何真实代码，也保证同一部署下自检结果可对比。
+ *   内容写英文：state 也是送进模型的文本，官方明确 Jev 英文准确率最优。
  */
 const JEV_PROBE_STATE: Record<string, unknown> = {
-	note: "内置自检样本（不是真实代码）",
+	note: "Built-in self-check sample (not real code)",
 	diff: [
 		"--- a/src/api.ts",
 		"+++ b/src/api.ts",

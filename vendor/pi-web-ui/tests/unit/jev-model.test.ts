@@ -210,9 +210,13 @@ describe("JEV_PROPOSITIONS", () => {
 			// 官方 model-jaggedness：Jev 默认不把 state 当敌意输入 → 判定标准里必须显式声明。
 			expect(proposition.criteria.true).toContain(JEV_STATE_NOT_EVIDENCE);
 			expect(proposition.criteria.false).toContain(JEV_STATE_NOT_EVIDENCE);
-			// 语义方向一致：true = 「是」，false = 「否」。
-			expect(proposition.criteria.true.startsWith("是：")).toBe(true);
-			expect(proposition.criteria.false.startsWith("否：")).toBe(true);
+			// 语义方向一致：true = 「是」，false = 「否」。模型输入文本是英文（官方：Jev 英文准确率最优）。
+			expect(proposition.criteria.true.startsWith("Yes:")).toBe(true);
+			expect(proposition.criteria.false.startsWith("No:")).toBe(true);
+			// 送进模型的文本不得含中文：CJK 可用但不保证准确率。
+			expect(`${proposition.instructions}${proposition.criteria.true}${proposition.criteria.false}`).not.toMatch(
+				/[\u4e00-\u9fff]/,
+			);
 		}
 	});
 

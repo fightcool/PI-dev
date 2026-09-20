@@ -562,33 +562,79 @@ export function topupUrlOf(channel: ChannelRecord): string | null {
 	return /^https?:\/\//i.test(rendered) ? rendered : null;
 }
 
-/** OpenRouter：/api/v1/key 给出该 key 的限额与用量，/api/v1/credits 给出账户余额。 */
+/**
+ * OpenRouter 余额查询。
+ * @WHY 普通**推理 key** 只能查 `/api/v1/key`（该 key 的额度与用量）；`/api/v1/credits`
+ *   （账户总余额）需要 **management key**。旧实现只打 `/credits`，于是普通 key 一律查不到余额。
+ *   现在以 `/key` 为主、`/credits` 为可选补充：任一可用即有值，两个都不可用才算失败。
+ */
 export const openRouterAdapter: AccountAdapter = {
 	kind: "openrouter",
 	match: (channel) => accountConfig(channel)?.kind === "openrouter",
 	async query({ channel, apiKey, signal }) {
 		const cfg = accountConfig(channel);
 		const base = (cfg?.url ?? "https://openrouter.ai/api/v1").replace(/\/+$/, "");
-		const credits = await fetchJson(
-			fetch,
-			`${base}/credits`,
-			{ headers: { authorization: `Bearer ${apiKey}` } },
-			signal,
-		);
-		if (!credits.ok) return { status: "failed", error: credits.error };
-		const cdata = ((credits.body ?? {}) as Record<string, unknown>).data as Record<string, unknown> | undefined;
-		const total = num(cdata?.total_credits);
-		const used = num(cdata?.total_usage);
-		if (total === undefined) return { status: "failed", error: "账户接口未返回可识别的额度字段" };
-		return {
-			status: "ok",
-			unit: "USD",
-			balance: used === undefined ? undefined : total - used,
-			quota: { used, limit: total, remaining: used === undefined ? undefined : total - used, unit: "USD" },
-			checkedAt: Date.now(),
-		};
+		const headers = { authorization: `Bearer ${apiKey}` };
+
+		// 1) key 级额度与用量：任何 key 都能查（含普通推理 key）。
+		const keyRes = await fetchJson(fetch, `${base}/key`, { headers }, signal);
+		if (keyRes.ok) {
+			const kdata = ((keyRes.body ?? {}) as Record<string, unknown>).data as Record<string, unknown> | undefined;
+			const usage = num(kdata?.usage);
+			const limit = num(kdata?.limit);
+			const remaining = num(kdata?.limit_remaining);
+			// 2) key 没有额度上限时，剩余额度信息不足 → 尝试账户总余额补位（需 management key）。
+			if (limit === undefined || remaining === undefined) {
+				const account = await openRouterAccountBalance(base, headers, signal);
+				if (account) return account;
+				return {
+					status: "ok",
+					unit: "USD",
+					balance: remaining,
+					quota: { used: usage, unit: "USD" },
+					checkedAt: Date.now(),
+					note: "该 key 未设置额度上限；账户总余额需要 management key，可在 openrouter.ai/settings/credits 查看",
+				};
+			}
+			return {
+				status: "ok",
+				unit: "USD",
+				balance: remaining,
+				quota: { used: usage, limit, remaining, unit: "USD" },
+				checkedAt: Date.now(),
+				note: "该 API key 的额度",
+			};
+		}
+
+		// 3) key 接口不可用（权限或路径差异）→ 退回账户总余额端点。
+		const account = await openRouterAccountBalance(base, headers, signal);
+		if (account) return account;
+		return { status: "failed", error: keyRes.error ?? "账户接口查询失败" };
 	},
 };
+
+/** OpenRouter 账户总余额（需 management key）。不可用时返回 null，由调用方决定降级。 */
+async function openRouterAccountBalance(
+	base: string,
+	headers: Record<string, string>,
+	signal: AbortSignal,
+): Promise<Omit<AccountQueryResult, "accountRef" | "kind"> | null> {
+	const res = await fetchJson(fetch, `${base}/credits`, { headers }, signal);
+	if (!res.ok) return null;
+	const cdata = ((res.body ?? {}) as Record<string, unknown>).data as Record<string, unknown> | undefined;
+	const total = num(cdata?.total_credits);
+	const used = num(cdata?.total_usage);
+	if (total === undefined) return null;
+	const remaining = used === undefined ? undefined : total - used;
+	return {
+		status: "ok",
+		unit: "USD",
+		balance: remaining,
+		quota: { used, limit: total, remaining, unit: "USD" },
+		checkedAt: Date.now(),
+		note: "账户总余额",
+	};
+}
 
 export interface AccountRegistryOptions {
 	adapters?: AccountAdapter[];

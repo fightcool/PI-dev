@@ -78,13 +78,21 @@ const EMPTY_RUNTIME: UiJevRuntimeStatus = {
 	lastError: null,
 };
 
+// 命题文本即**送进模型的文本**，服务端注册表里是英文（官方：Jev 英文准确率最优）。
 const PROPOSITIONS: UiJevProposition[] = [
 	{
 		id: "is_breaking_change",
-		instructions: "这次改动是否破坏向后兼容",
-		criteria: { true: "存在不兼容的接口改动", false: "完全向后兼容" },
+		instructions: "Decide whether this change introduces a breaking API change.",
+		criteria: {
+			true: "Yes: it removes or changes a public interface.",
+			false: "No: it stays fully backward compatible.",
+		},
 	},
-	{ id: "touches_auth", instructions: "是否改到鉴权路径", criteria: { true: "改了鉴权", false: "没改鉴权" } },
+	{
+		id: "touches_auth",
+		instructions: "Decide whether this change touches the auth path.",
+		criteria: { true: "Yes: the auth path is touched.", false: "No: the auth path is untouched." },
+	},
 ];
 
 const statusOf = (config: UiJevGateConfig = CONFIG): JevUiState => ({
@@ -340,10 +348,10 @@ describe("Jev 决策门禁分区（设置面板）", () => {
 	it("命题清单：默认一行摘要，展开才显示成立/不成立的口径", () => {
 		const { container } = mount();
 		expect(textOf(container)).toContain("is_breaking_change");
-		expect(textOf(container)).not.toContain("存在不兼容的接口改动");
+		expect(textOf(container)).not.toContain("Yes: it removes or changes a public interface.");
 		click(byText(container, "展开"));
-		expect(textOf(container)).toContain("存在不兼容的接口改动");
-		expect(textOf(container)).toContain("完全向后兼容");
+		expect(textOf(container)).toContain("Yes: it removes or changes a public interface.");
+		expect(textOf(container)).toContain("No: it stays fully backward compatible.");
 	});
 
 	it("阈值不合法 → 保存禁用并说明原因（含抖动带宽）", () => {
