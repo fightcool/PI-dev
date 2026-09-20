@@ -592,11 +592,32 @@ describe("tune 报告（逐命题一节 + JSON 字段）", () => {
 			`${P}  pass n=2 [0.73 … 0.95]  block n=2 [0.08 … 0.6]  → 可分 t ∈ (0.6, 0.73]  最佳档 0.7/0.1（误放行 0 误拦 0 转人工 1）`,
 		);
 		expect(text).toContain("→ 该命题需要独立阈值：建议 approveAt = 0.7 阻断 ≤ 0.1");
-		// 不可分命题一行：重叠值 + 点名两边的极端条目 + 「阈值解决不了」。
+		// 不可分命题一行：重叠值 + 点名两边的极端条目；**零误放行零误拦时给「仍可用」而不是「解决不了」**
+		// （严格不可分 ≠ 阈值没用：重叠区落转人工就安全了，只有连零错误档都没有才该改判据）。
 		expect(text).toContain(
-			`${S}  pass n=3 [0.39 … 0.71]  block n=2 [0.4 … 0.79]  → 不可分：重叠 0.4（should-block 最高 0.79 b-scope / should-pass 最低 0.39 p-scope3）；最佳档 0.98/0.02（误放行 0 误拦 0 转人工 5）`,
+			`${S}  pass n=3 [0.39 … 0.71]  block n=2 [0.4 … 0.79]  → 严格不可分：重叠 0.4（should-block 最高 0.79 b-scope / should-pass 最低 0.39 p-scope3）；最佳档 0.98/0.02（误放行 0 误拦 0 转人工 5）`,
 		);
+		expect(text).toContain("→ 仍可用：零误放行零误拦档位存在");
+		expect(text).not.toContain("→ 阈值解决不了这条命题");
+	});
+
+	it("says thresholds cannot fix a proposition when even the best tier still errs", () => {
+		// 拦截侧分数 0.99 超出网格上限 0.98：任何可表达的档位都留着一个误放行。
+		const items = [scored("p1", "should-pass", { [S]: [0.9] }), scored("b1", "should-block", { [S]: [0.99] })];
+		const lines: string[] = [];
+		const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+			lines.push(args.map((arg) => String(arg)).join(" "));
+		});
+		try {
+			printTuneReport(buildReport(items));
+		} finally {
+			spy.mockRestore();
+		}
+		const text = lines.join("\n");
+		expect(text).toContain("严格不可分：重叠 0.09");
+		expect(text).toContain("仍有误放行 1");
 		expect(text).toContain("→ 阈值解决不了这条命题：需要改判据（把命题写得更可判）或接受更多转人工");
+		expect(text).not.toContain("→ 仍可用：");
 	});
 
 	it("renders a no-sample proposition as unjudgeable instead of inventing a window", () => {

@@ -605,17 +605,21 @@ export function analyzePropositionWindows(
 		const best = meanItems.length > 0 ? (suggestThresholds(meanItems, grid, 1).suggestions[0] ?? null) : null;
 
 		const approveAt = windowHi !== null ? floorToStep(windowHi) : Number.NaN;
+		// @GOTCHA 下取整后的值必须**仍落在窗口里**：窗口 (0.60, 0.61] 只有 0.01 宽，
+		//   floorToStep(0.61) = 0.60 恰好是窗口下界（不含）—— 拿它当建议会把 0.60 的 should-block 放行。
+		//   落不进去就不给建议（null），由渲染层如实说「窗口太窄」。
+		const windowFits =
+			separable && windowLo !== null && windowHi !== null && windowLo < approveAt && approveAt <= windowHi;
 		// 建议的 blockAt 取经验最佳档，但必须严格小于建议的 approveAt（与 validateJevGateConfig 同一条约束）。
-		const recommended =
-			separable && Number.isFinite(approveAt) && approveAt > 0
-				? {
-						approveAt,
-						blockAt: Math.max(
-							0,
-							Math.min(best ? best.blockAt : JEV_TUNE_DEFAULT_GRID.blockAt[0]!, roundScore(approveAt - 0.05)),
-						),
-					}
-				: null;
+		const recommended = windowFits
+			? {
+					approveAt,
+					blockAt: Math.max(
+						0,
+						Math.min(best ? best.blockAt : JEV_TUNE_DEFAULT_GRID.blockAt[0]!, roundScore(approveAt - 0.05)),
+					),
+				}
+			: null;
 		// 窗口是否被全局网格覆盖：有全局 approveAt 落在 (windowLo, windowHi] 里 = 全局阈值能表达它。
 		const needsOwnThreshold =
 			separable && windowLo !== null && windowHi !== null
@@ -640,4 +644,88 @@ export function analyzePropositionWindows(
 			needsOwnThreshold,
 		};
 	});
+}
+
+/** 逐判定项的建议值（两个字段都给：可直接写进 `thresholds.perProposition`）。 */
+export interface JevTunePropositionOverride {
+	approveAt: number;
+	blockAt: number;
+}
+
+/**
+ * 「逐命题建议」的落地形态：一个全局基档 + 各判定项的独立阈值。
+ * @WHY 单一全局阈值在结构上不可能合适（三个命题的窗口互不相同，见文件头 @WHY），
+ *   所以最终交给人的**不是**一个数，而是「基档 + 覆盖」这一对东西。
+ */
+export interface JevTunePropositionRecommendation {
+	/** 全局基档（调用方给；本仓 CLI 传窄网格的 top 档）。 */
+	base: { approveAt: number; blockAt: number };
+	/** 逐判定项覆盖：只给**需要且能表达**的判定项（判定项名 → 一对阈值）。 */
+	overrides: Record<string, JevTunePropositionOverride>;
+	/** 逐命题建议解决不了的判定项（阈值这条路走不通，如实写原因）。 */
+	unresolved: { proposition: string; reason: string }[];
+	/** base + overrides 实际生效的阈值：可直接写进配置，也可直接喂 confusionAt。 */
+	thresholds: JevThresholds;
+	/** 这组阈值（按**逐项解析**生效后）在语料上的四类统计。 */
+	confusion: JevTuneConfusion;
+}
+
+/**
+ * 逐命题建议 + 它在语料上的四类统计（用完逐项阈值）。
+ * @CONTRACT 两层判据：
+ *   ① 可分且基档的 approveAt 已落在窗口 (windowLo, windowHi] 内 → **不加覆盖**（基档自己够用，
+ *      少配一项就少一份不一致的可能）；
+ *   ② 可分但基档落不进去 → 用该命题的 `recommended`（= windowHi 下取整）作覆盖；
+ *   ③ 不可分 / 样本不足 / 窗口窄于步长 → 进 unresolved（**不编造**一对值），保持全局基档。
+ * @GOTCHA 「需要覆盖」的判据是「基档的 approveAt 是否落在该命题窗口内」，**不是** needsOwnThreshold：
+ *   后者问的是「全局网格有没有档位」，前者问的是「**我们真要用的这一档**够不够用」。
+ * @CONTRACT 覆盖值必须仍满足 blockAt < approveAt（与 validateJevGateConfig 同一条约束）：
+ *   analyzePropositionWindows 已保证，这里只做透传与回归断言。
+ */
+export function recommendPropositionThresholds(
+	items: readonly JevTuneScoredItem[],
+	base: { approveAt: number; blockAt: number },
+	analyses: readonly JevTunePropositionAnalysis[] = analyzePropositionWindows(items),
+): JevTunePropositionRecommendation {
+	const overrides: Record<string, JevTunePropositionOverride> = {};
+	const unresolved: { proposition: string; reason: string }[] = [];
+	for (const entry of analyses) {
+		if (entry.passCount === 0 || entry.blockCount === 0) {
+			unresolved.push({
+				proposition: entry.proposition,
+				reason: `样本不足（should-pass ${entry.passCount} / should-block ${entry.blockCount}）：不下可分结论`,
+			});
+			continue;
+		}
+		if (!entry.separable || entry.windowLo === null || entry.windowHi === null) {
+			unresolved.push({
+				proposition: entry.proposition,
+				reason: `分数分布重叠（重叠 ${entry.overlap}）：任何阈值都只能二选一`,
+			});
+			continue;
+		}
+		// ① 基档已经落在窗口里：这一项不需要覆盖（override 越少，配置越不容易自相矛盾）。
+		if (entry.windowLo < base.approveAt && base.approveAt <= entry.windowHi) continue;
+		// ③ 可分但步长表达不了（窗口窄于 0.05）：不硬凑一个会误放行的值。
+		if (!entry.recommended) {
+			unresolved.push({
+				proposition: entry.proposition,
+				reason: `窗口 (${entry.windowLo}, ${entry.windowHi}] 窄于 ${JEV_TUNE_PROPOSITION_STEP} 步长：没有能落进窗口的 approveAt`,
+			});
+			continue;
+		}
+		overrides[entry.proposition] = { ...entry.recommended };
+	}
+	const thresholds: JevThresholds =
+		Object.keys(overrides).length > 0
+			? { approveAt: base.approveAt, blockAt: base.blockAt, perProposition: overrides }
+			: { approveAt: base.approveAt, blockAt: base.blockAt };
+	return {
+		base: { approveAt: base.approveAt, blockAt: base.blockAt },
+		overrides,
+		unresolved,
+		thresholds,
+		// 三态与逐项阈值解析全走 decideOutcome（唯一事实源）：这里不写第二份判定。
+		confusion: confusionAt(items, thresholds),
+	};
 }

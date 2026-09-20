@@ -332,18 +332,18 @@ export interface UiState {
 			cacheRead: number;
 			cacheWrite: number;
 			total: number;
-			/** Tokens consumed by the current request/run. */
-			request?: { input: number; output: number; total: number };
-			run?: { input: number; output: number; total: number };
-		};
-		/** 按来源/渠道/模型归组的累计用量（§7）。缺省 = 未提供归属。 */
-		attribution?: UiUsageAttribution[];
-		/** 本次 run 的标识（服务端生成；用于把晚到事件归回原运行）。 */
-		runId?: string | null;
-		/** 最近若干条逐请求记录（新→旧，有界；含时间与计价依据）。 */
-		recentRequests?: UiUsageRecord[];
-		cost: number;
-		contextUsage: {
+				/** Tokens consumed by the current request/run. */
+				request?: { input: number; output: number; total: number };
+				run?: { input: number; output: number; total: number };
+			};
+			/** 按来源/渠道/模型归组的累计用量（§7）。缺省 = 未提供归属。 */
+			attribution?: UiUsageAttribution[];
+			/** 本次 run 的标识（服务端生成；用于把晚到事件归回原运行）。 */
+			runId?: string | null;
+			/** 最近若干条逐请求记录（新→旧，有界；含时间与计价依据）。 */
+			recentRequests?: UiUsageRecord[];
+			cost: number;
+			contextUsage: {
 			tokens: number | null;
 			contextWindow: number;
 			percent: number | null;
@@ -442,43 +442,13 @@ export interface UiOpsThresholds {
 export interface UiDiagnostics {
 	generatedAt: number;
 	app: { node: string; pid: number; uptimeSec: number; engine: string; protocolVersion: number };
-	release: {
-		commit: string | null;
-		appVersion: string | null;
-		protocolVersion: number | null;
-		builtAt: string | null;
-		source: string | null;
-	};
-	instance: {
-		configDir: string;
-		dataDir: string;
-		agentDir: string;
-		workspaceDir: string;
-		host: string | null;
-		port: number | null;
-		profile: string | null;
-	};
+	release: { commit: string | null; appVersion: string | null; protocolVersion: number | null; builtAt: string | null; source: string | null };
+	instance: { configDir: string; dataDir: string; agentDir: string; workspaceDir: string; host: string | null; port: number | null; profile: string | null };
 	units: { unit: string; active: string; enabled: string }[];
 	resources: UiResourceSnapshot;
 	storage: UiStorageSnapshot;
-	channels: {
-		configRevision: number;
-		count: number;
-		enabledCount: number;
-		bindings: number;
-		pending: number;
-		accounts: number;
-		brokenRefs: number;
-	};
-	usage: {
-		windowDays: number;
-		requests: number;
-		totalTokens: number;
-		cost: number;
-		unpricedRequests: number;
-		bySource: Record<string, number>;
-		byChannel: Record<string, number>;
-	};
+	channels: { configRevision: number; count: number; enabledCount: number; bindings: number; pending: number; accounts: number; brokenRefs: number };
+	usage: { windowDays: number; requests: number; totalTokens: number; cost: number; unpricedRequests: number; bySource: Record<string, number>; byChannel: Record<string, number> };
 	environment: { platform: string; cpuCount: number; totalMemBytes: number };
 	warnings: string[];
 }
@@ -1805,7 +1775,7 @@ export type ServerMessage =
 				total: number;
 				request?: { input: number; output: number; total: number };
 				run?: { input: number; output: number; total: number };
-			} | null;
+		} | null;
 			assistantMessageEvent: { type: string; contentIndex?: number; delta?: string };
 	  }
 	/** A tool FINISHED executing (SDK tool_execution_end). Unlike toolResult
@@ -1922,15 +1892,7 @@ export type ServerMessage =
 			accountPresets?: { id: string; label: string; description: string; template: Record<string, unknown> }[];
 	  }
 	/** P4 运维：诊断包（只含元数据）+ 当前告警开关与阈值。 */
-	| {
-			type: "diagnostics";
-			reqId: number;
-			ok: boolean;
-			error?: string;
-			bundle?: UiDiagnostics;
-			alertsEnabled?: boolean;
-			thresholds?: UiOpsThresholds;
-	  }
+	| { type: "diagnostics"; reqId: number; ok: boolean; error?: string; bundle?: UiDiagnostics; alertsEnabled?: boolean; thresholds?: UiOpsThresholds }
 	/** DEV-CON Jev 门禁状态（config 已清洗：只回密钥**名**，绝不回密钥值）。 */
 	| {
 			type: "jev_status";

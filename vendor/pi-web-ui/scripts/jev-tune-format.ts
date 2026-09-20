@@ -19,12 +19,13 @@ import type {
 	JevTuneCorpusError,
 	JevTuneLabel,
 	JevTunePropositionAnalysis,
+	JevTunePropositionRecommendation,
 	JevTuneScoreSummary,
 	JevTuneSuggestion,
 	JevTuneWindowRef,
 } from "../server/dev-con/jev-tune.js";
 import { JEV_TUNE_DEFAULT_GRID, JEV_TUNE_REPEAT_MAX } from "../server/dev-con/jev-tune.js";
-import type { JevThresholds } from "../server/dev-con/jev-model.js";
+import { type JevThresholds, resolvePropositionThresholds } from "../server/dev-con/jev-model.js";
 
 /** 一条拿不到分数的条目（调用失败 / 缓存无此条）：如实列出，绝不补一个好看的数。 */
 export interface JevTuneFailure {
@@ -79,6 +80,12 @@ export interface JevTuneReport {
 	 *   所以除全局建议外单独给出「每个命题自己的可分窗口 + 只扫该命题的最佳档」。
 	 */
 	perProposition: JevTunePropositionAnalysis[];
+	/**
+	 * 逐命题建议（本轮新增）：全局基档 + 各判定项的独立阈值，以及**用完逐项阈值后**的四类统计。
+	 * @WHY 单看「全局最佳档」永远看不出逐项阈值的价值：同一份语料下逐项阈值能把误放行
+	 *   从 1 降到 0，而这只有在「按逐项生效」重新统计一遍四类之后才看得出来。
+	 */
+	propositionRecommendation: JevTunePropositionRecommendation;
 	/** top 建议（无误放行的档位优先）；没有任何合法档位时为 null。 */
 	recommended: { approveAt: number; blockAt: number } | null;
 	suggestions: JevTuneSuggestion[];
@@ -169,18 +176,27 @@ function propositionWindowLines(analyses: readonly JevTunePropositionAnalysis[])
 			}
 		} else {
 			const best = formatBestTier(entry.best);
-			const tail =
-				entry.best && entry.best.confusion.falsePass > 0
-					? `${best} 仍有误放行 ${entry.best.confusion.falsePass}`
-					: entry.best
-						? `${best}（${formatTierCounts(entry.best.confusion)}）`
-						: best;
+			const clean = entry.best && entry.best.confusion.falsePass === 0 && entry.best.confusion.falseBlock === 0;
+			const tail = clean
+				? `${best}（${formatTierCounts(entry.best!.confusion)}）`
+				: entry.best
+					? `${best} 仍有误放行 ${entry.best.confusion.falsePass} / 误拦 ${entry.best.confusion.falseBlock}`
+					: best;
 			lines.push(
-				`${head}  → 不可分：重叠 ${formatScore(entry.overlap)}` +
+				`${head}  → 严格不可分：重叠 ${formatScore(entry.overlap)}` +
 					`（should-block 最高 ${extremeRefs(entry.overlapBlockItems, "max")} / ` +
 					`should-pass 最低 ${extremeRefs(entry.overlapPassItems, "min")}）；${tail}`,
 			);
-			lines.push("    → 阈值解决不了这条命题：需要改判据（把命题写得更可判）或接受更多转人工");
+			// @WHY 严格不可分 ≠ 阈值没用：只要存在一档「零误放行零误拦」，它就能用，
+			//   代价是落在重叠区的那几条转人工（比误放行安全，比全局阈值的转人工少）。
+			//   只有连这档都不存在时，才该说「改判据」而不是继续调阈值。
+			if (clean) {
+				lines.push(
+					`    → 仍可用：零误放行零误拦档位存在（代价是重叠区转人工；不改判据也能用，只是偏保守）`,
+				);
+			} else {
+				lines.push("    → 阈值解决不了这条命题：需要改判据（把命题写得更可判）或接受更多转人工");
+			}
 		}
 		if (entry.unusable.length > 0) {
 			lines.push(`    未参与（无可用分数，不补 0）：${entry.unusable.join(", ")}`);
@@ -287,11 +303,28 @@ export function printTuneReport(report: JevTuneReport): void {
 	for (const line of propositionWindowLines(report.perProposition)) console.log(line);
 	console.log(
 		"  注：可分 = max(should-block) < min(should-pass)，窗口 (windowLo, windowHi] 里的阈值才能既不误放行也不误拦；" +
-			"不可分说明这条命题的分数分布重叠，任何阈值都只能二选一（要么误放行，要么误拦/多转人工）。",
+			"「严格不可分」只说明两个分布有重叠，不等于阈值没用：把 approveAt 提到拦截侧最高分之上就能拿到零错误档位，" +
+			"**真正的代价是重叠区转人工**（逐命题阈值的主要收益就是把这个代价压下来）；" +
+			"只有连零错档都不存在（分数越过网格上下限）时，才该改判据而不是继续调阈值。",
 	);
 
 	const thresholds = report.current.thresholds;
 	console.log(`\n当前阈值（通过 ≥ ${thresholds.approveAt} / 阻断 ≤ ${thresholds.blockAt} / 其余转人工）`);
+	// 逐判定项独立阈值：不说清楚就会让人拿全局值去解释逐命题的结论（实测数字对不上）。
+	const per = thresholds.perProposition;
+	if (per && Object.keys(per).length > 0) {
+		for (const [id, entry] of Object.entries(per)) {
+			const approveAt = entry.approveAt ?? thresholds.approveAt;
+			const blockAt = entry.blockAt ?? thresholds.blockAt;
+			const inherited = [
+				entry.approveAt === undefined ? "放行继承全局" : null,
+				entry.blockAt === undefined ? "拦截继承全局" : null,
+			].filter(Boolean);
+			console.log(
+				`  · ${id}: 通过 ≥ ${approveAt} / 阻断 ≤ ${blockAt}${inherited.length ? `（${inherited.join("、")}）` : ""}`,
+			);
+		}
+	}
 	for (const line of confusionLines(report.current.confusion)) console.log(`  ${line}`);
 
 	console.log("\n候选阈值（排序：① 误放行少 ② 误拦少 ③ 转人工少 ④ 空白带更宽；blockAt < approveAt）");
