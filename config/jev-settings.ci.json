@@ -1,0 +1,20 @@
+{
+  "note": "CI 门禁（.github/workflows/jev-gate.yml）用的门禁配置。**不含任何密钥**：credentialRef 只有名字，值由 CI 从 secret 写进临时 agentDir。阈值与本地校准结果一致（docs/JEV-DECISION-GATE.md §3.1 / §4.4）——改了这里等于改 PR 卡口的口径，要和本地 ~/.local/share/pi-dev/agent/dev-con/jev-settings.json 对齐。",
+  "enabled": true,
+  "endpoint": "https://openrouter.ai/api/alpha/decisions",
+  "model": "typesafe/jev-1.13",
+  "thresholds": {
+    "approveAt": 0.9,
+    "blockAt": 0.1,
+    "perProposition": {
+      "change_preserves_public_api": { "approveAt": 0.7, "blockAt": 0.15 },
+      "test_asserts_behavior": { "approveAt": 0.95, "blockAt": 0.15 },
+      "change_within_task_scope": { "approveAt": 0.5, "blockAt": 0.1 }
+    }
+  },
+  "credentialRef": { "providerId": "openrouter", "keyName": "ci" },
+  "timeoutMs": 8000,
+  "cacheTtlMs": 300000,
+  "minIntervalMs": 1000,
+  "version": 1
+}

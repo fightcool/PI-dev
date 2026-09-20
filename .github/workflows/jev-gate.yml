@@ -1,0 +1,44 @@
+name: Jev Gate
+# 门禁卡口：每个 PR 用它**自己的 diff** 真的问一遍 Jev 决策门禁。
+# 为什么是独立 job：它是唯一需要模型凭据的检查（skip 语义也不同），混进 Rebuild and Verify 会让
+# 「没配凭据」把整条流水线染成假红/假绿。
+# 门槛（用户 2026-09-20 定）：**只有 block 拦**；review（灰区）只提醒。
+# 详细口径：docs/JEV-DECISION-GATE.md §2.2；驱动脚本：scripts/ci/jev-gate-pr.mjs
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: jev-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  jev-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # 要能算出 PR 的 diff → 需要 base 的历史（浅克隆会把 merge-base 藏起来）。
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Rebuild locked environment
+        run: bash scripts/bootstrap.sh
+      # 没配密钥时**明确跳过**（fork PR 天然拿不到 secret）：跳过 ≠ 通过，job 里会写清楚。
+      - name: Jev gate (block only)
+        env:
+          JEV_OPENROUTER_KEY: ${{ secrets.JEV_OPENROUTER_KEY }}
+          JEV_OBJECTIVE: ${{ github.event.pull_request.title }}
+          JEV_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          base="${JEV_BASE_SHA:-$(git rev-parse origin/${GITHUB_DEFAULT_BRANCH:-feat/isolated-dev-environment})}"
+          echo "base=$base title=${JEV_OBJECTIVE:-（无）}"
+          if [ -z "${JEV_OPENROUTER_KEY:-}" ]; then
+            echo "::warning::Jev 门禁被跳过：未配置 JEV_OPENROUTER_KEY（跳过 ≠ 通过）"
+            exit 0
+          fi
+          node scripts/ci/jev-gate-pr.mjs "$base"
