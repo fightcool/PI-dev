@@ -2,8 +2,9 @@
 /*
  * 🍞 AI Breadcrumb — @COUPLED ../server/dev-con/jev-model.ts, ../server/dev-con/jev-gate.ts,
  *   ../server/dev-con/jev-cache.ts, ../server/dev-con/jev-settings.ts, ../server/model-admin.ts,
- *   ../server/dev-con/channel-accounts.ts（openRouterAdapter）, ./jev-gate-format.ts
- * 📖 ../../../docs/JEV-DECISION-GATE.md §「CLI」
+ *   ../server/dev-con/channel-accounts.ts（openRouterAdapter）, ./jev-gate-format.ts,
+ *   ../server/dev-con/jev-tune.ts（tune 的纯逻辑）, ./jev-tune-format.ts（tune 的渲染）
+ * 📖 ../../../docs/JEV-DECISION-GATE.md §「CLI」、§4（阈值与抖动）、§5.1（命题必须正向）、§9（成本）
  *
  * Jev 决策门禁 CLI —— 编码过程中的二元判断入口。
  *
@@ -14,15 +15,40 @@
  *   - 密钥只按名字引用，经 model-admin 解析，**任何输出都不含密钥正文**；
  *   - 额度查询复用既有的 OpenRouter 账户查询适配器，不新增第二份余额事实源；
  *   - 持久决策缓存（jev-cache.ts）是派生可丢的：`cache stats` / `cache clear` 只看/只删它。
+ *   - `tune` 用**真实分数**评测阈值：命题/阈值/三态一律取 dev-con/jev-model.ts，统计与建议一律
+ *     取 dev-con/jev-tune.ts；本文件只负责读语料、调用 gate、拼报告与定退出码。
  *
  * Usage: node --import tsx scripts/jev-gate.ts <command> [options]
  * 退出码：0 通过 / 1 阻断 / 2 转人工 / 3 出错（仅 check、probe 使用）
+ * 退出码（tune）：0 有建议且无误放行 / 1 建议档位仍存在误放行 / 2 语料或输入问题 / 3 出错
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { JevGate } from "../server/dev-con/jev-gate.js";
-import { clearJevCache, jevCachePath, jevCacheStats } from "../server/dev-con/jev-cache.js";
-import { JEV_PROPOSITIONS, buildJevQuestions, redactJevGateConfigForEcho } from "../server/dev-con/jev-model.js";
+import {
+	cacheEntryMatches,
+	clearJevCache,
+	jevCachePath,
+	jevCacheStats,
+	loadJevCache,
+} from "../server/dev-con/jev-cache.js";
+import {
+	JEV_PROPOSITIONS,
+	buildJevQuestions,
+	cacheKey,
+	redactJevGateConfigForEcho,
+	type JevGateConfig,
+} from "../server/dev-con/jev-model.js";
+import {
+	JEV_TUNE_REPEAT_DEFAULT,
+	JEV_TUNE_REPEAT_MAX,
+	type JevTuneScoredItem,
+	confusionAt,
+	parseJevCorpus,
+	suggestThresholds,
+	summarizeScores,
+} from "../server/dev-con/jev-tune.js";
 import { jevSettingsPath, loadJevSettings, saveJevSettings } from "../server/dev-con/jev-settings.js";
 import { ModelAdminService, type ModelAdminHost } from "../server/model-admin.js";
 import { openRouterAdapter } from "../server/dev-con/channel-accounts.js";
@@ -37,6 +63,13 @@ import {
 	printStatus,
 	printUsage,
 } from "./jev-gate-format.js";
+import {
+	type JevTuneFailure,
+	type JevTuneReport,
+	printCorpusErrors,
+	printTuneReport,
+	printTuneUsage,
+} from "./jev-tune-format.js";
 
 const OUTCOME_EXIT: Record<string, number> = { approve: 0, block: 1, review: 2 };
 const HARD_TIMEOUT_MS = 30_000;
@@ -236,6 +269,228 @@ async function runBalance(
 	}
 }
 
+/**
+ * 解析语料路径。
+ * @GOTCHA 根工程的 `npm run jev` 是 `npm --prefix vendor/pi-web-ui run jev`，npm 会把 cwd 切到
+ *   包目录，于是「仓库相对路径」会找不到文件（实测）。先按 cwd 找，再退回真实调用者目录
+ *   （npm 会把它放在 INIT_CWD）—— 两个都不存在时原样返回，让报错里保留用户写的路径。
+ */
+function resolveCorpusPath(raw: string): string {
+	const candidates = [raw];
+	const initCwd = process.env.INIT_CWD;
+	if (initCwd && !isAbsolute(raw)) candidates.push(resolve(initCwd, raw));
+	for (const candidate of candidates) if (existsSync(candidate)) return resolve(candidate);
+	return raw;
+}
+
+/**
+ * `tune`：用**真实分数**评测阈值是否合理（语料是人标的，分数是模型给的）。
+ * @CONTRACT 分数只有两个来源，两个都不编造：
+ *   ① 默认逐条调 `JevGate.evaluate`（与 check/probe 是同一个 gate、同一份密钥解析：
+ *      密钥经 ModelAdminService 取出，只活在本次请求头里，**不打印、不落盘、不进报告**）；
+ *   ② `--from-cache` 只读 jev-decisions-cache.jsonl 里已记录的分数（按 cacheKey 匹配，
+ *      并做 model/命题集合同构校验）；查不到就如实报「缓存无此条」。
+ *   拿不到分数的条目进 failures：不参与统计、绝不补 0（补 0 = 伪造一次拦截）。
+ * @GOTCHA `--repeat` > 1 必须关缓存：读缓存会拿到同一个分数，抖动会被抹平成假的 0。
+ * @GOTCHA 调用之间按配置的 minIntervalMs 主动让路：不限频的话 gate 会直接回 rate-limited
+ *   （转人工），评测就退化成一堆假的失败。
+ */
+async function runTune(
+	gate: JevGate,
+	agentDir: string,
+	config: JevGateConfig,
+	flags: Flags,
+	asJson: boolean,
+): Promise<number> {
+	const corpusArg = flags.get("corpus");
+	if (typeof corpusArg !== "string" || !corpusArg.trim()) {
+		console.error("缺少 --corpus <path.jsonl>（JSONL：每行 {id,label,state,propositions}）");
+		return 2;
+	}
+	const corpus = resolveCorpusPath(corpusArg);
+	let text: string;
+	try {
+		text = readFileSync(corpus, "utf8");
+	} catch (err) {
+		console.error(`无法读取语料 ${corpus}：${(err as Error).message}`);
+		return 2;
+	}
+	const { items, errors } = parseJevCorpus(text);
+	if (errors.length > 0) {
+		// 语料是测量工具：坏行先修，不带着坏行花钱（否则阈值会看起来比实际更好）。
+		if (asJson) console.log(JSON.stringify({ corpus, items: items.length, errors }, null, 2));
+		else printCorpusErrors(corpus, errors, items.length);
+		return 2;
+	}
+	if (items.length === 0) {
+		console.error(`语料没有任何条目：${corpus}（没有语料就没有评测，不编造分数）`);
+		return 2;
+	}
+
+	const fromCache = flags.get("from-cache") === true;
+	const repeatFlag = flags.get("repeat");
+	const repeatNum = numFlag(flags, "repeat");
+	if (
+		repeatFlag !== undefined &&
+		(repeatNum === undefined || !Number.isInteger(repeatNum) || repeatNum < 1 || repeatNum > JEV_TUNE_REPEAT_MAX)
+	) {
+		console.error(`--repeat 必须是 1..${JEV_TUNE_REPEAT_MAX} 的整数（当前：${String(repeatFlag)}）`);
+		return 2;
+	}
+	const repeats = repeatNum ?? JEV_TUNE_REPEAT_DEFAULT;
+	if (fromCache && repeats > 1) {
+		console.error("--from-cache 与 --repeat 互斥：缓存里每条只有一次分数，量抖动必须实时调用");
+		return 2;
+	}
+	// 只有「单次采样」才允许用缓存：重复采样必须每次都新鲜（见函数头 @GOTCHA）。
+	const useCache = repeats === 1 && flags.get("no-cache") !== true;
+
+	let apiKey: string | null = null;
+	if (!fromCache) {
+		apiKey = requireApiKey(agentDir, config);
+		if (!apiKey) return 3;
+		// 看门狗预算：每次调用一条限频间隔 + 一个超时，再留一份默认余量。
+		extendHardTimeout((config.minIntervalMs + config.timeoutMs) * items.length * repeats + HARD_TIMEOUT_MS);
+	}
+
+	const disk = fromCache ? loadJevCache(jevCachePath(agentDir)) : null;
+	const scoredItems: JevTuneScoredItem[] = [];
+	const perItemScores: { id: string; proposition: string; scores: number[] }[] = [];
+	const failures: JevTuneFailure[] = [];
+	const calls = {
+		total: 0,
+		errors: 0,
+		cached: 0,
+		fresh: 0,
+		cost: 0,
+		inputTokens: 0,
+		outputTokens: 0,
+		replayedCost: 0,
+		replayedInputTokens: 0,
+		replayedOutputTokens: 0,
+	};
+	let lastCallAt = 0;
+	/**
+	 * @MAGIC 50ms 余量：gate 的间隔判定是「本次发起时刻 - 上次发起时刻 < minIntervalMs」，
+	 *   而 `Date.now()` 按毫秒**截断**（实测：正好睡到边界时仍会被判 rate-limited，
+	 *   评测评均会凭空多出一条「失败」）。所以让路要比最小间隔多走一点。
+	 */
+	const paceMarginMs = 50;
+	const pace = async (): Promise<void> => {
+		const wait = config.minIntervalMs + paceMarginMs - (Date.now() - lastCallAt);
+		if (lastCallAt > 0 && wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+		lastCallAt = Date.now();
+	};
+
+	for (const item of items) {
+		const propositions: string[] = item.propositions;
+		// 命题 id 已在 parseJevCorpus 校验过来自注册表；组装也只走官方函数（同一份事实源）。
+		const questions = buildJevQuestions(propositions);
+		const scores: Record<string, number[]> = {};
+		let failure: string | null = null;
+
+		if (fromCache) {
+			const key = cacheKey({ model: config.model, questions, state: item.state });
+			const entry = disk!.get(key);
+			if (!entry) {
+				failure = "缓存无此条（磁盘缓存里没有该 state+命题的分数；不要用别的分数替代）";
+			} else if (!cacheEntryMatches(entry, config.model, propositions)) {
+				failure = "缓存条目与当前模型/命题集合不一致（按 miss 处理，不能当答案）";
+			} else {
+				for (const name of propositions) {
+					const score = entry.checks[name];
+					if (typeof score !== "number" || !Number.isFinite(score)) {
+						calls.errors += 1;
+						failure = `缓存条目缺少命题 ${name} 的分数`;
+						break;
+					}
+					scores[name] = [score];
+				}
+			}
+		} else {
+			for (let round = 0; round < repeats; round++) {
+				await pace();
+				const decision = await gate.evaluate({ state: item.state, questions, apiKey: apiKey!, useCache });
+				calls.total += 1;
+				// @GOTCHA 缓存命中（hit/disk）带出的是**当初那次**的 token/cost：分开记，
+				//   否则一次全命中的跑分会被读成「刚刚花了这些钱」（见 jev-tune-format 的同名注）。
+				const replayed = decision.audit.cache === "hit" || decision.audit.cache === "disk";
+				if (replayed) {
+					calls.cached += 1;
+					calls.replayedCost += decision.audit.cost ?? 0;
+					calls.replayedInputTokens += decision.audit.inputTokens ?? 0;
+					calls.replayedOutputTokens += decision.audit.outputTokens ?? 0;
+				} else {
+					calls.fresh += 1;
+					calls.cost += decision.audit.cost ?? 0;
+					calls.inputTokens += decision.audit.inputTokens ?? 0;
+					calls.outputTokens += decision.audit.outputTokens ?? 0;
+				}
+				if (decision.error) {
+					calls.errors += 1;
+					failure = `第 ${round + 1} 次调用未拿到有效决策：${decision.error}`;
+					break;
+				}
+				for (const name of propositions) {
+					const score = decision.checks[name];
+					if (typeof score !== "number" || !Number.isFinite(score)) {
+						calls.errors += 1;
+						failure = `第 ${round + 1} 次调用缺少命题 ${name} 的分数`;
+						break;
+					}
+					(scores[name] ??= []).push(score);
+				}
+				if (failure) break;
+			}
+		}
+
+		if (failure) {
+			failures.push({ id: item.id, label: item.label, proposition: propositions.join(", "), reason: failure });
+			continue;
+		}
+		scoredItems.push({ id: item.id, label: item.label, scores });
+		for (const name of propositions) perItemScores.push({ id: item.id, proposition: name, scores: scores[name]! });
+	}
+
+	const summaries = summarizeScores(perItemScores, config.thresholds);
+	const current = confusionAt(scoredItems, config.thresholds);
+	const { suggestions, evaluated, skipped } = suggestThresholds(scoredItems);
+	const top = suggestions[0];
+	const report: JevTuneReport = {
+		corpus,
+		model: config.model,
+		repeats,
+		fromCache,
+		items: items.length,
+		scored: scoredItems.length,
+		calls,
+		failures,
+		summaries,
+		current: { thresholds: config.thresholds, confusion: current },
+		recommended: top ? { approveAt: top.approveAt, blockAt: top.blockAt } : null,
+		suggestions,
+		evaluated,
+		skipped,
+	};
+	if (asJson) console.log(JSON.stringify(report, null, 2));
+	else printTuneReport(report);
+
+	if (scoredItems.length === 0) {
+		console.error("没有任何条目拿到分数：不出建议（不编造结论）。");
+		return 3;
+	}
+	if (failures.length > 0) {
+		console.error(`${failures.length} 条未拿到分数：本次评测不完整，不能拿它当「阈值已验证」。`);
+		return 3;
+	}
+	if (!top) {
+		console.error("没有任何合法候选档位（blockAt 必须小于 approveAt）：检查网格。");
+		return 3;
+	}
+	// 退出码 1 = 连最优档位都存在误放行：需要人看，不能当「阈值没问题」。
+	return top.confusion.falsePass > 0 ? 1 : 0;
+}
+
 async function main(): Promise<number> {
 	const { command, flags, positional } = parseArgs(process.argv.slice(2));
 	const asJson = flags.get("json") === true;
@@ -245,6 +500,7 @@ async function main(): Promise<number> {
 
 	if (command === "help" || flags.get("help")) {
 		printUsage(CREDENTIAL_PROVIDER);
+		printTuneUsage();
 		return 0;
 	}
 	if (loaded.parseError && !asJson) {
@@ -319,26 +575,43 @@ async function main(): Promise<number> {
 		return await runDecision(gate, state, ids, apiKey, asJson, flags.get("no-cache") !== true);
 	}
 
+	if (command === "tune") return await runTune(gate, agentDir, config, flags, asJson);
+
 	if (command === "balance") return await runBalance(agentDir, config, asJson);
 
 	console.error(`未知命令: ${command}\n`);
 	printUsage(CREDENTIAL_PROVIDER);
+	printTuneUsage();
 	return 3;
 }
 
-const HARD_EXIT = setTimeout(() => {
+/** CLI 整体看门狗：前台长命令被中止不等于失败，但 CLI 自己绝不能挂住。 */
+let hardExitTimer: NodeJS.Timeout | null = setTimeout(() => {
 	console.error("FAIL: CLI 超时未退出");
 	process.exit(3);
 }, HARD_TIMEOUT_MS);
-HARD_EXIT.unref?.();
+hardExitTimer.unref?.();
+
+/**
+ * 重新给看门狗上闸（`tune` 要跑几十次真实调用，30s 的默认闸门必然误杀）。
+ * @CONTRACT 只延长、不缩短：其余命令的行为与之前完全一致。
+ */
+function extendHardTimeout(ms: number): void {
+	if (hardExitTimer) clearTimeout(hardExitTimer);
+	hardExitTimer = setTimeout(() => {
+		console.error("FAIL: CLI 超时未退出");
+		process.exit(3);
+	}, ms);
+	hardExitTimer.unref?.();
+}
 
 main()
 	.then((code) => {
-		clearTimeout(HARD_EXIT);
+		if (hardExitTimer) clearTimeout(hardExitTimer);
 		process.exit(code);
 	})
 	.catch((err: unknown) => {
-		clearTimeout(HARD_EXIT);
+		if (hardExitTimer) clearTimeout(hardExitTimer);
 		console.error(`FAIL: ${err instanceof Error ? err.message : String(err)}`);
 		process.exit(3);
 	});
