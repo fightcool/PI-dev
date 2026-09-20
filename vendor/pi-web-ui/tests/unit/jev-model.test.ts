@@ -261,6 +261,17 @@ describe("JEV_PROPOSITIONS", () => {
 		}
 	});
 
+	it("pins the applicability rule on the test proposition (no test change ⇒ not a weak-test defect)", () => {
+		// @BUGFIX 2026-09-20：命题问的是「新增/修改的测试是否断言具体行为」，但改动**根本不碰测试**时
+		// 模型把「没有断言」答成「否」→ 实测 0.08 → 被 test 的阻断线（0.15）拦下：纯注释改动被判 block。
+		// 根因是适用性没写进判据（不是阈值问题——再拧阈值也只能二选一）。
+		// 修完后实测：纯注释改动 0.98（approve）；弱断言用例仍 0.14（block）；强断言 0.97（approve）。
+		const test = propositionById("test_asserts_behavior")!;
+		expect(formatJevProse(test.instructions)).toMatch(/no test code at all|does not apply/i);
+		expect(formatJevProse(test.criteria.true)).toMatch(/does not apply/i);
+		expect(formatJevProse(test.criteria.false)).toMatch(/only when the change did add or modify test code/i);
+	});
+
 	it("resolves ids exactly and refuses unknown ones", () => {
 		expect(propositionById("change_preserves_public_api")?.id).toBe("change_preserves_public_api");
 		expect(propositionById("nope")).toBeNull();
