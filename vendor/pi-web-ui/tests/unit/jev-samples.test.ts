@@ -40,6 +40,8 @@ afterEach(() => {
 
 const BASE = {
 	at: 1_700_000_000_000,
+	// state 是**必填**（每条样本都要有可复盘的内容；缺了就只是分数，复盘不了）。
+	state: "-const before = 1;\n+const before = 2;",
 	propositions: ["change_within_task_scope"],
 	checks: { change_within_task_scope: 0.56 },
 	outcome: "approve" as const,
