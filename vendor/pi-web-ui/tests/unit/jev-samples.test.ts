@@ -4,6 +4,7 @@
  *   ① 超长截断但如实记录原文长度；② 密钥**形状**的 token 被抹掉（且不会因为 diff 里
  *   出现 `token` 这种键名就整条不落盘 —— 那正是我第一版的 bug）；③ 轮转/清空/损坏行都不抛。
  */
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -177,6 +178,32 @@ describe("磁盘往返", () => {
 		expect(normalizeJevSampleEntry({ v: 1, outcome: "approve" })).toBeNull();
 		expect(normalizeJevSampleEntry({ v: 1, at: 1, outcome: "maybe" })).toBeNull();
 		expect(normalizeJevSampleEntry({ v: 1, at: 1, outcome: "approve" })?.state).toBe("");
+	});
+});
+
+describe("病态路径不能把判定挂死（回归护栏）", () => {
+	/**
+	 * @BUGFIX 2026-09-20：`mkdirSync("/proc/xxx", { recursive: true })` 在本机会**死循环**（CPU 打满、
+	 *   永不返回）——递归建目录逐级向上走，伪文件系统让它转不出来。门禁在判定路径上写样本，
+	 *   一个病态路径就能把判定挂住，所以 ensureDir 改成有界实现。
+	 * @WHY 这条用**子进程 + 超时**做金丝雀：如果将来有人把 recursive 改回来，进程会挂住，
+	 *   execFileSync 超时抛错 → 这个用例失败；而**不会**把整个测试套件挂死。
+	 */
+	it("/proc 下的样本路径快速返回（不递归建目录）", () => {
+		const script = [
+			"const m = await import('./server/dev-con/jev-samples.js');",
+			`const entry = m.captureJevSample({ at: 1, state: "-a", propositions: ["p"], checks: { p: 0.5 },`,
+			`  outcome: "approve", reason: "r", reasonEn: "r", source: "tool", model: "m", stateHash: "h" });`,
+			`m.appendJevSample("/proc/jev-no-such-dir/jev-samples.jsonl", entry);`,
+			`m.saveJevReviewAck("/proc/jev-no-such-dir/jev-review.json", 1);`,
+			`console.log("ok");`,
+		].join("\n");
+		const out = execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+			encoding: "utf8",
+			cwd: join(__dirname, "..", ".."),
+			timeout: 20_000,
+		});
+		expect(out.trim()).toBe("ok");
 	});
 });
 

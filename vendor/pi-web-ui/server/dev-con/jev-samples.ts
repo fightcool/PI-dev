@@ -287,6 +287,31 @@ export function loadJevSamples(path: string): { entries: JevSampleEntry[]; skipp
 	return { entries, skipped, bytes };
 }
 
+/**
+ * 建立父目录（**有界**，不使用 `{ recursive: true }`）。
+ * @GOTCHA 本机实测：`mkdirSync("/proc/xxx", { recursive: true })` 会**死循环**（CPU 打满、永不返回）——
+ *   递归建目录逐级向上走，`/proc` 这类伪文件系统让它转不出来。门禁在判定路径上写样本，
+ *   一个病态路径就能把判定挂死，所以这里只建到 4 层、每层单独建，失败立即放弃（由调用方兜住）。
+ */
+function ensureDir(dir: string): void {
+	const pending: string[] = [];
+	let current = dir;
+	for (let i = 0; i < 4; i++) {
+		if (existsSync(current)) break;
+		pending.unshift(current);
+		const parent = dirname(current);
+		if (parent === current) break;
+		current = parent;
+	}
+	for (const part of pending) {
+		try {
+			mkdirSync(part);
+		} catch {
+			return; // 建不了就算了：随后的 append 会失败并被兜住（绝不抛、绝不重试）
+		}
+	}
+}
+
 /** 超过字节上限就轮转（只留一代，旧 `.1` 被 rename 覆盖）。 */
 function rotateIfNeeded(path: string): void {
 	try {
@@ -308,7 +333,7 @@ export function appendJevSample(path: string, entry: JevSampleEntry): void {
 	try {
 		const normalized = normalizeJevSampleEntry(entry);
 		if (!normalized) return;
-		mkdirSync(dirname(path), { recursive: true });
+		ensureDir(dirname(path));
 		rotateIfNeeded(path);
 		appendFileSync(path, JSON.stringify(normalized) + "\n", { mode: 0o600 });
 	} catch {
@@ -394,7 +419,7 @@ export function loadJevReviewAck(path: string): JevReviewAck | null {
 /** 写确认状态（tmp + rename 原子写，0600）。失败返回 false，不抛。 */
 export function saveJevReviewAck(path: string, lastAckAt: number): boolean {
 	try {
-		mkdirSync(dirname(path), { recursive: true });
+		ensureDir(dirname(path));
 		const payload: JevReviewAck = { version: JEV_REVIEW_ACK_VERSION, lastAckAt };
 		const tmp = `${path}.${process.pid}.tmp`;
 		appendFileSync(tmp, JSON.stringify(payload, null, 2) + "\n", { mode: 0o600 });
