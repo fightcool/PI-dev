@@ -113,12 +113,12 @@ const NOT_EVIDENCE =
 /** UiJevProposition[]：与 server/dev-con/jev-model.ts 的 JEV_PROPOSITIONS 逐字一致（三条英文命题）。 */
 const JEV_PROPOSITIONS = [
 	{
-		id: "is_breaking_change",
+		id: "change_preserves_public_api",
 		instructions:
-			"Decide whether this change introduces a breaking API change. Check each point: does it delete a public export, change the signature or parameters of a public function or method, tighten a type or a return value, or change a published behavioral contract?",
+			"Decide whether this change keeps the public API compatible. Check each point: is every public export still present with its name, does every public function or method keep its parameters and return value, is no type tightened, and is every already published behavioral contract unchanged?",
 		criteria: {
-			true: `Yes: the change deletes a public export, changes a public signature or parameter, tightens a type or a return value, or changes an already published behavioral contract (including renaming a public identifier). ${NOT_EVIDENCE}`,
-			false: `No: the change only adds an optional parameter, is a purely internal refactor, touches only comments, documentation, or tests, or does not touch any public interface at all. ${NOT_EVIDENCE}`,
+			true: `Yes: no public export is deleted or renamed, no public signature or parameter changes incompatibly, no type or return value is tightened, and no published behavioral contract changes (adding an optional parameter or refactoring internals still counts as preserving). ${NOT_EVIDENCE}`,
+			false: `No: the change deletes or renames a public export, changes a public signature or parameter, tightens a type or a return value, or changes an already published behavioral contract. ${NOT_EVIDENCE}`,
 		},
 	},
 	{
@@ -131,12 +131,12 @@ const JEV_PROPOSITIONS = [
 		},
 	},
 	{
-		id: "change_out_of_scope",
+		id: "change_within_task_scope",
 		instructions:
-			"Decide whether this change touches modules outside the task's objective. Judge against the objective stated in the task description: editing files unrelated to the objective, refactoring along the way, or fixing an unrelated bug all count as out of scope.",
+			"Decide whether every part of this change stays within the task's objective. Judge against the objective stated in the task description: an incidental refactor, an unrelated bug fix, or edits to files the objective does not need all fall outside it.",
 		criteria: {
-			true: `Yes: the change includes a module, file, or feature unrelated to the task objective (an incidental refactor or an unrelated fix also counts). ${NOT_EVIDENCE}`,
-			false: `No: every part of the change falls within the scope the task objective requires (including necessary changes that the objective directly depends on). ${NOT_EVIDENCE}`,
+			true: `Yes: every part of the change is required by the task objective (including necessary changes that the objective directly depends on). ${NOT_EVIDENCE}`,
+			false: `No: the change includes a module, file, or feature unrelated to the task objective (an incidental refactor or an unrelated fix also counts). ${NOT_EVIDENCE}`,
 		},
 	},
 ];
@@ -146,7 +146,7 @@ const JEV_DECISION = {
 	outcome: "approve",
 	reason: "全部明确",
 	reasonEn: "every check clear",
-	checks: { is_breaking_change: 0.93 },
+	checks: { change_preserves_public_api: 0.93 },
 	audit: {
 		requestId: "gen-1",
 		model: "typesafe/jev-1.13-20260917",
@@ -693,7 +693,7 @@ try {
 		"every available proposition is listed by id",
 		(await rules.count()) === 3 &&
 			(await rules.locator(".set-row-name").allInnerTexts()).join(",") ===
-				"is_breaking_change,test_asserts_behavior,change_out_of_scope",
+				"change_preserves_public_api,test_asserts_behavior,change_within_task_scope",
 		(await rules.locator(".set-row-name").allInnerTexts()).join(" | "),
 	);
 	const firstRule = rules.first();
@@ -743,7 +743,7 @@ try {
 	const checkBits = await checksRow.locator(".chan-meta").allInnerTexts();
 	check(
 		"the probe result shows the per-proposition probability",
-		checkBits.includes("is_breaking_change=0.93"),
+		checkBits.includes("change_preserves_public_api=0.93"),
 		checkBits.join(" | "),
 	);
 	const auditText = await panel.locator(".chan-account-row", { hasText: "This call" }).first().innerText();
@@ -761,7 +761,7 @@ try {
 	check(
 		"the raw decision payload is shown (the gate is not a black box)",
 		rawJson.includes('"requestId": "gen-1"') &&
-			rawJson.includes('"is_breaking_change": 0.93') &&
+			rawJson.includes('"change_preserves_public_api": 0.93') &&
 			rawJson.includes('"cache": "miss"'),
 		norm(rawJson).slice(0, 200),
 	);

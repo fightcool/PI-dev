@@ -20,6 +20,8 @@
  *        限频与缓存；任一缺失都会让「查询故障不阻塞编码」变成空话（§4/§9）。
  *   @GOTCHA fetch 的 redirect 默认 follow 会把 Authorization 带到别的来源；
  *           这里显式 redirect:"manual" 并把 3xx 当失败。
+ *   @ASSUME fetchJson 的失败默认只给状态码；要排障 alpha 接口（如 Jev Decisions 的 400）
+ *           需调用方显式开 opts.captureErrorDetail（错误体同样受 64KiB 上限，默认关闭）。
  *   @MAGIC DEFAULT_TIMEOUT_MS=5000 / MAX_BODY_BYTES=64KiB / CACHE_TTL_MS=300_000 /
  *          MIN_INTERVAL_MS=10_000（每渠道限频窗口）。
  * ──────────────────────────────────────────────────
@@ -144,16 +146,62 @@ function isCctqUrl(raw: string): boolean {
  */
 export type FetchJsonFailureKind = "timeout" | "network" | "redirect" | "http" | "no-body" | "too-large" | "not-json";
 
+/**
+ * 有界读取响应体（超时 / 体积上限与 ok 路径完全同一套规则）。
+ * @CONTRACT 返回 `{ok:false}` 时 `kind`/`message` 就是既有失败种类与中文文案，状态码由调用方补。
+ */
+async function readBoundedBody(
+	res: Response,
+): Promise<{ ok: true; text: string } | { ok: false; kind: FetchJsonFailureKind; message: string }> {
+	const reader = res.body?.getReader();
+	if (!reader) return { ok: false, kind: "no-body", message: "账户接口无响应体" };
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (value) {
+				total += value.byteLength;
+				if (total > MAX_BODY_BYTES) {
+					await reader.cancel();
+					return { ok: false, kind: "too-large", message: "账户接口响应体超出上限" };
+				}
+				chunks.push(value);
+			}
+		}
+	} catch (err) {
+		const aborted = (err as Error).name === "AbortError";
+		return {
+			ok: false,
+			kind: aborted ? "timeout" : "network",
+			message: aborted ? "查询超时" : (err as Error).message,
+		};
+	}
+	return { ok: true, text: Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8") };
+}
+
 /** 有界 JSON 读取：超时、体积上限、禁止重定向、非 2xx 即失败。
  *  @CONTRACT 导出供 jev-gate 复用（单一有界传输实现，安全修复只需改一处）；
  *  调用方自己持有 AbortController 与超时定时器，这里只发一次请求、**绝不重试**。
+ *  `opts.captureErrorDetail` = 额外读取**错误响应体**（同样是 64KiB 上限）放到 `detail`，供
+ *  调用方拼自己的错误文案：alpha 接口的 400 只靠状态码无法排障（实测：形状错时正文才是答案）。
+ *  默认关闭，现有账户查询调用完全不受影响。
  */
 export async function fetchJson(
 	fetchImpl: typeof fetch,
 	url: string,
 	init: RequestInit,
 	signal: AbortSignal,
-): Promise<{ ok: boolean; status: number; body?: unknown; error?: string; kind?: FetchJsonFailureKind }> {
+	opts?: { captureErrorDetail?: boolean },
+): Promise<{
+	ok: boolean;
+	status: number;
+	body?: unknown;
+	error?: string;
+	kind?: FetchJsonFailureKind;
+	detail?: string;
+}> {
 	let res: Response;
 	try {
 		res = await fetchImpl(url, { ...init, redirect: "manual", signal });
@@ -168,36 +216,17 @@ export async function fetchJson(
 	}
 	if (res.status >= 300 && res.status < 400)
 		return { ok: false, status: res.status, kind: "redirect", error: "账户接口返回重定向，已按策略拒绝" };
-	if (!res.ok) return { ok: false, status: res.status, kind: "http", error: `账户接口返回 HTTP ${res.status}` };
-	const reader = res.body?.getReader();
-	if (!reader) return { ok: false, status: res.status, kind: "no-body", error: "账户接口无响应体" };
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			if (value) {
-				total += value.byteLength;
-				if (total > MAX_BODY_BYTES) {
-					await reader.cancel();
-					return { ok: false, status: res.status, kind: "too-large", error: "账户接口响应体超出上限" };
-				}
-				chunks.push(value);
-			}
-		}
-	} catch (err) {
-		const aborted = (err as Error).name === "AbortError";
-		return {
-			ok: false,
-			status: res.status,
-			kind: aborted ? "timeout" : "network",
-			error: aborted ? "查询超时" : (err as Error).message,
-		};
+	if (!res.ok) {
+		const failed = { ok: false, status: res.status, kind: "http" as const, error: `账户接口返回 HTTP ${res.status}` };
+		if (!opts?.captureErrorDetail) return failed;
+		const raw = await readBoundedBody(res);
+		// 错误体本身读失败（无正文/超限/断流）时不覆盖状态码错误：detail 只是附加信息。
+		return raw.ok ? { ...failed, detail: raw.text } : failed;
 	}
-	const text = Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
+	const raw = await readBoundedBody(res);
+	if (!raw.ok) return { ok: false, status: res.status, kind: raw.kind, error: raw.message };
 	try {
-		return { ok: true, status: res.status, body: JSON.parse(text) };
+		return { ok: true, status: res.status, body: JSON.parse(raw.text) };
 	} catch {
 		return { ok: false, status: res.status, kind: "not-json", error: "账户接口返回非 JSON" };
 	}

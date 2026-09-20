@@ -83,11 +83,11 @@ const EMPTY_RUNTIME: UiJevRuntimeStatus = {
 // 命题文本即**送进模型的文本**，服务端注册表里是英文（官方：Jev 英文准确率最优）。
 const PROPOSITIONS: UiJevProposition[] = [
 	{
-		id: "is_breaking_change",
-		instructions: "Decide whether this change introduces a breaking API change.",
+		id: "change_preserves_public_api",
+		instructions: "Decide whether this change keeps the public API compatible.",
 		criteria: {
-			true: "Yes: it removes or changes a public interface.",
-			false: "No: it stays fully backward compatible.",
+			true: "Yes: no public export is removed or renamed.",
+			false: "No: it removes or changes a public interface.",
 		},
 	},
 	{
@@ -355,11 +355,11 @@ describe("Jev 决策门禁分区（设置面板）", () => {
 
 	it("命题清单：默认一行摘要，展开才显示成立/不成立的口径", () => {
 		const { container } = mount();
-		expect(textOf(container)).toContain("is_breaking_change");
-		expect(textOf(container)).not.toContain("Yes: it removes or changes a public interface.");
+		expect(textOf(container)).toContain("change_preserves_public_api");
+		expect(textOf(container)).not.toContain("Yes: no public export is removed or renamed.");
 		click(byText(container, "展开"));
-		expect(textOf(container)).toContain("Yes: it removes or changes a public interface.");
-		expect(textOf(container)).toContain("No: it stays fully backward compatible.");
+		expect(textOf(container)).toContain("Yes: no public export is removed or renamed.");
+		expect(textOf(container)).toContain("No: it removes or changes a public interface.");
 	});
 
 	it("阈值不合法 → 保存禁用并说明原因（含抖动带宽）", () => {
@@ -435,9 +435,9 @@ describe("Jev 决策门禁分区（设置面板）", () => {
 					ok: true,
 					decision: {
 						outcome: "block",
-						reason: "判定项触及拦截阈值（is_breaking_change=0.02；拦截阈值 0.1）",
+						reason: "判定项触及拦截阈值（change_preserves_public_api=0.02；拦截阈值 0.1）",
 						reasonEn: "Checks at or below the block threshold",
-						checks: { is_breaking_change: 0.02 },
+						checks: { change_preserves_public_api: 0.02 },
 						audit: {
 							model: "typesafe/jev-1.13",
 							elapsedMs: 640,
@@ -452,7 +452,7 @@ describe("Jev 决策门禁分区（设置面板）", () => {
 		});
 		expect(textOf(container)).toContain("连接正常");
 		expect(textOf(container)).toContain("拦下");
-		expect(textOf(container)).toContain("is_breaking_change=0.02");
+		expect(textOf(container)).toContain("change_preserves_public_api=0.02");
 		expect(textOf(container)).toContain("typesafe/jev-1.13");
 		expect(textOf(container)).toContain("缓存未命中");
 		expect(container.querySelector("pre")?.textContent).toContain('"outcome": "block"');

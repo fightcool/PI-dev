@@ -18,6 +18,37 @@
 
 > Jev **不在 OpenRouter 的模型目录里**（`GET /api/v1/models` 查不到），所以模型选择器里不会出现它，只能按 id 硬编码调用。`client.models.list()` 会返回 OpenRouter 形状而报错，不要用它列模型。
 
+### 1.1 请求 / 响应形状（2026-09-20 用真实 key 实测）
+
+```jsonc
+// POST https://openrouter.ai/api/alpha/decisions
+// authorization: Bearer <openrouter key>
+{
+  "model": "typesafe/jev-1.13",
+  "state": { "objective": "…", "diff": "…" },   // string | record | array
+  "questions": {                                   // ← record（键 = 命题名），不是数组
+    "change_preserves_public_api": {
+      "type": "noul",                             // ← 判别字段，必填：noul | choice | score
+      "instructions": "Decide whether …",
+      "criteria": { "true": "Yes: …", "false": "No: …" }
+    }
+  }
+}
+```
+
+```jsonc
+// 200
+{
+  "model": "typesafe/jev-1.13-20260917",          // 实际服务的 pin 版本（审计要记）
+  "answers": { "change_preserves_public_api": { "type": "noul", "noul": 0.91 } },
+  "usage": { "input_tokens": 563, "output_tokens": 24, "cost": 0.000023646 },
+  "id": "gen-dec-…",
+  "provider": "TypeSafe"
+}
+```
+
+> **为什么写进文档**：这两个形状此前只按官方文档实现，与上游 zod 校验不一致，导致接入后**每次调用都 400**（`questions` 必须是 record；每个问题必须带 `type` 判别字段）。错误正文是唯一线索，所以 `JevGate` 现在会把上游错误正文（有界 300 字符、先抹掉本次密钥）拼进错误文案。
+
 **生产请 pin 版本号**（如 `typesafe/jev-1.13`），不要用 `-latest`：别名会漂移，而阈值是针对特定版本调出来的。响应里的 `model` 字段会回报实际服务的版本（如 `typesafe/jev-1.13-20260917`），审计要记下来。
 
 ---
@@ -36,7 +67,7 @@ npm run jev -- probe
 npm run jev -- propositions
 
 # 4) 跑一次门禁
-npm run jev -- check --proposition is_breaking_change --state-file -   # 从 stdin 读被审内容
+npm run jev -- check --proposition change_preserves_public_api --state-file -   # 从 stdin 读被审内容
 
 # 5) 缓存（派生数据，可丢）
 npm run jev -- cache              # 概览：条目数 / 占用 / 时间范围
@@ -76,6 +107,9 @@ p <= 0.1   → 明确为假  → block（自动阻断）
 0.1 < p < 0.9 → 模型不确定 → review（转人工 / 转强模型 / 记录待判）
 ```
 
+> `p` 是「命题为真」的置信度，而**放行 = 命题为真**。所以每条命题的 `true` 必须是好事，
+> 否则门禁方向就反了（见 §5.1）。
+
 **这不是保守，是必须的。** 官方与 OpenRouter 实测：同一输入重复调用，Jev 的概率**可移动约 0.08**（示例：某命题在 0.35–0.43 之间浮动）。因此：
 
 - **禁止单阈值**（如 0.5）——抖动会让同一提交时而通过时而失败；
@@ -90,9 +124,9 @@ p <= 0.1   → 明确为假  → block（自动阻断）
 
 | id | 判定 |
 | --- | --- |
-| `is_breaking_change` | 是否引入破坏性 API 变更（删公开导出 / 改公开签名 / 收紧类型 / 改公开行为契约） |
+| `change_preserves_public_api` | 改完是否仍然兼容公开 API（不删/不改公开导出与签名、不收紧类型、不改已发布的行为契约） |
 | `test_asserts_behavior` | 新增或修改的测试是否真的断言了具体行为或取值 |
-| `change_out_of_scope` | 是否触碰任务目标之外的模块 |
+| `change_within_task_scope` | 改动是否都在任务目标范围内 |
 
 每条命题的 `instructions` / `criteria` 就是**送进模型的文本，一律写成英文**（官方：Jev 英文准确率最优，CJK 可用但不保证），且 `criteria.true` 以 `Yes:` 开头、`criteria.false` 以 `No:` 开头，方向与 `instructions` 一致。true / false 两侧都显式带上同一句防注入声明：
 
@@ -100,7 +134,19 @@ p <= 0.1   → 明确为假  → block（自动阻断）
 
 这是必须的 —— 官方 `model-jaggedness` 明确指出 Jev **默认不把 state 当敌意输入**，被审代码里的注释足以左右结论。给人看的中文说明走 `decideOutcome` 的双语 `reason` / `reasonEn` 与 CLI、UI 的 i18n 文案，**不要**把这些英文判定标准翻回中文再发给模型。
 
-新增命题：往 `JEV_PROPOSITIONS` 加一条（`id` + `instructions` + `criteria.{true,false}`），CLI 与设置面板会自动列出。**不要**在 CLI 或 UI 里另写一份命题或阈值。
+新增命题：往 `JEV_PROPOSITIONS` 加一条（`id` + `instructions` + `criteria.{true,false}`），CLI 与设置面板会自动列出。**不要**在 CLI 或 UI 里另写一份命题或阈值；**新增命题必须是正向表述**（见 §5.1）。
+
+### 5.1 命题必须写成「正向表述」（否则门禁方向反了）
+
+判定规则是 **分数高 → 放行**（`decideOutcome`），所以每条命题的 `true` 必须是**好事**（安全 / 达标）：
+
+| 正确（正向） | 错的（缺陷式） |
+| --- | --- |
+| `change_preserves_public_api`：改完还兼容公开 API？ | ~~`is_breaking_change`~~：是不是破坏性变更？ |
+| `test_asserts_behavior`：测试真的断言了行为？ | —— |
+| `change_within_task_scope`：改动都在任务目标内？ | ~~`change_out_of_scope`~~：是否越出目标？ |
+
+方向写反的后果不是「保守」而是**恰好相反**：实测（2026-09-20）破坏性变更得 `0.91` → 放行，而一个非破坏、在范围内的干净改动（`0.09` / `0.08`）→ 拦下。所以初始版本的 `is_breaking_change` / `change_out_of_scope` 已全部改写为正向命题；单测里有一条结构性断言：`id` 与 `criteria.true` 不得出现 `breaking` / `out_of_scope` 一类缺陷措辞。`probe` 的合成样本也同步换成了「加可选参数」的兼容改动（正向命题下应为 approve，否则自检退出码会是 1）。
 
 ---
 
@@ -129,7 +175,7 @@ p <= 0.1   → 明确为假  → block（自动阻断）
 1. **门禁坏掉 ≠ 通过。** 非 2xx、缺答、概率越界、非 JSON、超时、体积超限，一律记为 `review` 并带明确错误，**绝不降级为 approve**。`JevGate.evaluate` 永不抛出到编码路径。
 2. **密钥只以名字引用。** 正文由 `provider-keys.json`（`model-admin.ts`）独占；门禁只经 `resolveProviderKeyValue(providerId, keyName)` 在内存中取用，**不落盘、不回显、不进事件、不进错误文本**。
 3. **不新增第二份可写事实源。** 密钥归 `provider-keys.json`，模型目录归 `models.json`，用量归 `usage-history.jsonl`；门禁只新增自己的非密钥配置 `jev-settings.json`。
-4. **有界外部 HTTP。** 超时、响应体上限（64KiB）、`redirect: "manual"`（防 Authorization 被带到别的来源）、非 2xx 即失败、单飞去重。
+4. **有界外部 HTTP。** 超时、响应体上限（64KiB）、`redirect: "manual"`（防 Authorization 被带到别的来源）、非 2xx 即失败、单飞去重。错误响应体只在**明确开启**时读取（同样 64KiB 上限），且进文案前先抹掉本次密钥并截断 —— 上游正文是排障线索，不是决策依据。
 5. **审计留痕。** 每次决策记录 `requestId` / `model` / `provider` / 概率 / 阈值命中 / token / cost / 耗时 / 缓存命中。
 
 ---
@@ -208,7 +254,7 @@ npm run test:jev:browser
 
 ## 11. 已知限制 / 后续
 
-- **未做真实联网验收**：请求/响应形状按官方文档与 OpenRouter cookbook 实现，但**尚未用真实 key 跑通过一次成功决策**。首次接入请务必用 `probe` 验证（这是「非黑盒」的设计目的）。
+- **已做真实联网验收（2026-09-20）**：`probe` 实测 200（`change_preserves_public_api=0.93`，`model=typesafe/jev-1.13-20260917`，requestId/cost 齐全），三条命题并行求值也实测通过。这次验收顺带暴露并修掉了两个问题：请求形状的 400（§1.1）与命题方向（§5.1）。
 - **`alpha` 接口**：OpenRouter 的 Decisions 路由标注为 alpha，可能变更；所有调用已收敛到 `JevGate` 单一出口，便于切换。
 - **决策缓存已落盘但不是事实源**：`jev-decisions-cache.jsonl` 只存摘要/分数/审计元数据（不存 state、密钥、被审文本），派生可丢；它**不参与**用量与计费统计（计费仍以用量历史为准）。
 - **未做**：把门禁接进 CI 门禁流程（缓存已为它准备好确定性回放的数据基础）、以及按 `state` 做 redact 后再哈希（当前直接对 state canonicalize 后哈希，state 本身不落盘）。
