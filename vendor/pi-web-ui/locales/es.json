@@ -1261,6 +1261,11 @@
 		"settingsJevCredentialStale": "Este nombre de clave ya no existe en el proveedor (borrado o renombrado): las llamadas fallarán hasta que elijas otro.",
 		"settingsJevEndpointInvalid": "El endpoint no puede estar vacío y debe ser una URL https (por defecto https://openrouter.ai/api/alpha/decisions).",
 		"settingsJevModelRequired": "El id del modelo no puede estar vacío (por defecto typesafe/jev-1.13).",
-		"settingsJevKeyNameRequired": "Hay un proveedor elegido pero ninguna clave: el servidor solo acepta una referencia de clave explícita; elige una."
+		"settingsJevKeyNameRequired": "Hay un proveedor elegido pero ninguna clave: el servidor solo acepta una referencia de clave explícita; elige una.",
+		"footerJev": "Jev",
+		"footerJevTip": "Puerta Jev: Permitir {approve} · Bloquear {block} · A persona {review} · Fallos {failed}. Haz clic para ver los detalles.",
+		"footerJevEmpty": "Jev: sin decisiones",
+		"footerJevDetail": "Las puntuaciones por proposición más recientes están en la sección «Puerta Jev» de los ajustes.",
+		"footerJevLastDecision": "Última decisión"
 	}
 }

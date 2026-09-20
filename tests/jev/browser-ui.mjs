@@ -2,6 +2,8 @@
 /* 🍞 AI Breadcrumb Navigation
  * @COUPLED vendor/pi-web-ui/web/src/components/JevSettings.tsx（设置面板「Jev 决策门禁」分区：总开关 /
  *   API KEY 选择 / 端点与模型 / 阈值 / 余额 / 运行状态 / 命题清单 / 测试连接 / 保存）,
+ *   components/JevFooterItem.tsx + jev-footer.ts（底栏 Jev 门禁项：最简结论 + 点开浮层；
+ *   浮层运行状态与设置面板同一 JevRuntimeCards）,
  *   components/JevRuntimeView.tsx（运行状态卡 + 命题清单 + 余额行 + 三条回执）,
  *   jev-decision.ts（jev_status / jev_probe / jev_config_save 的出站构造与文案口径）,
  *   components/SettingsModal.tsx（data-tab="jev" 的分区注册 + chat.jev 传入）
@@ -18,6 +20,8 @@
  *   （jev 夹具只在本用例合成）。所以本用例在 isolatedContext **之后**注册自己的 routeWebSocket：
  *   同一份隔离底座（HTTP 白名单路由、pageerror 采集、断开外网），只是把每一帧都交给本文件的
  *   jevReply —— 先走 socketReply 再补三条 jev_* 回包，绝不连真实服务、模型或凭据。
+ * @GOTCHA 推送（reqId:0）也要走 routeWebSocket/jevReply（不是另起一套夹具）：夹具把它接在
+ *   jev_probe 回包后面（「测试连接」就是一次真实决策），底栏靠推送计数差归因出「刚刚那次结论」。
  * @GOTCHA 期望文案取自 vendor/pi-web-ui/web/src/i18n-en.ts（隔离底座强制 lang=en，与
  *   tests/channels/browser-ui.mjs 同口径）。文案改了这里要跟着改，但**不允许**因为「界面上看不到」
  *   就放宽断言：运行状态卡钉的是 runtime 的真实数字，保存在钉出站帧里的 config，不只看界面。
@@ -44,6 +48,8 @@ const KEY_ENTRY_SCREENSHOT = "/tmp/jev-key-entry.png";
 const ADD_PROVIDER_KEY_DELAY_MS = 300;
 /** 「没有密钥时就地建」的复核图：Jev 面板里的 .jev-newkey 内联表单（本次修复新增的入口）。 */
 const INLINE_KEY_SCREENSHOT = "/tmp/jev-inline-newkey.png";
+/** 底栏 Jev 门禁项 + 点开浮层的复核图（结论文字/三态计数/只读配置一屏可见）。 */
+const FOOTER_SCREENSHOT = "/tmp/jev-footer-item.png";
 
 /** 归一化空白：innerText 会把相邻 span 拆行，断言按词而不是按行。 */
 const norm = (value) =>
@@ -225,6 +231,14 @@ const state = {
 let storedConfig = { ...JEV_CONFIG, thresholds: { ...JEV_CONFIG.thresholds } };
 
 /**
+ * 服务端**主动推送**的运行态（reqId:0）：真实服务端在会话 ready 后推一次、之后**每次真实决策**
+ * 再推一次（面板「测试连接」/ Agent 工具 jev_check）。夹具里每次推进 +1（total/approve 各 +1），
+ * 这样底栏能靠前后两份计数的差认出「刚刚那次是放行」；
+ * @GOTCHA 推送必须走同一条 routeWebSocket/jevReply 路径（见文件头 @GOTCHA），不能另起飞具。
+ */
+let pushedRuntime = { ...JEV_RUNTIME };
+
+/**
  * 出站帧 → 回包：既有的 socketReply 负责全部旧夹具，这里补齐三条 jev_* 回包 + 服务商清单 + add_provider_key。
  * @GOTCHA add_provider_key 要改**有状态**的 providerKeys（与上面的 storedConfig 同一套写法），而且**整个处理**
  *   要延后 ADD_PROVIDER_KEY_DELAY_MS（见调用处）：真实服务端里写库是 await 的、provider_keys 在写完之后才推，
@@ -247,7 +261,19 @@ function jevReply(message, current) {
 				},
 			];
 		case "jev_probe":
-			return [...replies, { type: "jev_probe_result", reqId: message.reqId, ok: true, decision: JEV_DECISION }];
+			// 「测试连接」就是一次**真实决策**：真服务端在它之后会主动推一次 jev_status（reqId:0）。
+			// 推送里的 total/approve 各 +1，底栏据此把「刚刚那次」归因为放行。
+			pushedRuntime = { ...pushedRuntime, total: pushedRuntime.total + 1, approve: pushedRuntime.approve + 1 };
+			return [
+				...replies,
+				{ type: "jev_probe_result", reqId: message.reqId, ok: true, decision: JEV_DECISION },
+				{
+					type: "jev_status",
+					reqId: 0,
+					ok: true,
+					status: { config: storedConfig, runtime: pushedRuntime, propositions: JEV_PROPOSITIONS },
+				},
+			];
 		case "jev_config_save":
 			storedConfig = {
 				...storedConfig,
@@ -293,6 +319,8 @@ const browser = await chromium.launch({
 });
 /** 客户端实际发出的帧（出站断言用；页面里改的字段必须真的出现在帧里）。 */
 const sent = [];
+/** 服务端**主动推送**的帧（reqId:0）：jev 夹具只在本用例合成，用来钉「底栏反映刚刚的决策」。 */
+const pushed = [];
 try {
 	const { context } = await isolatedContext(browser, options, state);
 	// 见文件头 @GOTCHA：换来同一 socket 上的超集替身（每一帧仍走 socketReply）。
@@ -309,7 +337,11 @@ try {
 				// @GOTCHA add_provider_key 的**处理**（写库 + 回包）要延后：真实服务端写库是 await 的，
 				// 面板紧接着发的 list_provider_keys 会先拿到旧清单。这段窗口才测得出「发完立刻清空值框」。
 				const handle = () => {
-					for (const reply of jevReply(message, state)) socket.send(JSON.stringify(reply));
+					for (const reply of jevReply(message, state)) {
+						// 主动推送（reqId:0）单独记一笔：出站帧里看不到它，但底栏的结论就是靠它推出来的。
+						if (reply.type === "jev_status" && reply.reqId === 0) pushed.push(reply);
+						socket.send(JSON.stringify(reply));
+					}
 				};
 				if (message.type === "add_provider_key") setTimeout(handle, ADD_PROVIDER_KEY_DELAY_MS);
 				else handle();
@@ -322,6 +354,16 @@ try {
 	const page = await context.newPage();
 	page.on("pageerror", (err) => check("no page error", false, errorSummary(err, true).message));
 	await page.goto(origin, { waitUntil: "domcontentloaded" });
+
+	// ---- 0) 底栏 Jev 门禁项存在；还没有任何 jev_status 时如实显示「无决策」 --------
+	const jevItem = page.locator("footer.statusbar button.status-jev");
+	await jevItem.waitFor({ state: "visible", timeout: options.stepTimeout });
+	const jevEmptyShown = await waitFor(async () => has(await jevItem.innerText(), "Jev: no decisions"), 3000);
+	check(
+		"the footer shows the Jev gate item and says no decisions before any status arrives",
+		jevEmptyShown,
+		norm(await jevItem.innerText()),
+	);
 
 	// ---- 1) 设置面板里有 Jev 分区，点击后表单可见 -----------------------------
 	const settingsChip = page.locator('button.chip[title="Settings"]').first();
@@ -776,6 +818,24 @@ try {
 		JSON.stringify(secondProbe ?? null),
 	);
 
+	// ---- 8b) 服务端主动推送（reqId:0）→ 底栏 Jev 项显示刚刚那次结论 -----------
+	// 真实服务端在每次真实决策后推一次 jev_status；「测试连接」就是一次真实决策（上面点了两次）。
+	// @GOTCHA 推送不带「最近一次结论」字段（只有聚合计数）：底栏靠前后两份计数的差归因 ——
+	//   见 web/src/jev-footer.ts 的 lastOutcomeFromDelta。
+	check(
+		"the fixture pushed jev_status with reqId 0 after the real decisions (push, not a reply)",
+		pushed.length === 2 &&
+			pushed.every((m) => m.reqId === 0) &&
+			pushed.at(-1).status.runtime.approve === JEV_RUNTIME.approve + 2,
+		`${pushed.length} push frame(s) · last approve=${pushed.at(-1)?.status?.runtime?.approve}`,
+	);
+	const footerVerdict = await waitFor(async () => has(await jevItem.innerText(), "Approve"), 5000);
+	check(
+		"the footer Jev item turns into the conclusion the server just pushed",
+		footerVerdict,
+		norm(await jevItem.innerText()),
+	);
+
 	// ---- 9) 改模型/阈值后保存：断言出站帧里的 config（不只看界面） ----------
 	const PINNED_MODEL = "typesafe/jev-1.13-20260917";
 	await modelInput.fill(PINNED_MODEL);
@@ -852,6 +912,63 @@ try {
 		draftShown === DRAFT_MODEL && reloadedValue === storedConfig.model && sent.some((m) => m.type === "jev_status"),
 		`draft=${JSON.stringify(draftShown)} → after Reload=${JSON.stringify(reloadedValue)} · server jev_status model=${JSON.stringify(storedConfig.model)} · jev_status frames=${JSON.stringify(sent.filter((m) => m.type === "jev_status"))}`,
 	);
+
+	// ---- 10) 底栏 Jev 项点开浮层：运行状态数字 + 只读配置 + 可关闭 -----------
+	// 设置弹窗的 .modal-backdrop 盖在底栏之上：先关掉它才能点状态栏项。
+	await page.locator(".settings-modal .modal-close").click();
+	await page.locator(".settings-modal").waitFor({ state: "hidden", timeout: options.stepTimeout });
+	await jevItem.click();
+	const jevPanel = page.locator(".usage-panel.jev-panel");
+	await jevPanel.waitFor({ state: "visible", timeout: options.stepTimeout });
+	const jevPanelText = norm(await jevPanel.innerText());
+	check(
+		"clicking the footer Jev item opens the detail panel",
+		has(jevPanelText, "Jev decision gate") && has(jevPanelText, "Total calls"),
+		jevPanelText.slice(0, 120),
+	);
+	// 复用 JevRuntimeCards → 与设置面板「运行状态」同一份数字（钉 runtime 的真实值）。
+	check(
+		"the panel renders the same runtime numbers as the settings section (shared JevRuntimeCards)",
+		has(jevPanelText, `Total calls ${JEV_RUNTIME.total}`) &&
+			has(jevPanelText, `Approve ${JEV_RUNTIME.approve}`) &&
+			has(jevPanelText, `Block ${JEV_RUNTIME.block}`) &&
+			has(jevPanelText, `Escalate ${JEV_RUNTIME.review}`) &&
+			has(jevPanelText, `Failures ${JEV_RUNTIME.failed}`),
+		jevPanelText.slice(0, 320),
+	);
+	check(
+		"the panel points at the settings section for per-proposition scores (nothing fabricated)",
+		has(jevPanelText, "latest per-proposition scores are in the Jev settings section"),
+		jevPanelText.slice(-220),
+	);
+	// 只读配置取自 status.config（§9 保存后的权威值，不是初始夹具值）。
+	check(
+		"the panel shows the read-only config facts (thresholds / endpoint / model)",
+		has(jevPanelText, String(storedConfig.thresholds.approveAt)) &&
+			has(jevPanelText, String(storedConfig.thresholds.blockAt)) &&
+			has(jevPanelText, storedConfig.endpoint) &&
+			has(jevPanelText, storedConfig.model),
+		jevPanelText.slice(-260),
+	);
+	// 复核图：底栏结论 + 浮层（人工核对排版与文案）。
+	await page.screenshot({ path: FOOTER_SCREENSHOT });
+	console.log(`screenshot: ${FOOTER_SCREENSHOT} (footer Jev item + detail panel)`);
+	// 关闭行为对齐 UsageDetail：点透明 backdrop（避开浮层本身）→ 面板消失。
+	await page.locator(".status-cwd-backdrop").click({ position: { x: 10, y: 10 } });
+	const jevPanelClosed = await waitFor(async () => (await jevPanel.count()) === 0, 3000);
+	check("clicking the backdrop closes the Jev panel", jevPanelClosed, `panels left: ${await jevPanel.count()}`);
+	// 浮层底部的「设置」入口：走 App 已有的 dialogs.setSettingsOpen（不另建一套开关）。
+	await jevItem.click();
+	await jevPanel.waitFor({ state: "visible", timeout: options.stepTimeout });
+	await jevPanel.locator("button.usage-topup", { hasText: "Settings" }).click();
+	await page.locator(".settings-modal").waitFor({ state: "visible", timeout: options.stepTimeout });
+	check(
+		"the panel's Settings entry opens the settings panel and closes the panel",
+		await waitFor(async () => (await jevPanel.count()) === 0, 3000),
+	);
+	// 回到 Jev 分区，给文末的复核截图用。
+	await page.locator('.settings-rail .settings-tab[data-tab="jev"]').click();
+	await page.locator(".chan-settings .chan-enable input").waitFor({ state: "visible", timeout: options.stepTimeout });
 
 	// ---- 截图（人工复核）---------------------------------------------------
 	// 设置弹窗的内容区自带滚动条（height: min(74vh, 720px)），整段 Jev 分区一屏放不下：

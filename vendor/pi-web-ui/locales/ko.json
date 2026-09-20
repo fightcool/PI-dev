@@ -1261,6 +1261,11 @@
 		"settingsJevCredentialStale": "이 키 이름은 현재 공급자에 없습니다(삭제 또는 이름 변경): 다른 키를 선택할 때까지 호출이 실패합니다.",
 		"settingsJevEndpointInvalid": "엔드포인트는 비워 둘 수 없고 https URL이어야 합니다(기본 https://openrouter.ai/api/alpha/decisions).",
 		"settingsJevModelRequired": "모델 ID는 비워 둘 수 없습니다(기본 typesafe/jev-1.13).",
-		"settingsJevKeyNameRequired": "공급자는 선택했지만 키 이름이 없습니다: 서버는 명시적 키 참조만 허용합니다. 하나 선택하세요."
+		"settingsJevKeyNameRequired": "공급자는 선택했지만 키 이름이 없습니다: 서버는 명시적 키 참조만 허용합니다. 하나 선택하세요.",
+		"footerJev": "Jev",
+		"footerJevTip": "Jev 게이트: 허용 {approve} · 차단 {block} · 사람 이관 {review} · 실패 {failed}. 클릭하면 상세 정보.",
+		"footerJevEmpty": "Jev: 판정 없음",
+		"footerJevDetail": "최근 판정 항목별 점수는 설정의 “Jev 게이트” 섹션에 있습니다.",
+		"footerJevLastDecision": "최근 판정"
 	}
 }

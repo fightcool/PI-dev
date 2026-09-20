@@ -1261,7 +1261,12 @@
 		"settingsJevCredentialStale": "Este nome de chave não existe mais no provedor (excluído ou renomeado): as chamadas falharão até você escolher outra.",
 		"settingsJevEndpointInvalid": "O endpoint não pode ficar vazio e deve ser uma URL https (padrão https://openrouter.ai/api/alpha/decisions).",
 		"settingsJevModelRequired": "O id do modelo não pode ficar vazio (padrão typesafe/jev-1.13).",
-		"settingsJevKeyNameRequired": "Provedor escolhido mas sem nome de chave: o servidor só aceita uma referência de chave explícita — escolha uma."
+		"settingsJevKeyNameRequired": "Provedor escolhido mas sem nome de chave: o servidor só aceita uma referência de chave explícita — escolha uma.",
+		"footerJev": "Jev",
+		"footerJevTip": "Portão Jev: Permitir {approve} · Bloquear {block} · Para pessoa {review} · Falhas {failed}. Clique para detalhes.",
+		"footerJevEmpty": "Jev: sem decisões",
+		"footerJevDetail": "As pontuações por proposição mais recentes estão na secção «Portão Jev» das configurações.",
+		"footerJevLastDecision": "Última decisão"
 	},
 	"serverStrings": {
 		"agent.subagent.template.unavailable": "Template de subagente indisponível: {templateName} (ausente ou desativado)",

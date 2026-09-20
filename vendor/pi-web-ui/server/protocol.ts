@@ -1878,6 +1878,13 @@ export type ServerMessage =
 	/** DEV-CON Jev 门禁状态（config 已清洗：只回密钥**名**，绝不回密钥值）。 */
 	| {
 			type: "jev_status";
+			/**
+			 * 请求回显（回答客户端的 jev_status 请求）。
+			 * @CONTRACT `0` = **服务端主动推送**，不是任何请求的回应：会话 ready 后推一次，
+			 *   以及每次真实决策（面板自检 / Agent 工具 jev_check）后推一次。
+			 *   客户端应把最新一份当**权威运行态**渲染（状态栏实时显示），按 reqId 匹配
+			 *   自己请求的那个仍只用于各自按钮的 busy 状态。
+			 */
 			reqId: number;
 			ok: boolean;
 			status?: {

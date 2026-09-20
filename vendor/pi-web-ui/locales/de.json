@@ -1261,6 +1261,11 @@
 		"settingsJevCredentialStale": "Dieser Schlüsselname existiert beim Anbieter nicht mehr (gelöscht oder umbenannt): Aufrufe schlagen fehl, bis du einen anderen wählst.",
 		"settingsJevEndpointInvalid": "Der Endpunkt darf nicht leer sein und muss eine https-URL sein (Standard https://openrouter.ai/api/alpha/decisions).",
 		"settingsJevModelRequired": "Die Modell-ID darf nicht leer sein (Standard typesafe/jev-1.13).",
-		"settingsJevKeyNameRequired": "Anbieter gewählt, aber kein Schlüsselname: der Server akzeptiert nur eine eindeutige Schlüsselreferenz — bitte einen auswählen."
+		"settingsJevKeyNameRequired": "Anbieter gewählt, aber kein Schlüsselname: der Server akzeptiert nur eine eindeutige Schlüsselreferenz — bitte einen auswählen.",
+		"footerJev": "Jev",
+		"footerJevTip": "Jev-Gate: Freigeben {approve} · Blockieren {block} · An Mensch {review} · Fehler {failed}. Klicken für Details.",
+		"footerJevEmpty": "Jev: keine Entscheidungen",
+		"footerJevDetail": "Die aktuellen Punktwerte je Proposition stehen im Abschnitt „Jev-Gate“ der Einstellungen.",
+		"footerJevLastDecision": "Letzte Entscheidung"
 	}
 }

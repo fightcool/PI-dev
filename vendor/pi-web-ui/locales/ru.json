@@ -1261,6 +1261,11 @@
 		"settingsJevCredentialStale": "Такого имени ключа у провайдера больше нет (удалён или переименован): вызовы будут падать, пока не выберете другой.",
 		"settingsJevEndpointInvalid": "Адрес не может быть пустым и должен быть https-URL (по умолчанию https://openrouter.ai/api/alpha/decisions).",
 		"settingsJevModelRequired": "ID модели не может быть пустым (по умолчанию typesafe/jev-1.13).",
-		"settingsJevKeyNameRequired": "Провайдер выбран, но имя ключа нет: сервер принимает только явную ссылку на ключ — выберите её."
+		"settingsJevKeyNameRequired": "Провайдер выбран, но имя ключа нет: сервер принимает только явную ссылку на ключ — выберите её.",
+		"footerJev": "Jev",
+		"footerJevTip": "Шлюз Jev: Разрешить {approve} · Заблокировать {block} · К человеку {review} · Ошибки {failed}. Нажмите для подробностей.",
+		"footerJevEmpty": "Jev: нет решений",
+		"footerJevDetail": "Последние оценки по каждому утверждению — в разделе «Шлюз Jev» настроек.",
+		"footerJevLastDecision": "Последнее решение"
 	}
 }
