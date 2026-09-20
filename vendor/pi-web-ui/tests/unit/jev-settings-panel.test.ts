@@ -9,7 +9,9 @@
  *   ② 运行状态 / 命题 / 最近错误逐项来自服务端，取不到就说取不到（不拿 0 顶替）；
  *   ③ 阈值不合法时保存按钮禁用并给出原因（含抖动带宽解释）；
  *   ④ 「测试连接」= jev_probe，失败原因（双语）必须显示出来；
- *   ⑤ 保存 = jev_config_save，只提交界面拥有的字段（服务端读-合并-写）。
+ *   ⑤ 保存 = jev_config_save，只提交界面拥有的字段（服务端读-合并-写）；
+ *   ⑥ 真实样本留痕开关 + 复盘状态：代价与边界（4000 / «redacted» / 0600）必须写在界面上，
+ *      recordSamples **只在改过**时才上行（缺省 = 服务端保留磁盘上的值）。
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createElement, type ReactNode } from "react";
@@ -24,6 +26,7 @@ import type {
 	UiChannelInfo,
 	UiJevGateConfig,
 	UiJevProposition,
+	UiJevReviewStatus,
 	UiJevRuntimeStatus,
 } from "../../web/src/types.js";
 
@@ -48,7 +51,24 @@ const CONFIG: UiJevGateConfig = {
 	timeoutMs: 8000,
 	cacheTtlMs: 300000,
 	minIntervalMs: 1000,
+	// 全量留痕默认开（协议默认 true）。
+	recordSamples: true,
 };
+
+/** UiJevReviewStatus 夹具：默认未到期、无待复盘；用例只用它关心的字段。 */
+function review(patch: Partial<UiJevReviewStatus>): UiJevReviewStatus {
+	return {
+		pending: 0,
+		due: false,
+		reason: null,
+		oldestPendingAt: null,
+		newestPendingAt: null,
+		needsHumanLabel: 0,
+		thresholds: { minEntries: 40, maxAgeMs: 7 * 24 * 60 * 60_000 },
+		lastAckAt: null,
+		...patch,
+	};
+}
 
 const RUNTIME: UiJevRuntimeStatus = {
 	total: 12,
@@ -63,6 +83,7 @@ const RUNTIME: UiJevRuntimeStatus = {
 	diskHits: 3,
 	avgElapsedMs: 812,
 	lastError: { at: 1758000000000, code: "E_TIMEOUT", error: "上游超时", errorEn: "upstream timeout" },
+	reviewStatus: review({ pending: 12, due: true, reason: "entries", oldestPendingAt: 1758000000000 }),
 };
 
 const EMPTY_RUNTIME: UiJevRuntimeStatus = {
@@ -78,6 +99,7 @@ const EMPTY_RUNTIME: UiJevRuntimeStatus = {
 	diskHits: 0,
 	avgElapsedMs: 0,
 	lastError: null,
+	reviewStatus: review({}),
 };
 
 // 命题文本即**送进模型的文本**，服务端注册表里是英文（官方：Jev 英文准确率最优）。
@@ -738,5 +760,132 @@ describe("Jev 决策门禁：逐判定项阈值", () => {
 		click(container.querySelector(".chan-settings-head button") as HTMLButtonElement);
 		// 服务端生效值里没有覆盖 → 重载后回到空（继承全局）。
 		expect(propInputs(container, API)[0].value).toBe("");
+	});
+});
+
+/* ------------------------------------------------------------------ */
+/* 真实样本留痕（全量留痕）+ 复盘状态                                    */
+/* ------------------------------------------------------------------ */
+
+/** 「记录真实决策样本」那个开关：面板里有两个 .chan-enable，按标签文字定位，不靠行序。 */
+const sampleToggle = (c: HTMLElement) =>
+	[...c.querySelectorAll(".chan-enable")]
+		.find((el) => (el.textContent ?? "").includes("记录真实决策样本"))
+		?.querySelector("input") as HTMLInputElement | undefined;
+/** 点一下受控 checkbox：走原生 click（同时翻转 checked 并发事件，React 的 change 插件才看得到）。 */
+const toggleCheckbox = (input: HTMLInputElement) =>
+	act(() => {
+		input.click();
+	});
+/** 服务端把这次保存应用了：回执里的 config 就是新的生效基线（服务端保存后不补推 jev_status）。 */
+const applied = (reqId: number, config: UiJevGateConfig): JevUiState => ({
+	...statusOf(),
+	config: { type: "jev_config_result", reqId, ok: true, phase: "applied", config },
+});
+
+describe("Jev 决策门禁：真实样本留痕与复盘", () => {
+	it("留痕开关随服务端值回显：默认勾选，服务端关掉时就是未勾选", () => {
+		const on = mount();
+		expect(sampleToggle(on.container), "开关存在").toBeTruthy();
+		expect(sampleToggle(on.container)!.checked).toBe(true);
+		expect(textOf(on.container)).toContain("全量留痕");
+		act(() => root?.unmount());
+		const off = mount({ jev: statusOf({ ...CONFIG, recordSamples: false }) });
+		expect(sampleToggle(off.container)!.checked).toBe(false);
+	});
+
+	it("取消勾选后保存：出站载荷里 recordSamples 为 false", () => {
+		const { container, sent } = mount();
+		toggleCheckbox(sampleToggle(container)!);
+		expect(sampleToggle(container)!.checked).toBe(false);
+		const payload = savePayload(container, sent);
+		expect(payload?.recordSamples).toBe(false);
+	});
+
+	it("没碰过这个开关就不上行这个字段（缺省 = 服务端保留磁盘上的值，不拿旧值盖回去）", () => {
+		const { container, sent } = mount();
+		const payload = savePayload(container, sent);
+		expect(payload).toBeTruthy();
+		expect("recordSamples" in (payload as object)).toBe(false);
+	});
+
+	it("保存生效后改回开：以回执为基线，仍然上行 true（不拿过期的 status 比）", () => {
+		const { container, sent, rerender } = mount();
+		// ① 关掉并保存 → 服务端回执确认 false（status 里的 config 还是旧的 true）。
+		toggleCheckbox(sampleToggle(container)!);
+		sent.length = 0;
+		click(byText(container, "保存配置"));
+		const reqId = (sent.find((m) => m.type === "jev_config_save") as ClientSave).reqId;
+		rerender({ jev: applied(reqId, { ...CONFIG, recordSamples: false }) });
+		expect(sampleToggle(container)!.checked).toBe(false);
+		// ② 再勾回去 → 载荷必须是 true；若基线跟的是旧 status（true），这里会被当成「没改过」而不发。
+		toggleCheckbox(sampleToggle(container)!);
+		sent.length = 0;
+		click(byText(container, "保存配置"));
+		const save = sent.find((m) => m.type === "jev_config_save") as ClientSave;
+		expect(save.config.recordSamples).toBe(true);
+	});
+
+	it("提示把代价与边界写全：截断 4000 字符 / 密钥形状抹成 «redacted» / 落盘 0600", () => {
+		const { container } = mount();
+		const text = textOf(container);
+		expect(text).toContain("4000");
+		expect(text).toContain("«redacted»");
+		expect(text).toContain("0600");
+		// 位置与轮转也说清楚（否则没人知道去哪看、能畩多少）。
+		expect(text).toContain("jev-samples.jsonl");
+		expect(text).toContain("2000 条");
+		// 关掉/清空的出口：关掉即停止写入，已写的用 samples clear 清。
+		expect(text).toContain("samples clear");
+		// 缓存回放不记（样本只认真实决策）也要说明。
+		expect(text).toContain("缓存回放不记");
+	});
+
+	it("复盘状态如实回显（待复盘 / 已到期）并给出同一条导出命令", () => {
+		const { container } = mount();
+		const text = textOf(container);
+		expect(text).toContain("样本复盘");
+		expect(text).toContain("待复盘 12 条");
+		expect(text).toContain("已到期");
+		expect(text).toContain("npm run jev -- review export --since 7d > corpus.week.jsonl");
+		expect(text).toContain("npm run jev -- review ack");
+	});
+
+	it("未到期就不说「已到期」（到期与否读的是服务端回包，不是客户端算的）", () => {
+		const { container } = mount({
+			jev: {
+				...statusOf(),
+				status: {
+					type: "jev_status",
+					reqId: 7,
+					ok: true,
+					status: {
+						config: CONFIG,
+						runtime: { ...RUNTIME, reviewStatus: review({ pending: 3 }) },
+						propositions: PROPOSITIONS,
+					},
+				},
+			},
+		});
+		const text = textOf(container);
+		expect(text).toContain("待复盘 3 条");
+		expect(text).not.toContain("已到期");
+	});
+
+	it("旧服务端没有 reviewStatus：留痕开关照旧渲染，复盘那一节不渲染也不崩", () => {
+		const { reviewStatus: _omitted, ...legacy } = RUNTIME;
+		const { container } = mount({
+			jev: {
+				...statusOf(),
+				status: {
+					type: "jev_status",
+					reqId: 7,
+					ok: true,
+					status: { config: CONFIG, runtime: legacy as UiJevRuntimeStatus, propositions: PROPOSITIONS },
+				},
+			},
+		});
+		expect(sampleToggle(container)!.checked).toBe(true);
+		expect(textOf(container)).not.toContain("待复盘");
 	});
 });
