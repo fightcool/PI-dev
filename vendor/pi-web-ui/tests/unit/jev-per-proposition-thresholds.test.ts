@@ -26,6 +26,8 @@ import {
 	mergeThresholds,
 	saveJevSettings,
 } from "../../server/dev-con/jev-settings.js";
+import { JevGate } from "../../server/dev-con/jev-gate.js";
+import { defaultJevGateConfig } from "../../server/dev-con/jev-model.js";
 
 const dirs: string[] = [];
 function agentDir(): string {
@@ -272,6 +274,21 @@ describe("磁盘往返（config --proposition 走的真实路径）", () => {
 		saveJevSettings(dir, { thresholds: { perProposition: { change_within_task_scope: { approveAt: 0.5 } } } });
 		const raw = JSON.parse(readFileSync(jevSettingsPath(dir), "utf8"));
 		expect(raw.thresholds.perProposition).toEqual({ change_within_task_scope: { approveAt: 0.5 } });
+	});
+});
+
+describe("JevGate.config() 的深副本契约", () => {
+	it("外部改返回值的 perProposition 不会渗透进内部状态（嵌套对象不能浅拷）", () => {
+		const gate = new JevGate({
+			config: {
+				...defaultJevGateConfig(),
+				thresholds: { ...GLOBAL, perProposition: { change_within_task_scope: { approveAt: 0.5 } } },
+			},
+		});
+		const first = gate.config();
+		first.thresholds.perProposition!.change_within_task_scope.approveAt = 0.05;
+		first.thresholds.perProposition!.injected = { approveAt: 0.01 };
+		expect(gate.config().thresholds.perProposition).toEqual({ change_within_task_scope: { approveAt: 0.5 } });
 	});
 });
 
