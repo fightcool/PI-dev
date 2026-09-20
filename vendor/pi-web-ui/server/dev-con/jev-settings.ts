@@ -41,6 +41,7 @@ const KNOWN_KEYS = new Set([
 	"timeoutMs",
 	"cacheTtlMs",
 	"minIntervalMs",
+	"recordSamples",
 ]);
 
 export interface LoadedJevSettings {

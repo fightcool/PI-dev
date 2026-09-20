@@ -7,7 +7,8 @@
  * Breadcrumbs (changing this affects):
  *   @COUPLED jev-gate.ts（配置/判定/缓存键的消费者）, jev-settings.ts（持久化同一 shape）,
  *            jev-cache.ts（把 JevDecisionEvent 的 cache 三态与 checks 摘要落盘）,
- *            ../protocol.ts（UiJevGateConfig / UiJevDecision / UiJevRuntimeStatus 的镜像），
+ *            jev-samples.ts（recordSamples 开关决定是否落盘被审内容）,
+ *            ../protocol.ts（UiJevGateConfig / UiJevDecision / UiJevRuntimeStatus 的镜像）,
  *            ../agent-service.ts（ClientSession 接线）, ../index.ts（dispatch）
  *   @CONTRACT 纯逻辑模块：禁止 fs / 网络 / SDK 导入（只允许 node:crypto 做哈希），
  *             便于 vitest 单测直接覆盖规格；密钥正文永不进入本模块的数据结构。
@@ -76,6 +77,14 @@ export interface JevGateConfig {
 	cacheTtlMs: number;
 	/** 同一进程内两次真实调用之间的最小间隔（ms）；0 = 不限频。 */
 	minIntervalMs: number;
+	/**
+	 * 是否把**真实调用**（cache=miss）的被审内容写成样本，供日后复盘校准阈值/判据。
+	 * @WHY 磁盘决策缓存只存 cacheKey 摘要 + 分数（可回放、不含被审内容），只有分数分布
+	 *   无法判断某条 approve 是对是错 —— 所以「先跑一周真实使用，再拿真实样本校准」
+	 *   必须有内容可看（见 dev-con/jev-samples.ts 头部 @WHY）。
+	 * @CONTRACT 关闭它只影响采样，**绝不影响判定**；缓存命中/磁盘回放一律不采样。
+	 */
+	recordSamples: boolean;
 }
 
 /** @MAGIC 默认值与合理区间（见头部说明）。 */
@@ -87,6 +96,8 @@ export const JEV_DEFAULT_BLOCK_AT = 0.1;
 export const JEV_DEFAULT_TIMEOUT_MS = 8_000;
 export const JEV_DEFAULT_CACHE_TTL_MS = 300_000;
 export const JEV_DEFAULT_MIN_INTERVAL_MS = 1_000;
+/** @MAGIC 样本采集默认**开**：默认关就等于「一周后又没有样本可复盘」，而漏采样无法事后补。 */
+export const JEV_DEFAULT_RECORD_SAMPLES = true;
 export const JEV_TIMEOUT_MIN_MS = 500;
 export const JEV_TIMEOUT_MAX_MS = 60_000;
 export const JEV_CACHE_TTL_MAX_MS = 24 * 60 * 60_000;
@@ -104,6 +115,7 @@ export function defaultJevGateConfig(): JevGateConfig {
 		timeoutMs: JEV_DEFAULT_TIMEOUT_MS,
 		cacheTtlMs: JEV_DEFAULT_CACHE_TTL_MS,
 		minIntervalMs: JEV_DEFAULT_MIN_INTERVAL_MS,
+		recordSamples: JEV_DEFAULT_RECORD_SAMPLES,
 	};
 }
 
@@ -170,6 +182,9 @@ export function validateJevGateConfig(raw: unknown): JevConfigValidation {
 	}
 	if (r.model !== undefined && typeof r.model !== "string") {
 		return fail("model 必须是字符串", "model must be a string");
+	}
+	if (r.recordSamples !== undefined && typeof r.recordSamples !== "boolean") {
+		return fail("recordSamples 必须是布尔值", "recordSamples must be a boolean");
 	}
 	const endpoint = typeof r.endpoint === "string" ? r.endpoint.trim() : d.endpoint;
 	if (!endpoint) return fail("Decisions 接口地址不能为空", "The Decisions endpoint must not be empty");
@@ -326,6 +341,7 @@ export function validateJevGateConfig(raw: unknown): JevConfigValidation {
 			timeoutMs,
 			cacheTtlMs,
 			minIntervalMs,
+			recordSamples: r.recordSamples === undefined ? d.recordSamples : r.recordSamples === true,
 		},
 	};
 }
@@ -398,6 +414,7 @@ export function redactJevGateConfigForEcho(config: JevGateConfig): JevGateConfig
 		timeoutMs: finiteNumber(cleaned.timeoutMs) ?? d.timeoutMs,
 		cacheTtlMs: finiteNumber(cleaned.cacheTtlMs) ?? d.cacheTtlMs,
 		minIntervalMs: finiteNumber(cleaned.minIntervalMs) ?? d.minIntervalMs,
+		recordSamples: typeof cleaned.recordSamples === "boolean" ? cleaned.recordSamples : d.recordSamples,
 	};
 }
 

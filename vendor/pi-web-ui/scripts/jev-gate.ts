@@ -15,14 +15,17 @@
  *   - 密钥只按名字引用，经 model-admin 解析，**任何输出都不含密钥正文**；
  *   - 额度查询复用既有的 OpenRouter 账户查询适配器，不新增第二份余额事实源；
  *   - 持久决策缓存（jev-cache.ts）是派生可丢的：`cache stats` / `cache clear` 只看/只删它。
+ *   - 样本（jev-samples.ts）是本项目**唯一**落盘被审内容的地方：`samples` / `review` / `samples clear`
+ *     只看/只删/只导它（真实调用后写入，见 jev-gate.ts 的 captureSample）。
  *   - `tune` 用**真实分数**评测阈值：命题/阈值/三态一律取 dev-con/jev-model.ts，统计与建议一律
  *     取 dev-con/jev-tune.ts；本文件只负责读语料、调用 gate、拼报告与定退出码。
  *
  * Usage: node --import tsx scripts/jev-gate.ts <command> [options]
  * 退出码：0 通过 / 1 阻断 / 2 转人工 / 3 出错（仅 check、probe 使用）
  * 退出码（tune）：0 有建议且无误放行 / 1 建议档位仍存在误放行 / 2 语料或输入问题 / 3 出错
+ * 退出码（review）：0 到期该复盘 / 1 未到期 / 3 参数或 IO 问题（便于放进定时任务判断）
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { JevGate } from "../server/dev-con/jev-gate.js";
@@ -40,6 +43,18 @@ import {
 	redactJevGateConfigForEcho,
 	type JevGateConfig,
 } from "../server/dev-con/jev-model.js";
+import {
+	clearJevSamples,
+	jevReviewAckPath,
+	jevSamplesPath,
+	jevSamplesPreviousPath,
+	jevSamplesStats,
+	loadJevReviewAck,
+	loadJevSamples,
+	saveJevReviewAck,
+	type JevSampleSource,
+} from "../server/dev-con/jev-samples.js";
+import { corpusToJsonl, reviewStatus as computeReviewStatus, samplesToCorpus } from "../server/dev-con/jev-review.js";
 import {
 	JEV_TUNE_REPEAT_DEFAULT,
 	JEV_TUNE_REPEAT_MAX,
@@ -65,6 +80,15 @@ import {
 	printStatus,
 	printUsage,
 } from "./jev-gate-format.js";
+import {
+	printReviewAck,
+	printReviewExportSummary,
+	printReviewStatus,
+	printReviewUsage,
+	printSamplesClear,
+	printSamplesStats,
+	printSamplesUsage,
+} from "./jev-review-format.js";
 import {
 	type JevTuneFailure,
 	type JevTuneReport,
@@ -175,8 +199,10 @@ async function runDecision(
 	asJson: boolean,
 	/** false = --no-cache：强制新鲜判定（内存与磁盘缓存都不读也不写）。 */
 	useCache: boolean,
+	/** 样本来源（check=cli / probe=probe）；只用于复盘时的来源分布。 */
+	source: JevSampleSource,
 ): Promise<number> {
-	const decision = await gate.evaluate({ state, questions: questionsFor(ids), apiKey, useCache });
+	const decision = await gate.evaluate({ state, questions: questionsFor(ids), apiKey, useCache, source });
 	if (asJson) console.log(JSON.stringify(decision, null, 2));
 	else printDecision(decision);
 	if (decision.error) return 3;
@@ -203,6 +229,136 @@ function requireApiKey(
 
 /** 用法错误（互斥 flag、缺参数）：由调用方统一报错退出，不猜意图。 */
 class FlagError extends Error {}
+
+/**
+ * 解析 `--since`：`7d` / `24h` / `30m`（也接受 `90s`）或 ISO 时间戳。
+ * @CONTRACT 解析失败返回 null，调用方报错退出 3：**绝不把「看不懂」当成「不过滤」**——
+ *   那会把全部样本导出去，而用户以为只导了最近 24 小时。
+ */
+function parseSince(raw: string, now: number): number | null {
+	const text = raw.trim();
+	const relative = /^(\d+)([dhms])$/i.exec(text);
+	if (relative) {
+		const unit = { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1_000 }[relative[2]!.toLowerCase() as "d" | "h" | "m" | "s"];
+		return now - Number(relative[1]) * unit;
+	}
+	const stamp = Date.parse(text);
+	return Number.isFinite(stamp) ? stamp : null;
+}
+
+/** `samples` / `samples clear`：样本是本项目唯一落盘被审内容的地方，概览与删除都只认这一条路径。 */
+function runSamples(agentDir: string, sub: string, asJson: boolean): number {
+	const path = jevSamplesPath(agentDir);
+	if (sub === "" || sub === "stats") {
+		const stats = jevSamplesStats(path);
+		if (asJson) console.log(JSON.stringify(stats, null, 2));
+		else {
+			const previousPath = jevSamplesPreviousPath(path);
+			printSamplesStats(stats, { previousPath, previousExists: existsSync(previousPath) });
+		}
+		return 0;
+	}
+	if (sub === "clear") {
+		const cleared = clearJevSamples(path);
+		if (asJson) console.log(JSON.stringify({ path, ...cleared }, null, 2));
+		else printSamplesClear(path, cleared);
+		return 0;
+	}
+	console.error(`未知子命令: samples ${sub}（可用: samples / samples clear）`);
+	return 3;
+}
+
+/**
+ * `review [export|ack]`：到期判定 / 导出 tune 语料草稿 / 确认已复盘。
+ * @CONTRACT 退出码：**到期 0 / 未到期 1**（便于放进定时任务或技能里判断该不该提醒），
+ *   参数与 IO 问题一律 3。`export` 的语料只走 stdout（或 --out 文件），
+ *   统计与提醒一律 stderr：只有这样才能安全重定向（`> corpus.jsonl`）。
+ */
+function runReview(gate: JevGate, agentDir: string, flags: Flags, sub: string, asJson: boolean): number {
+	const samplesPath = jevSamplesPath(agentDir);
+	const ackPath = jevReviewAckPath(agentDir);
+	const now = Date.now();
+
+	if (sub === "" || sub === "status") {
+		const status = gate.reviewStatus(now);
+		if (asJson) console.log(JSON.stringify(status, null, 2));
+		else printReviewStatus(status, { samplesPath, ackPath });
+		// 到期 0 / 未到期 1：提醒逻辑可以直接跟退出码挂钩。
+		return status.due ? 0 : 1;
+	}
+
+	if (sub === "export") {
+		const sinceRaw = flags.get("since");
+		let since: number | null = null;
+		if (sinceRaw !== undefined) {
+			if (typeof sinceRaw !== "string") {
+				console.error("--since 需要一个值（例如 7d / 24h / 30m / 2026-09-20T00:00:00Z）");
+				return 3;
+			}
+			since = parseSince(sinceRaw, now);
+			if (since === null) {
+				console.error(
+					`无法解析 --since ${sinceRaw}：用 7d / 24h / 30m / 90s 或 ISO 时间戳（如 2026-09-20T00:00:00Z）`,
+				);
+				return 3;
+			}
+		}
+		const outRaw = flags.get("out");
+		const outText = typeof outRaw === "string" ? outRaw.trim() : "";
+		// `--out -` 与不给 --out 同义：语料走 stdout。
+		const out = outText && outText !== "-" ? resolve(outText) : null;
+		const { entries } = loadJevSamples(samplesPath);
+		const { items, skipped } = samplesToCorpus(entries, { since });
+		const jsonl = corpusToJsonl(items);
+		if (out) {
+			try {
+				writeFileSync(out, jsonl, { mode: 0o600 });
+			} catch (err) {
+				console.error(`写入语料失败 ${out}：${(err as Error).message}`);
+				return 3;
+			}
+		} else {
+			process.stdout.write(jsonl);
+		}
+		const summary = { out, since, items: items.length, skipped };
+		// stdout 已经装了语料时，摘要只能走 stderr；写了文件（stdout 空闲）才允许 --json 走 stdout。
+		if (asJson && out) console.log(JSON.stringify(summary, null, 2));
+		else if (asJson) console.error(JSON.stringify(summary, null, 2));
+		else printReviewExportSummary({ out, items: items.length, since, skipped });
+		return 0;
+	}
+
+	if (sub === "ack") {
+		const atRaw = flags.get("at");
+		let at = now;
+		if (atRaw !== undefined) {
+			if (typeof atRaw !== "string") {
+				console.error("--at 需要一个值（ISO 时间戳，如 2026-09-20T00:00:00Z）");
+				return 3;
+			}
+			const stamp = Date.parse(atRaw.trim());
+			if (!Number.isFinite(stamp)) {
+				console.error(`无法解析 --at ${atRaw}：用 ISO 时间戳（如 2026-09-20T00:00:00Z）`);
+				return 3;
+			}
+			at = stamp;
+		}
+		const previousAckAt = loadJevReviewAck(ackPath)?.lastAckAt ?? null;
+		// 先算「确认掉几条」再写：回执里那个数字才有意义（ack 本身不删样本）。
+		const { entries } = loadJevSamples(samplesPath);
+		const acknowledged = computeReviewStatus(entries, { lastAckAt: previousAckAt, now: at }).pending;
+		if (!saveJevReviewAck(ackPath, at)) {
+			console.error(`写入确认文件失败：${ackPath}`);
+			return 3;
+		}
+		if (asJson) console.log(JSON.stringify({ ackPath, lastAckAt: at, acknowledged, previousAckAt }, null, 2));
+		else printReviewAck({ ackPath, lastAckAt: at, acknowledged, previousAckAt });
+		return 0;
+	}
+
+	console.error(`未知子命令: review ${sub}（可用: review / review export / review ack）`);
+	return 3;
+}
 
 function applyConfigPatch(
 	flags: Flags,
@@ -267,6 +423,11 @@ function applyConfigPatch(
 	if (cacheTtlMs !== undefined) patch.cacheTtlMs = cacheTtlMs;
 	const minIntervalMs = numFlag(flags, "min-interval");
 	if (minIntervalMs !== undefined) patch.minIntervalMs = minIntervalMs;
+	const record = flags.get("record-samples") === true;
+	const noRecord = flags.get("no-record-samples") === true;
+	if (record && noRecord) throw new FlagError("--record-samples 与 --no-record-samples 不能同时使用");
+	if (record) patch.recordSamples = true;
+	if (noRecord) patch.recordSamples = false;
 	if (flags.get("clear-credential") === true) patch.credentialRef = null;
 	const keyName = flags.get("key-name");
 	if (typeof keyName === "string") {
@@ -455,7 +616,16 @@ async function runTune(
 		} else {
 			for (let round = 0; round < repeats; round++) {
 				await pace();
-				const decision = await gate.evaluate({ state: item.state, questions, apiKey: apiKey!, useCache });
+				const decision = await gate.evaluate({
+					state: item.state,
+					questions,
+					apiKey: apiKey!,
+					useCache,
+					// tune 跑的是**语料**（几十上百条合成/历史样本），不是真实使用：
+					// 把它们写进样本会把「一周真实使用」的口径整个淹掉（见 JevEvaluateInput.recordSample）。
+					source: "cli",
+					recordSample: false,
+				});
 				calls.total += 1;
 				// @GOTCHA 缓存命中（hit/disk）带出的是**当初那次**的 token/cost：分开记，
 				//   否则一次全命中的跑分会被读成「刚刚花了这些钱」（见 jev-tune-format 的同名注）。
@@ -558,6 +728,8 @@ async function main(): Promise<number> {
 	if (command === "help" || flags.get("help")) {
 		printUsage(CREDENTIAL_PROVIDER);
 		printTuneUsage();
+		printSamplesUsage();
+		printReviewUsage();
 		return 0;
 	}
 	if (loaded.parseError && !asJson) {
@@ -596,6 +768,8 @@ async function main(): Promise<number> {
 		minIntervalMs: config.minIntervalMs,
 		// 磁盘持久缓存：CLI 与在线实例共用同一份（同一 agentDir），CI 回放靠它保证同结论。
 		cachePath: jevCachePath(agentDir),
+		// 样本：在线实例写同一个文件，`review` 的到期判定读的也是它（与 ack 同目录，见 JevGate 注释）。
+		samplesPath: jevSamplesPath(agentDir),
 	});
 
 	if (command === "status") {
@@ -603,6 +777,10 @@ async function main(): Promise<number> {
 		else printStatus(gate);
 		return 0;
 	}
+
+	if (command === "samples") return runSamples(agentDir, positional[0] ?? "stats", asJson);
+
+	if (command === "review") return runReview(gate, agentDir, flags, positional[0] ?? "status", asJson);
 
 	if (command === "cache") {
 		const sub = positional[0] ?? "stats";
@@ -634,10 +812,11 @@ async function main(): Promise<number> {
 		if (!apiKey) return 3;
 		const rawIds = flags.get("proposition");
 		const single = typeof rawIds === "string" ? [rawIds] : null;
+		const isProbe = command === "probe";
 		const ids =
-			command === "probe" ? (single ?? [JEV_PROPOSITIONS[0]!.id]) : (single ?? JEV_PROPOSITIONS.map((p) => p.id));
-		const state = command === "probe" ? PROBE_STATE : await readState(flags);
-		return await runDecision(gate, state, ids, apiKey, asJson, flags.get("no-cache") !== true);
+			isProbe ? (single ?? [JEV_PROPOSITIONS[0]!.id]) : (single ?? JEV_PROPOSITIONS.map((p) => p.id));
+		const state = isProbe ? PROBE_STATE : await readState(flags);
+		return await runDecision(gate, state, ids, apiKey, asJson, flags.get("no-cache") !== true, isProbe ? "probe" : "cli");
 	}
 
 	if (command === "tune") return await runTune(gate, agentDir, config, flags, asJson);
@@ -647,6 +826,8 @@ async function main(): Promise<number> {
 	console.error(`未知命令: ${command}\n`);
 	printUsage(CREDENTIAL_PROVIDER);
 	printTuneUsage();
+	printSamplesUsage();
+	printReviewUsage();
 	return 3;
 }
 

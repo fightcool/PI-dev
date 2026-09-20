@@ -65,6 +65,7 @@ export function printUsage(credentialProvider: string): void {
 			"  config --proposition <id> --approve <0..1> [--block <0..1>]   # 给单个判定项配独立阈值",
 			"  config --unset-proposition <id> | --clear-propositions        # 删单个 / 全清独立阈值",
 			"  config --timeout <ms> --cache-ttl <ms> --min-interval <ms>",
+			"  config --[no-]record-samples  # 真实调用后是否把被审内容写成样本（默认开，供一周后复盘）",
 			`  config --key-name <name> [--key-provider ${credentialProvider}]   # 只存名字引用`,
 			"  config --clear-credential",
 			"  propositions                 列出可用二元判断命题（判定句 + 真/假标准）",
@@ -72,6 +73,10 @@ export function printUsage(credentialProvider: string): void {
 			"  probe                        真实自检：用合成样本打一次 Decisions 接口（支持 --no-cache）",
 			"  cache                        磁盘决策缓存概览（条数 / 占用 / 时间范围）",
 			"  cache clear [--json]         删除磁盘决策缓存（派生数据，删了只损失一次调用费用）",
+			"  samples [--json]             真实样本概览（`samples clear` 删样本：不可再生，先导出再删）",
+			"  review [--json]              是否该复盘了（到期退出码 0 / 未到期 1）",
+			"  review export [--since <7d|24h|30m|ISO>] [--out <path|->]   导出 tune 语料草稿（stdout 是纯 JSONL）",
+			"  review ack [--at <ISO>]      确认已复盘（默认 now；只重置提醒，不删样本）",
 			"  balance                      查询 OpenRouter 额度（复用既有账户查询适配器）",
 			"",
 			"  --agent-dir <path>           覆盖实例数据目录（默认 $PI_CODING_AGENT_DIR ?? getAgentDir()）",
@@ -79,6 +84,7 @@ export function printUsage(credentialProvider: string): void {
 			"  --json                       机器可读输出",
 			"",
 			"退出码（check / probe）：0 通过 / 1 阻断 / 2 转人工 / 3 出错",
+			"退出码（review）：0 到期该复盘 / 1 未到期 / 3 参数或 IO 问题",
 		].join("\n"),
 	);
 }
@@ -108,6 +114,10 @@ export function printConfig(config: JevGateConfig, agentDir: string): void {
 		}
 	}
 	console.log(`超时: ${echo.timeoutMs}ms  缓存: ${echo.cacheTtlMs}ms  最小间隔: ${echo.minIntervalMs}ms`);
+	// 样本开关影响「一周后能不能复盘」：默认关就等于没数据，所以必须回显（不改判定，只改采样）。
+	console.log(
+		`样本: ${echo.recordSamples ? "记录真实调用（截断 + 密钥形状检测，见 jev-samples.ts）" : "不记录（`review` 将永远无样本可复盘）"}`,
+	);
 	console.log("提示: 阈值之间是「模型不确定」的空白带。Jev 同一输入的概率抖动可达 ~0.08，不要收窄到 0.5 附近。");
 }
 
@@ -118,6 +128,11 @@ export function printStatus(gate: JevGate): void {
 	console.log(`Token: 输入 ${s.inputTokens} / 输出 ${s.outputTokens}  费用: $${s.cost.toFixed(6)}`);
 	console.log(`平均耗时: ${Math.round(s.avgElapsedMs)}ms`);
 	if (s.lastError) console.log(`最近错误: [${s.lastError.code}] ${s.lastError.error}`);
+	// 样本复盘：只报计数与是否到期（内容一律走 `review export`，不在这里回显）。
+	const r = s.reviewStatus;
+	console.log(
+		`待复盘样本: ${r.pending} 条（${r.due ? `已到期：${r.reason === "entries" ? "条数够了" : "等够时间了"}` : "未到期"}）  转人工需人判: ${r.needsHumanLabel} 条`,
+	);
 	// 决策事件只在内存（刻意不落盘，避免第二份可写事实源）。
 	// 但决策缓存本身是落盘的（派生可丢），两者不是一回事：这里统计的是本进程的事件。
 	console.log(
@@ -125,6 +140,9 @@ export function printStatus(gate: JevGate): void {
 	);
 	console.log(
 		"注: 磁盘决策缓存是跨进程的（`cache` 查看概览，`cache clear` 清空）；命中会分别记在「缓存命中/磁盘命中」里。",
+	);
+	console.log(
+		"注: 「待复盘样本」看的是落盘样本（`samples` 看概览，`review` 看是否到期，`review export` 导语料）。",
 	);
 }
 

@@ -6,6 +6,8 @@
  *
  * Breadcrumbs (changing this affects):
  *   @COUPLED jev-model.ts（配置/判定/缓存键/事件聚合）, jev-settings.ts（配置来源）,
+ *            jev-samples.ts（真实调用后落一条样本；唯一 hook 点，见 @GOTCHA）,
+ *            jev-review.ts（复盘到期判定：snapshotStatus().review 带出去）,
  *            channel-accounts.ts（复用的有界 fetchJson）, ../agent-service.ts（唯一装配处）
  *   @CONTRACT 本层只负责「发一次有界请求 + 把答案归一化成三态 + 记账」：
  *             不读盘、不解析密钥（apiKey 由调用方解析后传入），密钥正文绝不进入
@@ -23,11 +25,30 @@
  *            fix: buildJevQuestions 已改为 record + type（单一事实源，CLI/Web 共用）。
  *            同时让失败文案带上游错误正文（否则 alpha 接口的 400 无法排障）。
  *   @COUPLED jev-cache.ts（持久决策缓存：CI 确定性回放的第二级缓存，派生可丢）。
+ *   @GOTCHA 样本只在**真实调用（cache=miss）**的那一次记（`captureSample`）——
+ *         缓存命中/磁盘回放、单飞的后续参与者、以及还没出网就被拒的（未启用/未配凭据/
+ *         无限题/限频）都不记：同一内容重放一百次也只有一个真相，
+ *         而没出网的拒绝既无分数也无内容，记下来只会把「待复盘」条数变成噪声。
+ *   @GOTCHA 采样绝不参与判定：写在决策对象构造完之后、走 appendJevSample（内部兜住异常）。
+ *   @PERF snapshotStatus() 每次都读一遍样本文件做到期判定（上限 2000 条 / 8 MiB，毫秒级）：
+ *         它只在「会话 ready」与「刚发生决策」时被调用，不在热路径上。
  *   @MAGIC MAX_BODY_BYTES=64KiB（复用 fetchJson 的上限）/ 事件环形缓冲 200 / 缓存上限 200 /
  *         磁盘缓存 8MiB 轮转 + 20_000 条（见 jev-cache.ts）。
  * ──────────────────────────────────────────────────
  */
+import { dirname, join } from "node:path";
 import { fetchJson } from "./channel-accounts.js";
+import {
+	appendJevSample,
+	captureJevSample,
+	loadJevReviewAck,
+	loadJevSamples,
+	type JevSampleSource,
+} from "./jev-samples.js";
+import {
+	reviewStatus as computeReviewStatus,
+	type JevReviewStatus,
+} from "./jev-review.js";
 import {
 	JEV_CACHE_MAX_ENTRIES as JEV_DISK_MAX_ENTRIES,
 	JEV_CACHE_VERSION,
@@ -107,12 +128,19 @@ export interface JevDecision {
 	/** 非空 = 这次不是有效决策（outcome 必为 review）。 */
 	error?: string;
 	errorEn?: string;
+	/**
+	 * 失败的错误码（`error` 非空时必定有值；与决策事件里的 code 同源）。
+	 * @WHY 复盘时要能把「转人工」按原因分类（超时/限流/缺答/越界是完全不同的问题）。
+	 */
+	errorCode?: string;
 }
 
 export interface JevEvaluateInput {
 	/**
 	 * 被审查的内容（原样放进请求体 state 字段；本地不做任何判定）。
 	 * @CONTRACT state 只参与 cacheKey 的哈希，**绝不落盘**（磁盘缓存里只有摘要，见 jev-cache.ts）。
+	 *   @GOTCHA 唯一的例外在样本里（jev-samples.ts）：recordSamples=true 时把**原始 state**
+	 *   （截断 + 密钥形状检测后）写进样本文件——那是「一周后拿真实样本复盘」的唯一内容来源。
 	 */
 	state: unknown;
 	/** 命题负载（buildJevQuestions 的产物）；决定必须被回答的命题名。 */
@@ -126,6 +154,17 @@ export interface JevEvaluateInput {
 	 * @WHY 排障/验证上游时必须能绕过缓存，否则「看起来通过」可能只是一周前的那次答案。
 	 */
 	useCache?: boolean;
+	/**
+	 * 本次决策从哪里发起（复盘时区分 agent 主动问的与脚本/CI 跑的）；默认 "unknown"。
+	 */
+	source?: JevSampleSource;
+	/**
+	 * false = 本次**不写样本**（默认写）。
+	 * @WHY 取样只对「真实使用」有意义：`tune` 一次跑几十上百条**语料**，
+	 *   把它们写进真实样本会把「一周真实使用」的口径整个淹掉（见 scripts/jev-gate.ts 的 runTune）。
+	 * @CONTRACT 只影响采样，绝不影响判定；缓存命中/回放本来就不采。
+	 */
+	recordSample?: boolean;
 }
 
 /** 构造选项逐字对标 AccountRegistryOptions（见 channel-accounts.ts）。 */
@@ -145,6 +184,44 @@ export interface JevGateOptions {
 	 * @CONTRACT 不传/null = **关闭**磁盘缓存（测试与旧调用完全不受影响）。
 	 */
 	cachePath?: string | null;
+	/**
+	 * 样本文件路径（jevSamplesPath(agentDir)）。
+	 * @CONTRACT 不传/null = **关闭**采样（测试与旧调用完全不受影响）。
+	 *   samplePath 的目录同时也是复盘确认文件（jev-review.json）的目录（见 reviewAckPathOf）。
+	 */
+	samplesPath?: string | null;
+}
+
+/**
+ * 复盘确认文件的路径：与样本文件**同目录**（`<agentDir>/dev-con/jev-review.json`）。
+ * @WHY 由 samplesPath 推出来，而不是再要一个 options 字段：两者必须成对指向同一个 agentDir，
+ *   分开传就给了「服务端读 A 目录的样本、CLI 写 B 目录的 ack」这种静默错配一个机会。
+ */
+function reviewAckPathOf(samplesPath: string): string {
+	return join(dirname(samplesPath), "jev-review.json");
+}
+
+/** 原始 state 文本（能 JSON.stringify 就 stringify 原对象；拿不到就空串）。
+ *  @CONTRACT **不是** canonicalizeState：样本要的是调用方本来传进来的那份文本（键顺序不限），
+ *    规范化只属于 cacheKey 的领域。 */
+function rawStateText(state: unknown): string {
+	if (typeof state === "string") return state;
+	try {
+		const text = JSON.stringify(state);
+		return typeof text === "string" ? text : "";
+	} catch {
+		return "";
+	}
+}
+
+/**
+ * 运行态 + 样本复盘状态：Agent 回执/底栏一次拿全（一个时间戳、一次读盘）。
+ * @GOTCHA 字段叫 `reviewStatus`，**不能**叫 `review`：`JevRuntimeStatus.review` 已经是
+ *   「结论为转人工的**调用条数**」（三态计数之一，UI 运行卡片与 e2e 都在读它）。
+ *   一个是计数、一个是复盘状态，同名就变成两个意思共用一个字段。
+ */
+export interface JevGateRuntimeStatus extends JevRuntimeStatus {
+	reviewStatus: JevReviewStatus;
 }
 
 interface CacheEntry {
@@ -170,6 +247,10 @@ export class JevGate {
 	private lastCallAt: number | null = null;
 	/** 磁盘决策缓存的路径（null = 关闭）。 */
 	private readonly cachePath: string | null;
+	/** 样本文件路径（null = 关闭采样）。 */
+	private readonly samplesPath: string | null;
+	/** 复盘确认文件路径（null = 没有样本，也就没有复盘状态）。 */
+	private readonly reviewAckPath: string | null;
 	/** 惰性加载的磁盘缓存镜像（key → entry）；useCache:false 时连读都不读。 */
 	private diskMirror: Map<string, JevCacheEntry> | null = null;
 
@@ -187,6 +268,8 @@ export class JevGate {
 		};
 		this.eventCapacity = Math.max(1, opts.eventCapacity ?? JEV_EVENT_CAPACITY);
 		this.cachePath = opts.cachePath ?? null;
+		this.samplesPath = opts.samplesPath ?? null;
+		this.reviewAckPath = this.samplesPath ? reviewAckPathOf(this.samplesPath) : null;
 	}
 
 	/** 当前配置（**深**副本，避免调用方改到内部状态：perProposition 是嵌套对象，浅拷会漏）。 */
@@ -211,9 +294,31 @@ export class JevGate {
 		this.cache.clear();
 	}
 
-	/** 运行态聚合（内存态 + 环形事件缓冲）。 */
-	snapshotStatus(): JevRuntimeStatus {
-		return aggregateJevStatus(this.events);
+	/** 运行态聚合（内存态 + 环形事件缓冲 + 样本复盘状态）。 */
+	snapshotStatus(): JevGateRuntimeStatus {
+		return { ...aggregateJevStatus(this.events), reviewStatus: this.reviewStatus() };
+	}
+
+	/**
+	 * 样本复盘状态：读样本 + 上次确认时间，算「该不该拿真实样本回看」。
+	 * @CONTRACT 读盘失败/未配置样本路径一律返回**空状态**（pending 0 / due false），绝不抛 ——
+	 *   它是回执的一部分，不能因为一个统计文件把状态推送搞崩（对标 appendJevSample 的尽力而为）。
+	 */
+	reviewStatus(now?: number): JevReviewStatus {
+		const at = now ?? this.now();
+		const path = this.samplesPath;
+		const ackPath = this.reviewAckPath;
+		if (!path || !ackPath) {
+			// 空状态也走同一个纯函数，阈值口径只有一个（不手写第二份默认值）。
+			return computeReviewStatus([], { lastAckAt: null, now: at });
+		}
+		try {
+			const { entries } = loadJevSamples(path);
+			const ack = loadJevReviewAck(ackPath);
+			return computeReviewStatus(entries, { lastAckAt: ack?.lastAckAt ?? null, now: at });
+		} catch {
+			return computeReviewStatus([], { lastAckAt: null, now: at });
+		}
 	}
 
 	/** 最近决策事件（副本，最新在后）；审计/排障用。 */
@@ -355,9 +460,52 @@ export class JevGate {
 		const promise = this.callUpstream(input, config, key, names, startedAt);
 		this.inFlight.set(key, promise);
 		try {
-			return await promise;
+			const decision = await promise;
+			// 只有**发起者**（真正打了一次接口的那位）到这里：单飞的其它参与者拿的是同一个结论，
+			// 记第二次就是把一次真相数成两次（见头部 @GOTCHA）。
+			this.captureSample(input, decision, key, names);
+			return decision;
 		} finally {
 			this.inFlight.delete(key);
+		}
+	}
+
+	/**
+	 * 把一次真实决策（cache=miss）写成样本：截断 + 密钥形状检测由 captureJevSample 负责。
+	 * @CONTRACT ① 决策**已经算完**才调用；② 任何失败都静默（appendJevSample 内部兜住），
+	 *   采样绝不能改变判定结果、也不能把异常抛回编码路径。
+	 *   ③ stateHash 复用本次 cacheKey（sha256 摘要），不另算第二个摘要。
+	 */
+	private captureSample(input: JevEvaluateInput, decision: JevDecision, key: string, names: readonly string[]): void {
+		const path = this.samplesPath;
+		if (!path || !this.configValue.recordSamples) return;
+		if (input.recordSample === false) return;
+		if (decision.audit.cache !== "miss") return;
+		try {
+			appendJevSample(
+				path,
+				captureJevSample({
+					at: this.now(),
+					state: rawStateText(input.state),
+					propositions: names,
+					checks: decision.checks,
+					outcome: decision.outcome,
+					reason: decision.reason,
+					reasonEn: decision.reasonEn,
+					source: input.source ?? "unknown",
+					model: decision.audit.model ?? this.configValue.model,
+					stateHash: key,
+					error: decision.error
+						? {
+								code: decision.errorCode ?? "unknown",
+								error: decision.error,
+								errorEn: decision.errorEn ?? "",
+							}
+						: undefined,
+				}),
+			);
+		} catch {
+			/* 采样尽力而为（见 @CONTRACT） */
 		}
 	}
 
@@ -624,6 +772,7 @@ export class JevGate {
 			audit,
 			error: reviewed.failure.error,
 			errorEn: reviewed.failure.errorEn,
+			errorCode: reviewed.failure.code,
 		};
 		this.record({ at: this.now(), result, error: reviewed.failure });
 		return result;
