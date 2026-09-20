@@ -13,6 +13,7 @@
 - [DEV-CON历史材料](docs/history/dev-con/README.md)：前期评估、架构讨论和暂停原型，均非当前计划。
 - [目录结构与开发边界](docs/STRUCTURE.md)：各目录的归属、源码与运行数据的区别。
 - [安装与运维](docs/OPERATIONS.md)：配置、服务维护和升级。
+- [Jev 提交钩子](docs/JEV-HOOK.md)：Pi bash 提交前自动判定；仅 block 拦截，全局安装、关闭与卸载。
 - [PM2 正式运行管理](docs/PM2-PRODUCTION.md)：统一进程、日志、开机恢复与版本切换。
 - [PM2 候选发布与回滚](docs/PM2-SHADOW.md)：隔离候选端口与验证。
 - [既有性能与验收记录](docs/FOUNDATION-VALIDATION.md)：指定基线的修改和测量，不代表本期完成状态。
