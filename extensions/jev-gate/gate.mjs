@@ -5,7 +5,7 @@
  * 门禁失败（包括无法确定 diff）→ 告警放行，绝不能称为通过。
  * JEV_GATE_HOOK=off → 关闭；默认开启。不复制命题或阈值，CLI 从配置/注册表读取。
  */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
@@ -13,6 +13,8 @@ import { detectCommits } from "./command.mjs";
 import { redact, runProcess, stagedState } from "./state.mjs";
 
 const SELF_ROOT = fileURLToPath(new URL("../../", import.meta.url));
+/** 安装时写入的「CLI 在哪」记录（和 gate.mjs 同目录，随副本一起安装/卸载）。 */
+const APP_RECORD = fileURLToPath(new URL("./app.json", import.meta.url));
 const require = createRequire(import.meta.url);
 
 /**
@@ -21,9 +23,13 @@ const require = createRequire(import.meta.url);
  *   （`<agentDir>/hooks/jev-gate/gate.mjs`），那个算法会指向 `<agentDir>/vendor/pi-web-ui`（不存在），
  *   于是钩子在每次提交时都退化成「找不到 CLI → 告警放行」：看着装好了，其实一次也不会真拦。
  * 解析顺序：显式 `JEV_GATE_APP` → 从**会话 cwd** 逐级向上找仓库根 →
- *   扩展源码所在的 checkout（开发时有效）→ null（调用方必须明确告警放行，绝不假装通过）。
+ *   **安装时记录的 app 路径**（`app.json`，见下）→ 扩展源码所在的 checkout（开发时有效）→
+ *   null（调用方必须明确告警放行，绝不假装通过）。
+ * @GOTCHA 只靠 cwd 不够：会话在**别的项目**里提交（cwd 不含 `vendor/pi-web-ui`）时也会找不到 CLI，
+ *   于是同样退化成「静默放行」。实测：在 `/tmp/<临时仓库>` 里提交，钩子确实没拦 —— 不是没加载，
+ *   是没找到 CLI。所以安装时把当时的 checkout 记进 `app.json` 当兜底。
  */
-export function resolveApp(cwd, env = process.env) {
+export function resolveApp(cwd, env = process.env, recordPath = APP_RECORD) {
   const hasCli = (dir) =>
     Boolean(dir) && existsSync(join(dir, "scripts", "jev-gate.ts"));
   if (env.JEV_GATE_APP)
@@ -33,8 +39,23 @@ export function resolveApp(cwd, env = process.env) {
     if (hasCli(candidate)) return candidate;
     if (dirname(dir) === dir) break;
   }
-  const selfCandidate = resolve(SELF_ROOT, "vendor", "pi-web-ui");
-  return hasCli(selfCandidate) ? selfCandidate : null;
+  for (const candidate of [
+    readRecordedApp(recordPath),
+    resolve(SELF_ROOT, "vendor", "pi-web-ui"),
+  ]) {
+    if (hasCli(candidate)) return resolve(candidate);
+  }
+  return null;
+}
+
+/** 读安装时记录的 app 路径；文件缺失/损坏/字段不对一律当没有（不抛，也不猜）。 */
+function readRecordedApp(recordPath) {
+  try {
+    const parsed = JSON.parse(readFileSync(recordPath, "utf8"));
+    return typeof parsed?.app === "string" && parsed.app ? parsed.app : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function callCli(state, signal, cwd) {
@@ -147,6 +168,10 @@ export function createGate({
       }
       if (verdict.kind === "block") blocked.push(verdict.message);
       notify(verdict.message, verdict.kind === "approve" ? "info" : "warning");
+      // 「没判定成」必须留痕到宿主日志：UI 通知在子代理会话里等于没人看见，
+      // 而失败放行最怕的就是「看着是绿的，其实一次也没判」（消息本身是固定文案，无 diff/密钥）。
+      if (verdict.kind === "failure")
+        console.error(`[jev-gate] ${verdict.message}`);
     }
     if (blocked.length) return { block: true, reason: blocked.join("\n") };
   };

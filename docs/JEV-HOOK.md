@@ -40,8 +40,11 @@ PI_CODING_AGENT_DIR=/home/dev/.local/share/pi-dev/agent node scripts/install-jev
 > ① pi 的全局发现规则有两条 —— `extensions/<文件名>.ts` 与 `extensions/<目录名>/index.ts`。
 > 把本体放进 `extensions/jev-gate/`，它**自己也会被当成一个扩展**发现，于是同一个钩子加载两次
 > （SDK 实测 `extensions.length === 2`）。
+> ③ **只靠会话 cwd 找 CLI 不够**：在别的项目里提交时 cwd 不含 `vendor/pi-web-ui`，钩子会找不到 CLI 而**静默放行**（实测：在 `/tmp/<临时仓库>` 提交没被拦）——所以安装时把 checkout 路径写进 `app.json` 兜底。
 > ② 第一版入口写的是「re-export 指向仓库里的绝对路径」，结果指向了一个**临时 worktree** —— 那个目录一删，
 > 所有会话加载扩展都会报错。现在入口是相对路径 + 本体内联在宿主里，**装完就与仓库位置无关**。
+
+| `<agentDir>/hooks/jev-gate/app.json` | **兜底**：安装时记下的「门禁 CLI 在哪个 checkout」（`vendor/pi-web-ui`）。会话在**别的项目**里提交时（cwd 不含 `vendor/pi-web-ui`）靠它找到 CLI；换兜底 checkout 就在那个 checkout 里重跑 install |
 
 **升级**：`git pull` 后重跑 `install`（会覆盖本体文件；旧版本入口带同一行管理标记，因此能直接升级，不会被当成别人的扩展拒掉）。
 **卸载**：

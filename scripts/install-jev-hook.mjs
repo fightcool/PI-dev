@@ -7,13 +7,27 @@
  *   `<agentDir>/extensions/jev-gate/`（扩展本体 + `.managed-by` 标记）。
  *   **不是我们装的东西一律拒绝覆盖/删除**（内容不匹配就抛错），绝不静默接管别人的扩展。
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const SOURCE_DIR = fileURLToPath(new URL("../extensions/jev-gate/", import.meta.url));
-const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+const SOURCE_DIR = fileURLToPath(
+  new URL("../extensions/jev-gate/", import.meta.url),
+);
+/** 安装来源 checkout 根（用于把「CLI 在哪」写进 app.json 当兜底）。 */
+const SOURCE_ROOT = fileURLToPath(new URL("../", import.meta.url));
+const agentDir =
+  process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
 const extensionsDir = resolve(agentDir, "extensions");
 const shimPath = join(extensionsDir, "jev-gate.ts");
 /**
@@ -26,37 +40,70 @@ const shimPath = join(extensionsDir, "jev-gate.ts");
 const hooksDir = resolve(agentDir, "hooks");
 const bodyDir = join(hooksDir, "jev-gate");
 const markerPath = join(bodyDir, ".managed-by");
+const appRecordPath = join(bodyDir, "app.json");
 /** 入口 shim 用**相对**路径 —— 这样它对仓库/ worktree 的位置零依赖（见 @WHY）。 */
-const SHIM = '// Managed by PI-dev scripts/install-jev-hook.mjs\nexport { default } from "../hooks/jev-gate/index.ts";\n';
-const MARKER = "pi-dev jev-gate hook（安装：scripts/install-jev-hook.mjs install；卸载：… uninstall）\n";
+const SHIM =
+  '// Managed by PI-dev scripts/install-jev-hook.mjs\nexport { default } from "../hooks/jev-gate/index.ts";\n';
+const MARKER =
+  "pi-dev jev-gate hook（安装：scripts/install-jev-hook.mjs install；卸载：… uninstall）\n";
 
 const action = process.argv[2] ?? "install";
-if (!["install", "uninstall"].includes(action)) throw new Error("Use install or uninstall");
+if (!["install", "uninstall"].includes(action))
+  throw new Error("Use install or uninstall");
 
 /** 本安装器写过的入口都带这行标记 —— 用它把「自己人的旧版本」和「别人的扩展」分开。 */
 const MANAGED_PREFIX = "// Managed by PI-dev scripts/install-jev-hook.mjs";
-const currentShim = existsSync(shimPath) ? readFileSync(shimPath, "utf8") : null;
-const shimIsOurs = currentShim === null || currentShim.startsWith(MANAGED_PREFIX);
+const currentShim = existsSync(shimPath)
+  ? readFileSync(shimPath, "utf8")
+  : null;
+const shimIsOurs =
+  currentShim === null || currentShim.startsWith(MANAGED_PREFIX);
 if (!shimIsOurs) {
-  throw new Error("已有不同的 jev-gate.ts；请先确认其来源并用原安装目录卸载，拒绝覆盖。");
+  throw new Error(
+    "已有不同的 jev-gate.ts；请先确认其来源并用原安装目录卸载，拒绝覆盖。",
+  );
 }
 const bodyIsOurs = !existsSync(bodyDir) || existsSync(markerPath);
-if (!bodyIsOurs) throw new Error(`${bodyDir} 不是本安装器管理的目录，拒绝覆盖或删除。`);
+if (!bodyIsOurs)
+  throw new Error(`${bodyDir} 不是本安装器管理的目录，拒绝覆盖或删除。`);
 
 if (action === "uninstall") {
   if (currentShim !== null) unlinkSync(shimPath);
   if (existsSync(bodyDir)) rmSync(bodyDir, { recursive: true, force: true });
-  console.log(`已卸载 ${shimPath} 与 ${bodyDir}/；现有会话需 /reload 或重新创建。`);
+  console.log(
+    `已卸载 ${shimPath} 与 ${bodyDir}/；现有会话需 /reload 或重新创建。`,
+  );
 } else {
   mkdirSync(extensionsDir, { recursive: true });
   mkdirSync(bodyDir, { recursive: true });
-  const files = readdirSync(SOURCE_DIR).filter((name) => name.endsWith(".ts") || name.endsWith(".mjs"));
-  if (files.length === 0) throw new Error(`源目录里没有可安装的文件：${SOURCE_DIR}`);
-  for (const name of files) copyFileSync(join(SOURCE_DIR, name), join(bodyDir, name));
+  const files = readdirSync(SOURCE_DIR).filter(
+    (name) => name.endsWith(".ts") || name.endsWith(".mjs"),
+  );
+  if (files.length === 0)
+    throw new Error(`源目录里没有可安装的文件：${SOURCE_DIR}`);
+  for (const name of files)
+    copyFileSync(join(SOURCE_DIR, name), join(bodyDir, name));
   writeFileSync(markerPath, MARKER, { mode: 0o600 });
+  /**
+   * 记下「门禁 CLI 在本机哪个 checkout」—— 会话在**别的项目**里提交时（cwd 不含 `vendor/pi-web-ui`），
+   * gate.mjs 靠这份记录兜底；否则它就找不到 CLI 而静默放行。装完与源目录无关（只是兜底路径）。
+   * 想换兜底 checkout：在目标 checkout 里重跑 install。
+   */
+  writeFileSync(
+    appRecordPath,
+    `${JSON.stringify({ app: resolve(SOURCE_ROOT, "vendor", "pi-web-ui"), installedAt: new Date().toISOString() }, null, 2)}\n`,
+    { mode: 0o600 },
+  );
   // 旧版本入口也覆盖（升级路径）：第一版指向 worktree 的 shim 就是这么换成自包含入口的。
   writeFileSync(shimPath, SHIM, { mode: 0o600 });
-  console.log(`已安装 ${shimPath}（本体 ${files.length} 个文件在 ${bodyDir}/，自包含、不依赖仓库路径）`);
-  console.log("新会话自动加载；现有会话执行 /reload，或在宿主中重新创建会话运行时。");
+  console.log(
+    `已安装 ${shimPath}（本体 ${files.length} 个文件在 ${bodyDir}/，自包含、不依赖仓库路径）`,
+  );
+  console.log(
+    `兜底 CLI 路径已记入 ${appRecordPath}（会话在别的项目里提交时用它；换 checkout 重跑 install 即可）`,
+  );
+  console.log(
+    "新会话自动加载；现有会话执行 /reload，或在宿主中重新创建会话运行时。",
+  );
   console.log("更新：改了扩展源码后重跑 install（会覆盖本体文件）。");
 }

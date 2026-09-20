@@ -44,6 +44,29 @@ test("resolveApp 优先用 JEV_GATE_APP，指错就返回 null（不静默退回
   assert.equal(resolveApp(app, { JEV_GATE_APP: join(tmp, "nope") }), null);
 });
 
+test("cwd 在仓库外时用安装时记录的 app.json 兜底（别的项目里提交也不能静默放行）", (t) => {
+  // @BUGFIX 2026-09-20：实测在 /tmp/<临时仓库> 里提交时钩子没拦 —— 不是没加载，是 cwd 不含
+  // vendor/pi-web-ui 而找不到 CLI，于是静默放行。安装时记下 checkout 路径即可兜底。
+  const tmp = mkdtempSync(join(tmpdir(), "jev-app-record-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  const root = fakeCheckout(tmp, "recorded");
+  const app = join(root, "vendor", "pi-web-ui");
+  const record = join(tmp, "app.json");
+  writeFileSync(record, JSON.stringify({ app }));
+  assert.equal(resolveApp(join(tmp, "elsewhere"), {}, record), app);
+  // 显式 JEV_GATE_APP 优先于记录；记录损坏/指向失效路径 → 不猜，返回 null。
+  assert.equal(
+    resolveApp(join(tmp, "elsewhere"), { JEV_GATE_APP: app }, record),
+    app,
+  );
+  // 记录损坏 / 指向失效路径 → 绝不把失效路径当成答案（此测试跑在 checkout 里，
+  // 所以最后一档「扩展源码所在 checkout」仍会命中；关键是**不会**返回记录里的坏路径）。
+  writeFileSync(record, "{ not json");
+  assert.notEqual(resolveApp(join(tmp, "elsewhere"), {}, record), undefined);
+  writeFileSync(record, JSON.stringify({ app: join(tmp, "gone") }));
+  assert.notEqual(resolveApp(join(tmp, "elsewhere"), {}, record), join(tmp, "gone"));
+});
+
 test("cwd 在仓库外时回退到扩展源码所在的 checkout（开发时的预期行为）", (t) => {
   const tmp = mkdtempSync(join(tmpdir(), "jev-app-outside-"));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
