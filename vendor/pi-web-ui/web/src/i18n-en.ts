@@ -326,7 +326,8 @@ export const en: EnDictionary = {
 	dshExtensionsNote:
 		"DSH has no pi extension system; capabilities are runtime-built-in (MCP/subagent/goal/plan/skill…)",
 	dshReviewPromptNote: "DSH has no separate reviewer: this text is appended to the system prompt for goal rounds",
-	dshVisionHiddenNote: "DSH supports real image input (the selected model must be natively multimodal) — no vision bridge needed",
+	dshVisionHiddenNote:
+		"DSH supports real image input (the selected model must be natively multimodal) — no vision bridge needed",
 	dshNoReviewModel:
 		"DSH has no separate reviewer model — the model self-certifies goal completion; max rounds = auto-iteration count",
 	noOptions: "(no options)",
@@ -1102,13 +1103,16 @@ export const en: EnDictionary = {
 	// §7 per-request records and pricing basis (missing history is stated, unknown price is not 0).
 	usageRecentTitle: "Recent requests",
 	usageColTime: "Time",
-	usageCostBasisNote: "Estimated cost = USD computed by the SDK from the model's price table at request time (not the provider's charge)",
+	usageCostBasisNote:
+		"Estimated cost = USD computed by the SDK from the model's price table at request time (not the provider's charge)",
 	usageCostBasisTip: "This request carried no pricing information; an unknown price is shown as empty, not 0",
 	usageUnknownPrice: "Unknown price",
 	usageUnreported: "usage not reported",
 	usageHistoryUnreported: "({n} unreported)",
-	usageHistoryUnattributed: "These session tokens have no channel attribution (recorded before channels existed, or from a run without a channel)",
-	usageHistoryTip: "Attribution is recorded per request; missing attribution is never inferred from today's configuration.",
+	usageHistoryUnattributed:
+		"These session tokens have no channel attribution (recorded before channels existed, or from a run without a channel)",
+	usageHistoryTip:
+		"Attribution is recorded per request; missing attribution is never inferred from today's configuration.",
 	// P4 first slice: usage history across channels / projects / time (read-only aggregation).
 	usageHistoryTitle: "Usage history (channel / project / time)",
 	usageHistoryLoading: "Reading usage history…",
@@ -1116,7 +1120,8 @@ export const en: EnDictionary = {
 	usageHistoryEmpty: "No records in this window",
 	usageHistoryTotals: "Total",
 	usageHistoryUnpriced: "({n} unpriced)",
-	usageHistoryWindowNote: "Windows are cut in UTC; costs are estimates (not the provider's charge) and unpriced requests add no cost",
+	usageHistoryWindowNote:
+		"Windows are cut in UTC; costs are estimates (not the provider's charge) and unpriced requests add no cost",
 	usageHistoryTruncated: "Too many records; the result is incomplete",
 	usageHistoryFailed: "({n} failed)",
 	usageFailedTip:
@@ -1134,7 +1139,8 @@ export const en: EnDictionary = {
 	// P4 candidate: system resources (read-only; unreadable fields show "—" with their source).
 	// Model routing rules (editable in the settings panel; factory defaults in server/model-routing.ts / docs/MODEL-ROUTING.md)
 	modelRoutingTitle: "Model routing rules",
-	modelRoutingHint: "Upstream routes come and go; this list can be corrected without touching code or shipping a release.",
+	modelRoutingHint:
+		"Upstream routes come and go; this list can be corrected without touching code or shipping a release.",
 	modelRoutingDesc:
 		"Routes listed here disappear from the model picker (existing sessions and channel bindings still resolve). One id per line: `provider/id` matches that provider only, a bare id matches every provider; write aliases as old=new. Model names/context/pricing/thinking levels live in “Manage models” (agent/models.json).",
 	modelRoutingRetiredLabel: "Retired routes (one id per line)",
@@ -1188,7 +1194,8 @@ export const en: EnDictionary = {
 	diagnosticsDownload: "Download JSON",
 	diagnosticsUnavailable: "Diagnostics unavailable",
 	diagnosticsSummary: "commit {commit} · protocol v{protocol} · engine {engine} · {units}",
-	diagnosticsPrivacy: "The bundle carries metadata only (versions, paths, unit states, resource and usage totals); no key values, session content, prompts or log bodies.",
+	diagnosticsPrivacy:
+		"The bundle carries metadata only (versions, paths, unit states, resource and usage totals); no key values, session content, prompts or log bodies.",
 	diagnosticsAlertsOn: "Resource alerts: on",
 	diagnosticsAlertsOff: "Resource alerts: off",
 	channelUnknownTip:
@@ -1252,7 +1259,8 @@ export const en: EnDictionary = {
 	channelAccountStale: "Stale",
 	channelAccountStaleTip: "The latest query failed; below is the last successful result (time = last success)",
 	channelAccountStaleTtl: "Needs refresh",
-	channelAccountStaleTtlTip: "Last successful query was over 5 minutes ago, so the number may be out of date (the channel itself reported no error)",
+	channelAccountStaleTtlTip:
+		"Last successful query was over 5 minutes ago, so the number may be out of date (the channel itself reported no error)",
 	channelAccountRefresh: "Refresh",
 	channelAccountGranted: "granted",
 	channelAccountToppedUp: "topped up",
@@ -1293,13 +1301,15 @@ export const en: EnDictionary = {
 	channelModelsNoProvider: "This provider has no selectable models yet (add them in the model config first).",
 	channelId: "Channel id",
 	channelIdPh: "auto-generated when empty",
-	channelIdLocked: "The channel id is the binding key and cannot change after creation (rename via the display name instead).",
+	channelIdLocked:
+		"The channel id is the binding key and cannot change after creation (rename via the display name instead).",
 	channelIdInvalid: "Channel id must be 2–48 lowercase letters, digits or hyphens",
 	// Channels: account query settings (standalone modal + one declarative JSON + preset fill)
 	channelSectionBasics: "Basics",
 	channelSectionBasicsHint: "The display name is what the channel list and the model picker show.",
 	channelAdvancedTitle: "Advanced",
-	channelAdvancedHint: "All optional: the channel id is generated, and the credential follows the provider's active key by default.",
+	channelAdvancedHint:
+		"All optional: the channel id is generated, and the credential follows the provider's active key by default.",
 	channelAdvancedAllDefault: "All defaults",
 	channelAccountSectionTitle: "Account query settings",
 	channelAccountConfigure: "Configure account query…",
@@ -1334,7 +1344,8 @@ export const en: EnDictionary = {
 	channelConnTitle: "Provider connection",
 	channelConnModeNew: "New provider",
 	channelConnModeExisting: "Existing provider",
-	channelConnHint: "Claude models use anthropic-messages (site root, no /v1); GPT/Codex models use openai-completions or openai-responses (usually with /v1).",
+	channelConnHint:
+		"Claude models use anthropic-messages (site root, no /v1); GPT/Codex models use openai-completions or openai-responses (usually with /v1).",
 	channelConnProviderId: "Provider ID (auto when blank)",
 	channelConnBaseUrl: "Endpoint URL",
 	channelConnApi: "Protocol",
@@ -1348,7 +1359,8 @@ export const en: EnDictionary = {
 	channelModelsAdd: "Add",
 	channelModelsAddPh: "Type a model ID (e.g. claude-opus-5)",
 	customManagedInChannels: "Managed in Settings → Channels",
-	customAddInChannels: "To add or edit a provider, use Settings → Channels → Add channel → Provider connection: it writes the endpoint, protocol, key and models together.",
+	customAddInChannels:
+		"To add or edit a provider, use Settings → Channels → Add channel → Provider connection: it writes the endpoint, protocol, key and models together.",
 	channelAccountModeGateway: "Built-in gateway probe (one-api / new-api, no JSON needed)",
 	channelAccountUsed: "Used",
 	channelBalanceDerived: "(matched from the current model)",
@@ -1360,7 +1372,8 @@ export const en: EnDictionary = {
 	channelTopUp: "Top up",
 	channelAccountAutoRefresh: "Refreshes every 2 minutes",
 	channelAccountRetry: "Retry",
-	channelAccountRetryHint: "After 3 failed attempts auto-refresh drops to once every 10 minutes; press Retry to resume the normal cadence.",
+	channelAccountRetryHint:
+		"After 3 failed attempts auto-refresh drops to once every 10 minutes; press Retry to resume the normal cadence.",
 	channelErrorQuota:
 		"This channel's gateway account is out of credit (gateway reports {remaining} left). Top up that account or switch to another channel.",
 	channelErrorQuotaNoRemaining:
@@ -1386,13 +1399,25 @@ export const en: EnDictionary = {
 	settingsJevCredentialBound: "Currently bound",
 	settingsJevCredentialNone: "Not bound (follows the provider's active key)",
 	settingsJevCredentialMissing:
-		"This provider has no key yet: create one under “Built-in providers & keys” (for example openrouter), then come back to select it.",
+		"This provider has no key yet: create one right below (or manage existing ones under “Built-in providers & keys”).",
+	settingsJevUseOpenRouter: "Use OpenRouter",
+	settingsJevNewKeyName: "Key name",
+	settingsJevNewKeyNamePh: "e.g. jev",
+	settingsJevNewKeyValue: "API key",
+	settingsJevNewKeyValuePh: "Paste the key value",
+	settingsJevNewKeyCreate: "Create key",
+	settingsJevNewKeyHint:
+		"The value goes to the server and into the existing key store only; it is never echoed back and never logged. It gets selected automatically.",
 	settingsJevChannelTitle: "Endpoint & model",
 	settingsJevEndpoint: "Endpoint",
 	settingsJevEndpointPh: "https://openrouter.ai/api/alpha/decisions (default)",
 	settingsJevModel: "Model",
 	settingsJevModelPh: "typesafe/jev-1.13 (default)",
 	settingsJevModelPick: "Pick from existing models",
+	settingsJevModelCatalogHint:
+		"Jev is a Decisions-API-only model and is not in the provider chat catalog (so the picker usually cannot list it); type typesafe/jev-<version> directly.",
+	settingsJevModelNotJevWarn:
+		"That model does not look like a Typesafe Jev model: the Decisions API only serves typesafe/jev-*, so a chat model will fail at call time.",
 	settingsJevModelPinHint:
 		"Pin the version in production: aliases (-latest) drift with the vendor, the probability scale changes with them, and your thresholds become wrong.",
 	settingsJevModelLatestWarn:

@@ -43,6 +43,9 @@ import {
 	draftOf,
 	formatLimit,
 	isDriftingModelAlias,
+	JEV_DEFAULT_PROVIDER_ID,
+	JEV_KNOWN_MODELS,
+	isJevModelId,
 	jevConfigSaveMessage,
 	jevProbeMessage,
 	jevStatusMessage,
@@ -90,6 +93,11 @@ export function JevSettings({
 	const view = draft ?? (config ? draftOf(config) : null);
 	const reqRef = useRef({ status: 0, save: 0, probe: 0 });
 	const [busy, setBusy] = useState<null | "status" | "save" | "probe">(null);
+	/** 就地新建密钥：名 + 值。**值只活到发出那一顺**，不回显、不入草稿、不进日志。 */
+	const [newKeyName, setNewKeyName] = useState("");
+	const [newKeyValue, setNewKeyValue] = useState("");
+	/** 等回包把新密钥名带回来的目标（到了就自动选上，见下面的 effect）。 */
+	const [pendingKeyName, setPendingKeyName] = useState<string | null>(null);
 
 	/** 拉一次运行状态（只读；回包按 reqId 匹配，见下面三个 effect）。 */
 	const refresh = useCallback(() => {
@@ -121,8 +129,8 @@ export function JevSettings({
 	}, [busy, jev.probe?.reqId]);
 
 	const providerId = view?.providerId ?? null;
-	// 可选服务商 = 已有密钥的 + 已注册的（与 SettingsModal 的 channelProviderIds 同口径）：
-	// 新实例一个密钥都没存时 providerKeys 里没有 openrouter，下拉会是空的。
+	/** 可选服务商 = 已有密钥的 + 已注册的（与 SettingsModal 的 channelProviderIds 同口径）：
+	 *  新实例一个密钥都没存时 providerKeys 里没有 openrouter，下拉会是空的。 */
 	const providerIds = useMemo(
 		() =>
 			[...new Set([...Object.keys(providerKeys), ...providers.map((p) => p.id), providerId ?? ""])]
@@ -130,16 +138,26 @@ export function JevSettings({
 				.sort(),
 		[providerKeys, providers, providerId],
 	);
+	/** Jev 的 Decisions API 只由 OpenRouter 提供：把它排到第一个。原本按字母排在第 30 位
+	 *  （46 项里绝大多数未配置），实测没人找得到它 —— 这就是「我不知道在哪配」。 */
+	const orderedProviderIds = useMemo(() => {
+		if (!providerIds.includes(JEV_DEFAULT_PROVIDER_ID)) return providerIds;
+		return [JEV_DEFAULT_PROVIDER_ID, ...providerIds.filter((id) => id !== JEV_DEFAULT_PROVIDER_ID)];
+	}, [providerIds]);
 	const knownKeys = providerId ? (providerKeys[providerId] ?? []) : [];
 	/** 选了服务商但一个密钥都没存：能选到，但得先去建密钥。 */
 	const keyMissing = !!providerId && knownKeys.length === 0;
 	/** 存着的密钥名已不在列表里（删除/改名）：照原样显示，否则会静默变成别的密钥（门禁用哪把钥匙不能猜）。 */
 	const keyStale = !!view?.keyName && !knownKeys.some((k) => k.name === view.keyName);
-	/** 该服务商在既有模型目录里的模型（渠道/模型选择器的同一数据源）。 */
-	const modelOptions = useMemo(
-		() => (providerId ? models.filter((m) => m.provider === providerId) : models),
-		[models, providerId],
-	);
+	/** @GOTCHA Jev 的模型**不在**服务商的对话模型目录里（Decisions API 专用，实测 models.json
+	 *  里 "jev" 零匹配）。所以下拉列的是「产品已知的 Jev 模型 + 目录里真像 Jev 的条目」，
+	 *  而不是那一大堆能用 chat/completions 但叫不动 Decisions API 的模型。 */
+	const modelOptions = useMemo(() => {
+		const fromCatalog = models.filter((m) => isJevModelId(m.id)).map((m) => m.id);
+		return [...new Set([...JEV_KNOWN_MODELS, ...fromCatalog])];
+	}, [models]);
+	/** 当前填的模型看起来不是 Jev：几乎必定调不通（见上面 @GOTCHA）。 */
+	const notJevModel = !!view && view.model.trim() !== "" && !isJevModelId(view.model);
 	const approveAt = view ? parseThreshold(view.approveAt) : null;
 	const blockAt = view ? parseThreshold(view.blockAt) : null;
 	const check = checkThresholds(approveAt, blockAt);
@@ -162,6 +180,40 @@ export function JevSettings({
 	const patch = (p: Partial<JevDraft>) => {
 		if (!view) return;
 		setDraft({ ...view, ...p });
+	};
+	/** 换服务商 = 旧密钥名无意义，必须清空（不做静默沿用）；有当前密钥就默认选上。 */
+	const selectProvider = (next: string) => {
+		const active = (providerKeys[next] ?? []).find((k) => k.active);
+		patch({ providerId: next, keyName: active?.name ?? null });
+	};
+
+	/** 新密钥名一旦出现在清单里就自动选上（不让「建好了还要自己再选一次」卡住人）。 */
+	useEffect(() => {
+		if (!pendingKeyName) return;
+		if (!knownKeys.some((k) => k.name === pendingKeyName)) return;
+		// 直接改草稿（等价于 patch，但不把非稳定的函数放进依赖）。draft===null 时以服务端值起底。
+		setDraft((d) => {
+			const base = d ?? (config ? draftOf(config) : null);
+			return base ? { ...base, keyName: pendingKeyName } : base;
+		});
+		setPendingKeyName(null);
+		setNewKeyName("");
+	}, [pendingKeyName, knownKeys, config]);
+
+	/**
+	 * 就地建密钥：复用既有 add_provider_key（还是同一份 provider-keys.json，不新增事实源）。
+	 * @GOTCHA 密钥值只活到发出这一顺：发完立即清空输入框，不入草稿、不回显。
+	 */
+	const createKey = () => {
+		const provider = view?.providerId.trim();
+		const value = newKeyValue.trim();
+		if (!provider || !value) return;
+		const name = newKeyName.trim();
+		send({ type: "add_provider_key", provider, apiKey: value, name: name || undefined });
+		setNewKeyValue("");
+		setPendingKeyName(name || null);
+		// 服务端建完不补推清单（与既有面板同做法），自己再拉一次。
+		send({ type: "list_provider_keys" });
 	};
 
 	const save = () => {
@@ -225,19 +277,11 @@ export function JevSettings({
 						<div className="form-grid">
 							<label className="field">
 								<span className="field-label">{t("settingsJevCredentialProvider")}</span>
-								<select
-									value={view.providerId}
-									// 换服务商 = 旧密钥名无意义，必须清空（不做静默沿用）；有当前密钥就默认选上。
-									onChange={(e) => {
-										const next = e.target.value;
-										const active = (providerKeys[next] ?? []).find((k) => k.active);
-										patch({ providerId: next, keyName: active?.name ?? null });
-									}}
-								>
+								<select value={view.providerId} onChange={(e) => selectProvider(e.target.value)}>
 									<option value="" disabled>
 										{t("settingsJevCredentialProvider")}
 									</option>
-									{providerIds.map((id) => (
+									{orderedProviderIds.map((id) => (
 										<option key={id} value={id}>
 											{id}
 										</option>
@@ -278,12 +322,58 @@ export function JevSettings({
 								<FiKey /> {t("channelProviderKeysEntry")}
 							</button>
 						</div>
-						{/* 选了服务商但没密钥（或根本选不出服务商）时，给出可执行的一步，而不是空下拉。 */}
-						{(keyMissing || providerIds.length === 0) && (
-							<p className="set-hint">{t("settingsJevCredentialMissing")}</p>
+						{/* 没密钥就地建：Jev 只能走 OpenRouter，再让人从「管理模型」那个面板绕一圈没必要
+						    （实测没人找得到 —— 那个面板的标题叫「管理模型」）。 */}
+						{keyMissing && (
+							<div className="jev-newkey">
+								<p className="set-hint">{t("settingsJevCredentialMissing")}</p>
+								<div className="form-grid">
+									<label className="field">
+										<span className="field-label">{t("settingsJevNewKeyName")}</span>
+										<input
+											value={newKeyName}
+											placeholder={t("settingsJevNewKeyNamePh")}
+											onChange={(e) => setNewKeyName(e.target.value)}
+										/>
+									</label>
+									<label className="field">
+										<span className="field-label">{t("settingsJevNewKeyValue")}</span>
+										<input
+											type="password"
+											value={newKeyValue}
+											placeholder={t("settingsJevNewKeyValuePh")}
+											autoComplete="off"
+											onChange={(e) => setNewKeyValue(e.target.value)}
+										/>
+									</label>
+								</div>
+								<div className="chan-account-row">
+									<button
+										type="button"
+										className="chan-btn primary"
+										disabled={!newKeyValue.trim() || newKeyName.trim() === ""}
+										onClick={createKey}
+									>
+										<FiSave /> {t("settingsJevNewKeyCreate")}
+									</button>
+									<span className="set-hint">{t("settingsJevNewKeyHint")}</span>
+								</div>
+							</div>
 						)}
+						{/* 一个服务商都选不出来时，同样给出可执行的一步，而不是空下拉。 */}
+						{providerIds.length === 0 && <p className="set-hint">{t("settingsJevCredentialMissing")}</p>}
 						{keyStale && <p className="set-hint">{t("settingsJevCredentialStale")}</p>}
-						{view.providerId === "" && <p className="set-hint">{t("settingsJevCredentialUnset")}</p>}
+						{/* 未绑定：给一个一键选上 OpenRouter 的动作，不让「先选服务商」成为一道坑。 */}
+						{view.providerId === "" && (
+							<div className="chan-account-row">
+								<span className="set-hint">{t("settingsJevCredentialUnset")}</span>
+								{providerIds.includes(JEV_DEFAULT_PROVIDER_ID) && (
+									<button type="button" className="chan-btn" onClick={() => selectProvider(JEV_DEFAULT_PROVIDER_ID)}>
+										<FiKey /> {t("settingsJevUseOpenRouter")}
+									</button>
+								)}
+							</div>
+						)}
 					</div>
 
 					{/* ---- 调用渠道 ---- */}
@@ -310,14 +400,20 @@ export function JevSettings({
 								<option value="" disabled>
 									{t("settingsJevModelPick")}
 								</option>
-								{modelOptions.map((m) => (
-									<option key={`${m.provider}/${m.id}`} value={m.id}>
-										{m.name}
+								{modelOptions.map((id) => (
+									<option key={id} value={id}>
+										{id}
 									</option>
 								))}
 							</select>
 						</div>
 						<p className="set-hint">{t("settingsJevModelPinHint")}</p>
+						<p className="set-hint">{t("settingsJevModelCatalogHint")}</p>
+						{notJevModel && (
+							<div className="chan-warn">
+								<FiAlertTriangle /> {t("settingsJevModelNotJevWarn")}
+							</div>
+						)}
 						{drifting && (
 							<div className="chan-warn">
 								<FiAlertTriangle /> {t("settingsJevModelLatestWarn")}

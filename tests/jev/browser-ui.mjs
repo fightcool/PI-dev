@@ -11,6 +11,9 @@
  * 📖 docs/DEV-CON-PROPOSAL.md
  * @CONTRACT 真实 Chromium + 合成数据 + 模拟 WS：不接触真实服务、真实模型、真实凭据。
  *   credentialRef 只有 {providerId, keyName} 名字引用，页面上不得出现任何密钥正文样式串（sk-or-v1-…）。
+ *   密钥正文的入口按「该服务商有没有密钥」分两种（本次修复后的契约）：已有密钥 → 面板里没有 password
+ *   框（只按名引用）；一把都没有 → 面板就地给 .jev-newkey 表单（名 + 值 + 新建），值上行一次后立即清空。
+ *   模型下拉只列 Jev 模型（JEV_KNOWN_MODELS ∪ 目录里像 Jev 的 id）：合成目录里的对话模型一个都不许出现。
  * @GOTCHA isolatedContext 的替身 socket 直接调用 fixtures.socketReply，而 socketReply 没有 jev_* 分支
  *   （jev 夹具只在本用例合成）。所以本用例在 isolatedContext **之后**注册自己的 routeWebSocket：
  *   同一份隔离底座（HTTP 白名单路由、pageerror 采集、断开外网），只是把每一帧都交给本文件的
@@ -36,6 +39,11 @@ const check = (name, ok, extra = "") => {
 const SCREENSHOT = "/tmp/jev-settings-panel.png";
 /** 「key 正文到底在哪填」的复核图：内置服务商与密钥面板，openrouter 行的两个输入框。 */
 const KEY_ENTRY_SCREENSHOT = "/tmp/jev-key-entry.png";
+/** 合成服务端处理 add_provider_key 的延迟：面板发完后到「新密钥出现」之间要留出一段窗口，
+ *  用来验证值框是**发完就清空**、而不是被回包触发的重新渲染顺手卸载（见 §4b 的断言）。 */
+const ADD_PROVIDER_KEY_DELAY_MS = 300;
+/** 「没有密钥时就地建」的复核图：Jev 面板里的 .jev-newkey 内联表单（本次修复新增的入口）。 */
+const INLINE_KEY_SCREENSHOT = "/tmp/jev-inline-newkey.png";
 
 /** 归一化空白：innerText 会把相邻 span 拆行，断言按词而不是按行。 */
 const norm = (value) =>
@@ -43,6 +51,16 @@ const norm = (value) =>
 		.replace(/\s+/g, " ")
 		.trim();
 const has = (haystack, needle) => norm(haystack).includes(norm(needle));
+
+/** 轮询一个条件（等一次 WS 往返 + React 提交）；超时返回 false，交给断言去判失败。 */
+const waitFor = async (predicate, timeoutMs = 5000) => {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (await predicate()) return true;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+	return false;
+};
 
 /** 轮询输入框的实际值（等一次 WS 往返 + React 提交）；超时返回当下值，交给断言去判失败。 */
 const waitForInputValue = async (locator, expected, timeoutMs = 5000) => {
@@ -141,8 +159,25 @@ const JEV_DECISION = {
 	},
 };
 
-/** 已注册服务商（ProviderStatus）：面板用它 + 密钥名清单拼出「API KEY」下拉。 */
-const PROVIDERS = [{ id: "openrouter", name: "OpenRouter", configured: true, source: "stored" }];
+/** 已注册服务商（ProviderStatus）：面板用它 + 密钥名清单拼出「API KEY」下拉。
+ *  anthropic 故意**一把密钥都没有**（providerKeys 里没有它）：用来钉「面板就地建密钥」那条路（见 §4b）。 */
+const PROVIDERS = [
+	{ id: "openrouter", name: "OpenRouter", configured: true, source: "stored" },
+	{ id: "anthropic", name: "Anthropic", configured: false, source: "builtin" },
+];
+
+/** 合成模型目录（list_models 回包）：故意混入对话模型 —— 它们**不能**出现在 Jev 的模型下拉里。
+ *  本次修复的核心：那个下拉原本列的是 366 个 openrouter 对话模型，一个都不是 Jev。
+ *  typesafe/jev-1.14-preview 用来证明「目录里像 Jev 的 id」会被并进来（见 isJevModelId）。 */
+const CATALOG_MODELS = [
+	{ id: "m1", name: "Mock One", provider: "openrouter", vision: false },
+	{ id: "anthropic/claude-3.5", name: "Claude 3.5 Sonnet", provider: "openrouter", vision: false },
+	{ id: "openai/gpt-4o", name: "GPT-4o", provider: "openrouter", vision: false },
+	{ id: "typesafe/jev-1.13", name: "Jev 1.13", provider: "openrouter", vision: false },
+	{ id: "typesafe/jev-1.14-preview", name: "Jev 1.14 preview", provider: "openrouter", vision: false },
+];
+/** 目录里那些**不该**出现在 Jev 模型下拉里的 id（对话模型 / 当前对话模型）。 */
+const NON_JEV_CATALOG_IDS = ["m1", "anthropic/claude-3.5", "openai/gpt-4o"];
 
 /** 一个配了账户查询的渠道：Jev 的余额行复用渠道的账户适配器（同一个数字口径）。 */
 const CHANNEL = {
@@ -163,8 +198,8 @@ const CHANNEL = {
 const state = {
 	...snapshot(3),
 	settingsState: settingsFixture(),
-	model: { id: "m1", name: "Mock One", provider: "openrouter", vision: false },
-	models: [{ id: "m1", name: "Mock One", provider: "openrouter", vision: false }],
+	model: CATALOG_MODELS[0],
+	models: CATALOG_MODELS,
 	providerKeys: { openrouter: [{ name: "prod", active: true }] },
 	channelState: {
 		type: "channel_state",
@@ -190,7 +225,11 @@ const state = {
 let storedConfig = { ...JEV_CONFIG, thresholds: { ...JEV_CONFIG.thresholds } };
 
 /**
- * 出站帧 → 回包：既有的 socketReply 负责全部旧夹具，这里补齐三条 jev_* 回包 + 服务商清单。
+ * 出站帧 → 回包：既有的 socketReply 负责全部旧夹具，这里补齐三条 jev_* 回包 + 服务商清单 + add_provider_key。
+ * @GOTCHA add_provider_key 要改**有状态**的 providerKeys（与上面的 storedConfig 同一套写法），而且**整个处理**
+ *   要延后 ADD_PROVIDER_KEY_DELAY_MS（见调用处）：真实服务端里写库是 await 的、provider_keys 在写完之后才推，
+ *   面板紧接着发的 list_provider_keys 拿到的还是**旧**清单。面板「发完立刻清空值框」只有在这个窗口里才
+ *   测得出来 —— 回包一到 keyMissing 就为假，整个内联表单会连同输入框一起卸载。
  * @CONTRACT 服务端是读-合并-写（jev-settings.ts）：保存只覆盖界面提交的字段，
  *   未提交的只读限制（timeoutMs/cacheTtlMs/minIntervalMs）保持原值。
  */
@@ -222,6 +261,20 @@ function jevReply(message, current) {
 		// 「内置服务商与密钥」面板打开时会问服务商与密钥名（真实服务端同样在这两条消息上回包）。
 		case "list_providers":
 			return [...replies, { type: "providers_status", providers: PROVIDERS }];
+		// 就地建密钥（Jev 面板的 .jev-newkey）走的就是这条既有消息：服务端写库 → 第一把即 active
+		// （model-admin.addProviderKey）→ 回 provider_keys + providers_status。时序见调用处。
+		case "add_provider_key": {
+			const provider = message.provider;
+			const existing = state.providerKeys[provider] ?? [];
+			state.providerKeys = {
+				...state.providerKeys,
+				[provider]: [...existing, { name: message.name, active: existing.length === 0 }],
+			};
+			return [
+				{ type: "provider_keys", keys: state.providerKeys },
+				{ type: "providers_status", providers: PROVIDERS },
+			];
+		}
 		default:
 			return replies;
 	}
@@ -253,7 +306,13 @@ try {
 			try {
 				const message = JSON.parse(String(raw));
 				sent.push(message);
-				for (const reply of jevReply(message, state)) socket.send(JSON.stringify(reply));
+				// @GOTCHA add_provider_key 的**处理**（写库 + 回包）要延后：真实服务端写库是 await 的，
+				// 面板紧接着发的 list_provider_keys 会先拿到旧清单。这段窗口才测得出「发完立刻清空值框」。
+				const handle = () => {
+					for (const reply of jevReply(message, state)) socket.send(JSON.stringify(reply));
+				};
+				if (message.type === "add_provider_key") setTimeout(handle, ADD_PROVIDER_KEY_DELAY_MS);
+				else handle();
 			} catch {
 				/* 坏帧只丢弃：不向页面注入任何东西。 */
 			}
@@ -300,6 +359,44 @@ try {
 		"the model input shows the configured (pinned) model",
 		(await modelInput.inputValue()) === JEV_CONFIG.model,
 		await modelInput.inputValue(),
+	);
+	// 本次修复的核心：模型下拉 = JEV_KNOWN_MODELS ∪ 目录里像 Jev 的 id，**不是**服务商的对话模型目录。
+	// 合成目录里故意塞了 m1 / anthropic/claude-3.5 / openai/gpt-4o（旧实现会把它们全列出来）以及
+	// typesafe/jev-1.14-preview（旧实现永远列不出来：真实 models.json 里 "jev" 零匹配）。
+	const modelPicker = panel.locator(".chan-model-add select");
+	const pickerTexts = (await modelPicker.locator("option").allInnerTexts()).map((text) => text.trim());
+	const placeholderText = pickerTexts[0];
+	const modelChoices = pickerTexts.slice(1);
+	check(
+		"the model picker lists Jev models only (catalog chat models are filtered out)",
+		placeholderText === "Pick from existing models" &&
+			modelChoices.includes("typesafe/jev-1.13") &&
+			modelChoices.includes("typesafe/jev-1.14-preview") &&
+			modelChoices.every((id) => /(^|\/)jev[-.]?\d/i.test(id)) &&
+			NON_JEV_CATALOG_IDS.every((id) => !modelChoices.includes(id)),
+		`options=${JSON.stringify(modelChoices)} · catalog ids in state.models=${JSON.stringify(CATALOG_MODELS.map((m) => m.id))} · excluded=${JSON.stringify(NON_JEV_CATALOG_IDS)}`,
+	);
+	const modelHintTexts = await panel
+		.locator(".chan-conn", { hasText: "Endpoint & model" })
+		.locator("p.set-hint")
+		.allInnerTexts();
+	check(
+		"the picker explains why the catalog usually cannot list Jev (Decisions-API-only model)",
+		modelHintTexts.some((text) =>
+			has(text, "Jev is a Decisions-API-only model and is not in the provider chat catalog"),
+		),
+		modelHintTexts.map((text) => norm(text).slice(0, 80)).join(" | "),
+	);
+	// 手填非 Jev 模型：必须给警告（Decisions API 只服务 typesafe/jev-*），换回 Jev 后警告要消失。
+	await modelInput.fill("anthropic/claude-3.5");
+	const notJevWarn = panel.locator(".chan-warn", { hasText: "does not look like a Typesafe Jev model" });
+	const warnShown = await waitFor(async () => (await notJevWarn.count()) === 1, 3000);
+	await modelInput.fill(JEV_CONFIG.model);
+	const warnGone = await waitFor(async () => (await notJevWarn.count()) === 0, 3000);
+	check(
+		"typing a chat model warns that only typesafe/jev-* is served (and the warning clears again)",
+		warnShown && warnGone,
+		`after typing anthropic/claude-3.5: warning shown=${warnShown} · after restoring ${JEV_CONFIG.model}: warning cleared=${warnGone}`,
 	);
 
 	// ---- 3) 阈值 + 「抖动/空白带/转人工」的解释文案 --------------------------
@@ -356,14 +453,28 @@ try {
 		orRowText.includes("openrouter") && valueType === "password" && nameType === "text",
 		`row=${JSON.stringify(orRowText.slice(0, 60))} · key-value input type=${JSON.stringify(valueType)} · key-name input type=${JSON.stringify(nameType)}`,
 	);
+	// 新契约（本次修复）：面板本身不接收密钥正文 —— **除非**该服务商一把密钥都没有（那就地给表单，见 §4b）。
+	// 此时 provider=openrouter 且存有 prod：下拉只按名引用，密码框一个都不应该有。
+	const boundProvider = await credBlock.locator(".field", { hasText: "Provider" }).locator("select").inputValue();
+	const boundKeyOptions = await credBlock
+		.locator(".field", { hasText: "Key name" })
+		.locator("select option")
+		.allInnerTexts();
+	const boundHasStoredKey = boundKeyOptions.some((option) => option.trim().startsWith("prod"));
+	const panelPasswordInputs = await panel.locator('input[type="password"]').count();
 	check(
-		"the Jev panel itself accepts no key material (names only, value entered elsewhere)",
-		(await panel.locator('input[type="password"]').count()) === 0,
-		`password inputs in the Jev panel: ${await panel.locator('input[type="password"]').count()}`,
+		"a provider that already has a key shows no password box in the Jev panel (names only)",
+		boundProvider === "openrouter" && boundHasStoredKey && panelPasswordInputs === 0,
+		`provider=${boundProvider} · key "prod" listed=${boundHasStoredKey} · password inputs in the Jev panel: ${panelPasswordInputs}`,
+	);
+	check(
+		"the Jev panel does not offer its own provider-key entry when the provider has a key",
+		(await panel.locator(".jev-newkey").count()) === 0,
+		`inline new-key forms in the Jev panel: ${await panel.locator(".jev-newkey").count()}`,
 	);
 	// 复核图：面板打开、openrouter 行的输入框可见（密码框必须是**空**的，不留任何真实凭据）。
 	await modelsModal.screenshot({ path: KEY_ENTRY_SCREENSHOT });
-	console.log(`screenshot: ${KEY_ENTRY_SCREENSHOT}`);
+	console.log(`screenshot: ${KEY_ENTRY_SCREENSHOT} (provider-key entry in the built-in panel)`);
 	await modelsModal.locator(".modal-close").click();
 	await modelsModal.waitFor({ state: "hidden", timeout: options.stepTimeout });
 	const keyReady = await page
@@ -415,6 +526,93 @@ try {
 		"a missing key is reported instead of silently substituting another one",
 		!has(await credBlock.innerText(), "no longer exists for the provider"),
 		norm(await credBlock.innerText()).slice(0, 200),
+	);
+
+	// ---- 4b) 该服务商一把密钥都没有：就地建（值只在发出那一顺经过界面，随后清空） ----
+	// 这是本次修复的另一半：不再把人推去「内置服务商与密钥」那一步（实测没人找得到）。
+	// 下面钉四件事：表单出现 → 出站帧带名字和值 → 值框在回包到达前就清空 → 新密钥自动选上且不入 DOM。
+	const NOKEY_PROVIDER = "anthropic";
+	const NEW_KEY_NAME = "jev";
+	// 合成值（不是真凭据）：用来验证「上行一次、不残留」这条口径。
+	const NEW_KEY_VALUE = "sk-or-v1-SYNTHETIC-NOT-A-REAL-KEY";
+	await providerSelect.selectOption(NOKEY_PROVIDER);
+	const newKeyForm = panel.locator(".jev-newkey");
+	await newKeyForm.waitFor({ state: "visible", timeout: options.stepTimeout });
+	const newKeyPassword = newKeyForm.locator('input[type="password"]');
+	const newKeyNameInput = newKeyForm.locator('input:not([type="password"])');
+	const newKeyFormText = norm(await newKeyForm.innerText());
+	check(
+		"switching to a provider with no stored key reveals the inline key form (name + password + create)",
+		(await newKeyPassword.count()) === 1 &&
+			(await newKeyNameInput.count()) === 1 &&
+			has(newKeyFormText, "This provider has no key yet: create one right below"),
+		`provider=${await providerSelect.inputValue()} · password inputs in the form: ${await newKeyPassword.count()} · text=${newKeyFormText.slice(0, 180)}`,
+	);
+	check(
+		"the inline form states the value goes to the server only and is never echoed back",
+		has(newKeyFormText, "never echoed back and never logged"),
+		newKeyFormText.slice(-160),
+	);
+	// 复核图：内联建密钥表单（人工核对「不用绕去别的面板」这件事）。
+	await newKeyForm.scrollIntoViewIfNeeded();
+	await page.screenshot({ path: INLINE_KEY_SCREENSHOT });
+	console.log(`screenshot: ${INLINE_KEY_SCREENSHOT} (inline key form, provider with no key)`);
+	const createKeyButton = newKeyForm.locator("button", { hasText: "Create key" });
+	const disabledWhenEmpty = !(await createKeyButton.isEnabled());
+	sent.length = 0;
+	await newKeyNameInput.fill(NEW_KEY_NAME);
+	const disabledWithNameOnly = !(await createKeyButton.isEnabled());
+	await newKeyPassword.fill(NEW_KEY_VALUE);
+	check(
+		"the create button refuses an empty name/value and enables once both are typed",
+		disabledWhenEmpty && disabledWithNameOnly && (await createKeyButton.isEnabled()),
+		`empty=${disabledWhenEmpty} · name-only=${disabledWithNameOnly} · both=${await createKeyButton.isEnabled()}`,
+	);
+	await createKeyButton.click();
+	// 夹具把 add_provider_key 的处理（写库 + 回包）延后了 ADD_PROVIDER_KEY_DELAY_MS：这期间值框必须已经
+	// 空了——这就是「发完立刻清空」，而不是「回包到了把整张表单连同输入框一起卸载」。
+	await page.waitForTimeout(150);
+	const valueAfterSend = await newKeyPassword.inputValue();
+	const addFrame = sent.find((m) => m.type === "add_provider_key");
+	check(
+		"the inline form really sends add_provider_key for the chosen provider with the typed name",
+		addFrame?.provider === NOKEY_PROVIDER && addFrame?.name === NEW_KEY_NAME && addFrame?.apiKey === NEW_KEY_VALUE,
+		`sent=${JSON.stringify({
+			type: addFrame?.type,
+			provider: addFrame?.provider,
+			name: addFrame?.name,
+			apiKey: addFrame ? `<${String(addFrame.apiKey).length} chars, redacted>` : undefined,
+		})}`,
+	);
+	check(
+		"the value box is cleared as soon as the key is sent (the UI stops holding the value)",
+		valueAfterSend === "",
+		`value box 150ms after the send: ${JSON.stringify(valueAfterSend)}`,
+	);
+	const keyAutoPicked = await waitFor(
+		async () => (await keySelect.count()) === 1 && (await keySelect.inputValue()) === NEW_KEY_NAME,
+		5000,
+	);
+	const inlineFormAfterCreate = await panel.locator(".jev-newkey").count();
+	const panelPasswordsAfterCreate = await panel.locator('input[type="password"]').count();
+	check(
+		"once the server has the key the inline form is gone and the new key is auto-selected",
+		keyAutoPicked && inlineFormAfterCreate === 0 && panelPasswordsAfterCreate === 0,
+		`key name field=${JSON.stringify(await keySelect.inputValue())} · inline form present=${inlineFormAfterCreate} · password inputs=${panelPasswordsAfterCreate}`,
+	);
+	const domAfterCreate = await page.content();
+	check(
+		"the key value never lands in the page DOM (no sk-… string after creating it)",
+		!domAfterCreate.includes(NEW_KEY_VALUE),
+		domAfterCreate.includes(NEW_KEY_VALUE) ? "the sent value is still in the DOM" : "no match for the sent value",
+	);
+	// 回到有密钥的 openrouter：不同服务商的密钥引用不能混，§9 的保存断言用的就是 openrouter / prod。
+	await providerSelect.selectOption("openrouter");
+	const backToProd = await waitFor(async () => (await keySelect.inputValue()) === "prod", 3000);
+	check(
+		"switching back to openrouter restores its own stored key reference (prod)",
+		backToProd,
+		`provider=${await providerSelect.inputValue()} · key name=${JSON.stringify(await keySelect.inputValue())}`,
 	);
 
 	// ---- 5) 余额行复用渠道账户查询（同一个数字口径） -------------------------
@@ -664,7 +862,7 @@ try {
 	});
 	await page.setViewportSize({ width: 1400, height: 3200 });
 	await page.screenshot({ path: SCREENSHOT, fullPage: true });
-	console.log(`screenshot: ${SCREENSHOT}`);
+	console.log(`screenshot: ${SCREENSHOT} (full Jev section, for manual review)`);
 } catch (err) {
 	check("browser run completed without exceptions", false, err?.message ?? String(err));
 } finally {
