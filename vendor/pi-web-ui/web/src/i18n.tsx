@@ -1174,6 +1174,8 @@ export const zh = {
 	usageScopeRun: "本轮",
 	usageScopeSession: "会话",
 	usageCacheRead: "缓存读",
+	usageCacheMiss: "缓存未命中",
+	usageAvgCacheHitRate: "平均缓存命中率",
 	usageCacheWrite: "缓存写",
 	usageCost: "估算费用",
 	usageCostNote: "费用为按当时计价规则的估算，未知价格不计费",
