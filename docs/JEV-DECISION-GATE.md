@@ -198,6 +198,10 @@ npm run typecheck
 # CLI 冒烟（无密钥时应得到 review + 鉴权错误，而不是 approve）
 npm run jev -- status
 npm run jev -- probe
+
+# 真实浏览器验收（设置面板：配置项、余额、运行状态、命题清单、自检、
+# 保存出站帧；含「空闲不重复查询」等回归断言）。先 npm run build。
+npm run test:jev:browser
 ```
 
 ---

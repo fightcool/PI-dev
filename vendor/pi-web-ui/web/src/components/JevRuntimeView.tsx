@@ -29,7 +29,7 @@ import {
 	startBalanceRefresh,
 } from "../channel-account";
 import type { UiAccountStatus, UiChannelInfo, UiJevDecision, UiJevProposition, UiJevRuntimeStatus } from "../types";
-import type { JevConfigResultMsg, JevProbeResultMsg, JevStatusMsg } from "../use-chat";
+import type { ChannelApi, JevConfigResultMsg, JevProbeResultMsg, JevStatusMsg } from "../use-chat";
 import {
 	brief,
 	cacheClearHint,
@@ -149,13 +149,13 @@ export function JevBalance({
 	channels,
 	accounts,
 	providerId,
-	onQuery,
+	channelApi,
 }: {
 	channels: UiChannelInfo[];
 	accounts: UiAccountStatus[];
 	providerId: string;
-	/** 发一次 channel_query_account（只读）。 */
-	onQuery: (channelId: string) => void;
+	/** 渠道只读 API：查询动作直接由本组件发出，避免调用方每次渲染都新建回调。 */
+	channelApi: ChannelApi;
 }) {
 	const t = useT();
 	const view = useMemo(
@@ -172,16 +172,19 @@ export function JevBalance({
 	const statusRef = useRef(status?.status);
 	statusRef.current = status?.status;
 	const channelId = channel?.id ?? null;
+	// @GOTCHA 依赖必须是**稳定**引用：若依赖调用方传入的内联回调（每次渲染都新建），
+	//   effect 会在每次渲染重跑 → 立即发 channel_query_account → 回包触发重渲染 → 请求风暴
+	//   （实测空闲 3 秒发出 559 帧）。与 ModelThinking.tsx 同形：依赖 channelApi 这类稳定对象。
 	useEffect(() => {
 		if (!channelId) return;
 		return startBalanceRefresh({
 			channelId,
-			query: () => onQuery(channelId),
+			query: () => channelApi.queryChannelAccount(channelId),
 			statusOf: () => statusRef.current,
 			queryFailedOf: () => failedRef.current,
 			lastCheckedAt: () => checkedRef.current,
 		});
-	}, [channelId, onQuery]);
+	}, [channelId, channelApi]);
 	const state = accountStateView(status);
 	return (
 		<div className="chan-account-row">
@@ -197,7 +200,7 @@ export function JevBalance({
 							{t("channelAccountCheckedAt")} {new Date(status.checkedAt).toLocaleString()}
 						</span>
 					)}
-					<button type="button" className="chan-btn" onClick={() => onQuery(channel.id)}>
+					<button type="button" className="chan-btn" onClick={() => channelApi.queryChannelAccount(channel.id)}>
 						{t("channelAccountRefresh")}
 					</button>
 				</>

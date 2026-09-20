@@ -108,8 +108,13 @@ export function JevSettings({
 	useEffect(() => {
 		if (busy !== "save" || jev.config?.reqId !== reqRef.current.save) return;
 		setBusy(null);
-		// 生效后丢掉本地草稿：表单回到服务端权威值（可能被归一化过）。
-		if (jev.config.ok && jev.config.phase === "applied") setDraft(null);
+		// 生效后以**保存回执里的 config** 作为新基线：服务端是读-合并-写，且可能做过归一化，
+		// 回执里的 config 才是权威值。注意不能简单地 setDraft(null) —— 那会退回到**上一次
+		// jev_status** 的旧配置（服务端保存后并不会补推 jev_status），实测表现为「回执说已生效，
+		// 但输入框回到保存前的值」。
+		if (jev.config.ok && jev.config.phase === "applied") {
+			setDraft(jev.config.config ? draftOf(jev.config.config) : null);
+		}
 	}, [busy, jev.config]);
 	useEffect(() => {
 		if (busy === "probe" && jev.probe?.reqId === reqRef.current.probe) setBusy(null);
@@ -175,7 +180,17 @@ export function JevSettings({
 	return (
 		<div className="chan-settings">
 			<div className="chan-settings-head">
-				<button type="button" className="chan-btn" onClick={refresh} disabled={busy === "status"}>
+				<button
+					type="button"
+					className="chan-btn"
+					onClick={() => {
+						// 「重新载入」按文件头 @GOTCHA 的约定回到服务端值：必须一并丢弃本地草稿，
+						// 否则光 refresh 只更新了 status，表单仍停在草稿上（与文案不符）。
+						setDraft(null);
+						refresh();
+					}}
+					disabled={busy === "status"}
+				>
 					<FiRefreshCw /> {busy === "status" ? t("loading") : t("settingsJevReload")}
 				</button>
 				<button
@@ -365,12 +380,7 @@ export function JevSettings({
 					</div>
 
 					{/* ---- 余额：复用渠道账户查询适配器（不另写余额接口） ---- */}
-					<JevBalance
-						channels={channels}
-						accounts={accounts}
-						providerId={view.providerId}
-						onQuery={(channelId) => channelApi.queryChannelAccount(channelId)}
-					/>
+					<JevBalance channels={channels} accounts={accounts} providerId={view.providerId} channelApi={channelApi} />
 
 					{/* ---- 运行状态 + 命题清单 ---- */}
 					<div className="set-section-title">{t("settingsJevRuntimeTitle")}</div>
