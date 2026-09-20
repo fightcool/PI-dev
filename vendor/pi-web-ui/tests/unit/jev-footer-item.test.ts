@@ -7,7 +7,10 @@
  * @CONTRACT 浮层只展示**服务端给的事实**：
  *   ① 判定理由 = 客户端手里最近一次真实决策回包的 reason（reasonEn 给非中文界面），没有就不渲染；
  *   ② 逐判定项生效阈值 = 直接读 config.thresholds 回显（缺的一侧回落全局），不在客户端重新推导数值；
- *      没有独立阈值时整节不渲染（否则与上面那行全局阈值完全重复）。
+ *      没有独立阈值时整节不渲染（否则与上面那行全局阈值完全重复）；
+ *   ③ 样本复盘（本切片）= runtime.reviewStatus 回显 + 两条 CLI 命令。徽标**只在 due** 时出现
+ *      （未到期却天天挂条数会被读成噪声），而待复盘条数本身在浮层里始终看得见。
+ *      @GOTCHA 字段是 reviewStatus，不是 review（后者是「转人工的**调用条数**」）。
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { createElement, type ReactNode } from "react";
@@ -16,7 +19,13 @@ import { act } from "react-dom/test-utils";
 import { JevFooterItem } from "../../web/src/components/JevFooterItem.js";
 import { LanguageProvider } from "../../web/src/i18n.js";
 import type { JevStatusMsg } from "../../web/src/use-chat.js";
-import type { UiJevDecision, UiJevGateConfig, UiJevProposition, UiJevRuntimeStatus } from "../../web/src/types.js";
+import type {
+	UiJevDecision,
+	UiJevGateConfig,
+	UiJevProposition,
+	UiJevReviewStatus,
+	UiJevRuntimeStatus,
+} from "../../web/src/types.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 localStorage.setItem("pi-web-ui:lang", "zh");
@@ -41,7 +50,25 @@ const RUNTIME: UiJevRuntimeStatus = {
 	diskHits: 0,
 	avgElapsedMs: 300,
 	lastError: null,
+	// 默认夹具：没有待复盘的样本（−0 与「不在期」是两件事，所以这两个值都写出来）。
+	reviewStatus: review({ pending: 0, due: false, needsHumanLabel: 0, oldestPendingAt: null }),
 };
+
+/** UiJevReviewStatus 夹具：只有用例关心的字段给值，其余取「未到期 / 无待复盘」的中性值。 */
+function review(patch: Partial<UiJevReviewStatus>): UiJevReviewStatus {
+	return {
+		pending: 0,
+		due: false,
+		reason: null,
+		oldestPendingAt: null,
+		newestPendingAt: null,
+		needsHumanLabel: 0,
+		// 阈值即服务端的 JEV_REVIEW_MIN_ENTRIES / JEV_REVIEW_MAX_AGE_MS（40 条 / 7 天）。
+		thresholds: { minEntries: 40, maxAgeMs: 7 * 24 * 60 * 60_000 },
+		lastAckAt: null,
+		...patch,
+	};
+}
 
 const PROPOSITIONS: UiJevProposition[] = [
 	{
@@ -61,14 +88,15 @@ const CONFIG: UiJevGateConfig = {
 	timeoutMs: 8000,
 	cacheTtlMs: 300000,
 	minIntervalMs: 1000,
+	recordSamples: true,
 };
 
 /** 服务端**主动推送**的 jev_status（reqId 0）：带配置、运行聚合与命题表，**不带**决策理由。 */
-const pushed = (config: UiJevGateConfig = CONFIG): JevStatusMsg => ({
+const pushed = (config: UiJevGateConfig = CONFIG, runtime: UiJevRuntimeStatus = RUNTIME): JevStatusMsg => ({
 	type: "jev_status",
 	reqId: 0,
 	ok: true,
-	status: { config, runtime: RUNTIME, propositions: PROPOSITIONS },
+	status: { config, runtime, propositions: PROPOSITIONS },
 });
 
 const DECISION: UiJevDecision = {
@@ -162,5 +190,109 @@ describe("底栏 Jev 浮层：判定理由与逐判定项生效阈值", () => {
 		});
 		const auth = factRows(panel).find((r) => r.id === "touches_auth");
 		expect(auth?.metas).toEqual(["0.9 / 0.1", "继承全局"]);
+	});
+});
+
+/** 待复盘夹具：12 条待复盘、其中 3 条转人工（没有真值，只能人判）。 */
+const DUE_REVIEW = review({
+	pending: 12,
+	due: true,
+	reason: "entries",
+	oldestPendingAt: 1758000000000,
+	newestPendingAt: 1758100000000,
+	needsHumanLabel: 3,
+});
+
+const withReview = (patch: Partial<UiJevReviewStatus>): UiJevRuntimeStatus => ({
+	...RUNTIME,
+	reviewStatus: review(patch),
+});
+
+/** 底栏那项里的徽标（没到期时不存在）。 */
+const badge = (container: HTMLElement) => container.querySelector("button.status-jev .jev-review-due");
+/** 浮层里的复盘事实行（整节没渲染时不存在）。 */
+const reviewFacts = (panel: HTMLElement) => panel.querySelector(".jev-review-facts");
+
+describe("底栏 Jev 浮层：样本复盘", () => {
+	it("到期时底栏项挂出「待复盘 N 条」徽标（条数取回包里的 pending）", () => {
+		const { container, text } = mount({ status: pushed(CONFIG, withReview(DUE_REVIEW)), decision: null });
+		const el = badge(container);
+		expect(el, "到期时徽标存在").toBeTruthy();
+		expect(el?.textContent).toContain("待复盘 12 条");
+		expect(el?.className).toContain("jev-review-due");
+		// 触发条件默认读服务端的 40 条 / 7 天（不在客户端写死）。
+		expect(text).toContain("每 40 条或每 7 天");
+	});
+
+	it("未到期但有待复盘样本：不挂徽标（不天天打扰），浮层里仍有一行状态", () => {
+		const { container, panel, text } = mount({
+			status: pushed(CONFIG, withReview({ ...DUE_REVIEW, due: false, reason: null })),
+			decision: null,
+		});
+		expect(badge(container), "未到期时不挂徽标").toBeNull();
+		expect(reviewFacts(panel), "浮层里仍有复盘一节").toBeTruthy();
+		expect(text).toContain("待复盘 12 条");
+	});
+
+	it("转人工条数单独写出来：那些样本没有真值，只能人判", () => {
+		const { text } = mount({ status: pushed(CONFIG, withReview(DUE_REVIEW)), decision: null });
+		expect(text).toContain("其中 3 条转人工，没有真值只能人判");
+	});
+
+	it("没有转人工样本时不写那一行（0 条不是需要人判的事实，别占地方）", () => {
+		const { text } = mount({
+			status: pushed(CONFIG, withReview({ ...DUE_REVIEW, needsHumanLabel: 0 })),
+			decision: null,
+		});
+		expect(text).toContain("待复盘 12 条");
+		expect(text).not.toContain("转人工，没有真值");
+	});
+
+	it("最老一条的时间与触发条件都写出来（阈值读服务端回包，不在客户端写死）", () => {
+		// 服务端回包里改过阈值（20 条 / 3 天）→ 文案要跟着变，不能被写死的 40/7 盖掉。
+		const { text, panel } = mount({
+			status: pushed(
+				CONFIG,
+				withReview({ ...DUE_REVIEW, thresholds: { minEntries: 20, maxAgeMs: 3 * 24 * 60 * 60_000 } }),
+			),
+			decision: null,
+		});
+		expect(text).toContain("最老一条");
+		expect(text).toContain("每 20 条或每 3 天");
+		expect(text).not.toContain("每 40 条或每 7 天");
+		expect(reviewFacts(panel)).toBeTruthy();
+	});
+
+	it("两条命令原文可复制：导出语料 + 导出后 ack（各带一个复制按钮）", () => {
+		const { panel, text } = mount({ status: pushed(CONFIG, withReview(DUE_REVIEW)), decision: null });
+		expect(text).toContain("npm run jev -- review export --since 7d > corpus.week.jsonl");
+		expect(text).toContain("npm run jev -- review ack");
+		// 命令给全还不够：每条都要能直接复制走（复用既有 CopyButton，不自己写剪贴板）。
+		const commands = [...panel.querySelectorAll(".jev-review-cmd")];
+		expect(commands.length).toBe(2);
+		expect(commands.every((row) => row.querySelector("button.copy-btn") !== null)).toBe(true);
+	});
+
+	it("没有待复盘样本时整节不渲染（列一堆 0 只是噪声）", () => {
+		const { container, panel, text } = mount({ status: pushed(CONFIG, withReview({ pending: 0 })), decision: null });
+		expect(badge(container)).toBeNull();
+		expect(reviewFacts(panel)).toBeNull();
+		expect(text).not.toContain("待复盘");
+	});
+
+	it("旧服务端没有 reviewStatus 字段：不崩、不挂徽标、整节不渲染", () => {
+		// 旧的推送 payload：整个字段缺失（不是空对象，也不是 0）。
+		// @GOTCHA mount 本身就断言了「底栏项能点开、浮层渲染出来」：这里能往下走到断言
+		//   就说明缺字段没有把组件搞崩（不另写一次 expect(...).not.toThrow() 的重复挂载）。
+		const { reviewStatus: _omitted, ...legacy } = RUNTIME;
+		const { container, panel, text } = mount({
+			status: pushed(CONFIG, legacy as UiJevRuntimeStatus),
+			decision: null,
+		});
+		expect(badge(container)).toBeNull();
+		expect(reviewFacts(panel)).toBeNull();
+		expect(text).not.toContain("待复盘");
+		// 其余一节照旧渲染（缺字段只影响它自己那一节，不是整块白屏）。
+		expect(text).toContain("最近结论");
 	});
 });

@@ -5,6 +5,8 @@
  *   components/JevFooterItem.tsx + jev-footer.ts（底栏 Jev 门禁项：最简结论 + 点开浮层；
  *   浮层运行状态与设置面板同一 JevRuntimeCards，并展示最近一次真实决策的理由与逐判定项**生效**阈值）,
  *   components/JevRuntimeView.tsx（运行状态卡 + 命题清单 + 余额行 + 三条回执）,
+ *   components/JevReviewSection.tsx（样本复盘：待复盘条数 / 转人工条数 / 最老一条 / 触发条件
+ *   + 导出语料与 ack 两条命令；底栏浮层与设置面板同一份）,
  *   jev-decision.ts（jev_status / jev_probe / jev_config_save 的出站构造与文案口径）,
  *   components/SettingsModal.tsx（data-tab="jev" 的分区注册 + chat.jev 传入）
  * @COUPLED vendor/pi-web-ui/server/protocol.ts（UiJevGateConfig / UiJevRuntimeStatus / UiJevProposition /
@@ -97,6 +99,20 @@ const JEV_CONFIG = {
 	timeoutMs: 8000,
 	cacheTtlMs: 900000,
 	minIntervalMs: 250,
+	// 真实样本留痕（全量留痕）默认开。
+	recordSamples: true,
+};
+
+/** UiJevReviewStatus：样本复盘状态（阈值 40 条 / 7 天 = 服务端 jev-review.ts 的常量）。 */
+const REVIEW_STATUS = {
+	pending: 12,
+	due: true,
+	reason: "entries",
+	oldestPendingAt: 1758000000000,
+	newestPendingAt: 1758100000000,
+	needsHumanLabel: 3,
+	thresholds: { minEntries: 40, maxAgeMs: 7 * 24 * 60 * 60_000 },
+	lastAckAt: null,
 };
 
 /** UiJevRuntimeStatus：非零、各字段互不相同的数字 —— 任何一处串行/复用都会被看出来。 */
@@ -113,6 +129,8 @@ const JEV_RUNTIME = {
 	diskHits: 5,
 	avgElapsedMs: 412,
 	lastError: null,
+	// @GOTCHA 字段名是 reviewStatus：runtime.review 是「转人工的**调用条数**」（上面那个 8）。
+	reviewStatus: { ...REVIEW_STATUS },
 };
 
 /** 防提示注入声明（server/dev-con/jev-model.ts 的 JEV_STATE_NOT_EVIDENCE 原文）。 */
@@ -269,6 +287,8 @@ function mergeFixtureThresholds(base, patch) {
  * @GOTCHA 推送必须走同一条 routeWebSocket/jevReply 路径（见文件头 @GOTCHA），不能另起飞具。
  */
 let pushedRuntime = { ...JEV_RUNTIME };
+/** 推送里的复盘状态（与 pushedRuntime 分开一份）：用例可以把它推成「未到期」再推回来。 */
+let pushedReview = { ...REVIEW_STATUS };
 
 /**
  * 出站帧 → 回包：既有的 socketReply 负责全部旧夹具，这里补齐三条 jev_* 回包 + 服务商清单 + add_provider_key。
@@ -303,7 +323,11 @@ function jevReply(message, current) {
 					type: "jev_status",
 					reqId: 0,
 					ok: true,
-					status: { config: storedConfig, runtime: pushedRuntime, propositions: JEV_PROPOSITIONS },
+					status: {
+						config: storedConfig,
+						runtime: { ...pushedRuntime, reviewStatus: { ...pushedReview } },
+						propositions: JEV_PROPOSITIONS,
+					},
 				},
 			];
 		case "jev_config_save":
@@ -410,7 +434,9 @@ try {
 	);
 	await jevTab.click();
 	const panel = page.locator(".chan-settings").first();
-	const enable = panel.locator(".chan-enable input");
+	// @GOTCHA 面板里有两个 .chan-enable（总开关 + 留痕开关）：底栏/表单断言的那一个是**总开关**，
+	//   所以按「不是留痕开关」排除，而不是靠 .first()（行序一变断言就会对着另一个开关说话）。
+	const enable = panel.locator(".chan-enable:not(.jev-samples-toggle) input");
 	await enable.waitFor({ state: "visible", timeout: options.stepTimeout });
 	check("clicking the Jev section renders the gate form", await enable.isVisible());
 	const statusFrames = sent.filter((m) => m.type === "jev_status");
@@ -1000,7 +1026,82 @@ try {
 	);
 	// 回到 Jev 分区，给文末的复核截图用。
 	await page.locator('.settings-rail .settings-tab[data-tab="jev"]').click();
-	await page.locator(".chan-settings .chan-enable input").waitFor({ state: "visible", timeout: options.stepTimeout });
+	await page.locator(".chan-settings .chan-enable:not(.jev-samples-toggle) input").waitFor({ state: "visible", timeout: options.stepTimeout });
+
+	// ---- 10b) 真实样本留痕 + 样本复盘：代价/边界写在界面上，徽标只在到期时出现 ----------
+	// 背景：Jev 先跑一周真实使用，再拿真实样本校准（全量留痕是拍板过的事）。界面必须说清楚存什么、
+	// 存哪、什么不存 —— 这三件事在 hint 里各有一个可断言的事实词（4000 / «redacted» / 0600）。
+	const sampleToggle = panel.locator(".jev-samples-toggle input");
+	const panelText = norm(await panel.innerText());
+	check(
+		"the sample trail can be turned off explicitly and the panel states what is stored where",
+		(await sampleToggle.count()) === 1 &&
+			(await sampleToggle.isChecked()) &&
+			has(panelText, "4000") &&
+			has(panelText, "«redacted»") &&
+			has(panelText, "0600") &&
+			has(panelText, "jev-samples.jsonl") &&
+			has(panelText, "samples clear"),
+		`toggles=${await sampleToggle.count()} · checked=${await sampleToggle.isChecked()} · 4000=${has(panelText, "4000")} · redacted=${has(panelText, "«redacted»")} · 0600=${has(panelText, "0600")}`,
+	);
+	// 徽标只在 due 时出现：两种状态各推一次真实 jev_status 来看它的两面。
+	// 「测试连接」就是一次真实决策，夹具在它之后照原样推一次（同一条 routeWebSocket 路径）。
+	const reviewBadge = page.locator("footer.statusbar button.status-jev .jev-review-due");
+	const probeNow = async () => {
+		const before = pushed.length;
+		await panel.locator(".chan-settings-head button", { hasText: "Test connection" }).click();
+		await waitFor(async () => pushed.length > before, 5000);
+		// 等 React 把这次推送提交到界面（底栏与设置面板都是同一个 status 的消费者）。
+		await page.waitForTimeout(200);
+	};
+	pushedReview = { ...pushedReview, due: false, reason: null };
+	await probeNow();
+	const badgeGone = await waitFor(async () => (await reviewBadge.count()) === 0, 3000);
+	const notDueText = norm(await panel.innerText());
+	check(
+		"a not-due review keeps the footer badge hidden (no daily nagging) but the pending line stays visible",
+		badgeGone && has(notDueText, "Review due: 12") && !has(notDueText, "Due now"),
+		`badge elements=${await reviewBadge.count()} · pending line=${has(notDueText, "Review due: 12")} · says due now=${has(notDueText, "Due now")}`,
+	);
+	pushedReview = { ...pushedReview, due: true, reason: "entries" };
+	await probeNow();
+	const badgeShown = await waitFor(async () => (await reviewBadge.count()) === 1, 3000);
+	const badgeText = badgeShown ? norm(await reviewBadge.innerText()) : "";
+	check(
+		"a due review puts the pending count in the footer badge",
+		badgeShown && has(badgeText, "Review due: 12"),
+		badgeText || `badge elements=${await reviewBadge.count()}`,
+	);
+	// 浮层里的复盘一节：条数 / 转人工条数 / 最老一条 / 触发条件 / 两条命令（各带一个复制按钮）。
+	await page.locator(".settings-modal .modal-close").click();
+	await page.locator(".settings-modal").waitFor({ state: "hidden", timeout: options.stepTimeout });
+	await jevItem.click();
+	await jevPanel.waitFor({ state: "visible", timeout: options.stepTimeout });
+	const reviewText = norm(await jevPanel.innerText());
+	const reviewCommands = (await jevPanel.locator(".jev-review-cmd code").allInnerTexts()).map((text) => norm(text));
+	check(
+		"the footer panel states the review facts the server sent (pending / escalated / oldest / trigger)",
+		has(reviewText, "Review due: 12") &&
+			has(reviewText, "3 of them escalated") &&
+			has(reviewText, "Oldest") &&
+			has(reviewText, "Triggers every 40 samples or 7 days"),
+		reviewText.slice(-420),
+	);
+	check(
+		"the panel hands over both CLI commands (export corpus + ack) as copyable text",
+		(await jevPanel.locator(".jev-review-cmd").count()) === 2 &&
+			reviewCommands.some((cmd) => cmd.includes("npm run jev -- review export --since 7d > corpus.week.jsonl")) &&
+			reviewCommands.some((cmd) => cmd.includes("npm run jev -- review ack")) &&
+			(await jevPanel.locator(".jev-review-cmd button.copy-btn").count()) === 2,
+		`commands=${JSON.stringify(reviewCommands)} · copy buttons=${await jevPanel.locator(".jev-review-cmd button.copy-btn").count()}`,
+	);
+	// 恢复现场：关掉浮层，重新打开设置面板的 Jev 分区（§11 与文末截图都要它开着）。
+	await page.locator(".status-cwd-backdrop").click({ position: { x: 10, y: 10 } });
+	await waitFor(async () => (await jevPanel.count()) === 0, 3000);
+	await settingsChip.click();
+	await page.locator(".settings-modal").waitFor({ state: "visible", timeout: options.stepTimeout });
+	await page.locator('.settings-rail .settings-tab[data-tab="jev"]').click();
+	await page.locator(".chan-settings .chan-enable:not(.jev-samples-toggle) input").waitFor({ state: "visible", timeout: options.stepTimeout });
 
 	// ---- 11) 逐判定项阈值：面板可改可清，出站帧只带改过的项，底栏浮层显示**生效**阈值 ----
 	// 真实服务端（a7121c4 起）支持 thresholds.perProposition（逐项合并 + null 删除）；这一节走完整往返。
@@ -1122,7 +1223,7 @@ try {
 	await settingsChip.click();
 	await page.locator(".settings-modal").waitFor({ state: "visible", timeout: options.stepTimeout });
 	await page.locator('.settings-rail .settings-tab[data-tab="jev"]').click();
-	await page.locator(".chan-settings .chan-enable input").waitFor({ state: "visible", timeout: options.stepTimeout });
+	await page.locator(".chan-settings .chan-enable:not(.jev-samples-toggle) input").waitFor({ state: "visible", timeout: options.stepTimeout });
 
 	// ---- 截图（人工复核）---------------------------------------------------
 	// 设置弹窗的内容区自带滚动条（height: min(74vh, 720px)），整段 Jev 分区一屏放不下：

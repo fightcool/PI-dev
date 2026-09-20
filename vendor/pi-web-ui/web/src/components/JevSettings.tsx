@@ -7,6 +7,8 @@
  * Breadcrumbs (changing this affects):
  *   @COUPLED components/SettingsModal.tsx（挂载为「Jev 决策门禁」分区 + 传 chat.jev）,
  *            components/JevRuntimeView.tsx（运行状态 / 命题 / 余额 / 自检回包展示）,
+ *            components/JevReviewSection.tsx（样本留痕的复盘状态 + 导出/ack 命令，与底栏浮层同一份；
+ *             字段是 runtime.reviewStatus —— `runtime.review` 是转人工的**调用条数**，不是它）,
  *            jev-decision.ts（视图模型 + 解码 + 出站消息）,
  *            use-chat.ts（jev_* 回包 → ChatState.jev）,
  *            server/dev-con/jev-*.ts（服务端权威：jev_status / jev_config_save / jev_probe）
@@ -16,8 +18,9 @@
  *             固定为本地草稿 —— 否则每次 status 回包都会把正在输入的内容盖掉。改完保存或点
  *             「重新载入」才回到服务端值。
  *   @GOTCHA 保存提交的是**整份配置**（含服务端限制字段原样回传）：少带字段等于把它清空。
- *           唯一例外是 thresholds.perProposition：它走**逐项补丁**（只提交用户改过的项，
- *           整项留空 = 发 null 删除），整块回写会盖掉别的客户端刚设的独立阈值。
+ *           两个例外都走**补丁**语义：thresholds.perProposition（只提交改过的项，
+ *           整项留空 = 发 null 删除）与 recordSamples（只在与已生效值不同时才带上）。
+ *           整块回写会盖掉别的客户端刚设的独立阈值，或把留痕开关改回旧值。
  *   @GOTCHA 逐判定项区块**不能**用 .set-list/.set-row 类名：命题清单区块的浏览器断言按
  *           `.set-list .set-row` 计数，复用类名会让两边互相污染（见 tests/jev/browser-ui.mjs §7）。
  *           同理不能用 “approve threshold” 这种与全局阈值 label 重合的字串做行内 label。
@@ -38,10 +41,12 @@ import type {
 	ProviderStatus,
 	UiAccountStatus,
 	UiChannelInfo,
+	UiJevGateConfig,
 	UiJevThresholds,
 	UiJevThresholdsInput,
 } from "../types";
 import { JevBalance, JevPropositionList, JevReceipts, JevRuntimeCards } from "./JevRuntimeView";
+import { JevReviewSection } from "./JevReviewSection";
 import {
 	brief,
 	checkEndpoint,
@@ -105,6 +110,16 @@ export function JevSettings({
 	const { locale } = useI18n();
 	const status = jev.status;
 	const config = status?.status?.config ?? null;
+	/**
+	 * 表单/保存载荷的**已生效基线**：保存回执优先于 jev_status。
+	 * @GOTCHA 服务端保存后**不**补推 jev_status，回执里的 config 才是刚生效的权威值（且可能被归一化过）；
+	 *   只读 status.config 的话，输入框会退回保存前的值，「这个字段到底改没改过」也算错。
+	 */
+	const appliedConfig: UiJevGateConfig | null =
+		jev.config?.ok && jev.config.phase === "applied" && jev.config.config ? jev.config.config : config;
+	/** 样本复盘状态（旧服务端没有这个字段 → null，整块不渲染）。
+	 *  @GOTCHA 不是 `runtime.review` —— 那个是「结论为转人工的**调用条数**」（运行卡片在读它）。 */
+	const review = status?.status?.runtime?.reviewStatus ?? null;
 	// 草稿：null = 未编辑（跟着服务端生效值走），见文件头 @GOTCHA。
 	const [draft, setDraft] = useState<JevDraft | null>(null);
 	/** 逐判定项草稿：**只有用户改过的项**才进这个 map（未出现的项不提交，见 jev-decision.ts）。 */
@@ -184,15 +199,9 @@ export function JevSettings({
 	const check = checkThresholds(approveAt, blockAt);
 	const propositions = status?.status?.propositions ?? [];
 	/**
-	 * 逐判定项的**回显底稿**：保存回执优先于 jev_status。
-	 * @GOTCHA 保存后服务端**不**补推 jev_status，回执才是刚生效的权威值（且可能被归一化过）；
-	 *   只读 status.config 的话，保存完输入框会退回保存前的值，连「清除」按钮的可用性也错了
-	 *   （明明有独立阈值却显示成没有）——与文件头那条 @GOTCHA 同一个坑，这里同样要避开。
+	 * 逐判定项的**回显底稿**：保存回执优先于 jev_status（见上面 appliedConfig）。
 	 */
-	const appliedThresholds: UiJevThresholds | undefined =
-		jev.config?.ok && jev.config.phase === "applied" && jev.config.config
-			? jev.config.config.thresholds
-			: config?.thresholds;
+	const appliedThresholds: UiJevThresholds | undefined = appliedConfig?.thresholds;
 	/**
 	 * 逐判定项的就地校验：留空按**全局值补齐**后必须 0 ≤ 拦截 < 放行。
 	 * @WHY 全局阈值本身就不合法时这里不报（上面那条理由已经在说同一件事，不重复刷屏）。
@@ -294,7 +303,7 @@ export function JevSettings({
 		if (propPatch) thresholds.perProposition = propPatch;
 		reqRef.current.save += 1;
 		setBusy("save");
-		send(jevConfigSaveMessage(reqRef.current.save, configInputOf(view, thresholds)));
+		send(jevConfigSaveMessage(reqRef.current.save, configInputOf(view, thresholds, appliedConfig)));
 	};
 	const probe = () => {
 		reqRef.current.probe += 1;
@@ -344,6 +353,26 @@ export function JevSettings({
 						{t("settingsJevEnable")}
 					</label>
 					<p className="set-hint">{t("settingsJevEnableHint")}</p>
+
+					{/* ---- 真实样本留痕：唯一会落盘被审内容的东西，所以代价与边界写全（不写「恕不详解」） ---- */}
+					<label className="chan-enable jev-samples-toggle">
+						<input
+							type="checkbox"
+							checked={view.recordSamples}
+							onChange={(e) => patch({ recordSamples: e.target.checked })}
+						/>
+						{t("settingsJevRecordSamples")}
+					</label>
+					<p className="set-hint">{t("settingsJevRecordSamplesHint")}</p>
+					<p className="set-hint">{t("settingsJevSamplesPrivacy")}</p>
+					{/* 复盘状态：不自己算到期，一律读服务端回包（与底栏浮层同一份数字）。 */}
+					{review && (
+						<>
+							<div className="set-section-title">{t("settingsJevSamplesReview")}</div>
+							{review.due && <p className="set-hint">{t("settingsJevSamplesDue")}</p>}
+							<JevReviewSection review={review} />
+						</>
+					)}
 
 					{/* ---- 凭据：只按名称引用（密钥正文永不出服务端） ---- */}
 					<div className="chan-conn">

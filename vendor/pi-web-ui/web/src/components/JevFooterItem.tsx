@@ -7,6 +7,7 @@
  * Breadcrumbs (changing this affects):
  *   @COUPLED components/FooterBar.tsx（唯一挂载点：缓存命中项之后、消息数之前）,
  *            components/JevRuntimeView.tsx（**复用** JevRuntimeCards：面板与设置页同一份数字）,
+ *            components/JevReviewSection.tsx（**复用**样本复盘一节的只读事实 + 两条 CLI 命令）,
  *            components/UsageDetail.tsx（浮层外壳与关闭行为对齐：.usage-panel + .status-cwd-backdrop）,
  *            jev-footer.ts（最近结论的推断：计数差 → 三态；本组件不自己猜）,
  *            jev-decision.ts（outcomeLabelKey / pickError / formatScore 的复用来源）,
@@ -24,6 +25,11 @@
  *             只在真有独立阈值时渲染（否则与上面那行全局阈值重复，白占地方）。
  *   @WHY 最近结论由服务端推送的计数差推断（见 jev-footer.ts）：推送只带聚合数，没有「上一次结论」
  *        字段；能唯一归因才显示，否则显示「—」。
+ *   @WHY 样本复盘的徽标**只在到期时**出现（runtime.reviewStatus.due）：未到期却天天挂个条数，会被读成
+ *        「还有事没做」而变成噪声；那一行状态在浮层里始终看得见。
+ *   @GOTCHA runtime.reviewStatus 是**新字段**：旧服务端的 payload 没有它（整个字段缺失），
+ *        所以这里一律可选读（`runtime?.reviewStatus`），既不能在缺字段时崩，也不能拿 0 顶替成「不在期」。
+ *        （字段名不是 review —— 那个已经是「转人工的调用条数」。）
  * ──────────────────────────────────────────────────
  */
 import { useState } from "react";
@@ -32,6 +38,7 @@ import type { JevStatusMsg } from "../use-chat";
 import type { UiJevDecision, UiJevGateConfig, UiJevProposition } from "../types";
 import { effectiveThresholds, formatScore, outcomeLabelKey, pickError, pickReason } from "../jev-decision";
 import { useLastJevOutcome, verdictTone } from "../jev-footer";
+import { JevReviewSection } from "./JevReviewSection";
 import { JevRuntimeCards } from "./JevRuntimeView";
 
 /**
@@ -62,6 +69,11 @@ export function JevFooterItem({
 	const empty = !runtime || runtime.total === 0;
 	const tone = verdictTone(outcome);
 	const error = status && !status.ok ? pickError(status, locale) : "";
+	// 样本复盘（旧服务端没有这个字段 → null，整块不渲染，也不崩）。
+	// @GOTCHA 字段名是 `reviewStatus`：`runtime.review` 已经是「结论为转人工的**调用条数**」（上面运行卡片在读它）。
+	const review = runtime?.reviewStatus ?? null;
+	const reviewDue = review?.due === true;
+	const reviewPending = review?.pending ?? 0;
 	// title 的三态计数取不到就写「—」：0 与「没读到」是两件事（同 JevRuntimeView 口径）。
 	const count = (v: number | undefined) => (typeof v === "number" ? String(v) : "—");
 	const tip = t("footerJevTip", {
@@ -84,6 +96,10 @@ export function JevFooterItem({
 					<>
 						{t("footerJev")} <b className={`jev-verdict ${tone}`}>{outcome ? t(outcomeLabelKey(outcome)) : "—"}</b>
 					</>
+				)}
+				{/* 到期才挂徽标（见文件头 @WHY）：它是「有事要你做」，与旁边的三态结论（刚刚判了什么）不同。 */}
+				{reviewDue && (
+					<b className="jev-review-due">{t("footerJevReviewPending", { pending: reviewPending })}</b>
 				)}
 			</button>
 			{/* 分隔符与其它状态项一致；放在组件内让 FooterBar 只多一行挂载点。 */}
@@ -112,6 +128,14 @@ export function JevFooterItem({
 						{error && <div className="chan-warn">{error}</div>}
 						{/* 运行状态卡：与设置面板「Jev 决策门禁」共用同一组件 → 同一份数字。 */}
 						<JevRuntimeCards runtime={runtime} locale={locale} />
+						{/* 样本复盘：待复盘 N 条 / 转人工 M 条 / 最老一条 / 触发条件 + 两条 CLI 命令。
+						    没待复盘的样本（pending 为 0）时整节不渲染：没有事实可看，列一堆 0 只是噪声。 */}
+						{review && reviewPending > 0 && (
+							<>
+								<div className="usage-attr-title">{t("footerJevReviewTitle")}</div>
+								<JevReviewSection review={review} />
+							</>
+						)}
 						<div className="usage-attr-title">{t("footerJevLastDecision")}</div>
 						{runtime ? (
 							<div className="jev-verdicts">

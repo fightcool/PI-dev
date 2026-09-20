@@ -27,6 +27,7 @@ import { ChannelService } from "./dev-con/channel-service.js";
 import { AccountRegistry } from "./dev-con/channel-accounts.js";
 import { JevGate, type JevDecision } from "./dev-con/jev-gate.js";
 import { jevCachePath } from "./dev-con/jev-cache.js";
+import { jevSamplesPath } from "./dev-con/jev-samples.js";
 import {
 	JEV_PROBE_PROPOSITION_ID,
 	JEV_PROPOSITIONS,
@@ -1765,7 +1766,12 @@ export class ClientSession {
 		this.channels = new ChannelService(this.makeChannelHost(agentDir), this.accounts);
 		// Jev 门禁：配置在装配时读一次（损坏则回落默认值 + parseError，不阻塞启动）；
 		// cachePath = 磁盘持久决策缓存（派生、可丢：删了只损失一次调用费用，见 jev-cache.ts）。
-		this.jev = new JevGate({ config: loadJevSettings(agentDir).config, cachePath: jevCachePath(agentDir) });
+		// samplesPath = 真实调用后的样本（被审内容截断落盘，供一周后复盘校准，见 jev-samples.ts）。
+		this.jev = new JevGate({
+			config: loadJevSettings(agentDir).config,
+			cachePath: jevCachePath(agentDir),
+			samplesPath: jevSamplesPath(agentDir),
+		});
 		this.usageHistory = new UsageHistoryStore(join(agentDir, "dev-con", "usage-history.jsonl"));
 		// 模板里的 {baseUrl} 取自运行时模型目录（服务商 baseUrl 由 models.json 拥有）。
 		setProviderBaseUrlLookup((providerId) => {
@@ -6568,7 +6574,7 @@ export class ClientSession {
 	 * 主动推一份门禁状态（reqId: 0 = 无请求来源，见 protocol.ts 的 jev_status @CONTRACT）。
 	 * @WHY 状态栏/面板要能在**决策刚发生**时就看见（否则得手动刷新 = 黑盒）；
 	 *   推而不是轮询：空闲反复查是既有回归禁忌（见 tests/jev/browser-ui.mjs 的「空闲不重复查询」）。
-	 * @CONTRACT 只推聚合与计数（调用数/三态/失败/费用/缓存），不含 state、不含密钥。
+	 * @CONTRACT 只推聚合与计数（调用数/三态/失败/费用/缓存 + 样本复盘状态），不含 state、不含密钥。
 	 */
 	private notifyJevStatus(): void {
 		void this.pushJevStatus(0);
@@ -6611,6 +6617,8 @@ export class ClientSession {
 			questions: buildJevQuestions(ids),
 			apiKey: this.resolveJevApiKey() ?? "",
 			useCache: input.useCache !== false,
+			// 复盘时要能区分「agent 主动问的」与「设置面板自检 / 脚本跑的」（见 JevSampleSource）。
+			source: "tool",
 		});
 		this.notifyJevStatus();
 		return { ids, decision };
@@ -6645,6 +6653,7 @@ export class ClientSession {
 				apiKey,
 				// 自检必须真的打一次接口（见上方 @CONTRACT）。
 				useCache: false,
+				source: "probe",
 			});
 		} catch (err) {
 			// evaluate 本就永不抛；这里是兵底（例如 keyName 解析器抛错），同样不能冒泡到 dispatch。

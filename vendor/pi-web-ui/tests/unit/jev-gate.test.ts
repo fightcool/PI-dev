@@ -13,6 +13,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { JevGate } from "../../server/dev-con/jev-gate.js";
 import { JEV_CACHE_VERSION, appendJevCacheEntry, clearJevCache, jevCachePath } from "../../server/dev-con/jev-cache.js";
 import {
+	jevReviewAckPath,
+	jevSamplesPath,
+	loadJevSamples,
+	saveJevReviewAck,
+} from "../../server/dev-con/jev-samples.js";
+import {
 	JEV_PROBE_PROPOSITION_ID,
 	buildJevQuestions,
 	cacheKey,
@@ -638,5 +644,186 @@ describe("JevGate — 磁盘持久缓存（cachePath）", () => {
 		expect(g.snapshotStatus()).toMatchObject({ total: 3, cacheHits: 2, diskHits: 1, approve: 3 });
 		// diskHits 必须能从事件缓冲单独取出来（设置面板/CLI 的「磁盘命中」就是它）。
 		expect(g.recentEvents().filter((e) => e.cache === "disk")).toHaveLength(1);
+	});
+});
+
+/**
+ * 真实样本（samplesPath）：一周后拿真实样本校准阈值/判据的**唯一**内容来源。
+ * 全部用 mkdtempSync 隔离的临时文件，零真实网络。
+ * @CONTRACT 只记**真实调用**（cache=miss）：缓存命中/磁盘回放、单飞的后续参与者、
+ *   以及还没出网就被拒的（未启用/未配凭据/限频）都不记；采样绝不改变判定。
+ */
+describe("JevGate — 真实样本（samplesPath）", () => {
+	let dir = "";
+	let samplesPath = "";
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "jev-gate-samples-"));
+		samplesPath = jevSamplesPath(dir);
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	const sampleGate = (
+		impl: typeof fetch,
+		overrides: Partial<JevGateConfig> = {},
+		extra: { now?: () => number; samplesPath?: string | null; cachePath?: string | null; cacheTtlMs?: number } = {},
+	): JevGate =>
+		new JevGate({
+			fetchImpl: impl,
+			config: config(overrides),
+			now: extra.now,
+			cacheTtlMs: extra.cacheTtlMs ?? overrides.cacheTtlMs ?? 300_000,
+			cachePath: extra.cachePath ?? null,
+			samplesPath: extra.samplesPath === undefined ? samplesPath : extra.samplesPath,
+		});
+
+	it("真实调用（miss）落一条样本：原始 state 文本 + cacheKey 摘要 + 来源/命题/分数", async () => {
+		// 两个键**故意逆序**：canonicalizeState 会按键名排序，样本要的是调用方传进来的原文。
+		const state = { zeta: 1, alpha: 2 };
+		const { impl } = stubFetch(() => jsonResponse(noul(0.95)));
+		const decision = await sampleGate(impl).evaluate({
+			state,
+			questions: QUESTIONS,
+			apiKey: SYNTHETIC_KEY,
+			source: "tool",
+		});
+		expect(decision.outcome).toBe("approve");
+
+		const { entries, skipped } = loadJevSamples(samplesPath);
+		expect(skipped).toBe(0);
+		expect(entries).toHaveLength(1);
+		const entry = entries[0]!;
+		expect(entry.outcome).toBe("approve");
+		expect(entry.source).toBe("tool");
+		expect(entry.propositions).toEqual([JEV_PROBE_PROPOSITION_ID]);
+		expect(entry.checks).toEqual({ [JEV_PROBE_PROPOSITION_ID]: 0.95 });
+		expect(entry.model).toBe(defaultJevGateConfig().model);
+		// 落盘的是**原始** state 文本（键顺序不限），不是 canonicalizeState 的结果。
+		expect(entry.state).toBe('{"zeta":1,"alpha":2}');
+		expect(entry.stateChars).toBe(entry.state.length);
+		// stateHash 复用本次 cacheKey 的 sha256 摘要（不另算第二个摘要）。
+		expect(entry.stateHash).toBe(cacheKey({ model: defaultJevGateConfig().model, questions: QUESTIONS, state }));
+		expect(entry.error).toBeUndefined();
+		// 样本 0600（同机其他用户不该读到你审过的代码）。
+		expect(statSync(samplesPath).mode & 0o777).toBe(0o600);
+	});
+
+	it("缓存命中与磁盘回放都不再写样本（同一内容重放一百次也只是一个真相）", async () => {
+		const { impl, calls } = stubFetch(() => jsonResponse(noul(0.95)));
+		const cachePath = jevCachePath(dir);
+		// 第一个进程：真实调用（miss）→ 1 条样本。
+		const first = sampleGate(impl, {}, { cachePath });
+		await first.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		// 同进程第二次 = 内存命中。
+		const hit = await first.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		// 另一个进程同输入 = 磁盘回放（cache=disk）。
+		const replayed = await sampleGate(impl, {}, { cachePath }).evaluate({
+			state: STATE,
+			questions: QUESTIONS,
+			apiKey: SYNTHETIC_KEY,
+		});
+
+		expect([hit.audit.cache, replayed.audit.cache]).toEqual(["hit", "disk"]);
+		expect(calls).toHaveLength(1);
+		// 样本只跟着**真实调用**走：3 次 evaluate 里只有 1 条样本。
+		expect(loadJevSamples(samplesPath).entries).toHaveLength(1);
+	});
+
+	it("失败调用也记（outcome=review + 错误码），坏掉不等于放行", async () => {
+		const { impl } = stubFetch(() => jsonResponse({ error: "nope" }, 429));
+		const decision = await sampleGate(impl).evaluate({
+			state: STATE,
+			questions: QUESTIONS,
+			apiKey: SYNTHETIC_KEY,
+			source: "cli",
+		});
+		expect(decision.outcome).toBe("review");
+		expect(decision.errorCode).toBe("http-429");
+		const entry = loadJevSamples(samplesPath).entries[0]!;
+		expect(entry.outcome).toBe("review");
+		expect(entry.source).toBe("cli");
+		expect(entry.error?.code).toBe("http-429");
+		expect(entry.checks).toEqual({});
+	});
+
+	it("还没出网就被拒的（未启用 / 未配凭据 / 限频）不留样本", async () => {
+		const { impl, calls } = stubFetch(() => jsonResponse(noul(0.95)));
+		await sampleGate(impl, { enabled: false }).evaluate({
+			state: STATE,
+			questions: QUESTIONS,
+			apiKey: SYNTHETIC_KEY,
+		});
+		await sampleGate(impl).evaluate({ state: STATE, questions: QUESTIONS, apiKey: "" });
+		expect(calls).toHaveLength(0);
+		expect(existsSync(samplesPath)).toBe(false);
+
+		// 限频：第一次真实调用记一条，紧接着的第二次被限频（没有请求、没有分数）不记。
+		let clock = 1_000_000;
+		const paced = sampleGate(impl, { minIntervalMs: 1_000 }, { now: () => clock });
+		await paced.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		clock += 100;
+		const limited = await paced.evaluate({ state: { diff: "other" }, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		expect(limited.error).toContain("过于频繁");
+		expect(loadJevSamples(samplesPath).entries).toHaveLength(1);
+	});
+
+	it("recordSamples=false（配置）或 recordSample=false（单次）都不写盘，判定照常", async () => {
+		const { impl } = stubFetch(() => jsonResponse(noul(0.95)));
+		const off = await sampleGate(impl, { recordSamples: false }).evaluate({
+			state: STATE,
+			questions: QUESTIONS,
+			apiKey: SYNTHETIC_KEY,
+		});
+		expect(off.outcome).toBe("approve");
+		const perCall = await sampleGate(impl).evaluate({
+			state: STATE,
+			questions: QUESTIONS,
+			apiKey: SYNTHETIC_KEY,
+			recordSample: false,
+		});
+		expect(perCall.outcome).toBe("approve");
+		expect(existsSync(samplesPath)).toBe(false);
+	});
+
+	it("写盘失败（不可写路径）时判定仍照常返回，绝不因为采样而抛", async () => {
+		const { impl } = stubFetch(() => jsonResponse(noul(0.95)));
+		// /proc 下建不了目录：appendJevSample 内部兜住，evaluate 必须原样返回决策。
+		const g = sampleGate(impl, {}, { samplesPath: "/proc/jev-no-such-dir/jev-samples.jsonl" });
+		const decision = await g.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		expect(decision.outcome).toBe("approve");
+		expect(decision.error).toBeUndefined();
+		expect(g.snapshotStatus()).toMatchObject({ total: 1, approve: 1 });
+	});
+
+	it("snapshotStatus().reviewStatus：无样本时 pending 0 / due false；有样本时按 ack 与阈值判定", async () => {
+		// ① 没有样本文件（含**未配置** samplesPath 的旧调用）→ 空状态，不抛。
+		const noPath = new JevGate({ config: config() });
+		expect(noPath.snapshotStatus().reviewStatus).toMatchObject({
+			pending: 0,
+			due: false,
+			reason: null,
+			oldestPendingAt: null,
+			newestPendingAt: null,
+			needsHumanLabel: 0,
+			lastAckAt: null,
+		});
+		const empty = sampleGate(stubFetch(() => jsonResponse(noul(0.95))).impl);
+		expect(empty.snapshotStatus().reviewStatus).toMatchObject({ pending: 0, due: false });
+
+		// ② 一条样本 + 8 天后 → 到期（原因 = 等够时间，不是条数）。
+		const at = 1_700_000_000_000;
+		const { impl } = stubFetch(() => jsonResponse(noul(0.95)));
+		const g = sampleGate(impl, {}, { now: () => at });
+		await g.evaluate({ state: STATE, questions: QUESTIONS, apiKey: SYNTHETIC_KEY });
+		const stale = g.reviewStatus(at + 8 * 24 * 60 * 60_000);
+		expect(stale).toMatchObject({ pending: 1, due: true, reason: "age", needsHumanLabel: 0, lastAckAt: null });
+		expect(stale.oldestPendingAt).toBe(at);
+		expect(stale.thresholds).toMatchObject({ minEntries: 40 });
+
+		// ③ ack 之后 pending 归零（ack 文件与样本文件同目录：这是 CLI 与服务端必须一致的那条契约）。
+		expect(saveJevReviewAck(jevReviewAckPath(dir), at + 1)).toBe(true);
+		expect(g.reviewStatus(at + 8 * 24 * 60 * 60_000)).toMatchObject({ pending: 0, due: false, lastAckAt: at + 1 });
 	});
 });

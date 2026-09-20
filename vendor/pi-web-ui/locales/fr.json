@@ -1277,6 +1277,18 @@
 		"footerJevEmpty": "Jev : aucune décision",
 		"footerJevDetail": "Les derniers scores par proposition se trouvent dans la section « Portail Jev » des réglages.",
 		"footerJevLastDecision": "Dernière décision",
-		"footerJevReason": "Motif (de la réponse de décision réelle la plus récente)"
+		"footerJevReason": "Motif (de la réponse de décision réelle la plus récente)",
+		"footerJevReviewTitle": "Revue",
+		"footerJevReviewPending": "Revue à faire : {pending}",
+		"footerJevReviewNeedsHuman": "dont {needsHuman} escaladés : sans vérité de référence, seul un humain peut les étiqueter",
+		"footerJevReviewOldest": "Le plus ancien",
+		"footerJevReviewRule": "Déclenchement : tous les {entries} échantillons ou tous les {days} jours",
+		"footerJevReviewExportHint": "Exporter le corpus (à lancer à la racine du projet) :",
+		"footerJevReviewAckHint": "Confirmer après l'export (code de sortie 0 = à faire / 1 = pas encore) :",
+		"settingsJevRecordSamples": "Enregistrer les échantillons de décisions réelles (trace complète)",
+		"settingsJevRecordSamplesHint": "Chaque décision réelle est écrite comme un échantillon (les rejeux depuis le cache non) : le contenu examiné (tronqué à 4000 caractères), les scores par proposition, la conclusion et la raison. Les jetons ayant la forme d'un secret sont remplacés par «redacted», mais ce n'est pas de l'anonymisation : le contenu peut contenir votre code et vos chemins. Désactiver arrête l'écriture ; les échantillons déjà écrits restent jusqu'à samples clear.",
+		"settingsJevSamplesPrivacy": "Stocké dans <agentDir>/dev-con/jev-samples.jsonl (mode 0600, rotation à 2000 entrées / 8 Mo). Reste sur cette machine : jamais envoyé, jamais de clé.",
+		"settingsJevSamplesReview": "Revue des échantillons",
+		"settingsJevSamplesDue": "C'est le moment : exportez le corpus, étiquetez-le à la main, puis ack (sinon le rappel revient)"
 	}
 }

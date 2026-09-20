@@ -580,6 +580,9 @@ export interface UiJevGateConfig {
 	timeoutMs: number;
 	cacheTtlMs: number;
 	minIntervalMs: number;
+	/** 把**真实调用**（cache=miss）的被审内容写成样本（供一周后的阈值/判据复盘校准）。
+	 *  只影响采样，绝不影响判定；缓存命中/磁盘回放一律不采样。 */
+	recordSamples: boolean;
 }
 
 /** 保存配置的输入：允许只给要改的字段（服务端读-合并-写，不会把未给字段清空）。 */
@@ -628,6 +631,36 @@ export interface UiJevRuntimeStatus {
 	diskHits: number;
 	avgElapsedMs: number;
 	lastError: { at: number; code: string; error: string; errorEn: string } | null;
+	/**
+	 * 样本复盘状态（底栏浮层显示「待复盘 N 条」与导出命令）。
+	 * @WHY 判定盘里的分数只有「用了哪些阈值」这一半事实，另一半是「当时审的是什么」：
+	 *   攒够样本或等够一周才提醒人拿真实样本回看（见 dev-con/jev-review.ts）。
+	 * @GOTCHA 字段叫 `reviewStatus`，**不能**叫 `review`：`review: number` 已经是
+	 *   「结论为转人工的**调用条数**」（上面那个，UI 运行卡片与 e2e 都在读它）。
+	 */
+	reviewStatus: UiJevReviewStatus;
+}
+
+/**
+ * 样本复盘状态：攒够 `minEntries` 条**或**最早一条已等 `maxAgeMs` 就该复盘（先到先触发）。
+ * @CONTRACT 纯数字/枚举，**不含被审内容**（内容只在样本文件里，导出走 CLI）。
+ */
+export interface UiJevReviewStatus {
+	/** 上次确认（ack）之后新增的样本数。 */
+	pending: number;
+	/** 是否到期该复盘。 */
+	due: boolean;
+	/** 触发原因：条数够了 / 等太久了（未到期为 null）。 */
+	reason: "entries" | "age" | null;
+	/** 待复盘样本里最早/最新一条的时间（ms；无待复盘为 null）。 */
+	oldestPendingAt: number | null;
+	newestPendingAt: number | null;
+	/** 待复盘样本里 outcome=review 的条数（这些没有真值，只能人判）。 */
+	needsHumanLabel: number;
+	/** 触发阈值（写出来避免「为什么现在提醒」成黑盒）。 */
+	thresholds: { minEntries: number; maxAgeMs: number };
+	/** 上次确认时间（ms；从未确认为 null）。 */
+	lastAckAt: number | null;
 }
 
 /** 可用命题（只读元数据，供 UI 展示判定标准）。 */

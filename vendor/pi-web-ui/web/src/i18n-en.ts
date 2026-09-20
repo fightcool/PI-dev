@@ -1499,4 +1499,22 @@ export const en: EnDictionary = {
 	footerJevDetail: "The latest per-proposition scores are in the Jev settings section.",
 	footerJevLastDecision: "Latest decision",
 	footerJevReason: "Reason (from the most recent real decision response)",
+
+	/* Sample review (components/JevReviewSection.tsx, shared by the footer panel and the settings
+	   section): the one-week calibration entry point. {pending}/{needsHuman} are counts;
+	   {entries}/{days} are the server's trigger thresholds — never hard-coded here. */
+	footerJevReviewTitle: "Review",
+	footerJevReviewPending: "Review due: {pending}",
+	footerJevReviewNeedsHuman: "{needsHuman} of them escalated — no ground truth, a human must label them",
+	footerJevReviewOldest: "Oldest",
+	footerJevReviewRule: "Triggers every {entries} samples or {days} days",
+	footerJevReviewExportHint: "Export the corpus (run it at the project root):",
+	footerJevReviewAckHint: "Acknowledge after exporting (exit code 0 = due / 1 = not due):",
+	settingsJevRecordSamples: "Record real decision samples (full trail)",
+	settingsJevRecordSamplesHint:
+		"Every real decision is written as one sample (cache replays are not): the material under review (truncated to 4000 chars), the per-proposition scores, the outcome and the reason. Tokens shaped like a secret are rewritten as «redacted», but this is not anonymisation — the material can contain your code and paths. Turning it off stops writing; samples already written stay until you run samples clear.",
+	settingsJevSamplesPrivacy:
+		"Stored at <agentDir>/dev-con/jev-samples.jsonl (mode 0600, rotated at 2000 entries / 8MB). It stays on this machine, is never uploaded and never holds key material.",
+	settingsJevSamplesReview: "Sample review",
+	settingsJevSamplesDue: "Due now: export the corpus, label it by hand, then ack (otherwise the reminder keeps coming back)",
 };

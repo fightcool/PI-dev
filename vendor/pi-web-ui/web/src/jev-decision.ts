@@ -357,8 +357,16 @@ export interface JevDraft {
 	keyName: string | null;
 	approveAt: string;
 	blockAt: string;
+	/** 是否把真实决策写成样本（全量留痕）。保存时**只在改过**才上行（见 configInputOf）。 */
+	recordSamples: boolean;
 }
 
+/**
+ * 配置 → 草稿。
+ * @GOTCHA recordSamples 用 `!== false` 读：旧服务端的 payload 里没有这个字段，此时必须按
+ *   **开着**（协议默认 true）理解 —— 写成 `!!config.recordSamples` 会把「字段缺失」显示成
+ *   「留痕已关」，界面与真实状态相反。
+ */
 export function draftOf(config: UiJevGateConfig): JevDraft {
 	return {
 		enabled: config.enabled,
@@ -368,16 +376,22 @@ export function draftOf(config: UiJevGateConfig): JevDraft {
 		keyName: config.credentialRef?.keyName ?? null,
 		approveAt: String(config.thresholds.approveAt),
 		blockAt: String(config.thresholds.blockAt),
+		recordSamples: config.recordSamples !== false,
 	};
 }
 
 /** 草稿 → 保存载荷（只含界面拥有的字段，见 {@link jevConfigSaveMessage} 的 @CONTRACT）。
  *  @CONTRACT thresholds 可以是**补丁**（UiJevThresholdsInput）：服务端读-合并-写，缺省字段不会被清空 ——
  *    所以「一项都没改」时调用方不带 perProposition 是安全的（不会误删别的客户端设的值）。 */
-export function configInputOf(draft: JevDraft, thresholds: UiJevThresholdsInput): UiJevGateConfigInput {
+export function configInputOf(
+	draft: JevDraft,
+	thresholds: UiJevThresholdsInput,
+	/** 当前**已生效**的配置（保存回执优先于 jev_status，与表单同一基线）：用来判断哪个字段真的被改过。 */
+	applied?: UiJevGateConfig | null,
+): UiJevGateConfigInput {
 	const providerId = draft.providerId.trim();
 	const keyName = (draft.keyName ?? "").trim();
-	return {
+	const input: UiJevGateConfigInput = {
 		enabled: draft.enabled,
 		endpoint: draft.endpoint.trim(),
 		model: draft.model.trim(),
@@ -385,4 +399,12 @@ export function configInputOf(draft: JevDraft, thresholds: UiJevThresholdsInput)
 		credentialRef: providerId && keyName ? { providerId, keyName } : null,
 		thresholds,
 	};
+	// recordSamples 只在**真的改过**时才上行（同 thresholds.perProposition 的逐项补丁口径）：
+	// @WHY 服务端是读-合并-写，少发一个字段就少一次「用旧值盖掉别的客户端刚设的值」的机会。
+	//  @GOTCHA 基线必须传进来：拿不到基线（调用方没传）就照发，绝不猜一个默认值替服务端做决定。
+	const appliedRecord = applied ? applied.recordSamples !== false : null;
+	if (appliedRecord === null || appliedRecord !== draft.recordSamples) {
+		input.recordSamples = draft.recordSamples;
+	}
+	return input;
 }

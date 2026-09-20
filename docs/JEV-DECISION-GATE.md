@@ -420,6 +420,8 @@ npm run jev -- tune --corpus <你的语料>.jsonl --from-cache          # 不联
 | 持久决策缓存（条目数 / 占用 / 时间范围 / 损坏行） | CLI `cache`（`--json` 机器可读）；清空用 `cache clear` |
 | 余额 / 额度 | 复用**既有 OpenRouter 账户查询适配器**（`/api/v1/credits`、`/api/v1/key`），不新增余额事实源 |
 | 命题清单（判定句 + 真/假标准） | 设置面板；CLI `propositions` |
+| 真实样本（条数 / 三态分布 / 来源 / 截断与抹除条数） | CLI `samples`（`--json`）；**不可再生**，清空用 `samples clear` |
+| 是否该复盘（待复盘条数 / 需人判条数 / 最早一条 / 阈值） | 底栏 Jev 项徽标与浮层、设置面板；CLI `review`（到期退出码 0） |
 
 > 决策事件**刻意只存内存、不落盘**，以免出现第二份用量/费用事实源。因此 CLI 的 `status` 只反映它自己那个进程；在线实例的运行态以状态栏/设置面板为准（两者同一份 `jev_status` 数据）。
 >
@@ -429,7 +431,86 @@ npm run jev -- tune --corpus <你的语料>.jsonl --from-cache          # 不联
 
 ---
 
-## 9. 成本与限额
+## 9. 真实样本留痕与复盘提醒（一周后拿真实使用校准）
+
+**为什么要**：`tune` 的语料是人工整理的（§4.4 的 50 条手标）——它证明了「逐命题阈值有用」，
+但语料会停在写它的那一天。**真实使用**里到底什么改动会被问、模型在真实 diff 上怎么打分，
+只有跑一周才知道。于是要两件事：① 留下**可复盘的原始材料**；② 到点时**提醒人**回看。
+
+**为什么现成的两份日志都不够**（这一节存在的理由）：
+
+| 现成日志 | 存了什么 | 能复盘吗 |
+| --- | --- | --- |
+| 磁盘决策缓存 `jev-decisions-cache.jsonl` | 只存 `cacheKey` 的 sha256、命题名、0..1 分数、审计元数据 | ✗ 摘要**推不回 state**（代码注释即写明），只知分数不知内容 |
+| 内存决策事件（环形缓冲，容量 200） | 时间/结论/分数/model/token/cost/耗时 | ✗ 不落盘，且没有 state、没有理由 |
+
+⇒ 一周后我们手里只有「分数分布」，无法判断某次 `approve` 到底对不对 → 校准无从谈起。
+**必须先加一份样本留痕**，再谈「跑一周」。
+
+### 9.1 记什么、不记什么
+
+落盘 `<agentDir>/dev-con/jev-samples.jsonl`（**0600**、append-only、2000 条 / 8 MiB 轮转只留一代 `.1`）：
+`at`、命题名（去重排序）、每个命题的 0..1 分数、三态结论、中英理由、来源（`tool`/`cli`/`probe`/`ws`）、
+`model`、**被审内容 `state`**（截断 4000 字符 + 密钥形状抹除）、`stateChars`（截断前长度）、
+`stateHash`（复用本次 cacheKey 的 sha256）、失败时的错误码。
+
+铁律（全部有单测）：
+
+1. **只记真实调用**（`cache=miss`）。缓存命中、磁盘回放、单飞的后续参与者都不记 ——
+   同一内容重放一百次也只有一个真相；**还没出网就被拒的**（未启用 / 未配凭据 / 无限题 / 限频）也不记：
+   没分数、没内容，记下来只会把「待复盘」条数变成噪声。
+2. **采样绝不参与判定**：写在决策对象构造完之后，走 `appendJevSample`（内部兜住异常）。
+   写盘失败（不可写路径、磁盘满）也必须原样返回决策、绝不抛回编码路径。
+3. **密钥形状只按值抹，不按键名**：`sk-…`/`ghp_…` 前缀串与 ≥32 位连续不透明串（hex/base64/JWT）
+   一律换成 `«redacted»`，命中数记进 `stateRedacted`。**误抹长标识符/长哈希是刻意的取舍**：
+   代价是一个词（diff 结构仍在），比漏掉一个真密钥便宜得多。
+   （按**键名**判是一类更糟的错：`findSecretMaterial` 会把所有提到 `token` 变量的正常改动都判成密钥，那样日志就废了。）
+4. **先截断再抹**：截断之外的内容本来就不入盘，先抹等于为马上要丢掉的部分白扫整份 diff（`state` 可能上 MB）。
+5. 开关 `recordSamples`（配置 / 面板，默认**开**；CLI `config --no-record-samples`）：关掉就一条不写。
+   面板上写明代价 ——「关掉 = `review` 将永远无样本可复盘」。
+6. `tune` **显式 `recordSample: false`**：它跑的是语料、不是真实使用，不能淹没「一周真实使用」的口径。
+7. 一键清空 `samples clear`（**不可再生**数据，命令提示先导出）。
+
+> 这份样本文件是整个门禁里**唯一**落盘被审内容的地方 —— 这正是它必须 `0600`、必须有开关、
+> 必须能一键清空的原因。（`state` 不进决策缓存、不进事件、不进错误文本，那几条性质不变，见 §7。）
+
+### 9.2 提醒机制：底栏徽标 + 两条命令
+
+到期判定是**纯函数**（`jev-review.ts`）：**40 条** 或 **7 天**，先到先算；只统计**上次确认（ack）之后**新增的样本。
+
+| 在哪 | 看到什么 |
+| --- | --- |
+| 底栏 Jev 项 | 到期时挂 `待复盘 N 条` 徽标；浮层「复盘」一节给出待复盘条数 / 其中需人判（无分数或缺内容）条数 / 最早一条的时间 / 触发条件（`N 条 或 M 天`，读回包阈值，不写死）|
+| 设置面板 | 「是否到期」+ 两条命令（可复制） |
+| CLI | `review`：到期退出码 **0** / 未到期 **1** / 参数或 IO 问题 **3**（可挂 cron 或 CI 定时任务） |
+| 导出 | `review export [--since 30d] [--out <path\|->]`：**tune 语料草稿**（stdout 纯 JSONL，统计一律走 stderr） |
+
+`review export` 的语义（`samplesToCorpus` 纯函数）：
+
+- `approve → should-pass`、`block → should-block`；**`review`（转人工）的样本不导出** ——
+  它们本来就没有 ground truth，导出去等于把「没标签」固化成语料。
+- 同 `stateHash` + 同一命题**去重只留最新**（换模型/改判据后会重判同一内容，旧的那次不再代表现状）。
+- 一条样本带 N 个命题 → 导出 N 条（逐命题独立校准，对齐 §3.1）。
+- 导出的只是**草稿**：仍要人按 §4.5 的标签政策过一遍，再进 `tune`。
+- `review ack [--at <ISO>]`（默认 now）只重置提醒，**不删样本**。
+
+### 9.3 一周后的操作序列
+
+```bash
+npm run jev -- review                       # 到期了吗（退出码 0 = 该复盘）
+npm run jev -- review export --since 30d --out /tmp/jev-real.jsonl
+# 人过一遍标签（§4.5）→ 与已标语料合并
+npm run jev -- tune --corpus /tmp/jev-real.jsonl --from-cache   # 免费：只回放已打过分的内容
+npm run jev -- tune --corpus /tmp/jev-real.jsonl                # 新内容要联网才出分（有费用）
+npm run jev -- review ack                   # 复盘完成，提醒重置
+```
+
+> `--from-cache` 只对**已经打过分的 state** 免费；新样本必须联网才有分数。
+> 标完标签后重跑 tune 是**零成本**的（分数按内容缓存，见 §4.1）。
+
+---
+
+## 10. 成本与限额
 
 | 项 | 值 |
 | --- | --- |
@@ -456,7 +537,7 @@ npm run jev -- tune --corpus <你的语料>.jsonl --from-cache          # 不联
 
 ---
 
-## 10. 验证
+## 11. 验证
 
 ```bash
 # 门禁内核单测（全部注入 fetchImpl/now，零真实网络）
@@ -473,6 +554,9 @@ npm --prefix vendor/pi-web-ui run check:protocol
 
 # 类型检查
 npm run typecheck
+
+# 真实样本留痕 + 复盘到期判定 + 导出语料（含「/proc 路径不许挂死」的子进程金丝雀）
+NODE_ENV=test npm --prefix vendor/pi-web-ui exec vitest run tests/unit/jev-samples.test.ts tests/unit/jev-review.test.ts
 
 # 逐判定项独立阈值（解析/校验/两层合并/CLI 真进程/磁盘往返，含「无配置时逐字节等旧行为」回归护栏）
 NODE_ENV=test npm --prefix vendor/pi-web-ui exec vitest run tests/unit/jev-per-proposition-thresholds.test.ts
@@ -491,7 +575,7 @@ npm run test:jev:browser
 
 ---
 
-## 11. 已知限制 / 后续
+## 12. 已知限制 / 后续
 
 - **已做真实联网验收（2026-09-20）**：`probe` 实测 200（`change_preserves_public_api=0.93`，`model=typesafe/jev-1.13-20260917`，requestId/cost 齐全），三条命题并行求值也实测通过。这次验收顺带暴露并修掉了两个问题：请求形状的 400（§1.1）与命题方向（§5.1）。
 - **`alpha` 接口**：OpenRouter 的 Decisions 路由标注为 alpha，可能变更；所有调用已收敛到 `JevGate` 单一出口，便于切换。
@@ -499,5 +583,12 @@ npm run test:jev:browser
 - **未做**：把门禁接进 CI 流程并让 CI 真的因它变红（缓存已为它准备好确定性回放的数据基础；目前只做到「Agent 可调 + 人能回放」）。
 - **未做**：按 `state` 做 redact 后再哈希（当前直接对 state canonicalize 后哈希，state 本身不落盘）。
 - **尚未接入自动化卡口**：`jev_check` 是**工具**，不是 hook；模型可以调它，也可以不调。想变成真卡口得再加一层「提交/合并前必须有过一次 approve」的强制（见 §2.1 与本节上一条）。
+- **唯一落盘被审内容的是样本文件**（§9）：它**不含密钥正文**，但**含业务 diff 片段**（截断 4000 字符），
+  这是「一周后复盘」的前提。介意就别开 `recordSamples`（默认开），或用 `samples clear` 清掉已留的。
+- **复盘是提醒，不是卡口**：到期只挂徽标 / `review` 退出码 0，**不阻止**任何提交与合并。要不要变成硬卡口是另一个决定。
+- **误抹**：≥32 位连续标识符/哈希会被换成 `«redacted»`（§9.1 第 3 条，刻意的）。
+- **路径健壮性**：样本/缓存路径由 `agentDir` 派生，建目录走**有界**实现 ——
+  本机实测 `mkdirSync(x, { recursive: true })` 在 `/proc` 这类伪文件系统上会**死循环**（CPU 打满、永不返回），
+  门禁在判定路径上写样本，一个病态路径不能把判定挂住（有子进程超时金丝雀用例钉住）。
 - **中文准确率**：官方称英文最优、CJK 可用但不保证；因此内置命题的 `instructions`/`criteria` 都是**英文**（送进模型的就是它们），给人的中文说明走双语的 `reason`/`reasonEn` 与 CLI/UI 文案。
 - **仅 Noul**：当前只用 `noul`（是/否概率）。`noul` **不带 confidence**（官方明确：confidence 只在 `choice` / `score` 上）。若某场景需要 confidence，应改用二元 `choice`，并**单独调阈值**（不可沿用 Noul 的阈值）。

@@ -1277,6 +1277,18 @@
 		"footerJevEmpty": "Jev: 판정 없음",
 		"footerJevDetail": "최근 판정 항목별 점수는 설정의 “Jev 게이트” 섹션에 있습니다.",
 		"footerJevLastDecision": "최근 판정",
-		"footerJevReason": "판정 이유(가장 최근에 받은 실제 판정 응답)"
+		"footerJevReason": "판정 이유(가장 최근에 받은 실제 판정 응답)",
+		"footerJevReviewTitle": "리뷰",
+		"footerJevReviewPending": "리뷰 대기 {pending}건",
+		"footerJevReviewNeedsHuman": "그중 {needsHuman}건은 에스컬레이션되어 정답이 없으므로 사람이 라벨링해야 합니다",
+		"footerJevReviewOldest": "가장 오래된 항목",
+		"footerJevReviewRule": "발동 조건: {entries}건마다 또는 {days}일마다",
+		"footerJevReviewExportHint": "코퍼스 내보내기(프로젝트 루트에서 실행):",
+		"footerJevReviewAckHint": "내보낸 뒤 확인(종료 코드 0=해당 / 1=미해당):",
+		"settingsJevRecordSamples": "실제 결정 샘플 기록(전량 흔적)",
+		"settingsJevRecordSamplesHint": "실제 결정마다(캐시 재생은 기록하지 않음) 샘플 한 건을 씁니다: 심사 대상 내용(4000자로 자름) + 항목별 점수 + 결론 + 이유. 키 모양의 토큰은 «redacted»로 바꾸지만 익명화는 아닙니다(내용에 코드와 경로가 들어갈 수 있습니다). 끄면 쓰기를 멈추고, 이미 쓴 샘플은 samples clear 전까지 남습니다.",
+		"settingsJevSamplesPrivacy": "저장 위치 <agentDir>/dev-con/jev-samples.jsonl(0600, 2000건 / 8MB 로테이션). 이 머신에만 남고 업로드하지 않으며 키를 저장하지 않습니다.",
+		"settingsJevSamplesReview": "샘플 리뷰",
+		"settingsJevSamplesDue": "지금이 리뷰 시점입니다: 코퍼스를 내보내 사람이 라벨링한 뒤 ack로 확인하세요(확인하지 않으면 다시 알림이 옵니다)"
 	}
 }

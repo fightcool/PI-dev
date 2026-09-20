@@ -1277,7 +1277,19 @@
 		"footerJevEmpty": "Jev: sem decisões",
 		"footerJevDetail": "As pontuações por proposição mais recentes estão na secção «Portão Jev» das configurações.",
 		"footerJevLastDecision": "Última decisão",
-		"footerJevReason": "Motivo (da resposta de decisão real mais recente)"
+		"footerJevReason": "Motivo (da resposta de decisão real mais recente)",
+		"footerJevReviewTitle": "Revisão",
+		"footerJevReviewPending": "Revisão pendente: {pending}",
+		"footerJevReviewNeedsHuman": "dos quais {needsHuman} escalados: sem verdade de referência, só um humano pode rotulá-los",
+		"footerJevReviewOldest": "Mais antigo",
+		"footerJevReviewRule": "Dispara a cada {entries} amostras ou a cada {days} dias",
+		"footerJevReviewExportHint": "Exportar o corpus (execute na raiz do projeto):",
+		"footerJevReviewAckHint": "Confirme depois de exportar (código de saída 0 = pendente / 1 = não pendente):",
+		"settingsJevRecordSamples": "Registrar amostras de decisões reais (trilha completa)",
+		"settingsJevRecordSamplesHint": "Cada decisão real é gravada como uma amostra (repetições do cache não): o conteúdo examinado (truncado em 4000 caracteres), as pontuações por proposição, o resultado e o motivo. Tokens com forma de segredo são reescritos como «redacted», mas isso não é anonimização: o conteúdo pode conter seu código e seus caminhos. Desligar interrompe a gravação; as amostras já gravadas permanecem até samples clear.",
+		"settingsJevSamplesPrivacy": "Guardado em <agentDir>/dev-con/jev-samples.jsonl (modo 0600, rotação a cada 2000 entradas / 8 MB). Fica nesta máquina: nunca é enviado e nunca guarda chaves.",
+		"settingsJevSamplesReview": "Revisão de amostras",
+		"settingsJevSamplesDue": "Pendente agora: exporte o corpus, rotule à mão e confirme com ack (senão o aviso volta)"
 	},
 	"serverStrings": {
 		"agent.subagent.template.unavailable": "Template de subagente indisponível: {templateName} (ausente ou desativado)",
