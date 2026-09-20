@@ -220,7 +220,12 @@ export function FooterBar({
 			</button>
 			<span className="status-sep">·</span>
 
-			<JevFooterItem status={chat.jev.status} onOpenSettings={onOpenSettings} />
+			{/* decision = 客户端手里最近一次真实决策回包（面板「测试连接」）；推送的运行态不带理由，见 JevFooterItem 头部 @GOTCHA。 */}
+			<JevFooterItem
+				status={chat.jev.status}
+				decision={chat.jev.probe?.decision ?? null}
+				onOpenSettings={onOpenSettings}
+			/>
 
 			<span className="status-item" title={t("sessionMessages")}>
 				{t("messages")} {s.totalMessages}

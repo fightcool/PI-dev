@@ -1430,6 +1430,17 @@ export const zh = {
 	settingsJevEndpointInvalid: "端点不能为空，且必须是 https 地址（默认 https://openrouter.ai/api/alpha/decisions）。",
 	settingsJevModelRequired: "模型 ID 不能为空（默认 typesafe/jev-1.13）。",
 	settingsJevKeyNameRequired: "已选服务商但没选密钥名：服务端只接受明确名称的密钥引用，请补选一个。",
+	settingsJevGlobalDefault: "全局默认",
+	settingsJevPerPropositionTitle: "逐判定项阈值",
+	settingsJevPerPropositionHint:
+		"实测三个判定项的分数区间整体错开（scope≈0.4 / api≈0.7 / test≈0.8+），单一全局阈值结构上不可能同时合适，所以这里给每个判定项单独设阈值。独立阈值同样参与三态判定；留空的字段继承全局，两个阈值之间仍是模型的不确定区（空白带 = 转人工）。",
+	settingsJevPerPropositionApprove: "放行",
+	settingsJevPerPropositionBlock: "拦截",
+	settingsJevPerPropositionInherit: "继承全局",
+	settingsJevPerPropositionClear: "清除",
+	settingsJevPerPropositionEffective: "生效阈值",
+	settingsJevPerPropositionScoped: "独立阈值",
+	settingsJevPerPropositionInvalid: "独立阈值不合法：留空按全局补齐后，需要 0 ≤ 拦截 < 放行 ≤ 1。",
 
 	/* 底栏 Jev 门禁项（components/JevFooterItem.tsx）：最简结论 + 点开浮层。
 	   四态占位符 {approve}/{block}/{review}/{failed} 对应运行态的三态计数与失败数。
@@ -1440,6 +1451,7 @@ export const zh = {
 	footerJevEmpty: "Jev 无决策",
 	footerJevDetail: "最近一次逐条分数见设置面板",
 	footerJevLastDecision: "最近结论",
+	footerJevReason: "判定理由（最近一次收到的真实决策回包）",
 } as const;
 
 /* ------------------------------------------------------------------ */

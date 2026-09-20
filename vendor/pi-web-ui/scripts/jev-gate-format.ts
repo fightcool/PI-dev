@@ -62,6 +62,8 @@ export function printUsage(credentialProvider: string): void {
 			"  config --enable|--disable    开关门禁",
 			"  config --endpoint <url> --model <id>",
 			"  config --approve <0..1> --block <0..1>",
+			"  config --proposition <id> --approve <0..1> [--block <0..1>]   # 给单个判定项配独立阈值",
+			"  config --unset-proposition <id> | --clear-propositions        # 删单个 / 全清独立阈值",
 			"  config --timeout <ms> --cache-ttl <ms> --min-interval <ms>",
 			`  config --key-name <name> [--key-provider ${credentialProvider}]   # 只存名字引用`,
 			"  config --clear-credential",
@@ -90,6 +92,21 @@ export function printConfig(config: JevGateConfig, agentDir: string): void {
 	console.log(`模型: ${echo.model}`);
 	console.log(`密钥: ${cred ? `${cred.providerId} / ${cred.keyName}（仅引用，不显示正文）` : "未绑定（门禁不可用）"}`);
 	console.log(`阈值: 通过 >= ${echo.thresholds.approveAt}  阻断 <= ${echo.thresholds.blockAt}  其余转人工`);
+	// 逐判定项独立阈值：实测各命题分数区间整体错开，全局阈值不可能同时合适；没配就不多打一行。
+	const per = echo.thresholds.perProposition;
+	if (per && Object.keys(per).length > 0) {
+		for (const [id, entry] of Object.entries(per)) {
+			const approveAt = entry.approveAt ?? echo.thresholds.approveAt;
+			const blockAt = entry.blockAt ?? echo.thresholds.blockAt;
+			const inherited = [
+				entry.approveAt === undefined ? "放行继承全局" : null,
+				entry.blockAt === undefined ? "拦截继承全局" : null,
+			].filter(Boolean);
+			console.log(
+				`  · ${id}: 通过 >= ${approveAt}  阻断 <= ${blockAt}${inherited.length ? `（${inherited.join("、")}）` : ""}`,
+			);
+		}
+	}
 	console.log(`超时: ${echo.timeoutMs}ms  缓存: ${echo.cacheTtlMs}ms  最小间隔: ${echo.minIntervalMs}ms`);
 	console.log("提示: 阈值之间是「模型不确定」的空白带。Jev 同一输入的概率抖动可达 ~0.08，不要收窄到 0.5 附近。");
 }

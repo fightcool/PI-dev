@@ -31,11 +31,25 @@ import { looksLikeLiteralSecret } from "./account-template.js";
 /** 门禁三态：放行 / 拦截 / 转人工（review 是**安全的一侧**：门禁坏了也绝不自动放行）。 */
 export type JevOutcome = "approve" | "block" | "review";
 
+/** 单个判定项的独立阈值：未给的字段回落到全局 thresholds（见 resolvePropositionThresholds）。 */
+export interface JevPropositionThresholds {
+	approveAt?: number;
+	blockAt?: number;
+}
+
 export interface JevThresholds {
 	/** 全部判定项分数 >= approveAt → approve。 */
 	approveAt: number;
 	/** 任一判定项分数 <= blockAt → block。 */
 	blockAt: number;
+	/**
+	 * 逐判定项独立阈值（键 = 判定项名，如 change_within_task_scope）。
+	 * @WHY 实测（50 条真实提交语料，docs/JEV-DECISION-GATE.md §4.3）三个命题的分数区间
+	 *   整体错开：scope 约 0.4、public-api 约 0.7、test 约 0.8+，**单一全局阈值在结构上
+	 *   不可能同时合适**。同一份语料下逐命题阈值把误放行从 1 降到 0，并把转人工 29 → 21。
+	 * @CONTRACT 缺省（undefined / 空对象）= 全部走全局阈值，行为与加本字段之前完全一致。
+	 */
+	perProposition?: Record<string, JevPropositionThresholds>;
 }
 
 /** 凭据引用：指向 provider-keys.json 里的命名密钥，**不含密钥正文**。 */
@@ -77,6 +91,8 @@ export const JEV_TIMEOUT_MIN_MS = 500;
 export const JEV_TIMEOUT_MAX_MS = 60_000;
 export const JEV_CACHE_TTL_MAX_MS = 24 * 60 * 60_000;
 export const JEV_MIN_INTERVAL_MAX_MS = 60_000;
+/** @MAGIC 逐判定项独立阈值的条目上限（现有判定项数远小于它；纯防呆）。 */
+export const JEV_MAX_PROPOSITION_THRESHOLDS = 32;
 
 export function defaultJevGateConfig(): JevGateConfig {
 	return {
@@ -205,6 +221,74 @@ export function validateJevGateConfig(raw: unknown): JevConfigValidation {
 		);
 	}
 
+	// 逐判定项独立阈值：键必须是已知判定项（防拼错），值必须是 0..1 的数字，
+	// 且**生效后**的一对必须满足 blockAt < approveAt（缺失的一侧回落到全局值）。
+	// @GOTCHA 空条目（{}）与全空 map 都归一成 undefined：磁盘上不留「配了但什么都没配」的噪声。
+	let perProposition: Record<string, JevPropositionThresholds> | undefined;
+	if (tRaw.perProposition !== undefined && tRaw.perProposition !== null) {
+		if (!isObject(tRaw.perProposition)) {
+			return fail("thresholds.perProposition 必须是对象", "thresholds.perProposition must be an object");
+		}
+		const known = new Set(JEV_PROPOSITIONS.map((p) => p.id));
+		const entries = Object.entries(tRaw.perProposition);
+		if (entries.length > JEV_MAX_PROPOSITION_THRESHOLDS) {
+			return fail(
+				`thresholds.perProposition 条目过多（${entries.length} > ${JEV_MAX_PROPOSITION_THRESHOLDS}）`,
+				`thresholds.perProposition has too many entries (${entries.length} > ${JEV_MAX_PROPOSITION_THRESHOLDS})`,
+			);
+		}
+		const next: Record<string, JevPropositionThresholds> = {};
+		for (const [id, value] of entries) {
+			if (!known.has(id)) {
+				return fail(
+					`thresholds.perProposition 里的判定项「${id}」不存在（可用：${[...known].join(", ")}）`,
+					`Unknown proposition "${id}" in thresholds.perProposition (available: ${[...known].join(", ")})`,
+				);
+			}
+			if (!isObject(value)) {
+				return fail(`thresholds.perProposition.${id} 必须是对象`, `thresholds.perProposition.${id} must be an object`);
+			}
+			const aRaw = finiteNumber(value.approveAt);
+			const bRaw = finiteNumber(value.blockAt);
+			if (value.approveAt !== undefined && aRaw === undefined) {
+				return fail(
+					`thresholds.perProposition.${id}.approveAt 必须是数字`,
+					`thresholds.perProposition.${id}.approveAt must be a number`,
+				);
+			}
+			if (value.blockAt !== undefined && bRaw === undefined) {
+				return fail(
+					`thresholds.perProposition.${id}.blockAt 必须是数字`,
+					`thresholds.perProposition.${id}.blockAt must be a number`,
+				);
+			}
+			for (const [field, n] of [
+				["approveAt", aRaw],
+				["blockAt", bRaw],
+			] as const) {
+				if (n !== undefined && (n < 0 || n > 1)) {
+					return fail(
+						`thresholds.perProposition.${id}.${field}（${n}）必须在 0 到 1 之间`,
+						`thresholds.perProposition.${id}.${field} (${n}) must be between 0 and 1`,
+					);
+				}
+			}
+			const effApprove = aRaw ?? approveAt;
+			const effBlock = bRaw ?? blockAt;
+			if (!(effBlock < effApprove)) {
+				return fail(
+					`thresholds.perProposition.${id} 的拦截阈值（${effBlock}）必须小于放行阈值（${effApprove}）`,
+					`thresholds.perProposition.${id}: the block threshold (${effBlock}) must be lower than the approve threshold (${effApprove})`,
+				);
+			}
+			const entry: JevPropositionThresholds = {};
+			if (aRaw !== undefined) entry.approveAt = aRaw;
+			if (bRaw !== undefined) entry.blockAt = bRaw;
+			if (Object.keys(entry).length > 0) next[id] = entry;
+		}
+		if (Object.keys(next).length > 0) perProposition = next;
+	}
+
 	const numberField = (
 		value: unknown,
 		label: string,
@@ -238,7 +322,7 @@ export function validateJevGateConfig(raw: unknown): JevConfigValidation {
 			endpoint,
 			model,
 			credentialRef,
-			thresholds: { approveAt, blockAt },
+			thresholds: perProposition ? { approveAt, blockAt, perProposition } : { approveAt, blockAt },
 			timeoutMs,
 			cacheTtlMs,
 			minIntervalMs,
@@ -286,6 +370,21 @@ export function redactJevGateConfigForEcho(config: JevGateConfig): JevGateConfig
 			}
 		: null;
 	const thresholdsRaw = isObject(cleaned.thresholds) ? cleaned.thresholds : {};
+	// 逐判定项独立阈值：只有数字 + 判定项名，**不含密钥类内容**，回显必须保留
+	// （否则 CLI `config` 与设置面板会看不到实际生效的阈值 —— 那就成黑盒了）。
+	const perProposition: Record<string, JevPropositionThresholds> = {};
+	if (isObject(thresholdsRaw.perProposition)) {
+		for (const [id, entry] of Object.entries(thresholdsRaw.perProposition)) {
+			if (!isObject(entry)) continue;
+			const a = finiteNumber(entry.approveAt);
+			const b = finiteNumber(entry.blockAt);
+			if (a === undefined && b === undefined) continue;
+			const item: JevPropositionThresholds = {};
+			if (a !== undefined) item.approveAt = a;
+			if (b !== undefined) item.blockAt = b;
+			perProposition[id] = item;
+		}
+	}
 	return {
 		enabled: raw.enabled !== false,
 		endpoint: typeof cleaned.endpoint === "string" ? cleaned.endpoint : d.endpoint,
@@ -294,6 +393,7 @@ export function redactJevGateConfigForEcho(config: JevGateConfig): JevGateConfig
 		thresholds: {
 			approveAt: finiteNumber(thresholdsRaw.approveAt) ?? d.thresholds.approveAt,
 			blockAt: finiteNumber(thresholdsRaw.blockAt) ?? d.thresholds.blockAt,
+			...(Object.keys(perProposition).length > 0 ? { perProposition } : {}),
 		},
 		timeoutMs: finiteNumber(cleaned.timeoutMs) ?? d.timeoutMs,
 		cacheTtlMs: finiteNumber(cleaned.cacheTtlMs) ?? d.cacheTtlMs,
@@ -315,8 +415,31 @@ export interface JevOutcomeDecision {
 	failed: string[];
 }
 
+export interface JevResolvedThresholds {
+	approveAt: number;
+	blockAt: number;
+	/** true = 这一对来自该判定项的独立阈值（不是全局值）。 */
+	scoped: boolean;
+}
+
 /**
- * 三态判定（纯函数）：全部 >= approveAt → approve；任一 <= blockAt → block；其余 → review。
+ * 解析某判定项实际生效的阈值：有独立配置用独立配置（缺的一侧回落全局），否则用全局。
+ * @GOTCHA 独立配置**自身不自洽**（blockAt >= approveAt，只在磁盘被手改等路径上可能出现）时
+ *   一律回落全局：宁可退回已验证的行为，也不拿一对没验证过的阈值做放行判断。
+ */
+export function resolvePropositionThresholds(id: string, thresholds: JevThresholds): JevResolvedThresholds {
+	const global: JevResolvedThresholds = { approveAt: thresholds.approveAt, blockAt: thresholds.blockAt, scoped: false };
+	const scoped = thresholds.perProposition?.[id];
+	if (!scoped) return global;
+	const approveAt = finiteNumber(scoped.approveAt) ?? thresholds.approveAt;
+	const blockAt = finiteNumber(scoped.blockAt) ?? thresholds.blockAt;
+	if (!(blockAt < approveAt)) return global;
+	return { approveAt, blockAt, scoped: true };
+}
+
+/**
+ * 三态判定（纯函数）：全部 >= 各自的 approveAt → approve；任一项 <= 各自的 blockAt → block；其余 → review。
+ * 每项的阈值由 resolvePropositionThresholds 解析（未配独立阈值 = 全局阈值，即历史行为）。
  * @GOTCHA 空 checks / 非有限分数一律 review 或 block —— 「没有证据」和「分数是 NaN」
  *   都不是放行理由（`every()` 对空数组恒为真，这里显式短路）。
  */
@@ -330,31 +453,53 @@ export function decideOutcome(checks: Record<string, number>, thresholds: JevThr
 			failed: [],
 		};
 	}
-	const format = (items: [string, number][]): string =>
-		items.map(([name, score]) => `${name}=${formatScore(score)}`).join(", ");
-	const below = entries.filter(([, score]) => !(Number.isFinite(score) && score >= thresholds.approveAt));
+	const rows = entries.map(([name, score]) => ({ name, score, t: resolvePropositionThresholds(name, thresholds) }));
+	// 细粒度：带独立阈值的判定项在理由里把生效阈值写出来，不然「为什么 0.5 就放行」成了黑盒。
+	// @CONTRACT 中文理由只出中文、英文理由只出英文（曾经把中文括注拼进 reasonEn）。
+	const format = (items: typeof rows, en: boolean): string =>
+		items
+			.map((r) => {
+				if (!r.t.scoped) return `${r.name}=${formatScore(r.score)}`;
+				const note = en
+					? ` (independent threshold ${r.t.approveAt}/${r.t.blockAt})`
+					: `（独立阈值 ${r.t.approveAt}/${r.t.blockAt}）`;
+				return `${r.name}=${formatScore(r.score)}${note}`;
+			})
+			.join(", ");
+	const scopedCount = rows.filter((r) => r.t.scoped).length;
+	const thresholdHint = (kind: "approve" | "block", used: typeof rows, en: boolean): string => {
+		const label = kind === "approve" ? (en ? "approve threshold" : "放行阈值") : en ? "block threshold" : "拦截阈值";
+		const globalValue = kind === "approve" ? thresholds.approveAt : thresholds.blockAt;
+		// 只有一项且它用了独立阈值时，直接写「全局值」作参照（该项自己的阈值已逐项标注）。
+		if (used.length === 1 && used[0].t.scoped) return `${label} ${globalValue}${en ? " (global)" : "（全局）"}`;
+		if (scopedCount === 0) return `${label} ${globalValue}`;
+		return en
+			? `${label} ${globalValue} (global; per-check overrides marked inline)`
+			: `${label} ${globalValue}（全局；带独立阈值的项已逐项标注）`;
+	};
+	const below = rows.filter((r) => !(Number.isFinite(r.score) && r.score >= r.t.approveAt));
 	// 非有限分数按拦截处理：拿不到的分数不能被当成「达标」。
-	const blocked = entries.filter(([, score]) => !Number.isFinite(score) || score <= thresholds.blockAt);
+	const blocked = rows.filter((r) => !Number.isFinite(r.score) || r.score <= r.t.blockAt);
 	if (blocked.length > 0) {
 		return {
 			outcome: "block",
-			reason: `判定项触及拦截阈值（${format(blocked)}；拦截阈值 ${thresholds.blockAt}）`,
-			reasonEn: `Checks at or below the block threshold (${format(blocked)}; block threshold ${thresholds.blockAt})`,
-			failed: below.map(([name]) => name),
+			reason: `判定项触及拦截阈值（${format(blocked, false)}；${thresholdHint("block", blocked, false)}）`,
+			reasonEn: `Checks at or below the block threshold (${format(blocked, true)}; ${thresholdHint("block", blocked, true)})`,
+			failed: below.map((r) => r.name),
 		};
 	}
 	if (below.length > 0) {
 		return {
 			outcome: "review",
-			reason: `判定项未全部达到放行阈值（未达标：${format(below)}；放行阈值 ${thresholds.approveAt}）`,
-			reasonEn: `Not every check reached the approve threshold (below: ${format(below)}; approve threshold ${thresholds.approveAt})`,
-			failed: below.map(([name]) => name),
+			reason: `判定项未全部达到放行阈值（未达标：${format(below, false)}；${thresholdHint("approve", below, false)}）`,
+			reasonEn: `Not every check reached the approve threshold (below: ${format(below, true)}; ${thresholdHint("approve", below, true)})`,
+			failed: below.map((r) => r.name),
 		};
 	}
 	return {
 		outcome: "approve",
-		reason: `全部判定项达到放行阈值（${format(entries)}；放行阈值 ${thresholds.approveAt}）`,
-		reasonEn: `All checks reached the approve threshold (${format(entries)}; approve threshold ${thresholds.approveAt})`,
+		reason: `全部判定项达到放行阈值（${format(rows, false)}；${thresholdHint("approve", rows, false)}）`,
+		reasonEn: `All checks reached the approve threshold (${format(rows, true)}; ${thresholdHint("approve", rows, true)})`,
 		failed: [],
 	};
 }

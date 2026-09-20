@@ -2727,6 +2727,81 @@ body.lp-resizing .lp-sash.dragging::after {
 	margin-top: 6px;
 }
 
+/* 逐判定项阈值行（设置面板「Jev 决策门禁」）：判定语句一行截断 + 两个紧凑数字输入 + 生效值 + 清除。
+   @GOTCHA 故意不用 .set-list/.set-row —— 命题清单区块的浏览器断言按 `.set-list .set-row` 计数
+   （tests/jev/browser-ui.mjs §7），复用会让两处互相污染。 */
+.jev-prop-list {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+.jev-prop-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 6px 9px;
+	background: var(--bg-elev2);
+	border: 1px solid var(--border-soft);
+	border-radius: 8px;
+}
+.jev-prop-info {
+	flex: 1 1 40%;
+	min-width: 0;
+}
+.jev-prop-name {
+	font-size: 12.5px;
+	color: var(--text);
+	font-family: var(--mono);
+	word-break: break-all;
+}
+.jev-prop-desc {
+	font-size: 11px;
+	color: var(--text-dim);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.jev-prop-field {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+.jev-prop-label {
+	font-size: 11px;
+	color: var(--text-dim);
+	white-space: nowrap;
+}
+.jev-prop-field input {
+	/* 宽度要装得下 placeholder「继承全局 / Inherit global」（窄了会被截成 “Inherit g…”）。 */
+	width: 104px;
+	background: var(--bg-elev);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	color: var(--text);
+	padding: 3px 6px;
+	font-size: 12px;
+	outline: none;
+}
+.jev-prop-field input:focus {
+	border-color: var(--accent);
+}
+.jev-prop-row .set-btn-mini {
+	margin-left: 0;
+}
+/* 生效阈值一行不折行（折成两行读起来像两个值），让左侧判定语句先让位（它本来就是一行截断）。 */
+.jev-prop-row .chan-meta {
+	white-space: nowrap;
+	flex: none;
+}
+
+/* 浮层里的逐判定项生效阈值（组件 JevFooterItem）：只在真有独立阈值时才渲染。 */
+.jev-panel .jev-prop-facts {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
 /* 实时生成速率 (tokens/sec) */
 .status-rate {
 	color: var(--accent);

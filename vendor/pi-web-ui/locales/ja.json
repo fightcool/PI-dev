@@ -1262,11 +1262,22 @@
 		"settingsJevEndpointInvalid": "エンドポイントは空にできず、https URL である必要があります（既定 https://openrouter.ai/api/alpha/decisions）。",
 		"settingsJevModelRequired": "モデル ID は空にできません（既定 typesafe/jev-1.13）。",
 		"settingsJevKeyNameRequired": "プロバイダーは選ばれていますがキー名が未選択です：サーバーは明示的なキー参照のみ受け付けます。選択してください。",
+		"settingsJevGlobalDefault": "グローバル既定",
+		"settingsJevPerPropositionTitle": "判定項目ごとのしきい値",
+		"settingsJevPerPropositionHint": "実測では 3 つの命題のスコア帯が大きくずれています（scope≈0.4 / api≈0.7 / test≈0.8+）。単一のグローバルなしきい値では構造的に同時に適切にできません。個別しきい値も三態判定に使われます。空欄の項目はグローバルの値を継承し、2 つのしきい値の間はモデルの不確実帯（人による確認）のままです。",
+		"settingsJevPerPropositionApprove": "許可",
+		"settingsJevPerPropositionBlock": "遮断",
+		"settingsJevPerPropositionInherit": "グローバルを継承",
+		"settingsJevPerPropositionClear": "クリア",
+		"settingsJevPerPropositionEffective": "有効なしきい値",
+		"settingsJevPerPropositionScoped": "個別しきい値",
+		"settingsJevPerPropositionInvalid": "個別しきい値が不正です：空欄をグローバルで補ったうえで 0 ≤ 遮断 < 許可 ≤ 1 が必要です。",
 		"footerJev": "Jev",
 		"footerJevTip": "Jev ゲート: 許可 {approve} · 遮断 {block} · 人へ回付 {review} · 失敗 {failed}。クリックで詳細。",
 		"footerJevEmpty": "Jev: 判定なし",
 		"footerJevDetail": "直近の判定項目ごとのスコアは設定の「Jev ゲート」セクションにあります。",
-		"footerJevLastDecision": "最新の判定"
+		"footerJevLastDecision": "最新の判定",
+		"footerJevReason": "判定理由（最後に受信した実際の判定応答）"
 	},
 	"serverStrings": {
 		"agent.subagent.stop.user": "ユーザーがサブエージェントを停止しました",

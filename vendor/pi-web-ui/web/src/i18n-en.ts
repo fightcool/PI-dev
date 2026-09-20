@@ -1477,6 +1477,18 @@ export const en: EnDictionary = {
 	settingsJevModelRequired: "The model id must not be empty (default typesafe/jev-1.13).",
 	settingsJevKeyNameRequired:
 		"A provider is selected but no key name: the server only accepts an explicit key reference — please pick one.",
+	settingsJevGlobalDefault: "Global default",
+	settingsJevPerPropositionTitle: "Per-proposition thresholds",
+	settingsJevPerPropositionHint:
+		"In measurement the three propositions score in separated ranges (scope≈0.4 / api≈0.7 / test≈0.8+), so one global threshold structurally cannot be right for all of them — hence the per-proposition values below. Overrides take part in the tri-state decision too; a blank field inherits the global value, and the band between the two thresholds is still the model's uncertainty zone (the gap escalates to a human).",
+	settingsJevPerPropositionApprove: "Approve",
+	settingsJevPerPropositionBlock: "Block",
+	settingsJevPerPropositionInherit: "Inherit global",
+	settingsJevPerPropositionClear: "Clear",
+	settingsJevPerPropositionEffective: "Effective threshold",
+	settingsJevPerPropositionScoped: "Override",
+	settingsJevPerPropositionInvalid:
+		"Invalid override: with the blanks filled from the global values, it needs 0 ≤ block < approve ≤ 1.",
 
 	/* Footer Jev gate item (components/JevFooterItem.tsx): minimal verdict + click-through panel.
 	   footerJevDetail = the note under "Latest decision" — status.runtime carries no per-proposition
@@ -1486,4 +1498,5 @@ export const en: EnDictionary = {
 	footerJevEmpty: "Jev: no decisions",
 	footerJevDetail: "The latest per-proposition scores are in the Jev settings section.",
 	footerJevLastDecision: "Latest decision",
+	footerJevReason: "Reason (from the most recent real decision response)",
 };

@@ -16,6 +16,12 @@
  *             三态计数 + 失败数，并明确指向设置面板，**不用 0 顶替**「没读到」。
  *   @GOTCHA 浮层是 <footer> 的子节点（position:fixed），所以 .statusbar 不能整块 display:none
  *             （会把它一起藏掉）——与 UsageDetail 同一条约束，见 FooterBar 头部 @GOTCHA。
+ *   @GOTCHA 推送（reqId:0）的 payload 里**没有**「最近一次决策」字段：只有聚合计数 + 配置 + 命题表。
+ *             所以这个浮层里的判定理由是**客户端手里确实有的那次真实决策回包**（目前唯一来源是
+ *             面板「测试连接」→ jev_probe_result，由 FooterBar 传 decision 进来）；拿不到就不渲染，
+ *             不把配置或聚合数拼成一句假的理由。
+ *   @CONTRACT 逐判定项生效阈值**读的是服务端回显**（config.thresholds.perProposition + 全局值），
+ *             只在真有独立阈值时渲染（否则与上面那行全局阈值重复，白占地方）。
  *   @WHY 最近结论由服务端推送的计数差推断（见 jev-footer.ts）：推送只带聚合数，没有「上一次结论」
  *        字段；能唯一归因才显示，否则显示「—」。
  * ──────────────────────────────────────────────────
@@ -23,8 +29,8 @@
 import { useState } from "react";
 import { useI18n, useT } from "../i18n";
 import type { JevStatusMsg } from "../use-chat";
-import type { UiJevGateConfig } from "../types";
-import { formatScore, outcomeLabelKey, pickError } from "../jev-decision";
+import type { UiJevDecision, UiJevGateConfig, UiJevProposition } from "../types";
+import { effectiveThresholds, formatScore, outcomeLabelKey, pickError, pickReason } from "../jev-decision";
 import { useLastJevOutcome, verdictTone } from "../jev-footer";
 import { JevRuntimeCards } from "./JevRuntimeView";
 
@@ -34,10 +40,13 @@ import { JevRuntimeCards } from "./JevRuntimeView";
  */
 export function JevFooterItem({
 	status,
+	decision,
 	onOpenSettings,
 }: {
 	/** 最近一次 jev_status（服务端主动推送的 reqId:0 与设置面板的回包是同一份存储，都能渲染）。 */
 	status: JevStatusMsg | null;
+	/** 客户端手里最近一次真实决策回包（目前唯一来源：面板「测试连接」）；没有就不渲染理由。 */
+	decision?: UiJevDecision | null;
 	/** 打开设置面板（由 App 注入 dialogs.setSettingsOpen；未注入时不显示入口）。 */
 	onOpenSettings?: () => void;
 }) {
@@ -48,6 +57,7 @@ export function JevFooterItem({
 	const payload = status?.ok ? status.status : undefined;
 	const runtime = payload?.runtime ?? null;
 	const config = payload?.config ?? null;
+	const propositions = payload?.propositions ?? [];
 	const outcome = useLastJevOutcome(runtime);
 	const empty = !runtime || runtime.total === 0;
 	const tone = verdictTone(outcome);
@@ -123,7 +133,15 @@ export function JevFooterItem({
 						)}
 						{/* status.runtime 不带逐条命题分数：如实说明分数在设置面板，不用 0/DOM 假造。 */}
 						<p className="set-hint">{t("footerJevDetail")}</p>
-						{config && <JevConfigFacts config={config} />}
+						{/* 判定理由：服务端 reason/reasonEn 已含**实际生效**的阈值与未达标项（jev-model.decideOutcome），
+						    双语按界面语言选 —— 直接显示，不要在客户端重写一份。 */}
+						{decision && (
+							<>
+								<div className="usage-attr-title">{t("footerJevReason")}</div>
+								<p className="set-hint">{pickReason(decision, locale)}</p>
+							</>
+						)}
+						{config && <JevConfigFacts config={config} propositions={propositions} />}
 					</div>
 				</>
 			)}
@@ -131,9 +149,11 @@ export function JevFooterItem({
 	);
 }
 
-/** 当前生效配置的只读展示（阈值 / 端点 / 模型 / 开关）；缺字段写「—」，不猜。 */
-function JevConfigFacts({ config }: { config: UiJevGateConfig }) {
+/** 当前生效配置的只读展示（阈值 / 逐判定项生效阈值 / 端点 / 模型 / 开关）；缺字段写「—」，不猜。 */
+function JevConfigFacts({ config, propositions }: { config: UiJevGateConfig; propositions: UiJevProposition[] }) {
 	const t = useT();
+	// 只有真有独立阈值时才列逐项生效值：否则每行都是全局值，与上面那行完全重复。
+	const overrides = Object.keys(config.thresholds?.perProposition ?? {});
 	return (
 		<>
 			<div className="usage-attr-title">{t("settingsJevThresholdsTitle")}</div>
@@ -143,6 +163,32 @@ function JevConfigFacts({ config }: { config: UiJevGateConfig }) {
 				<span className="field-label">{t("settingsJevBlockAt")}</span>
 				<span className="chan-meta">{formatScore(config.thresholds?.blockAt)}</span>
 			</div>
+			{config.thresholds && overrides.length > 0 && (
+				<>
+					<div className="usage-attr-title">{t("settingsJevPerPropositionEffective")}</div>
+					{propositions.length === 0 ? (
+						<p className="set-hint">{t("settingsJevPropositionsEmpty")}</p>
+					) : (
+						<div className="jev-prop-facts">
+							{propositions.map((p) => {
+								// 生效值一律读服务端**回显**（缺的一侧回落全局），不在客户端重新推导。
+								const eff = effectiveThresholds(p.id, config.thresholds);
+								return (
+									<div className="chan-account-row" key={p.id}>
+										<span className="field-label">{p.id}</span>
+										<span className="chan-meta">
+											{formatScore(eff.approveAt)} / {formatScore(eff.blockAt)}
+										</span>
+										<span className="chan-meta">
+											{eff.scoped ? t("settingsJevPerPropositionScoped") : t("settingsJevPerPropositionInherit")}
+										</span>
+									</div>
+								);
+							})}
+						</div>
+					)}
+				</>
+			)}
 			<div className="chan-account-row">
 				<span className="field-label">{t("settingsJevEndpoint")}</span>
 				<span className="chan-meta">{config.endpoint || "—"}</span>

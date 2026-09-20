@@ -44,8 +44,10 @@ import {
 	JEV_TUNE_REPEAT_DEFAULT,
 	JEV_TUNE_REPEAT_MAX,
 	type JevTuneScoredItem,
+	analyzePropositionWindows,
 	confusionAt,
 	parseJevCorpus,
+	recommendPropositionThresholds,
 	suggestThresholds,
 	summarizeScores,
 } from "../server/dev-con/jev-tune.js";
@@ -199,9 +201,18 @@ function requireApiKey(
 	return apiKey;
 }
 
+/** 用法错误（互斥 flag、缺参数）：由调用方统一报错退出，不猜意图。 */
+class FlagError extends Error {}
+
 function applyConfigPatch(
 	flags: Flags,
-	config: { thresholds: { approveAt: number; blockAt: number } },
+	config: {
+		thresholds: {
+			approveAt: number;
+			blockAt: number;
+			perProposition?: Record<string, { approveAt?: number; blockAt?: number }>;
+		};
+	},
 ): Record<string, unknown> {
 	const patch: Record<string, unknown> = {};
 	if (flags.get("enable") === true) patch.enabled = true;
@@ -210,10 +221,44 @@ function applyConfigPatch(
 	if (typeof endpoint === "string") patch.endpoint = endpoint;
 	const model = flags.get("model");
 	if (typeof model === "string") patch.model = model;
-	let thresholds: { approveAt: number; blockAt: number } | undefined;
+	const proposition = flags.get("proposition");
+	if (typeof proposition === "string" && flags.get("unset-proposition") !== undefined) {
+		// 两个都给了是矛盾指令：不猜，直接报错。
+		throw new FlagError("--proposition 与 --unset-proposition 不能同时使用");
+	}
+	let thresholds:
+		| { approveAt: number; blockAt: number; perProposition?: Record<string, { approveAt?: number; blockAt?: number }> }
+		| undefined;
 	const approveAt = numFlag(flags, "approve");
-	if (approveAt !== undefined) thresholds = { ...config.thresholds, approveAt };
 	const blockAt = numFlag(flags, "block");
+	if (typeof proposition === "string" && proposition.trim()) {
+		const id = proposition.trim();
+		const current = config.thresholds.perProposition?.[id] ?? {};
+		const next: { approveAt?: number; blockAt?: number } = { ...current };
+		if (approveAt !== undefined) next.approveAt = approveAt;
+		if (blockAt !== undefined) next.blockAt = blockAt;
+		if (next.approveAt === undefined && next.blockAt === undefined) {
+			throw new FlagError(`--proposition ${id} 需要同时给出 --approve 或 --block`);
+		}
+		const perProposition: Record<string, { approveAt?: number; blockAt?: number } | null> = {};
+		for (const [key, value] of Object.entries(config.thresholds.perProposition ?? {})) {
+			if (key !== id) perProposition[key] = value;
+		}
+		perProposition[id] = next;
+		patch.thresholds = { perProposition };
+		return patch;
+	}
+	const unset = flags.get("unset-proposition");
+	if (typeof unset === "string" && unset.trim()) {
+		// 显式 null = 删这一项（见 jev-settings.mergeThresholds）；其余项原样回写。
+		patch.thresholds = { perProposition: { [unset.trim()]: null } };
+		return patch;
+	}
+	if (flags.get("clear-propositions") === true) {
+		patch.thresholds = { perProposition: null };
+		return patch;
+	}
+	if (approveAt !== undefined) thresholds = { ...config.thresholds, approveAt };
 	if (blockAt !== undefined) thresholds = { ...(thresholds ?? config.thresholds), blockAt };
 	if (thresholds) patch.thresholds = thresholds;
 	const timeoutMs = numFlag(flags, "timeout");
@@ -455,7 +500,16 @@ async function runTune(
 	const summaries = summarizeScores(perItemScores, config.thresholds);
 	const current = confusionAt(scoredItems, config.thresholds);
 	const { suggestions, evaluated, skipped } = suggestThresholds(scoredItems);
+	// 逐命题窗口（加宽网格）：只增不改 —— 全局建议（suggestions/recommended）仍用窄网格。
+	const perProposition = analyzePropositionWindows(scoredItems);
 	const top = suggestions[0];
+	// 落地的建议形态：全局基档（窄网格 top）+ 逐项覆盖，并给出它自己的四类统计。
+	// @WHY 全局档位单独看永远看不出逐项阈值的价值；退出码也看这一组（见文件尾）。
+	const propositionRecommendation = recommendPropositionThresholds(
+		scoredItems,
+		top ?? config.thresholds,
+		perProposition,
+	);
 	const report: JevTuneReport = {
 		corpus,
 		model: config.model,
@@ -467,6 +521,8 @@ async function runTune(
 		failures,
 		summaries,
 		current: { thresholds: config.thresholds, confusion: current },
+		perProposition,
+		propositionRecommendation,
 		recommended: top ? { approveAt: top.approveAt, blockAt: top.blockAt } : null,
 		suggestions,
 		evaluated,
@@ -487,8 +543,9 @@ async function runTune(
 		console.error("没有任何合法候选档位（blockAt 必须小于 approveAt）：检查网格。");
 		return 3;
 	}
-	// 退出码 1 = 连最优档位都存在误放行：需要人看，不能当「阈值没问题」。
-	return top.confusion.falsePass > 0 ? 1 : 0;
+	// 退出码 1 = 要落地的建议（全局基档 + 逐项覆盖，按**逐项阈值生效**）仍存在误放行：需要人看，不能当「阈值没问题」。
+	// @WHY 只看全局档位会把「逐项阈值已经把误放行降到 0」的情况误报成有问题（反之亦然）。
+	return propositionRecommendation.confusion.falsePass > 0 ? 1 : 0;
 }
 
 async function main(): Promise<number> {
@@ -508,7 +565,15 @@ async function main(): Promise<number> {
 	}
 
 	if (command === "config") {
-		const patch = applyConfigPatch(flags, config);
+		const patch = (() => {
+			try {
+				return applyConfigPatch(flags, config);
+			} catch (e) {
+				console.error(`参数错误: ${e instanceof Error ? e.message : String(e)}`);
+				return null;
+			}
+		})();
+		if (patch === null) return 3;
 		if (Object.keys(patch).length > 0) {
 			const saved = saveJevSettings(agentDir, patch);
 			if (!saved.ok) {

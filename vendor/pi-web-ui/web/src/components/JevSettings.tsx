@@ -16,6 +16,11 @@
  *             固定为本地草稿 —— 否则每次 status 回包都会把正在输入的内容盖掉。改完保存或点
  *             「重新载入」才回到服务端值。
  *   @GOTCHA 保存提交的是**整份配置**（含服务端限制字段原样回传）：少带字段等于把它清空。
+ *           唯一例外是 thresholds.perProposition：它走**逐项补丁**（只提交用户改过的项，
+ *           整项留空 = 发 null 删除），整块回写会盖掉别的客户端刚设的独立阈值。
+ *   @GOTCHA 逐判定项区块**不能**用 .set-list/.set-row 类名：命题清单区块的浏览器断言按
+ *           `.set-list .set-row` 计数，复用类名会让两边互相污染（见 tests/jev/browser-ui.mjs §7）。
+ *           同理不能用 “approve threshold” 这种与全局阈值 label 重合的字串做行内 label。
  *   @ASSUME 出站消息直接是协议成员（`jev_status` / `jev_config_save` / `jev_probe`，见 protocol.ts），
  *            保存是服务端读-合并-写：只提交界面拥有的字段。
  *   @WHY 阈值必须给出解释文案：Jev 同一输入的概率抖动可达 ~0.08，双阈值之间的空白带是「转人工」
@@ -33,15 +38,22 @@ import type {
 	ProviderStatus,
 	UiAccountStatus,
 	UiChannelInfo,
+	UiJevThresholds,
+	UiJevThresholdsInput,
 } from "../types";
 import { JevBalance, JevPropositionList, JevReceipts, JevRuntimeCards } from "./JevRuntimeView";
 import {
+	brief,
 	checkEndpoint,
+	checkPropositionDraft,
 	checkThresholds,
 	configInputOf,
 	credentialProblem,
 	draftOf,
+	effectiveDraftThresholds,
+	effectiveThresholds,
 	formatLimit,
+	formatScore,
 	isDriftingModelAlias,
 	JEV_DEFAULT_PROVIDER_ID,
 	JEV_KNOWN_MODELS,
@@ -50,12 +62,17 @@ import {
 	jevProbeMessage,
 	jevStatusMessage,
 	parseThreshold,
+	propositionDraftOf,
+	propositionThresholdsPatch,
+	type EffectiveThresholds,
 	type JevDraft,
+	type JevPropositionDrafts,
 } from "../jev-decision";
 
 /** 拦住保存的文案 key（与 blockReason 一一对应）。 */
 type SaveBlockKey =
 	| "settingsJevThresholdsInvalid"
+	| "settingsJevPerPropositionInvalid"
 	| "settingsJevEndpointInvalid"
 	| "settingsJevModelRequired"
 	| "settingsJevKeyNameRequired";
@@ -90,6 +107,8 @@ export function JevSettings({
 	const config = status?.status?.config ?? null;
 	// 草稿：null = 未编辑（跟着服务端生效值走），见文件头 @GOTCHA。
 	const [draft, setDraft] = useState<JevDraft | null>(null);
+	/** 逐判定项草稿：**只有用户改过的项**才进这个 map（未出现的项不提交，见 jev-decision.ts）。 */
+	const [propDrafts, setPropDrafts] = useState<JevPropositionDrafts>({});
 	const view = draft ?? (config ? draftOf(config) : null);
 	const reqRef = useRef({ status: 0, save: 0, probe: 0 });
 	const [busy, setBusy] = useState<null | "status" | "save" | "probe">(null);
@@ -122,6 +141,8 @@ export function JevSettings({
 		// 但输入框回到保存前的值」。
 		if (jev.config.ok && jev.config.phase === "applied") {
 			setDraft(jev.config.config ? draftOf(jev.config.config) : null);
+			// 逐判定项草稿同步清空：新基线是回执里的 config，未编辑的项跟着它走。
+			setPropDrafts({});
 		}
 	}, [busy, jev.config]);
 	useEffect(() => {
@@ -161,6 +182,27 @@ export function JevSettings({
 	const approveAt = view ? parseThreshold(view.approveAt) : null;
 	const blockAt = view ? parseThreshold(view.blockAt) : null;
 	const check = checkThresholds(approveAt, blockAt);
+	const propositions = status?.status?.propositions ?? [];
+	/**
+	 * 逐判定项的**回显底稿**：保存回执优先于 jev_status。
+	 * @GOTCHA 保存后服务端**不**补推 jev_status，回执才是刚生效的权威值（且可能被归一化过）；
+	 *   只读 status.config 的话，保存完输入框会退回保存前的值，连「清除」按钮的可用性也错了
+	 *   （明明有独立阈值却显示成没有）——与文件头那条 @GOTCHA 同一个坑，这里同样要避开。
+	 */
+	const appliedThresholds: UiJevThresholds | undefined =
+		jev.config?.ok && jev.config.phase === "applied" && jev.config.config
+			? jev.config.config.thresholds
+			: config?.thresholds;
+	/**
+	 * 逐判定项的就地校验：留空按**全局值补齐**后必须 0 ≤ 拦截 < 放行。
+	 * @WHY 全局阈值本身就不合法时这里不报（上面那条理由已经在说同一件事，不重复刷屏）。
+	 */
+	const invalidPropositions =
+		approveAt === null || blockAt === null
+			? []
+			: propositions
+					.filter((p) => propDrafts[p.id] && !checkPropositionDraft(propDrafts[p.id], { approveAt, blockAt }))
+					.map((p) => p.id);
 	const drifting = !!view && isDriftingModelAlias(view.model);
 	/**
 	 * 拦住保存的那一条理由（null = 可保存）。
@@ -170,16 +212,43 @@ export function JevSettings({
 	const blockReason: SaveBlockKey | null =
 		!view || approveAt === null || blockAt === null || !check.ok
 			? "settingsJevThresholdsInvalid"
-			: !checkEndpoint(view.endpoint)
-				? "settingsJevEndpointInvalid"
-				: !view.model.trim()
-					? "settingsJevModelRequired"
-					: credentialProblem(view)
-						? "settingsJevKeyNameRequired"
-						: null;
+			: invalidPropositions.length > 0
+				? "settingsJevPerPropositionInvalid"
+				: !checkEndpoint(view.endpoint)
+					? "settingsJevEndpointInvalid"
+					: !view.model.trim()
+						? "settingsJevModelRequired"
+						: credentialProblem(view)
+							? "settingsJevKeyNameRequired"
+							: null;
 	const patch = (p: Partial<JevDraft>) => {
 		if (!view) return;
 		setDraft({ ...view, ...p });
+	};
+	/** 服务端回显的独立阈值 → 输入框初值（没配的项两侧都是空串 = 继承全局）。 */
+	const serverPropRow = (id: string) => propositionDraftOf(appliedThresholds?.perProposition?.[id]);
+	/** 这一项当前有没有落盘的独立阈值（决定「清除」能不能点）。 */
+	const hasPropOverride = (id: string) => !!appliedThresholds?.perProposition?.[id];
+	/**
+	 * 逐判定项输入：首次编辑时以**服务端回显值**起底，之后跟着本地草稿走（与 JevDraft 同一策略）。
+	 * @GOTCHA 不要用「整个 propDrafts 置为回显值」的写法：那等于把全部项都标成「改过」，保存时就会整块回写。
+	 */
+	const editProp = (id: string, field: "approveAt" | "blockAt", value: string) => {
+		setPropDrafts((d) => ({ ...d, [id]: { ...(d[id] ?? serverPropRow(id)), [field]: value } }));
+	};
+	/** 清除 = 该项整体回到「继承全局」：提交时按协议发 `{ id: null }`（删除磁盘上的独立阈值）。 */
+	const clearProp = (id: string) => {
+		setPropDrafts((d) => ({ ...d, [id]: { approveAt: "", blockAt: "" } }));
+	};
+	/**
+	 * 某一项当前实际生效的阈值口径：未编辑的项直接读服务端**回显**，编辑过的看草稿。
+	 * @CONTRACT 不在客户端重新推导数值（见 jev-decision.ts 的 effectiveThresholds / resolvePropositionThresholds 同源性）。
+	 */
+	const effectiveFor = (id: string): EffectiveThresholds | null => {
+		if (approveAt === null || blockAt === null) return null;
+		const local = propDrafts[id];
+		if (local) return effectiveDraftThresholds(local, { approveAt, blockAt });
+		return effectiveThresholds(id, appliedThresholds ?? { approveAt, blockAt });
 	};
 	/** 换服务商 = 旧密钥名无意义，必须清空（不做静默沿用）；有当前密钥就默认选上。 */
 	const selectProvider = (next: string) => {
@@ -219,9 +288,13 @@ export function JevSettings({
 	const save = () => {
 		// blockReason 已保证阈值合法；这里再判一次 null 只为让类型收窄（不用断言）。
 		if (!view || blockReason !== null || approveAt === null || blockAt === null) return;
+		const thresholds: UiJevThresholdsInput = { approveAt, blockAt };
+		// 只提交用户改过的项；一项都没改就不带 perProposition（服务端会原样保留磁盘上的值）。
+		const propPatch = propositionThresholdsPatch(propDrafts);
+		if (propPatch) thresholds.perProposition = propPatch;
 		reqRef.current.save += 1;
 		setBusy("save");
-		send(jevConfigSaveMessage(reqRef.current.save, configInputOf(view, { approveAt, blockAt })));
+		send(jevConfigSaveMessage(reqRef.current.save, configInputOf(view, thresholds)));
 	};
 	const probe = () => {
 		reqRef.current.probe += 1;
@@ -237,8 +310,9 @@ export function JevSettings({
 					className="chan-btn"
 					onClick={() => {
 						// 「重新载入」按文件头 @GOTCHA 的约定回到服务端值：必须一并丢弃本地草稿，
-						// 否则光 refresh 只更新了 status，表单仍停在草稿上（与文案不符）。
+						// 否则光 refresh 只更新了 status，表单仍停在草稿上（与文案不符）。逐判定项草稿同理。
 						setDraft(null);
+						setPropDrafts({});
 						refresh();
 					}}
 					disabled={busy === "status"}
@@ -421,9 +495,13 @@ export function JevSettings({
 						)}
 					</div>
 
-					{/* ---- 阈值（抖动带宽是这里最容易配错的地方） ---- */}
+					{/* ---- 阈值（抖动带宽是这里最容易配错的地方）。这两个值是**全局默认**：
+					      逐判定项可用下面的独立阈值覆盖，没覆盖的项一律走这里。 ---- */}
 					<div className="chan-conn">
-						<span className="field-label">{t("settingsJevThresholdsTitle")}</span>
+						<div className="chan-account-row">
+							<span className="field-label">{t("settingsJevThresholdsTitle")}</span>
+							<span className="chan-meta">{t("settingsJevGlobalDefault")}</span>
+						</div>
 						<div className="form-grid">
 							<label className="field">
 								<span className="field-label">{t("settingsJevApproveAt")}</span>
@@ -473,6 +551,84 @@ export function JevSettings({
 								{t("settingsJevMinInterval")} {formatLimit(config?.minIntervalMs)}
 							</span>
 						</div>
+					</div>
+
+					{/* ---- 逐判定项阈值：实测三个命题的分数区间整体错开，单一全局阈值结构上不可能同时合适 ---- */}
+					<div className="chan-conn">
+						<span className="field-label">{t("settingsJevPerPropositionTitle")}</span>
+						<p className="set-hint">{t("settingsJevPerPropositionHint")}</p>
+						{propositions.length === 0 ? (
+							<p className="set-hint">{t("settingsJevPropositionsEmpty")}</p>
+						) : (
+							<div className="jev-prop-list">
+								{propositions.map((p) => {
+									const local = propDrafts[p.id];
+									// 未编辑的项显示服务端回显值（有独立阈值就是覆盖值，否则就是空 = 继承）。
+									const row = local ?? serverPropRow(p.id);
+									const effective = effectiveFor(p.id);
+									const hasOverride = hasPropOverride(p.id);
+									const invalid = invalidPropositions.includes(p.id);
+									return (
+										<div className="jev-prop-row" key={p.id} data-prop-id={p.id}>
+											<div className="jev-prop-info">
+												{/* 判定语句截断到一行，title 放全文（与命题清单同一份服务端文本）。 */}
+												<div className="jev-prop-name" title={p.instructions}>
+													{p.id}
+												</div>
+												<div className="jev-prop-desc" title={p.instructions}>
+													{brief(p.instructions)}
+												</div>
+											</div>
+											<label className="jev-prop-field">
+												<span className="jev-prop-label">{t("settingsJevPerPropositionApprove")}</span>
+												<input
+													type="number"
+													min={0}
+													max={1}
+													step={0.01}
+													value={row.approveAt}
+													placeholder={t("settingsJevPerPropositionInherit")}
+													aria-label={`${p.id} ${t("settingsJevPerPropositionApprove")}`}
+													onChange={(e) => editProp(p.id, "approveAt", e.target.value)}
+												/>
+											</label>
+											<label className="jev-prop-field">
+												<span className="jev-prop-label">{t("settingsJevPerPropositionBlock")}</span>
+												<input
+													type="number"
+													min={0}
+													max={1}
+													step={0.01}
+													value={row.blockAt}
+													placeholder={t("settingsJevPerPropositionInherit")}
+													aria-label={`${p.id} ${t("settingsJevPerPropositionBlock")}`}
+													onChange={(e) => editProp(p.id, "blockAt", e.target.value)}
+												/>
+											</label>
+											{/* 生效阈值：显示「这一项到底按多少判」，未覆盖的项就是全局值。 */}
+											{effective && (
+												<span className="chan-meta">
+													{effective.scoped
+														? t("settingsJevPerPropositionScoped")
+														: t("settingsJevPerPropositionInherit")}{" "}
+													{formatScore(effective.approveAt)} / {formatScore(effective.blockAt)}
+												</span>
+											)}
+											<button
+												type="button"
+												className="set-btn-mini"
+												// 本来就没有独立阈值且没改过：清除是空操作，不发无意义的删除帧。
+												disabled={!hasOverride && !local}
+												onClick={() => clearProp(p.id)}
+											>
+												{t("settingsJevPerPropositionClear")}
+											</button>
+											{invalid && <span className="chan-warn">{t("settingsJevPerPropositionInvalid")}</span>}
+										</div>
+									);
+								})}
+							</div>
+						)}
 					</div>
 
 					{/* ---- 余额：复用渠道账户查询适配器（不另写余额接口） ---- */}

@@ -189,12 +189,16 @@ export class JevGate {
 		this.cachePath = opts.cachePath ?? null;
 	}
 
-	/** 当前配置（副本，避免调用方改到内部状态）。 */
+	/** 当前配置（**深**副本，避免调用方改到内部状态：perProposition 是嵌套对象，浅拷会漏）。 */
 	config(): JevGateConfig {
+		const per = this.configValue.thresholds.perProposition;
 		return {
 			...this.configValue,
 			credentialRef: this.configValue.credentialRef ? { ...this.configValue.credentialRef } : null,
-			thresholds: { ...this.configValue.thresholds },
+			thresholds: {
+				...this.configValue.thresholds,
+				...(per ? { perProposition: Object.fromEntries(Object.entries(per).map(([id, e]) => [id, { ...e }])) } : {}),
+			},
 		};
 	}
 

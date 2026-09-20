@@ -50,6 +50,49 @@ export interface LoadedJevSettings {
 	parseError?: boolean;
 }
 
+/**
+ * thresholds 的两层合并（保存路径专用）：
+ * - 第一层同旧行为：只给 approveAt 时不会把 blockAt 丢掉。
+ * - 第二层 perProposition **逐项**合并：只改一个判定项时不会把其它项的独立阈值抹掉，
+ *   这是必要的——如果整块替换，UI 里改一个题就会静默删掉其余题的阈值。
+ * - 删除语义：`perProposition: null` = 全清；`perProposition.<id>: null` = 删这一项。
+ *   @WHY 用 null 而不是「缺省即删」：缺省必须继续表示「这一层没提到，保留磁盘上的值」。
+ * - 非法形状（数组/字符串）原样透传，交给 validateJevGateConfig 报错，不在这里静默丢弃。
+ */
+export function mergeThresholds(base: unknown, patch: Record<string, unknown>): Record<string, unknown> {
+	const merged: Record<string, unknown> = { ...((base ?? {}) as Record<string, unknown>), ...patch };
+	if (!("perProposition" in patch)) return merged;
+	const incoming = patch.perProposition;
+	if (incoming === null) {
+		delete merged.perProposition;
+		return merged;
+	}
+	if (typeof incoming !== "object" || Array.isArray(incoming)) return merged;
+	const baseMap = ((base ?? {}) as Record<string, unknown>).perProposition;
+	const next: Record<string, unknown> = { ...((baseMap ?? {}) as Record<string, unknown>) };
+	if (!(typeof baseMap === "object" && baseMap !== null && !Array.isArray(baseMap))) {
+		for (const k of Object.keys(next)) delete next[k];
+	}
+	for (const [id, entry] of Object.entries(incoming as Record<string, unknown>)) {
+		if (entry === null) {
+			delete next[id];
+			continue;
+		}
+		if (typeof entry !== "object" || Array.isArray(entry)) {
+			next[id] = entry;
+			continue;
+		}
+		const prev = next[id];
+		next[id] = {
+			...((typeof prev === "object" && prev !== null && !Array.isArray(prev) ? prev : {}) as object),
+			...entry,
+		};
+	}
+	if (Object.keys(next).length === 0) delete merged.perProposition;
+	else merged.perProposition = next;
+	return merged;
+}
+
 /** 保存结果：失败给中文 + 英文双语（回执直接透传）。 */
 export type SaveJevSettingsResult = { ok: true; config: JevGateConfig } | { ok: false; error: string; errorEn: string };
 
@@ -141,10 +184,7 @@ export function saveJevSettings(agentDir: string, partial: unknown): SaveJevSett
 		if (value === undefined) continue;
 		// thresholds 深合并：只改 approveAt 时不能把 blockAt 丢掉。
 		if (key === "thresholds" && value && typeof value === "object" && !Array.isArray(value)) {
-			merged.thresholds = {
-				...(base.thresholds as Record<string, unknown>),
-				...(value as Record<string, unknown>),
-			};
+			merged.thresholds = mergeThresholds(base.thresholds, value as Record<string, unknown>);
 			continue;
 		}
 		merged[key] = value;

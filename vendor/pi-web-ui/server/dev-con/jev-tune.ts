@@ -24,9 +24,21 @@
  *   @MAGIC 默认网格见 JEV_TUNE_DEFAULT_GRID（approveAt ∈ {0.8,0.85,0.9,0.95} ×
  *          blockAt ∈ {0.02,0.05,0.1,0.15}，且必须 blockAt < approveAt）；重复采样上限见
  *          JEV_TUNE_REPEAT_MAX（钱与时间都随它线性增长）。
+ *          **逐命题**分析另有加宽网格 JEV_TUNE_PROPOSITION_GRID（approveAt 0.30…0.95 + 0.98，
+ *          步长 0.05）：实测三个命题的可分窗口互不相同（scope 在 0.4 附近、public_api 在
+ *          0.6–0.73、test_asserts_behavior 在 0.77+），窄网格连看都看不到它们。
+ *   @WHY 单一全局阈值在**结构上**不可能同时合适：每个命题的分数分布不同（见上面实测）。
+ *        所以逐命题分析按命题分组，且**只统计带该命题的条目** —— 一条样本带多个命题时每个
+ *        命题各算它一份（propositions 是数组），其它命题的条目不得污染本命题的统计。
+ *        重复采样取**均值**参与分组（逐命题只关心「这个命题的分数落在哪」，抖动由 summaries 交代）。
+ *   @GOTCHA 可分窗口是 (windowLo, windowHi] 这种**半开**区间：max(block) 与 min(pass) 相等时
+ *        窗口为空（不可分、重叠 0），差一点就会把该拦的放行。任一侧没有样本时不下「可分」结论。
+ *   @CONTRACT 逐命题分析**不改**全局建议：`suggestThresholds` 仍用窄网格与既有排序，
+ *        `JevTuneReport.suggestions` 的形状与含义不变（既有消费者/测试依赖它们）。
  * ──────────────────────────────────────────────────
  */
 import {
+	JEV_PROPOSITIONS,
 	type JevOutcome,
 	type JevThresholds,
 	decideOutcome,
@@ -351,6 +363,20 @@ export const JEV_TUNE_DEFAULT_GRID: JevTuneGrid = {
 	blockAt: [0.02, 0.05, 0.1, 0.15],
 };
 
+/** 逐命题分析的建议步长（窗口上界下取整到它，得到可写进配置的 approveAt）。 */
+export const JEV_TUNE_PROPOSITION_STEP = 0.05;
+
+/**
+ * **逐命题**用的加宽网格（见文件头 @MAGIC）。
+ * @WHY 实测 `change_within_task_scope` 的分数整体在 0.4 附近，窄网格（>= 0.8）在结构上就
+ *   扫不到它的窗口 —— 拿窄网格逐命题分析只会得到「所有档位都一样差」的假结论。
+ *   blockAt 沿用默认网格：低分段（<= 0.15）本来就是「明确是坏事」，不需要加宽。
+ */
+export const JEV_TUNE_PROPOSITION_GRID: JevTuneGrid = {
+	approveAt: [0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.98],
+	blockAt: [0.02, 0.05, 0.1, 0.15],
+};
+
 /** 一档候选阈值的评测结果 + 人可读的排序依据。 */
 export interface JevTuneSuggestion {
 	approveAt: number;
@@ -379,6 +405,8 @@ function rationaleOf(approveAt: number, blockAt: number, confusion: JevTuneConfu
  */
 export function suggestThresholds(
 	items: readonly JevTuneScoredItem[],
+	// @CONTRACT 默认仍是**窄**网格：加宽网格只用于逐命题分析（见 JEV_TUNE_PROPOSITION_GRID），
+	//   否则既有输出（`tune` 的候选阈值一节）与依赖它的消费者会整体变形。
 	grid: JevTuneGrid = JEV_TUNE_DEFAULT_GRID,
 	top = DEFAULT_TOP,
 ): {
@@ -413,4 +441,419 @@ export function suggestThresholds(
 	);
 	const limit = Number.isInteger(top) && top > 0 ? top : DEFAULT_TOP;
 	return { suggestions: evaluated.slice(0, limit), evaluated: evaluated.length, skipped };
+}
+
+/** 逐命题分析里点名的**一条样本**（id + 参与统计的均分），用于「谁挡住了可分性」。 */
+export interface JevTuneWindowRef {
+	id: string;
+	score: number;
+}
+
+/**
+ * 单个命题的「可分窗口」分析（阈值只对该命题生效）。
+ * @CONTRACT 统计范围只有**带这个命题**的条目（见文件头 @WHY）；一条样本带多个命题时，
+ *   每个命题各得到它自己的一份均值，互不污染。
+ */
+export interface JevTunePropositionAnalysis {
+	proposition: string;
+	/** 带该命题且有可用分数的条目数（should-pass / should-block 分开数）。 */
+	passCount: number;
+	blockCount: number;
+	/** 每条样本取重复的均值后**升序**排列（重复为 1 时就是原分数）。 */
+	passScores: number[];
+	blockScores: number[];
+	/** true = max(block) < min(pass)：存在一个能把两类分开的阈值。 */
+	separable: boolean;
+	/** 可分时：windowLo = should-block 最高分（**不含**）→ 建议判据 `t ∈ (windowLo, windowHi]`。 */
+	windowLo: number | null;
+	/** 可分时：windowHi = should-pass 最低分（**含**）。 */
+	windowHi: number | null;
+	/** 不可分时：max(block) - min(pass)（重叠，>= 0；任一侧没有样本时为 null —— 不编造窗口）。 */
+	overlap: number | null;
+	/** 挡住可分性的 should-block 条目（分数 >= min(pass)）：它们本就该被拦，分数却和 should-pass 撞上。 */
+	overlapBlockItems: JevTuneWindowRef[];
+	/** 挡住可分性的 should-pass 条目（分数 <= max(block)）。 */
+	overlapPassItems: JevTuneWindowRef[];
+	/** 带该命题但没有可用分数的条目 id（不补 0，已排除在统计外）。 */
+	unusable: string[];
+	/** 用**加宽**网格单独扫出的最佳档（排序同 suggestThresholds）；无样本时为 null。 */
+	best: JevTuneSuggestion | null;
+	/** 建议的独立阈值：可分时 approveAt = windowHi 下取整到 0.05；否则 null = 阈值解决不了。 */
+	recommended: { approveAt: number; blockAt: number } | null;
+	/** true = 可分窗口不在**全局**网格覆盖内 → 单一全局阈值在结构上就表达不了它。 */
+	needsOwnThreshold: boolean;
+}
+
+/** 一条样本×命题的中间态（均值已算好，后续只排序与分组）。 */
+interface PropositionSample {
+	id: string;
+	label: JevTuneLabel;
+	score: number;
+}
+
+/**
+ * 按判定项分组的一条条**均值样本**（逐命题分析的唯一入口）。
+ * @CONTRACT 阈值只对「带这个判定项」的条目生效：本函数就是这条规则的实现处，
+ *   别的判定项的条目在这里就被排除了；带该判定项却一个有效样本都没有的条目进 unusable。
+ */
+function groupMeanSamples(items: readonly JevTuneScoredItem[]): {
+	samples: Map<string, PropositionSample[]>;
+	unusable: Map<string, string[]>;
+} {
+	const samples = new Map<string, PropositionSample[]>();
+	const unusable = new Map<string, string[]>();
+	for (const item of items ?? []) {
+		for (const proposition of Object.keys(item.scores ?? {})) {
+			const mean = meanScoreOf(item.scores[proposition]);
+			if (mean === null) {
+				// 带了这个命题却一个有效样本都没有：如实列出，不进 pass/block（不补 0）。
+				unusable.set(proposition, [...(unusable.get(proposition) ?? []), item.id]);
+				continue;
+			}
+			samples.set(proposition, [...(samples.get(proposition) ?? []), { id: item.id, label: item.label, score: mean }]);
+		}
+	}
+	return { samples, unusable };
+}
+
+/** 把窗口上界下取整到步长（0.71 → 0.70），用整数运算避免 0.7000000000000001 这种脏值。 */
+function floorToStep(value: number, step = JEV_TUNE_PROPOSITION_STEP): number {
+	if (!Number.isFinite(value) || !(step > 0)) return Number.NaN;
+	return Number((Math.floor(value / step + 1e-9) * step).toFixed(4));
+}
+
+/**
+ * 一条（条目 × 命题）的重复分数取**均值**；没有有效样本时返回 null（绝不补 0）。
+ * @WHY 逐命题只问「这个命题的分数落在哪」：重复采样的抖动由 summarizeScores 交代，
+ *   这里若取最保守的一次，会把抖动误读成「这个命题本身不可分」。
+ * @GOTCHA 均值保留 4 位小数（与分数展示同精度）：否则 [0.6,0.3] 会得到 0.44999999999999996，
+ *   让 windowLo / overlap 这些**会被拿去做判断**的值带上看不见的尾巴。
+ */
+function meanScoreOf(scores: readonly number[] | undefined): number | null {
+	const usable = (scores ?? []).filter(isScore);
+	if (usable.length === 0) return null;
+	return roundScore(usable.reduce((sum, score) => sum + score, 0) / usable.length);
+}
+
+/** 命题的展示顺序：先按注册表顺序（人熟悉的那套），不在注册表里的按名字排在后面。 */
+function orderPropositions(names: readonly string[]): string[] {
+	const rank = (name: string): number => {
+		const index = JEV_PROPOSITIONS.findIndex((entry) => entry.id === name);
+		return index < 0 ? Number.POSITIVE_INFINITY : index;
+	};
+	return [...names].sort((a, b) => {
+		const rankA = rank(a);
+		const rankB = rank(b);
+		// 两边都不在注册表里时 rank 都是 Infinity（相减会得到 NaN），直接按名字兜底。
+		if (rankA !== rankB) return rankA < rankB ? -1 : 1;
+		return a < b ? -1 : a > b ? 1 : 0;
+	});
+}
+
+/** 重叠值保留 4 位小数（0.79-0.39 的浮点尾巴不该出现在报告里）。 */
+function roundScore(value: number): number {
+	return Number(value.toFixed(4));
+}
+
+/**
+ * 逐命题可分窗口分析（本轮核心交付）。
+ * @CONTRACT 输入是一条条 `JevTuneScoredItem`（`scores` 的键就是该条的 propositions、值是重复分数）；
+ *   **只统计带这个命题的条目**，其它命题的条目一律排除（见文件头 @WHY）。
+ * @CONTRACT 可分判据是**严格半开**：`max(block) < min(pass)` 才算可分，窗口 (windowLo, windowHi]；
+ *   相等（max(block) === min(pass)）时窗口为空 → 不可分，重叠 0。
+ *   任一侧没有样本 → 不下结论（separable=false、overlap=null），不拿「没测过」当好消息。
+ * @CONTRACT 最佳档排序与全局完全一致（① 误放行少 ② 误拦少 ③ 转人工少 ④ 空白带更宽），
+ *   只是换了加宽网格、且每条样本只用该命题的均值参与判定（`decideOutcome({ [命题]: 均值 })`）。
+ *   最佳档仍有误放行时由调用方按 `best.confusion.falsePass` 标出（不在这里改判）。
+ */
+export function analyzePropositionWindows(
+	items: readonly JevTuneScoredItem[],
+	grid: JevTuneGrid = JEV_TUNE_PROPOSITION_GRID,
+): JevTunePropositionAnalysis[] {
+	const { samples, unusable } = groupMeanSamples(items);
+
+	return orderPropositions([...samples.keys(), ...unusable.keys()]).map((proposition) => {
+		const bucket = {
+			pass: (samples.get(proposition) ?? []).filter((sample) => sample.label === "should-pass"),
+			block: (samples.get(proposition) ?? []).filter((sample) => sample.label === "should-block"),
+			unusable: unusable.get(proposition) ?? [],
+		};
+		const byScore = (a: PropositionSample, b: PropositionSample): number => a.score - b.score || (a.id < b.id ? -1 : 1);
+		const pass = [...bucket.pass].sort(byScore);
+		const block = [...bucket.block].sort(byScore);
+		const passScores = pass.map((sample) => sample.score);
+		const blockScores = block.map((sample) => sample.score);
+		const passMin = pass.length > 0 ? pass[0]!.score : null;
+		const blockMax = block.length > 0 ? block[block.length - 1]!.score : null;
+
+		let separable = false;
+		let windowLo: number | null = null;
+		let windowHi: number | null = null;
+		let overlap: number | null = null;
+		let overlapBlockItems: JevTuneWindowRef[] = [];
+		let overlapPassItems: JevTuneWindowRef[] = [];
+		if (passMin !== null && blockMax !== null) {
+			if (blockMax < passMin) {
+				separable = true;
+				windowLo = blockMax;
+				windowHi = passMin;
+			} else {
+				overlap = roundScore(blockMax - passMin);
+				// 挡住可分性的两边：本该拦下却高到撞上 should-pass 的，与本该放行却低到撞上 should-block 的。
+				// 只带出 id + 分数（JevTuneWindowRef 的形状）：label 是本模块的内部字段，不进报告。
+				overlapBlockItems = block
+					.filter((sample) => sample.score >= passMin)
+					.map((sample) => ({ id: sample.id, score: sample.score }));
+				overlapPassItems = pass
+					.filter((sample) => sample.score <= blockMax)
+					.map((sample) => ({ id: sample.id, score: sample.score }));
+			}
+		}
+
+		// 最佳档：每条样本只用**该命题的均值**（单样本判定 = decideOutcome 对该分数直接判三态）。
+		const meanItems: JevTuneScoredItem[] = [
+			...pass.map((sample) => ({
+				id: sample.id,
+				label: "should-pass" as JevTuneLabel,
+				scores: { [proposition]: [sample.score] },
+			})),
+			...block.map((sample) => ({
+				id: sample.id,
+				label: "should-block" as JevTuneLabel,
+				scores: { [proposition]: [sample.score] },
+			})),
+		];
+		// 一条样本都没有时不出最佳档：空语料下所有档位指标全为 0，那只是「最保守的一档」，不是证据。
+		const best = meanItems.length > 0 ? (suggestThresholds(meanItems, grid, 1).suggestions[0] ?? null) : null;
+
+		const approveAt = windowHi !== null ? floorToStep(windowHi) : Number.NaN;
+		// @GOTCHA 下取整后的值必须**仍落在窗口里**：窗口 (0.60, 0.61] 只有 0.01 宽，
+		//   floorToStep(0.61) = 0.60 恰好是窗口下界（不含）—— 拿它当建议会把 0.60 的 should-block 放行。
+		//   落不进去就不给建议（null），由渲染层如实说「窗口太窄」。
+		const windowFits =
+			separable && windowLo !== null && windowHi !== null && windowLo < approveAt && approveAt <= windowHi;
+		// 建议的 blockAt 取经验最佳档，但必须严格小于建议的 approveAt（与 validateJevGateConfig 同一条约束）。
+		const recommended = windowFits
+			? {
+					approveAt,
+					blockAt: Math.max(
+						0,
+						Math.min(best ? best.blockAt : JEV_TUNE_DEFAULT_GRID.blockAt[0]!, roundScore(approveAt - 0.05)),
+					),
+				}
+			: null;
+		// 窗口是否被全局网格覆盖：有全局 approveAt 落在 (windowLo, windowHi] 里 = 全局阈值能表达它。
+		const needsOwnThreshold =
+			separable && windowLo !== null && windowHi !== null
+				? !JEV_TUNE_DEFAULT_GRID.approveAt.some((candidate) => windowLo! < candidate && candidate <= windowHi!)
+				: false;
+
+		return {
+			proposition,
+			passCount: pass.length,
+			blockCount: block.length,
+			passScores,
+			blockScores,
+			separable,
+			windowLo,
+			windowHi,
+			overlap,
+			overlapBlockItems,
+			overlapPassItems,
+			unusable: [...bucket.unusable],
+			best,
+			recommended,
+			needsOwnThreshold,
+		};
+	});
+}
+
+/** 逐判定项的建议值（两个字段都给：可直接写进 `thresholds.perProposition`）。 */
+export interface JevTunePropositionOverride {
+	approveAt: number;
+	blockAt: number;
+}
+
+/** 一个判定项**自己样本**上的四类统计（不是全语料的：阈值只对该判定项生效）。 */
+export interface JevTunePropositionCounts {
+	correctPass: number;
+	correctBlock: number;
+	falsePass: number;
+	falseBlock: number;
+	review: number;
+	total: number;
+}
+
+/**
+ * 一个判定项的覆盖决策：基档 vs 候选覆盖，全部只在该判定项自己的条目上比较。
+ * @WHY 阈值不可跨判定项复用：别的判定项的条目不能替它说话，否则一条 should-pass 的 scope 样本
+ *   会替 public-api 的结论背书。
+ */
+export interface JevTunePropositionDecision {
+	proposition: string;
+	/** 把**基档**应用到该判定项时的四类。 */
+	baseCounts: JevTunePropositionCounts;
+	/** 候选覆盖 = 该判定项自己在加宽网格上扫出的最佳档（无样本/无合法档位时为 null）。 */
+	candidate: JevTunePropositionOverride | null;
+	/** 候选覆盖在该判定项样本上的四类。 */
+	candidateCounts: JevTunePropositionCounts | null;
+	decision: "override" | "keep";
+	/** 一行中文原因：为什么采用 / 为什么不采用（数字写全，不写安慰话）。 */
+	reason: string;
+}
+
+/**
+ * 「逐命题建议」的落地形态：一个全局基档 + 各判定项的独立阈值。
+ * @WHY 单一全局阈值在结构上不可能合适（三个命题的窗口互不相同，见文件头 @WHY），
+ *   所以最终交给人的**不是**一个数，而是「基档 + 覆盖」这一对东西。
+ */
+export interface JevTunePropositionRecommendation {
+	/** 全局基档（调用方给；本仓 CLI 传窄网格的 top 档）。 */
+	base: { approveAt: number; blockAt: number };
+	/** 逐判定项覆盖：只给**过得了下面两道门**的判定项（判定项名 → 一对阈值）。 */
+	overrides: Record<string, JevTunePropositionOverride>;
+	/** 未采用覆盖的判定项 + 一行原因（保持全局值）。 */
+	keptGlobal: { proposition: string; reason: string }[];
+	/** 逐项决策明细（含该判定项自己样本上的基档/候选四类，便于人复核）。 */
+	decisions: JevTunePropositionDecision[];
+	/** true = 至少采用了一项覆盖，且过得了总体门（见下）。 */
+	adopted: boolean;
+	/** 实际采用的阈值：可直接写进配置，也可直接喂 confusionAt。 */
+	thresholds: JevThresholds;
+	/** **基档**（一项覆盖都不加，逐项都走全局）在**全语料**上的四类。 */
+	baseConfusion: JevTuneConfusion;
+	/** 实际采用的阈值在**全语料**上的四类（逐项解析生效后）。 */
+	confusion: JevTuneConfusion;
+}
+
+/** 阈值的紧凑写法（`0.7/0.15`）：判定项名与数值要能在同一行里读。 */
+function formatTier(tier: { approveAt: number; blockAt: number }): string {
+	const compact = (value: number): string => String(Number(value.toFixed(4)));
+	return `${compact(tier.approveAt)}/${compact(tier.blockAt)}`;
+}
+
+/** 差值写法（+12 / -6）：净收益一行里要一眼看出方向。 */
+function formatDelta(delta: number): string {
+	return delta > 0 ? `+${delta}` : String(delta);
+}
+
+function countsOf(confusion: JevTuneConfusion): JevTunePropositionCounts {
+	return {
+		correctPass: confusion.correctPass,
+		correctBlock: confusion.correctBlock,
+		falsePass: confusion.falsePass,
+		falseBlock: confusion.falseBlock,
+		review: confusion.review,
+		total: confusion.total,
+	};
+}
+
+/**
+ * 逐命题建议：全局基档 + 各判定项的**独立**阈值（不是「一个更好的全局值」）。
+ * @CONTRACT 候选覆盖 = 该判定项**自己**在加宽网格上扫出的最佳档（排序 ① 误放行 ② 误拦 ③ 转人工，
+ *   与全局同一套排序；扫的就是该判定项自己的样本）。采用条件，全部只看该判定项自己的样本：
+ *   (a) 不增加误放行、不增加误拦；(b) 减少转人工。任何一条不过就保持全局值，并写清数字原因。
+ * @WHY 「严格不可分」不等于「阈值没用」——这是本函数存在的理由：严格重叠只说明没有单一窗口能
+ *   覆盖全部样本，把 approveAt 提到该判定项拦截侧最高分之上**仍然存在零误放行零误拦档位**，
+ *   代价是落在重叠区的条目转人工。逐项覆盖的收益就是把这份代价按判定项分开压
+ *   （实测 50 条语料：全局基档 9/8/0/0/33 → 基档+覆盖 21/8/0/0/21）。
+ *   反过来说，拿「可分窗口」当准入条件（只在可分时才给覆盖）会把这些判定项整体放弃，那是错的。
+ * @CONTRACT 最后还有一道**总体**门：采用覆盖后若全语料的误放行（或误拦）变多，就整体回退到基档
+ *   （adopted=false、overrides 清空、thresholds 就是基档），不拿更差的方案交差。
+ *   @GOTCHA 这道门在当前规则下是**防御性**的（正常路径不可达，证明见下），保留是为了
+ *   「规则万一被放宽」时它还在：候选覆盖的 approveAt 必然 > 该判定项 should-block 的最高均分
+ *   （否则候选自己就有误放行，过不了 (a)），所以任何 should-block 条目在覆盖下都不可能被放行，
+ *   更不可能凑齐一条多判定项条目所需的「全部放行」。
+ * @CONTRACT 覆盖值必须满足 blockAt < approveAt（与 validateJevGateConfig 同一条约束）；
+ *   `entry.best` 来自同一个网格，天然满足。
+ */
+export function recommendPropositionThresholds(
+	items: readonly JevTuneScoredItem[],
+	base: { approveAt: number; blockAt: number },
+	analyses: readonly JevTunePropositionAnalysis[] = analyzePropositionWindows(items),
+): JevTunePropositionRecommendation {
+	const { samples } = groupMeanSamples(items);
+	const decisions: JevTunePropositionDecision[] = [];
+	const overrides: Record<string, JevTunePropositionOverride> = {};
+	for (const entry of analyses) {
+		const proposition = entry.proposition;
+		// 该判定项自己的均值样本 → 转成「单判定项的条目」，判定一律走 decideOutcome（不写第二份）。
+		const meanItems: JevTuneScoredItem[] = (samples.get(proposition) ?? []).map((sample) => ({
+			id: sample.id,
+			label: sample.label,
+			scores: { [proposition]: [sample.score] },
+		}));
+		const candidate = entry.best ? { approveAt: entry.best.approveAt, blockAt: entry.best.blockAt } : null;
+		const baseCounts = countsOf(confusionAt(meanItems, base));
+		const candidateCounts = entry.best ? countsOf(entry.best.confusion) : null;
+		const keep = (reason: string): void => {
+			decisions.push({ proposition, baseCounts, candidate, candidateCounts, decision: "keep", reason });
+		};
+		if (meanItems.length === 0) {
+			keep("没有可用分数（不补 0）：不下覆盖结论");
+			continue;
+		}
+		if (!candidate || !candidateCounts) {
+			keep("宽网格里没有合法档位（blockAt 必须小于 approveAt）：保持全局值");
+			continue;
+		}
+		const tier = formatTier(candidate);
+		// (a) 不增加误放行 —— 第一优先级：放行了该拦的就是门禁坏了。
+		if (candidateCounts.falsePass > baseCounts.falsePass) {
+			keep(`候选覆盖 ${tier} 会增加该判定项的误放行（${baseCounts.falsePass} → ${candidateCounts.falsePass}）：不采用`);
+			continue;
+		}
+		if (candidateCounts.falseBlock > baseCounts.falseBlock) {
+			keep(`候选覆盖 ${tier} 会增加该判定项的误拦（${baseCounts.falseBlock} → ${candidateCounts.falseBlock}）：不采用`);
+			continue;
+		}
+		// (b) 必须真的换到收益：不能减少该判定项的转人工就不值得多配一项。
+		if (candidateCounts.review >= baseCounts.review) {
+			keep(`候选覆盖 ${tier} 不能减少该判定项的转人工（${baseCounts.review} → ${candidateCounts.review}）：保持全局值`);
+			continue;
+		}
+		overrides[proposition] = candidate;
+		decisions.push({
+			proposition,
+			baseCounts,
+			candidate,
+			candidateCounts,
+			decision: "override",
+			reason:
+				`该判定项自己：转人工 ${baseCounts.review} → ${candidateCounts.review}` +
+				`（${formatDelta(candidateCounts.review - baseCounts.review)}）、` +
+				`误放行 ${baseCounts.falsePass} → ${candidateCounts.falsePass}、` +
+				`误拦 ${baseCounts.falseBlock} → ${candidateCounts.falseBlock}`,
+		});
+	}
+
+	const baseConfusion = confusionAt(items, base);
+	const hasOverrides = Object.keys(overrides).length > 0;
+	const combined = hasOverrides ? confusionAt(items, { ...base, perProposition: overrides }) : baseConfusion;
+	// 总体门（防御性，见函数头 @GOTCHA）：覆盖让**整体**变差就整体回退，不硬推。
+	const rolledBack =
+		hasOverrides && (combined.falsePass > baseConfusion.falsePass || combined.falseBlock > baseConfusion.falseBlock);
+	const adoptedThresholds: JevThresholds =
+		hasOverrides && !rolledBack
+			? { approveAt: base.approveAt, blockAt: base.blockAt, perProposition: overrides }
+			: { ...base };
+	return {
+		base: { approveAt: base.approveAt, blockAt: base.blockAt },
+		overrides: hasOverrides && !rolledBack ? overrides : {},
+		keptGlobal: decisions
+			.filter((decision) => rolledBack || decision.decision === "keep")
+			.map((decision) => ({
+				proposition: decision.proposition,
+				reason: rolledBack
+					? `整体回退：采用覆盖后语料总误放行 ${baseConfusion.falsePass} → ${combined.falsePass}、` +
+						`总误拦 ${baseConfusion.falseBlock} → ${combined.falseBlock} 变差，全部保持全局值`
+					: decision.reason,
+			})),
+		// 回退时每条决策都标成 keep：decision 与 overrides 必须一致，否则 JSON 自相矛盾。
+		decisions: rolledBack ? decisions.map((decision) => ({ ...decision, decision: "keep" as const })) : decisions,
+		adopted: hasOverrides && !rolledBack,
+		thresholds: adoptedThresholds,
+		baseConfusion,
+		confusion: hasOverrides && !rolledBack ? combined : baseConfusion,
+	};
 }

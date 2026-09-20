@@ -4,12 +4,17 @@
  * 全部数据都是合成/注入的（零真实网络、零真实语料）；真实分数的评测见 `npm run jev -- tune`。
  */
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { type JevTuneReport, printTuneReport } from "../../scripts/jev-tune-format.js";
 import {
 	JEV_TUNE_DEFAULT_GRID,
+	JEV_TUNE_PROPOSITION_GRID,
+	JEV_TUNE_PROPOSITION_STEP,
 	JEV_TUNE_REPEAT_MAX,
+	analyzePropositionWindows,
 	confusionAt,
 	parseJevCorpus,
+	recommendPropositionThresholds,
 	suggestThresholds,
 	summarizeScores,
 	type JevTuneLabel,
@@ -275,5 +280,675 @@ describe("pure-logic contract", () => {
 		// 只允许向同目录的模型模块取事实源；出现 `../` 说明它开始依赖外层（CLI/gate/磁盘）。
 		expect(source).not.toMatch(/from "\.\.\//);
 		expect(source).toContain('from "./jev-model.js"');
+	});
+});
+
+describe("analyzePropositionWindows", () => {
+	const P = "change_preserves_public_api";
+	const S = "change_within_task_scope";
+
+	it("gives windowLo / windowHi and the floored approval threshold for a separable proposition", () => {
+		const items = [
+			scored("p1", "should-pass", { [P]: [0.95] }),
+			scored("p2", "should-pass", { [P]: [0.8] }),
+			scored("p3", "should-pass", { [P]: [0.73] }),
+			scored("b1", "should-block", { [P]: [0.6] }),
+			scored("b2", "should-block", { [P]: [0.08] }),
+		];
+		const [first] = analyzePropositionWindows(items);
+		expect(first!.proposition).toBe(P);
+		expect(first!.passCount).toBe(3);
+		expect(first!.blockCount).toBe(2);
+		// 分数按升序排列（人一眼就能看出两类有没有重叠）。
+		expect(first!.passScores).toEqual([0.73, 0.8, 0.95]);
+		expect(first!.blockScores).toEqual([0.08, 0.6]);
+		expect(first!.separable).toBe(true);
+		// 建议判据 t ∈ (windowLo, windowHi] = (0.6, 0.73]：0.61..0.73 都既不误放行也不误拦。
+		expect(first!.windowLo).toBe(0.6);
+		expect(first!.windowHi).toBe(0.73);
+		expect(first!.overlap).toBeNull();
+		expect(first!.overlapBlockItems).toEqual([]);
+		expect(first!.overlapPassItems).toEqual([]);
+		expect(first!.unusable).toEqual([]);
+		// 最佳档由加宽网格扫出，且该命题的最佳档必须无误放行（排序第一优先级）。
+		expect(first!.best!.confusion.falsePass).toBe(0);
+		expect(first!.best!.confusion.falseBlock).toBe(0);
+		// 建议值 = windowHi 下取整到 0.05（0.73 → 0.70），blockAt 取经验最佳档且严格小于 approveAt。
+		expect(first!.recommended!.approveAt).toBe(0.7);
+		expect(first!.recommended!.blockAt).toBeLessThan(first!.recommended!.approveAt);
+		// 窗口 (0.6, 0.73] 不在全局网格 {0.8,0.85,0.9,0.95} 覆盖内 → 这个命题需要独立阈值。
+		expect(first!.needsOwnThreshold).toBe(true);
+	});
+
+	it("floors the suggestion to the step but never above the window (0.71 → 0.70)", () => {
+		const items = [scored("p", "should-pass", { [P]: [0.71] }), scored("b", "should-block", { [P]: [0.39] })];
+		const [analysis] = analyzePropositionWindows(items);
+		expect(analysis!.separable).toBe(true);
+		expect(analysis!.recommended!.approveAt).toBe(0.7);
+		// 最佳档用该命题的均值单独扫描：0.71 准确放行、0.39 转人工（不误拦也不误放行）。
+		expect(analysis!.recommended!.blockAt).toBeLessThan(analysis!.recommended!.approveAt);
+		expect(analysis!.best!.confusion.correctPass).toBe(1);
+		expect(analysis!.best!.confusion.falsePass).toBe(0);
+		expect(analysis!.best!.confusion.falseBlock).toBe(0);
+	});
+
+	it("reports overlap and names the entries that block separability", () => {
+		// 实测形状：scope 的 should-block 最高 0.79 高于 should-pass 最低 0.39 → 没有可分窗口。
+		const items = [
+			scored("p1", "should-pass", { [S]: [0.71] }),
+			scored("p2", "should-pass", { [S]: [0.5] }),
+			scored("p3", "should-pass", { [S]: [0.39] }),
+			scored("b1", "should-block", { [S]: [0.79] }),
+			scored("b2", "should-block", { [S]: [0.4] }),
+		];
+		const [analysis] = analyzePropositionWindows(items);
+		expect(analysis!.separable).toBe(false);
+		expect(analysis!.windowLo).toBeNull();
+		expect(analysis!.windowHi).toBeNull();
+		// overlap = max(block) - min(pass) = 0.79 - 0.39 = 0.40（浮点尾巴已收干净）。
+		expect(analysis!.overlap).toBe(0.4);
+		// 挡住可分性的条目：should-block 里 >= min(pass)=0.39 的两条（各带分数）。
+		expect(analysis!.overlapBlockItems).toEqual([
+			{ id: "b2", score: 0.4 },
+			{ id: "b1", score: 0.79 },
+		]);
+		// should-pass 里 <= max(block)=0.79 的三条。
+		expect(analysis!.overlapPassItems.map((entry) => entry.id)).toEqual(["p3", "p2", "p1"]);
+		// 不可分时不给建议值 —— 阈值解决不了它，不能编一个好看的数。
+		expect(analysis!.recommended).toBeNull();
+		expect(analysis!.needsOwnThreshold).toBe(false);
+		// 最佳档最多能压到 0 误放行（代价是把一切都转人工）：这里必须如实给出。
+		expect(analysis!.best!.confusion.falsePass).toBe(0);
+		expect(analysis!.best!.confusion.review).toBeGreaterThan(0);
+	});
+
+	it("treats an empty window (max(block) === min(pass)) as not separable, overlap 0", () => {
+		const items = [scored("p", "should-pass", { [P]: [0.5] }), scored("b", "should-block", { [P]: [0.5] })];
+		const [analysis] = analyzePropositionWindows(items);
+		// 判据是半开区间：t ∈ (0.5, 0.5] 是空集 —— 相等不算可分。
+		expect(analysis!.separable).toBe(false);
+		expect(analysis!.overlap).toBe(0);
+		expect(analysis!.overlapBlockItems).toEqual([{ id: "b", score: 0.5 }]);
+		expect(analysis!.overlapPassItems).toEqual([{ id: "p", score: 0.5 }]);
+	});
+
+	it("counts a multi-proposition item once per proposition and never mixes groups", () => {
+		const items = [
+			// 一条样本带两个命题：两边都要算它一份。
+			scored("both", "should-pass", { [P]: [0.9], [S]: [0.42] }),
+			// 只带 scope 的条目不得污染 public_api 的统计。
+			scored("scope-only", "should-block", { [S]: [0.05] }),
+			scored("api-only", "should-block", { [P]: [0.2] }),
+		];
+		const analyses = analyzePropositionWindows(items);
+		// 顺序取注册表顺序（propositions 命令里看到的那套），便于人对照。
+		expect(analyses.map((entry) => entry.proposition)).toEqual([P, S]);
+		const api = analyses[0]!;
+		const scope = analyses[1]!;
+		expect(api.passScores).toEqual([0.9]);
+		expect(api.blockScores).toEqual([0.2]);
+		expect(api.passCount + api.blockCount).toBe(2);
+		// scope 只看得到带该命题的两条：both（pass 0.42）与 scope-only（block 0.05）。
+		expect(scope.passScores).toEqual([0.42]);
+		expect(scope.blockScores).toEqual([0.05]);
+		expect(scope.separable).toBe(true);
+		expect(scope.windowLo).toBe(0.05);
+		expect(scope.windowHi).toBe(0.42);
+		expect(scope.recommended!.approveAt).toBe(0.4);
+	});
+
+	it("sweeps the widened grid down to ~0.4 where the narrow grid cannot reach", () => {
+		// 实测形状：scope 类命题的窗口就在 0.4 附近 —— 窄网格（>= 0.8）只能把两类都判成转人工。
+		const items = [scored("p", "should-pass", { [S]: [0.42] }), scored("b", "should-block", { [S]: [0.35] })];
+		expect(JEV_TUNE_DEFAULT_GRID.approveAt).not.toContain(0.4);
+		expect(JEV_TUNE_PROPOSITION_GRID.approveAt).toContain(0.4);
+		expect(JEV_TUNE_PROPOSITION_STEP).toBe(0.05);
+		const narrow = suggestThresholds(items, JEV_TUNE_DEFAULT_GRID, 1).suggestions[0]!;
+		// 窄网格：没有任何档位能放行 0.42（最小 approveAt 0.8），两条都只能转人工。
+		expect(narrow.approveAt).toBeGreaterThanOrEqual(0.8);
+		expect(narrow.confusion.review).toBe(2);
+		const [analysis] = analyzePropositionWindows(items);
+		expect(analysis!.best!.approveAt).toBe(0.4);
+		expect(analysis!.best!.blockAt).toBeLessThan(0.4);
+		// 加宽网格把「0.42 正确放行」找了出来（窄网格两条都只能转人工）：转人工 2 → 1。
+		expect(analysis!.best!.confusion.correctPass).toBe(1);
+		expect(analysis!.best!.confusion.falsePass).toBe(0);
+		expect(analysis!.best!.confusion.falseBlock).toBe(0);
+		expect(analysis!.best!.confusion.review).toBe(1);
+	});
+
+	it("uses the mean of repeated samples and keeps one entry per item", () => {
+		const items = [
+			// 抖动样本：均值 0.7（不是最保守的 0.45，也不是最乐观的 0.95）。
+			scored("pass-jitter", "should-pass", { [P]: [0.95, 0.45] }),
+			scored("block-jitter", "should-block", { [P]: [0.6, 0.3] }),
+		];
+		const [analysis] = analyzePropositionWindows(items);
+		expect(analysis!.passCount).toBe(1);
+		expect(analysis!.blockCount).toBe(1);
+		expect(analysis!.passScores).toEqual([0.7]);
+		expect(analysis!.blockScores).toEqual([0.45]);
+		expect(analysis!.separable).toBe(true);
+		expect(analysis!.windowLo).toBe(0.45);
+		expect(analysis!.windowHi).toBe(0.7);
+		// 无效样本（NaN/Infinity）剔除后再取均值（0.5+0.7)/2 = 0.6，不是把 NaN 当 0。
+		const [filtered] = analyzePropositionWindows([
+			scored("x", "should-pass", { [P]: [Number.NaN, 0.5, 0.7, Infinity] }),
+		]);
+		expect(filtered!.passScores).toEqual([0.6]);
+	});
+
+	it("names items that carry the proposition without a usable score and refuses to judge", () => {
+		const items = [
+			scored("empty", "should-block", { [P]: [] }),
+			scored("nan", "should-block", { [P]: [Number.NaN] }),
+			scored("pass", "should-pass", { [P]: [0.9] }),
+		];
+		const [analysis] = analyzePropositionWindows(items);
+		// 不补 0：没样本的条目进 unusable，绝不变成一次假的拦截。
+		expect(analysis!.unusable).toEqual(["empty", "nan"]);
+		expect(analysis!.blockCount).toBe(0);
+		expect(analysis!.passCount).toBe(1);
+		// 只有一侧样本 → 不下「可分」结论（拿半边数据算窗口比没有窗口更危险）。
+		expect(analysis!.separable).toBe(false);
+		expect(analysis!.overlap).toBeNull();
+		expect(analysis!.windowLo).toBeNull();
+		expect(analysis!.windowHi).toBeNull();
+		expect(analysis!.recommended).toBeNull();
+	});
+
+	it("returns nothing for an empty corpus and no best tier without samples", () => {
+		expect(analyzePropositionWindows([])).toEqual([]);
+		// 语料里没有任何条目引用该命题时，根本不产生这一组。
+		expect(analyzePropositionWindows([scored("a", "should-pass", { [S]: [0.9] })])).toHaveLength(1);
+	});
+});
+
+/** 用真实函数拼一份 JevTuneReport（与 `tune` 命令同一条拼装路径，只是分数是注入的）。 */
+function buildReport(items: JevTuneScoredItem[]): JevTuneReport {
+	const thresholds = { approveAt: 0.9, blockAt: 0.1 };
+	const perItemScores = items.flatMap((item) =>
+		Object.entries(item.scores).map(([proposition, scores]) => ({ id: item.id, proposition, scores })),
+	);
+	const { suggestions, evaluated, skipped } = suggestThresholds(items);
+	const top = suggestions[0];
+	return {
+		corpus: "corpus.jsonl",
+		model: "typesafe/jev-1.13",
+		repeats: 1,
+		fromCache: false,
+		items: items.length,
+		scored: items.length,
+		calls: {
+			total: items.length,
+			errors: 0,
+			cached: 0,
+			fresh: items.length,
+			cost: 0,
+			inputTokens: 0,
+			outputTokens: 0,
+			replayedCost: 0,
+			replayedInputTokens: 0,
+			replayedOutputTokens: 0,
+		},
+		failures: [],
+		summaries: summarizeScores(perItemScores, thresholds),
+		current: { thresholds, confusion: confusionAt(items, thresholds) },
+		perProposition: analyzePropositionWindows(items),
+		propositionRecommendation: recommendPropositionThresholds(
+			items,
+			top ? { approveAt: top.approveAt, blockAt: top.blockAt } : thresholds,
+		),
+		recommended: top ? { approveAt: top.approveAt, blockAt: top.blockAt } : null,
+		suggestions,
+		evaluated,
+		skipped,
+	};
+}
+
+describe("tune 报告（逐命题一节 + JSON 字段）", () => {
+	const P = "change_preserves_public_api";
+	const S = "change_within_task_scope";
+	const items = [
+		scored("p-api", "should-pass", { [P]: [0.95] }),
+		scored("p-api2", "should-pass", { [P]: [0.73] }),
+		scored("b-api", "should-block", { [P]: [0.6] }),
+		scored("b-api2", "should-block", { [P]: [0.08] }),
+		// scope 类命题：不可分（实测形状）。
+		scored("p-scope", "should-pass", { [S]: [0.71] }),
+		scored("p-scope2", "should-pass", { [S]: [0.5] }),
+		scored("p-scope3", "should-pass", { [S]: [0.39] }),
+		scored("b-scope", "should-block", { [S]: [0.79] }),
+		scored("b-scope2", "should-block", { [S]: [0.4] }),
+	];
+
+	it("adds perProposition to the JSON without dropping or reshaping existing fields", () => {
+		const report = buildReport(items);
+		const json = JSON.parse(JSON.stringify(report)) as Record<string, unknown>;
+		// 既有顶层字段一个都不能少（既有消费者依赖 summaries / current / suggestions 等）。
+		for (const field of [
+			"corpus",
+			"model",
+			"repeats",
+			"fromCache",
+			"items",
+			"scored",
+			"calls",
+			"failures",
+			"summaries",
+			"current",
+			"recommended",
+			"suggestions",
+			"evaluated",
+			"skipped",
+		]) {
+			expect(Object.keys(json)).toContain(field);
+		}
+		// 既有字段的形状/内容不变（抽查每个子结构的判定字段）。
+		expect(json.summaries).toEqual(
+			expect.arrayContaining([expect.objectContaining({ id: "p-api", proposition: P, samples: 1 })]),
+		);
+		expect((json.current as { thresholds: unknown }).thresholds).toEqual({ approveAt: 0.9, blockAt: 0.1 });
+		expect((json.current as { confusion: { total: number } }).confusion.total).toBe(items.length);
+		expect((json.suggestions as { rationale: string }[])[0]!.rationale).toContain("误放行");
+		// 新增字段：逐命题结构完整可机读。
+		const perProposition = json.perProposition as Record<string, unknown>[];
+		expect(perProposition.map((entry) => entry.proposition)).toEqual([P, S]);
+		expect(perProposition[0]).toMatchObject({
+			passCount: 2,
+			blockCount: 2,
+			separable: true,
+			windowLo: 0.6,
+			windowHi: 0.73,
+			overlap: null,
+			needsOwnThreshold: true,
+		});
+		expect(perProposition[1]).toMatchObject({ separable: false, overlap: 0.4, recommended: null });
+		// 新增字段：逐命题建议（基档 + 覆盖 + 逐项生效后的四类统计）。
+		const recommendation = json.propositionRecommendation as {
+			base: unknown;
+			overrides: Record<string, unknown>;
+			keptGlobal: { proposition: string; reason: string }[];
+			decisions: { proposition: string; decision: string; candidate: unknown }[];
+			adopted: boolean;
+			thresholds: { perProposition?: Record<string, unknown> };
+			baseConfusion: { falsePass: number; correctPass: number; correctBlock: number; review: number };
+			confusion: { falsePass: number; correctPass: number; correctBlock: number; review: number };
+		};
+		expect(recommendation.base).toEqual({ approveAt: 0.95, blockAt: 0.1 });
+		// P 的窗口 (0.6, 0.73] 装不下基档 0.95，且该命题自己的转人工 2 → 1 → 采用覆盖。
+		expect(recommendation.overrides).toEqual({ [P]: { approveAt: 0.7, blockAt: 0.1 } });
+		expect(recommendation.adopted).toBe(true);
+		expect(recommendation.thresholds.perProposition).toEqual(recommendation.overrides);
+		// scope 严格不可分且覆盖换不到收益 → 保持全局值，原因是数字（不是「不可分」）。
+		expect(recommendation.keptGlobal.map((entry) => entry.proposition)).toEqual([S]);
+		expect(recommendation.keptGlobal[0]!.reason).toContain("不能减少该判定项的转人工（5 → 5）");
+		expect(recommendation.decisions).toEqual([
+			expect.objectContaining({ proposition: P, decision: "override", candidate: { approveAt: 0.7, blockAt: 0.1 } }),
+			expect.objectContaining({ proposition: S, decision: "keep" }),
+		]);
+		// 两组总统计都在 JSON 里：基档 1/1/0/0/7 → 基档+覆盖 2/1/0/0/6。
+		expect(recommendation.baseConfusion).toMatchObject({ correctPass: 1, correctBlock: 1, falsePass: 0, review: 7 });
+		// 逐项生效后的四类：全局只能拿 1 个正确放行，逐项拿 2（p-api2 0.73 被 P 的覆盖放行）。
+		expect(recommendation.confusion).toMatchObject({ correctPass: 2, correctBlock: 1, falsePass: 0, review: 6 });
+	});
+
+	it("renders the per-proposition section without touching the existing sections", () => {
+		const lines: string[] = [];
+		const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+			lines.push(args.map((arg) => String(arg)).join(" "));
+		});
+		try {
+			printTuneReport(buildReport(items));
+		} finally {
+			spy.mockRestore();
+		}
+		const text = lines.join("\n");
+		// 既有章节仍在（顺序：真实分数 → 逐命题窗口 → 当前阈值 → 候选阈值 → 建议）。
+		const sections = [
+			"真实分数（命题视角：分数高 = 命题为真 = 放行）",
+			"逐命题可分窗口（",
+			"当前阈值（通过 ≥ 0.9",
+			"候选阈值（排序",
+			"建议: 通过 ≥",
+		];
+		let cursor = -1;
+		for (const section of sections) {
+			const at = text.indexOf(section);
+			expect(at, `缺少章节：${section}`).toBeGreaterThan(-1);
+			expect(at, `章节顺序变了：${section}`).toBeGreaterThan(cursor);
+			cursor = at;
+		}
+		// 可分命题一行：窗口 + 该命题单独扫出的最佳档。
+		expect(text).toContain(
+			`${P}  pass n=2 [0.73 … 0.95]  block n=2 [0.08 … 0.6]  → 可分 t ∈ (0.6, 0.73]  最佳档 0.7/0.1（误放行 0 误拦 0 转人工 1）`,
+		);
+		expect(text).toContain("→ 该命题需要独立阈值：建议 approveAt = 0.7 阻断 ≤ 0.1");
+		// 不可分命题一行：重叠值 + 点名两边的极端条目；**零误放行零误拦时给「仍可用」而不是「解决不了」**
+		// （严格不可分 ≠ 阈值没用：重叠区落转人工就安全了，只有连零错误档都没有才该改判据）。
+		expect(text).toContain(
+			`${S}  pass n=3 [0.39 … 0.71]  block n=2 [0.4 … 0.79]  → 严格不可分：重叠 0.4（should-block 最高 0.79 b-scope / should-pass 最低 0.39 p-scope3）；最佳档 0.98/0.02（误放行 0 误拦 0 转人工 5）`,
+		);
+		expect(text).toContain("→ 仍可用：零误放行零误拦档位存在");
+		expect(text).not.toContain("→ 阈值解决不了这条命题");
+	});
+
+	it("says thresholds cannot fix a proposition when even the best tier still errs", () => {
+		// 拦截侧分数 0.99 超出网格上限 0.98：任何可表达的档位都留着一个误放行。
+		const items = [scored("p1", "should-pass", { [S]: [0.9] }), scored("b1", "should-block", { [S]: [0.99] })];
+		const lines: string[] = [];
+		const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+			lines.push(args.map((arg) => String(arg)).join(" "));
+		});
+		try {
+			printTuneReport(buildReport(items));
+		} finally {
+			spy.mockRestore();
+		}
+		const text = lines.join("\n");
+		expect(text).toContain("严格不可分：重叠 0.09");
+		expect(text).toContain("仍有误放行 1");
+		expect(text).toContain("→ 阈值解决不了这条命题：需要改判据（把命题写得更可判）或接受更多转人工");
+		expect(text).not.toContain("→ 仍可用：");
+	});
+
+	it("renders a no-sample proposition as unjudgeable instead of inventing a window", () => {
+		const lines: string[] = [];
+		const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+			lines.push(args.map((arg) => String(arg)).join(" "));
+		});
+		try {
+			printTuneReport(buildReport([scored("only-pass", "should-pass", { [S]: [0.9] })]));
+		} finally {
+			spy.mockRestore();
+		}
+		const text = lines.join("\n");
+		expect(text).toContain("pass n=1 [0.9 … 0.9]  block n=0 []  → 无法判可分：没有 should-block 样本（不编造窗口）");
+		// 没有最佳档时不能凭空给一个批准阈值。
+		expect(text).not.toContain("该命题需要独立阈值");
+	});
+});
+
+describe("逐项阈值在 tune 统计里生效", () => {
+	const P = "change_preserves_public_api";
+	const S = "change_within_task_scope";
+	// 只给 scope 配独立阈值：其余判定项一律回落全局（历史行为）。
+	const scoped = { approveAt: 0.9, blockAt: 0.1, perProposition: { [S]: { approveAt: 0.45, blockAt: 0.15 } } };
+
+	it("summarizeScores judges each item with its own proposition thresholds", () => {
+		const summaries = summarizeScores(
+			[
+				{ id: "scope-ok", proposition: S, scores: [0.5] },
+				{ id: "api-mid", proposition: P, scores: [0.5] },
+			],
+			scoped,
+		);
+		// scope 有自己的阈值 0.45 → 0.5 达标；public_api 没配 → 走全局 0.9 → 转人工。
+		expect(summaries[0]!.outcomes).toEqual(["approve"]);
+		expect(summaries[1]!.outcomes).toEqual(["review"]);
+	});
+
+	it("flags a flip against the scoped threshold, not the global one", () => {
+		const [summary] = summarizeScores([{ id: "s", proposition: S, scores: [0.4, 0.5] }], scoped);
+		// 0.4 → review（> 该命题 blockAt 0.15）、0.5 → approve：翻转由**该命题的**阈值决定
+		// （用全局 0.9 的话两次都是 review，抖动会被抹平）。
+		expect(summary!.outcomes).toEqual(["approve", "review"]);
+		expect(summary!.flips).toBe(true);
+		expect(summarizeScores([{ id: "s", proposition: S, scores: [0.4, 0.5] }], T)[0]!.flips).toBe(false);
+	});
+
+	it("confusionAt resolves thresholds per proposition per item", () => {
+		const items = [
+			scored("scope-pass", "should-pass", { [S]: [0.5] }),
+			scored("api-pass", "should-pass", { [P]: [0.5] }),
+			scored("scope-late-block", "should-block", { [S]: [0.99] }),
+		];
+		const confusion = confusionAt(items, scoped);
+		// scope-pass 0.5 ≥ 0.45 → 正确放行（全局 0.9 下这条只能是转人工）。
+		expect(confusion.correctPass).toBe(1);
+		// api-pass 0.5 < 全局 0.9 → 转人工（既不误放行也不误拦）。
+		expect(confusion.reviewItems.map((item) => item.id)).toEqual(["api-pass"]);
+		// scope-late-block 0.99 ≥ 0.45 → 逐项阈值下会被放行：误放行必须照样点出来。
+		expect(confusion.falsePass).toBe(1);
+		expect(confusion.falsePassItems.map((item) => item.id)).toEqual(["scope-late-block"]);
+	});
+
+	it("blocks a multi-proposition item when any one proposition is at its own blockAt", () => {
+		// 一条样本两个命题：scope 0.12 落在**它自己**的拦截侧（≤ 0.15），public_api 0.95 达标。
+		const items = [scored("mixed", "should-block", { [S]: [0.12], [P]: [0.95] })];
+		// 逐项：任一项 ≤ 其 blockAt → block（decideOutcome 的唯一语义，tune 不另写一份）。
+		expect(confusionAt(items, scoped).correctBlock).toBe(1);
+		// 全局（0.9/0.1）：scope 0.12 既不在拦截侧也不达标 → 只能转人工 ——
+		// 同一份分数，结论的差别全部来自「阈值是怎么解析的」。
+		expect(confusionAt(items, T).review).toBe(1);
+	});
+});
+
+describe("recommendPropositionThresholds", () => {
+	const P = "change_preserves_public_api";
+	const S = "change_within_task_scope";
+
+	it("adopts the proposition's own best tier when it cuts that proposition's review count", () => {
+		const items = [
+			// S 的窗口 (0.05, 0.5] 与基档 0.95 无关：基档下两个 S 样本都只能转人工。
+			scored("p-scope", "should-pass", { [S]: [0.5] }),
+			scored("b-scope", "should-block", { [S]: [0.05] }),
+			// P 的样本在基档下已经是「一放行一转人工」：候选覆盖换不到收益 → 不该多配一项。
+			scored("p-api", "should-pass", { [P]: [0.95] }),
+			scored("b-api", "should-block", { [P]: [0.6] }),
+		];
+		const rec = recommendPropositionThresholds(items, { approveAt: 0.95, blockAt: 0.1 });
+		// 采用：S 的最佳档 (0.5, 0.05)，该命题自己的转人工 2 → 0。
+		expect(rec.overrides[S]).toEqual({ approveAt: 0.5, blockAt: 0.05 });
+		expect(rec.adopted).toBe(true);
+		const scopeDecision = rec.decisions.find((decision) => decision.proposition === S)!;
+		expect(scopeDecision.decision).toBe("override");
+		expect(scopeDecision.baseCounts.review).toBe(1);
+		expect(scopeDecision.candidateCounts!.review).toBe(0);
+		expect(scopeDecision.reason).toContain("转人工 1 → 0（-1）");
+		// 不采用：P 的候选覆盖（0.95/0.02）换不到转人工收益 → 保持全局值并写清数字。
+		expect(rec.overrides[P]).toBeUndefined();
+		expect(rec.keptGlobal.map((entry) => entry.proposition)).toEqual([P]);
+		expect(rec.keptGlobal[0]!.reason).toContain("不能减少该判定项的转人工");
+		// 两组总统计都要有：基档 1/1/0/0/2 → 基档+覆盖 2/1/0/0/1。
+		expect(rec.baseConfusion).toMatchObject({ correctPass: 1, correctBlock: 1, review: 2, falsePass: 0 });
+		expect(rec.confusion).toMatchObject({ correctPass: 2, correctBlock: 1, review: 1, falsePass: 0 });
+		expect(rec.thresholds).toMatchObject({ approveAt: 0.95, blockAt: 0.1, perProposition: rec.overrides });
+	});
+
+	it("adopts an override even when the proposition is strictly inseparable (no single window)", () => {
+		// 实测形状：scope 的 block 最高 0.79 > pass 最低 0.39 —— 「严格不可分」，但不等于没有零错档。
+		// @WHY 中间那几条 pass 样本是关键：没有它们，宽网格扫描会因「空白带更宽」把 approveAt 顶到 0.95，
+		//   覆盖就换不到任何收益（真语料里正是这些中间样本带来收益）。
+		const items = [
+			scored("p-1", "should-pass", { [S]: [0.39] }),
+			scored("p-2", "should-pass", { [S]: [0.5] }),
+			scored("p-3", "should-pass", { [S]: [0.6] }),
+			scored("p-4", "should-pass", { [S]: [0.7] }),
+			scored("p-5", "should-pass", { [S]: [0.85] }),
+			scored("p-6", "should-pass", { [S]: [0.97] }),
+			scored("b-1", "should-block", { [S]: [0.79] }),
+			scored("b-2", "should-block", { [S]: [0.03] }),
+		];
+		const rec = recommendPropositionThresholds(items, { approveAt: 0.95, blockAt: 0.1 });
+		const [analysis] = analyzePropositionWindows(items);
+		expect(analysis!.separable).toBe(false);
+		// 严格不可分，但零误放行零误拦档位仍然存在：approveAt 提到拦截侧最高分（0.79）之上。
+		expect(analysis!.best!.confusion.falsePass).toBe(0);
+		expect(analysis!.best!.confusion.falseBlock).toBe(0);
+		expect(analysis!.best!.approveAt).toBeGreaterThan(0.79);
+		// 覆盖 = 该判定项自己的最佳档，且该判定项自己的转人工变少（误放行/误拦仍是 0）。
+		expect(rec.overrides[S]).toEqual({ approveAt: analysis!.best!.approveAt, blockAt: analysis!.best!.blockAt });
+		expect(rec.adopted).toBe(true);
+		const decision = rec.decisions[0]!;
+		expect(decision.baseCounts.falsePass).toBe(0);
+		expect(decision.candidateCounts!.falsePass).toBe(0);
+		expect(decision.candidateCounts!.falseBlock).toBe(0);
+		expect(decision.candidateCounts!.review).toBeLessThan(decision.baseCounts.review);
+		// 全语料对照：转人工严格变少，误放行/误拦不变（这就是「严格不可分也能用」的证据）。
+		expect(rec.confusion.review).toBeLessThan(rec.baseConfusion.review);
+		expect(rec.confusion.falsePass).toBe(rec.baseConfusion.falsePass);
+		expect(rec.confusion.falseBlock).toBe(rec.baseConfusion.falseBlock);
+	});
+
+	it("keeps the global value when the candidate would add false passes for that proposition", () => {
+		// 拦截侧分数 0.99 越过宽网格上限 0.98：候选覆盖最低只能做到 1 个误放行，
+		// 而基档（approveAt 1）在该判定项上零误放行 → (a) 不通过，不采用。
+		const items = [scored("p", "should-pass", { [S]: [0.5] }), scored("b", "should-block", { [S]: [0.99] })];
+		const rec = recommendPropositionThresholds(items, { approveAt: 1, blockAt: 0.15 });
+		expect(rec.overrides).toEqual({});
+		expect(rec.adopted).toBe(false);
+		expect(rec.keptGlobal[0]!.reason).toContain("会增加该判定项的误放行（0 → 1）");
+		// 诚实：保持基档后该判定项零误放行，代价是转人工。
+		expect(rec.baseConfusion).toMatchObject({ falsePass: 0, review: 2 });
+		expect(rec.confusion).toEqual(rec.baseConfusion);
+	});
+
+	it("keeps the global value when the candidate would add false blocks for that proposition", () => {
+		// should-pass 0.01 低于宽网格最小的 blockAt 0.02：候选覆盖一定会把它拦下来（误拦 +1），
+		// 而基档（blockAt 0.005）不会 → (a) 不通过。
+		const items = [scored("p", "should-pass", { [S]: [0.01] }), scored("b", "should-block", { [S]: [0.4] })];
+		const rec = recommendPropositionThresholds(items, { approveAt: 0.6, blockAt: 0.005 });
+		expect(rec.overrides).toEqual({});
+		expect(rec.keptGlobal[0]!.reason).toContain("会增加该判定项的误拦（0 → 1）");
+	});
+
+	it("says why an unusable or benefit-free proposition keeps the global value", () => {
+		// 0.2 低于宽网格最小的 approveAt（0.3）：该判定项无论怎么配都换不到收益。
+		const short = recommendPropositionThresholds([scored("p", "should-pass", { [S]: [0.2] })], {
+			approveAt: 0.95,
+			blockAt: 0.1,
+		});
+		expect(short.overrides).toEqual({});
+		expect(short.keptGlobal[0]!.reason).toContain("不能减少该判定项的转人工（1 → 1）");
+		const empty = recommendPropositionThresholds([scored("e", "should-pass", { [S]: [] })], {
+			approveAt: 0.95,
+			blockAt: 0.1,
+		});
+		expect(empty.keptGlobal[0]!.reason).toContain("没有可用分数");
+	});
+
+	it("rolls back every override when the combined set would make the corpus worse (defensive gate)", () => {
+		// @GOTCHA 这道总体门在正常路径下不可达（候选覆盖的 approveAt 必然高于该判定项 should-block 的最高分，
+		//   所以 should-block 条目在覆盖下不可能被放行）。这里注入一份**伪造**的分析结果把它逼出来：
+		//   候选在该判定项自己的样本上看着零误放行，合起来却多放行了一条 should-block。
+		const items = [scored("p", "should-pass", { [S]: [0.5] }), scored("b", "should-block", { [S]: [0.9] })];
+		const honest = analyzePropositionWindows(items);
+		const faked = honest.map((entry) => ({
+			...entry,
+			// 伪造：「该判定项自己的样本」看不出问题（零误放行、零转人工），实际这条 0.9 会被放行。
+			best: {
+				...entry.best!,
+				approveAt: 0.05,
+				blockAt: 0.02,
+				confusion: { ...entry.best!.confusion, falsePass: 0, review: 0 },
+			},
+		}));
+		const base = { approveAt: 0.95, blockAt: 0.1 };
+		const rec = recommendPropositionThresholds(items, base, faked);
+		// 伪造的候选过了逐项门（该判定项转人工 2 → 0），但语料总误放行 0 → 1 → 整体回退。
+		expect(rec.adopted).toBe(false);
+		expect(rec.overrides).toEqual({});
+		expect(rec.thresholds).toEqual(base);
+		expect(rec.confusion).toEqual(rec.baseConfusion);
+		expect(rec.baseConfusion.falsePass).toBe(0);
+		expect(rec.keptGlobal[0]!.reason).toContain("整体回退：采用覆盖后语料总误放行 0 → 1");
+		// decision 与 overrides 必须一致（JSON 不能自相矛盾）。
+		expect(rec.decisions.every((decision) => decision.decision === "keep")).toBe(true);
+	});
+
+	it("returns the base itself for an empty corpus (no invented overrides)", () => {
+		const rec = recommendPropositionThresholds([], { approveAt: 0.9, blockAt: 0.1 });
+		expect(rec).toMatchObject({ overrides: {}, keptGlobal: [], decisions: [], adopted: false });
+		expect(rec.thresholds).toEqual({ approveAt: 0.9, blockAt: 0.1 });
+		expect(rec.confusion.total).toBe(0);
+		expect(rec.baseConfusion.total).toBe(0);
+	});
+});
+
+describe("逐命题建议的渲染", () => {
+	const P = "change_preserves_public_api";
+	const S = "change_within_task_scope";
+	// 与 tune 命令同一条拼装路径：全局基档走窄网格，逐命题建议走加宽网格。
+	const items = [
+		scored("p-api", "should-pass", { [P]: [0.95] }),
+		scored("p-api2", "should-pass", { [P]: [0.73] }),
+		scored("b-api", "should-block", { [P]: [0.6] }),
+		scored("b-api2", "should-block", { [P]: [0.08] }),
+		scored("p-scope", "should-pass", { [S]: [0.71] }),
+		scored("p-scope2", "should-pass", { [S]: [0.5] }),
+		scored("p-scope3", "should-pass", { [S]: [0.39] }),
+		scored("b-scope", "should-block", { [S]: [0.79] }),
+		scored("b-scope2", "should-block", { [S]: [0.4] }),
+	];
+
+	function render(report: JevTuneReport): string {
+		const lines: string[] = [];
+		const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+			lines.push(args.map((arg) => String(arg)).join(" "));
+		});
+		try {
+			printTuneReport(report);
+		} finally {
+			spy.mockRestore();
+		}
+		return lines.join("\n");
+	}
+
+	it("prints the base, the adopted/kept decisions and both four-class rows", () => {
+		const text = render(buildReport(items));
+		expect(text).toContain("逐命题建议（基档 + 逐项覆盖；采用条件：该判定项自己的误放行/误拦不变、转人工变少）");
+		// 基档 = 窄网格 top 档；P 的窗口 (0.6, 0.73] 装不下 0.95，且该命题转人工 2 → 1 → 采用覆盖。
+		expect(text).toContain("基档: 通过 ≥ 0.95 阻断 ≤ 0.1");
+		expect(text).toContain(`· ${P}: 采用 通过 ≥ 0.7 阻断 ≤ 0.1（该判定项自己：转人工 2 → 1（-1）`);
+		// scope 严格不可分，但保持全局值的理由是「覆盖换不到收益」，不是「不可分」本身。
+		expect(text).toContain(`· ${S}: 保持全局值（候选覆盖 0.98/0.02 不能减少该判定项的转人工（5 → 5））`);
+		expect(text).toContain("config --proposition <判定项> --approve <值> --block <值>");
+		// 两组总统计必须同时出现：基档 1/1/0/0/7 → 基档+覆盖 2/1/0/0/6。
+		expect(text).toContain("基档四类（不加任何覆盖）: 正确放行 1  正确拦下 1  误放行 0  误拦 0  转人工 7（共 9 条）");
+		expect(text).toContain("基档+覆盖四类（逐项生效）: 正确放行 2  正确拦下 1  误放行 0  误拦 0  转人工 6（共 9 条）");
+		expect(text).toContain(
+			"净收益: 转人工 7 → 6（-1）；误放行 0 → 0（不变）、误拦 0 → 0（不变）；正确放行 1 → 2（+1）",
+		);
+		expect(text).not.toContain("⚠ 仍有误放行");
+	});
+
+	it("warns when even the per-proposition recommendation still false-passes", () => {
+		// scope 的拦截侧 0.99 越过加宽网格上限 0.98：任何档位都留着一个误放行。
+		const text = render(
+			buildReport([scored("p1", "should-pass", { [S]: [0.9] }), scored("b1", "should-block", { [S]: [0.99] })]),
+		);
+		expect(text).toContain("⚠ 仍有误放行");
+	});
+
+	it("says why nothing was overridden when no proposition can win anything", () => {
+		// 只有一个命题，且它的窗口 (0.6, 0.95] 正好含基档 0.95：覆盖（0.95/0.02）换不到任何转人工收益。
+		const text = render(
+			buildReport([scored("p", "should-pass", { [P]: [0.95] }), scored("b", "should-block", { [P]: [0.6] })]),
+		);
+		expect(text).toContain("未采用任何覆盖：没有判定项能同时做到「不增加误放行/误拦」且「减少转人工」，保持基档");
+		expect(text).not.toContain("config --proposition");
+		// 一条不能少的实话：严格不可分 ≠ 无零错档（判据说明就写在窗口一节里）。
+		expect(text).toContain("严格不可分 ≠ 无零错档；逐项覆盖的收益就是把重叠区转人工压下来。");
+	});
+});
+
+describe("逐命题建议在没有分数时不编造", () => {
+	it("says there is nothing to override instead of claiming the base fits", () => {
+		const lines: string[] = [];
+		const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+			lines.push(args.map((arg) => String(arg)).join(" "));
+		});
+		try {
+			printTuneReport(buildReport([]));
+		} finally {
+			spy.mockRestore();
+		}
+		const text = lines.join("\n");
+		expect(text).toContain("（没有命题拿到分数：不出覆盖，也不编造窗口）");
+		// 空语料下不能出现「覆盖换不到收益」这种其实没比较过的结论。
+		expect(text).not.toContain("没有判定项能同时做到");
+		expect(text).toContain("基档+覆盖四类（逐项生效）: 正确放行 0");
+		expect(text).toContain("净收益: 转人工 0 → 0（0）；误放行 0 → 0（不变）、误拦 0 → 0（不变）；正确放行 0 → 0（0）");
 	});
 });

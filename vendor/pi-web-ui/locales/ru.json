@@ -1262,10 +1262,21 @@
 		"settingsJevEndpointInvalid": "Адрес не может быть пустым и должен быть https-URL (по умолчанию https://openrouter.ai/api/alpha/decisions).",
 		"settingsJevModelRequired": "ID модели не может быть пустым (по умолчанию typesafe/jev-1.13).",
 		"settingsJevKeyNameRequired": "Провайдер выбран, но имя ключа нет: сервер принимает только явную ссылку на ключ — выберите её.",
+		"settingsJevGlobalDefault": "Глобальное значение",
+		"settingsJevPerPropositionTitle": "Пороги по утверждениям",
+		"settingsJevPerPropositionHint": "В измерениях три утверждения дают раздельные диапазоны (scope≈0,4 / api≈0,7 / test≈0,8+), поэтому единый глобальный порог структурно не может подойти всем. Индивидуальные пороги тоже участвуют в трёхзначном решении; пустое поле наследует глобальное значение, а полоса между двумя порогами остаётся зоной неуверенности модели (разрыв уходит человеку).",
+		"settingsJevPerPropositionApprove": "Разрешить",
+		"settingsJevPerPropositionBlock": "Заблокировать",
+		"settingsJevPerPropositionInherit": "Наследовать глобальный",
+		"settingsJevPerPropositionClear": "Очистить",
+		"settingsJevPerPropositionEffective": "Действующий порог",
+		"settingsJevPerPropositionScoped": "Свой порог",
+		"settingsJevPerPropositionInvalid": "Недопустимый свой порог: после подстановки глобальных значений нужно 0 ≤ блокировка < разрешение ≤ 1.",
 		"footerJev": "Jev",
 		"footerJevTip": "Шлюз Jev: Разрешить {approve} · Заблокировать {block} · К человеку {review} · Ошибки {failed}. Нажмите для подробностей.",
 		"footerJevEmpty": "Jev: нет решений",
 		"footerJevDetail": "Последние оценки по каждому утверждению — в разделе «Шлюз Jev» настроек.",
-		"footerJevLastDecision": "Последнее решение"
+		"footerJevLastDecision": "Последнее решение",
+		"footerJevReason": "Причина (из последнего полученного реального ответа решения)"
 	}
 }

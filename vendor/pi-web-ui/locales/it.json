@@ -1262,10 +1262,21 @@
 		"settingsJevEndpointInvalid": "L’endpoint non può essere vuoto e deve essere un URL https (predefinito https://openrouter.ai/api/alpha/decisions).",
 		"settingsJevModelRequired": "L’id del modello non può essere vuoto (predefinito typesafe/jev-1.13).",
 		"settingsJevKeyNameRequired": "Provider scelto ma nessun nome di chiave: il server accetta solo un riferimento esplicito — scegline uno.",
+		"settingsJevGlobalDefault": "Valore globale",
+		"settingsJevPerPropositionTitle": "Soglie per proposizione",
+		"settingsJevPerPropositionHint": "Le tre proposizioni si distribuiscono su intervalli distinti (scope≈0,4 / api≈0,7 / test≈0,8+), quindi una sola soglia globale non può strutturalmente andare bene per tutte. Le deroghe contano anch'esse nella decisione a tre stati; un campo vuoto eredita il valore globale e la banda tra le due soglie resta la zona di incertezza del modello (il divario va a una persona).",
+		"settingsJevPerPropositionApprove": "Consenti",
+		"settingsJevPerPropositionBlock": "Blocca",
+		"settingsJevPerPropositionInherit": "Eredita globale",
+		"settingsJevPerPropositionClear": "Cancella",
+		"settingsJevPerPropositionEffective": "Soglia effettiva",
+		"settingsJevPerPropositionScoped": "Deroga",
+		"settingsJevPerPropositionInvalid": "Deroga non valida: con i vuoti completati dal valore globale serve 0 ≤ blocco < consenso ≤ 1.",
 		"footerJev": "Jev",
 		"footerJevTip": "Gate Jev: Consenti {approve} · Blocca {block} · A una persona {review} · Errori {failed}. Clicca per i dettagli.",
 		"footerJevEmpty": "Jev: nessuna decisione",
 		"footerJevDetail": "I punteggi per proposizione più recenti sono nella sezione «Gate Jev» delle impostazioni.",
-		"footerJevLastDecision": "Ultima decisione"
+		"footerJevLastDecision": "Ultima decisione",
+		"footerJevReason": "Motivo (dall'ultima risposta di decisione reale ricevuta)"
 	}
 }

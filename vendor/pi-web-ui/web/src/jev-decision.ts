@@ -5,11 +5,16 @@
  *              @PERF=performance @CONTRACT=interface contract 📖=dev doc reference
  *
  * Breadcrumbs (changing this affects):
- *   @COUPLED components/JevSettings.tsx（设置面板「Jev 决策门禁」分区：表单 + 动作）,
- *            components/JevRuntimeView.tsx（运行状态 / 命题 / 余额 / 自检结果的只读展示）,
- *            use-chat.ts（jev_* 回包 → ChatState.jev）,
- *            server/protocol.ts（UiJevGateConfig / UiJevRuntimeStatus / UiJevDecision …）,
+ *   @COUPLED components/JevSettings.tsx（设置面板「Jev 决策门禁」分区：表单 + 动作），
+ *            components/JevRuntimeView.tsx（运行状态 / 命题 / 余额 / 自检结果的只读展示），
+ *            components/JevFooterItem.tsx（底栏浮层：逐判定项生效阈值 + 最近一次决策理由），
+ *            use-chat.ts（jev_* 回包 → ChatState.jev），
+ *            server/protocol.ts（UiJevGateConfig / UiJevRuntimeStatus / UiJevDecision …），
  *            server/dev-con/jev-model.ts + jev-settings.ts + jev-gate.ts（服务端权威）
+ *   @GOTCHA 逐判定项阈值在这里有两套表示，别混：**草稿**（JevPropositionDraft，字符串，空 = 继承全局）
+ *            是「用户在输入框里打了一半的东西」；**补丁**（propositionThresholdsPatch，数字 / null）
+ *            是出站协议形状。effectiveThresholds 读的是服务端**回显**（UiJevThresholds），
+ *            它只是 resolvePropositionThresholds 的展示镜像，不重新推导任何数值。
  *   @CONTRACT 纯前端工具：出站消息直接构造协议的 ClientMessage 成员（不 cast、不镜像类型）；
  *             wire 类型一律从 web/src/types.ts 再导出的 server/protocol.ts 引用。
  *             前端不持有 Jev 语义常量：endpoint/model 默认值由服务端下发（jev-model.ts 是唯一事实源），
@@ -27,7 +32,9 @@ import type {
 	UiJevGateConfig,
 	UiJevGateConfigInput,
 	UiJevOutcome,
+	UiJevPropositionThresholds,
 	UiJevThresholds,
+	UiJevThresholdsInput,
 } from "./types";
 
 /* ------------------------------------------------------------------ */
@@ -122,6 +129,17 @@ export function credentialProblem(draft: { providerId: string; keyName: string |
 	return draft.providerId.trim() !== "" && !(draft.keyName ?? "").trim();
 }
 
+/** 一对阈值（放行 / 拦截）。 */
+export interface ThresholdPair {
+	approveAt: number;
+	blockAt: number;
+}
+
+/** 生效阈值：`scoped=true` 表示这对值来自某项的独立配置（而不是全局）。 */
+export interface EffectiveThresholds extends ThresholdPair {
+	scoped: boolean;
+}
+
 /** 与 server/dev-con/jev-model.ts 的 validateJevGateConfig 同口径（0~1 且 blockAt < approveAt）。 */
 export function checkThresholds(approveAt: number | null, blockAt: number | null): ThresholdCheck {
 	if (approveAt === null || blockAt === null) return { ok: false, narrow: false };
@@ -129,6 +147,119 @@ export function checkThresholds(approveAt: number | null, blockAt: number | null
 	if (!inRange(approveAt) || !inRange(blockAt)) return { ok: false, narrow: false };
 	if (!(blockAt < approveAt)) return { ok: false, narrow: false };
 	return { ok: true, narrow: approveAt - blockAt < JEV_MIN_THRESHOLD_BAND };
+}
+
+/* ------------------------------------------------------------------ */
+/* 逐判定项阈值（草稿 / 校验 / 提交补丁 / 生效值）                       */
+/* ------------------------------------------------------------------ */
+
+/** 有限数字才算「给了值」（与服务端 finiteNumber 同口径：null/NaN/字符串都不算）。 */
+function finiteOr(v: unknown, fallback: number): number {
+	return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+}
+
+/**
+ * 某项的**生效阈值**：给了的字段用给的值，没给的一侧回落全局；整对自相矛盾时整体回落全局。
+ * @COUPLED server/dev-con/jev-model.ts 的 resolvePropositionThresholds —— 本函数是它的**展示镜像**
+ *   （同源性）：① 缺的一侧回落全局；② 独立配置自身不自洽（blockAt >= approveAt，只可能来自手改磁盘）
+ *   时一律回落全局，「宁可退回已验证的行为」。
+ * @CONTRACT 数值一律取**服务端回显**的原值，客户端不重新推导任何东西；这里只做「哪一对在生效」的判定。
+ */
+export function resolveEffectiveThresholds(
+	scoped: UiJevPropositionThresholds,
+	global: ThresholdPair,
+): EffectiveThresholds {
+	const approveAt = finiteOr(scoped.approveAt, global.approveAt);
+	const blockAt = finiteOr(scoped.blockAt, global.blockAt);
+	// 回落时只回这对值本身（不把 perProposition 之类的额外字段一起带走）。
+	if (!(blockAt < approveAt)) return { approveAt: global.approveAt, blockAt: global.blockAt, scoped: false };
+	return { approveAt, blockAt, scoped: true };
+}
+
+/**
+ * 配置回显里某判定项的生效阈值（浮层「这一项到底按多少判」的**唯一**数据源）。
+ * @GOTCHA 没有独立配置时返回全局值并标记 `scoped=false` —— 不要写成 `resolveEffectiveThresholds({}, …)`：
+ *   空对象两侧都回落全局，会被误标成「有独立阈值」（下一条规则就错了）。
+ */
+export function effectiveThresholds(id: string, thresholds: UiJevThresholds): EffectiveThresholds {
+	const scoped = thresholds.perProposition?.[id];
+	if (!scoped) return { approveAt: thresholds.approveAt, blockAt: thresholds.blockAt, scoped: false };
+	return resolveEffectiveThresholds(scoped, thresholds);
+}
+
+/** 逐判定项的编辑草稿：字符串（允许输到一半的 "0."），**空串 = 继承全局**。 */
+export interface JevPropositionDraft {
+	approveAt: string;
+	blockAt: string;
+}
+
+/**
+ * 用户**改过**的逐判定项草稿：只有改过的项才出现在这个 map 里。
+ * @GOTCHA 「键在不在」本身就是提交语义：没出现过的项一律不提交，否则会把别的客户端刚设的独立阈值覆盖掉
+ *   （服务端的 perProposition 是**逐项**合并的，见 jev-settings.ts 的 mergeThresholds）。
+ */
+export type JevPropositionDrafts = Record<string, JevPropositionDraft>;
+
+/** 服务端回显的独立配置 → 输入框初值（没配的项两侧都是空串 = 继承全局）。 */
+export function propositionDraftOf(scoped: UiJevPropositionThresholds | undefined): JevPropositionDraft {
+	return {
+		approveAt:
+			typeof scoped?.approveAt === "number" && Number.isFinite(scoped.approveAt) ? String(scoped.approveAt) : "",
+		blockAt: typeof scoped?.blockAt === "number" && Number.isFinite(scoped.blockAt) ? String(scoped.blockAt) : "",
+	};
+}
+
+/** 草稿层的生效阈值（空输入 = 继承全局，与 {@link checkPropositionDraft} 同口径）。 */
+export function effectiveDraftThresholds(draft: JevPropositionDraft, global: ThresholdPair): EffectiveThresholds {
+	const approveRaw = draft.approveAt.trim() === "" ? undefined : (parseThreshold(draft.approveAt) ?? undefined);
+	const blockRaw = draft.blockAt.trim() === "" ? undefined : (parseThreshold(draft.blockAt) ?? undefined);
+	if (approveRaw === undefined && blockRaw === undefined) {
+		return { approveAt: global.approveAt, blockAt: global.blockAt, scoped: false };
+	}
+	return resolveEffectiveThresholds({ approveAt: approveRaw, blockAt: blockRaw }, global);
+}
+
+/**
+ * 单项草稿的校验：空输入 = 继承全局（恒合法）；非空必须是 0~1 的数字，
+ * 且**与全局补齐后**必须 blockAt < approveAt。
+ * @WHY 只在界面上就地拦一次，省一轮往返；服务端 validateJevGateConfig 才是权威
+ *   （它连「判定项名拼错」都要拒，见 jev-per-proposition-thresholds 单测）。
+ */
+export function checkPropositionDraft(draft: JevPropositionDraft, global: ThresholdPair): boolean {
+	const approveAt = draft.approveAt.trim() === "" ? global.approveAt : parseThreshold(draft.approveAt);
+	const blockAt = draft.blockAt.trim() === "" ? global.blockAt : parseThreshold(draft.blockAt);
+	if (approveAt === null || blockAt === null) return false;
+	return checkThresholds(approveAt, blockAt).ok;
+}
+
+/**
+ * 草稿 → 保存补丁（{@link UiJevThresholdsInput}.perProposition 的形状）。
+ * @CONTRACT ① 只提交 map 里出现过的项（见 {@link JevPropositionDrafts} 的 @GOTCHA）；
+ *   ② 两侧都留空 = 继承全局 = 提交 `{ id: null }`（协议里的删除语义，删掉磁盘上的独立阈值）；
+ *   ③ 只填一侧时另一侧**不带字段**（服务端 mergeThresholds 会保留已有的那一侧，不会被空值抹掉）。
+ * @GOTCHA 一项都没改时返回 undefined（不是空对象）：调用方据此**不带** perProposition，
+ *   服务端见字段缺省会原样保留磁盘上的值。
+ */
+export function propositionThresholdsPatch(
+	drafts: JevPropositionDrafts,
+): Record<string, UiJevPropositionThresholds | null> | undefined {
+	const entries = Object.entries(drafts);
+	if (entries.length === 0) return undefined;
+	const patch: Record<string, UiJevPropositionThresholds | null> = {};
+	for (const [id, draft] of entries) {
+		const approveAt = draft.approveAt.trim() === "" ? undefined : (parseThreshold(draft.approveAt) ?? undefined);
+		const blockAt = draft.blockAt.trim() === "" ? undefined : (parseThreshold(draft.blockAt) ?? undefined);
+		if (approveAt === undefined && blockAt === undefined) {
+			patch[id] = null;
+			continue;
+		}
+		// 留空的一侧**不带字段**（不是带 undefined）：服务端 mergeThresholds 才会保留它已有的那一侧。
+		const entry: UiJevPropositionThresholds = {};
+		if (approveAt !== undefined) entry.approveAt = approveAt;
+		if (blockAt !== undefined) entry.blockAt = blockAt;
+		patch[id] = entry;
+	}
+	return patch;
 }
 
 /** 耗时（毫秒；取不到显示「—」而不是 0）。 */
@@ -240,8 +371,10 @@ export function draftOf(config: UiJevGateConfig): JevDraft {
 	};
 }
 
-/** 草稿 → 保存载荷（只含界面拥有的字段，见 {@link jevConfigSaveMessage} 的 @CONTRACT）。 */
-export function configInputOf(draft: JevDraft, thresholds: UiJevThresholds): UiJevGateConfigInput {
+/** 草稿 → 保存载荷（只含界面拥有的字段，见 {@link jevConfigSaveMessage} 的 @CONTRACT）。
+ *  @CONTRACT thresholds 可以是**补丁**（UiJevThresholdsInput）：服务端读-合并-写，缺省字段不会被清空 ——
+ *    所以「一项都没改」时调用方不带 perProposition 是安全的（不会误删别的客户端设的值）。 */
+export function configInputOf(draft: JevDraft, thresholds: UiJevThresholdsInput): UiJevGateConfigInput {
 	const providerId = draft.providerId.trim();
 	const keyName = (draft.keyName ?? "").trim();
 	return {

@@ -544,10 +544,26 @@ export interface PromptAttachment {
  */
 export type UiJevOutcome = "approve" | "block" | "review";
 
-/** 门禁阈值：全部判定项 >= approveAt 放行；任一 <= blockAt 拦截；其余转人工。 */
+/** 单个判定项的独立阈值（字段缺省 = 回落全局）。 */
+export interface UiJevPropositionThresholds {
+	approveAt?: number;
+	blockAt?: number;
+}
+
+/** 门禁阈值：全部判定项 >= approveAt 放行；任一 <= blockAt 拦截；其余转人工。
+ *  `perProposition`（可选）：按判定项覆盖上面的全局值（键 = UiJevProposition.id）。
+ *  实测三个命题的分数区间整体错开，单一全局阈值不可能同时合适（docs/JEV-DECISION-GATE.md §4.3）。 */
 export interface UiJevThresholds {
 	approveAt: number;
 	blockAt: number;
+	perProposition?: Record<string, UiJevPropositionThresholds>;
+}
+
+/** 保存时的 thresholds 补丁：`null` 表示删除（整块 perProposition 或单个判定项）。 */
+export interface UiJevThresholdsInput {
+	approveAt?: number;
+	blockAt?: number;
+	perProposition?: Record<string, UiJevPropositionThresholds | null> | null;
 }
 
 /**
@@ -568,7 +584,7 @@ export interface UiJevGateConfig {
 
 /** 保存配置的输入：允许只给要改的字段（服务端读-合并-写，不会把未给字段清空）。 */
 export type UiJevGateConfigInput = Partial<Omit<UiJevGateConfig, "thresholds">> & {
-	thresholds?: Partial<UiJevThresholds>;
+	thresholds?: UiJevThresholdsInput;
 };
 
 /** 一次决策事件的审计摘要（不含被审内容、不含密钥）。 */
