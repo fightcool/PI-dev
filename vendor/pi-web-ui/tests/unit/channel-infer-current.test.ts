@@ -10,7 +10,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { ModelInfo, UiChannelInfo } from "../../web/src/types";
-import { inferChannelIdByModel, switcherChannels } from "../../web/src/channel-models.js";
+import { bindingCoversActiveModel, inferChannelIdByModel, switcherChannels } from "../../web/src/channel-models.js";
 
 const chan = (id: string, providerId: string, models: string[] = []): UiChannelInfo => ({
 	id,
@@ -91,5 +91,65 @@ describe("switcherChannels（切换器列出哪些渠道）", () => {
 
 	it("全停用 → 空列表（调用方自己决定空态文案）", () => {
 		expect(switcherChannels([{ ...chan("ch-off", "prov-a"), enabled: false }])).toEqual([]);
+	});
+});
+
+describe("bindingCoversActiveModel（绑定还算不算数）", () => {
+	it("服务商不符即不算数（用户看到的「跑 deepseek 却显示 UU apiClaude」）", () => {
+		const ch = chan("ch-3", "uu-api", ["claude-opus-5"]);
+		expect(
+			bindingCoversActiveModel(ch, { channelId: "ch-3", modelId: "uu-api/claude-opus-5" }, "deepseek/deepseek-flash"),
+		).toBe(false);
+	});
+
+	it("同一渠道白名单内换模型仍然算数（不该把用户的渠道选择抹掉）", () => {
+		const ch = chan("ch-2", "rightcode", ["gpt-5.6-sol", "gpt-6-astra"]);
+		expect(
+			bindingCoversActiveModel(ch, { channelId: "ch-2", modelId: "rightcode/gpt-5.6-sol" }, "rightcode/gpt-6-astra"),
+		).toBe(true);
+	});
+
+	it("白名单挡住的同服务商模型不算数；空白名单 = 不限，只看服务商", () => {
+		expect(
+			bindingCoversActiveModel(
+				chan("ch-a", "prov-a", ["m1"]),
+				{ channelId: "ch-a", modelId: "prov-a/m1" },
+				"prov-a/m2",
+			),
+		).toBe(false);
+		expect(
+			bindingCoversActiveModel(chan("ch-a", "prov-a"), { channelId: "ch-a", modelId: "prov-a/m1" }, "prov-a/m2"),
+		).toBe(true);
+	});
+
+	it("实际模型未知时不判负（缺字段绝不藏东西）", () => {
+		expect(bindingCoversActiveModel(chan("ch-a", "prov-a"), { channelId: "ch-a", modelId: "prov-a/m1" }, null)).toBe(
+			true,
+		);
+		expect(
+			bindingCoversActiveModel(chan("ch-a", "prov-a"), { channelId: "ch-a", modelId: "prov-a/m1" }, undefined),
+		).toBe(true);
+		expect(bindingCoversActiveModel(chan("ch-a", "prov-a"), { channelId: "ch-a", modelId: "prov-a/m1" }, "")).toBe(
+			true,
+		);
+	});
+
+	it("渠道不存在或没有 channelId 时不算数", () => {
+		expect(bindingCoversActiveModel(undefined, { channelId: "ch-x", modelId: "prov-a/m1" }, "prov-a/m1")).toBe(false);
+		expect(
+			bindingCoversActiveModel(chan("ch-a", "prov-a"), { channelId: null, modelId: "prov-a/m1" }, "prov-a/m1"),
+		).toBe(false);
+		expect(bindingCoversActiveModel(chan("ch-a", "prov-a"), null, "prov-a/m1")).toBe(false);
+	});
+
+	it("模型 id 有多个斜杠时按第一个斜杠切服务商（同 bareModelId 口径）", () => {
+		const ch = chan("ch-gw", "openrouter", ["vendor/model"]);
+		expect(
+			bindingCoversActiveModel(
+				ch,
+				{ channelId: "ch-gw", modelId: "openrouter/vendor/model" },
+				"openrouter/vendor/model",
+			),
+		).toBe(true);
 	});
 });

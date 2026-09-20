@@ -1,9 +1,10 @@
 /* 🍞 AI Breadcrumb — @COUPLED ../../server/dev-con/channel-model.ts
  * 📖 ../../../docs/DEV-CON-PROPOSAL.md §4/§5（配置所有权、切换时点、版本复核）
- * 纯逻辑单测：覆盖规格里可判定的部分（优先级、时点、版本、脱敏、无损失去）。
+ * 纯逻辑单测：覆盖规格里可判定的部分（优先级、时点、版本、脱敏、无损失去、绑定是否覆盖当下模型）。
  */
 import { describe, expect, it } from "vitest";
 import {
+	bindingCoversModel,
 	checkBindingRevision,
 	checkConfigRevision,
 	defaultCatalog,
@@ -293,5 +294,45 @@ describe("provider id generation (channel form → models.json)", () => {
 		expect(isValidProviderId("cctq-claude_1.x")).toBe(true);
 		expect(isValidProviderId("bad id")).toBe(false);
 		expect(isValidProviderId("")).toBe(false);
+	});
+});
+
+describe("bindingCoversModel（绑定是否仍描述当下的请求）", () => {
+	it("服务商不符即不成立（模型被渠道以外的路径换掉后的常态）", () => {
+		// 真实事故：绑定 ch-3(uu-api)，模型却被 set_model 换成了 deepseek/deepseek-flash。
+		const ch = channel("ch-3", { providerId: "uu-api", models: ["claude-opus-5"] });
+		expect(
+			bindingCoversModel({ channelId: "ch-3", modelId: "uu-api/claude-opus-5" }, ch, "deepseek/deepseek-flash"),
+		).toBe(false);
+	});
+	it("同一渠道白名单内换模型仍然成立（不该把绑定清掉）", () => {
+		const ch = channel("ch-2", { providerId: "rightcode", models: ["gpt-5.6-sol", "gpt-6-astra"] });
+		expect(
+			bindingCoversModel({ channelId: "ch-2", modelId: "rightcode/gpt-5.6-sol" }, ch, "rightcode/gpt-6-astra"),
+		).toBe(true);
+	});
+	it("空白名单 = 不限模型，只按服务商判定", () => {
+		const ch = channel("ch-1", { providerId: "main", models: [] });
+		expect(bindingCoversModel({ channelId: "ch-1", modelId: "main/m1" }, ch, "main/m2")).toBe(true);
+		expect(bindingCoversModel({ channelId: "ch-1", modelId: "main/m1" }, ch, "other/x")).toBe(false);
+	});
+	it("白名单挡住的同服务商模型也不成立（渠道白名单是配置，不是摆设）", () => {
+		const ch = channel("ch-1", { providerId: "main", models: ["m1"] });
+		expect(bindingCoversModel({ channelId: "ch-1", modelId: "main/m1" }, ch, "main/m2")).toBe(false);
+	});
+	it("模型未知时不判负（缺信息宁可保留绑定，也不替用户清）", () => {
+		const ch = channel("ch-1", { providerId: "main" });
+		expect(bindingCoversModel({ channelId: "ch-1", modelId: "main/m1" }, ch, null)).toBe(true);
+		expect(bindingCoversModel({ channelId: "ch-1", modelId: "main/m1" }, ch, undefined)).toBe(true);
+		expect(bindingCoversModel({ channelId: "ch-1", modelId: "main/m1" }, ch, "")).toBe(true);
+	});
+	it("渠道不存在 / 无 channelId 时不成立", () => {
+		expect(bindingCoversModel({ channelId: "ch-x", modelId: "main/m1" }, undefined, "main/m1")).toBe(false);
+		expect(bindingCoversModel({ channelId: "", modelId: "main/m1" }, channel("ch-1"), "main/m1")).toBe(false);
+	});
+	it("模型 ref 没有 provider 前缀时按裸模型 id 判定（与用量归属同一口径）", () => {
+		const ch = channel("ch-1", { providerId: "main", models: ["m1"] });
+		expect(bindingCoversModel({ channelId: "ch-1", modelId: "main/m1" }, ch, "m1")).toBe(true);
+		expect(bindingCoversModel({ channelId: "ch-1", modelId: "main/m1" }, ch, "m2")).toBe(false);
 	});
 });

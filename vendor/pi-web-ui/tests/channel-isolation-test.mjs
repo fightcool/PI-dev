@@ -40,6 +40,8 @@ const check = (name, ok, extra = "") => {
 /** 记录每次模型请求携带的凭据；回显式 SSE 让一轮真实跑完。 */
 const mockBase = `http://127.0.0.1:${MOCK_PORT}`;
 const seenAuth = [];
+/** 每次请求一个唯一响应 id：用量记录按响应 id 去重（复用同一个会被当成同一条）。 */
+let responseSeq = 0;
 const mock = createServer(async (req, res) => {
 	let body = "";
 	for await (const chunk of req) body += chunk;
@@ -66,21 +68,22 @@ const mock = createServer(async (req, res) => {
 	const reply = `reply:${prompt}`;
 	res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
 	// 分片慢发：制造一个稳定的流式窗口，用于验证「生成中切换 → 待生效 → 本轮结束落定」。
+	const responseId = `chan-${++responseSeq}`;
 	const pieces = [reply.slice(0, 2) || "r", reply.slice(2) || "eply"];
 	for (const piece of pieces) {
 		res.write(
-			`data: ${JSON.stringify({ id: "chan", object: "chat.completion.chunk", created: Date.now(), model: payload.model, choices: [{ index: 0, delta: { content: piece }, finish_reason: null }] })}\n\n`,
+			`data: ${JSON.stringify({ id: responseId, object: "chat.completion.chunk", created: Date.now(), model: payload.model, choices: [{ index: 0, delta: { content: piece }, finish_reason: null }] })}\n\n`,
 		);
 		await sleep(700);
 	}
 	res.write(
-		`data: ${JSON.stringify({ id: "chan", object: "chat.completion.chunk", created: Date.now(), model: payload.model, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`,
+		`data: ${JSON.stringify({ id: responseId, object: "chat.completion.chunk", created: Date.now(), model: payload.model, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`,
 	);
 	// 真实 provider 语义：开启 include_usage 后，最后一个 chunk 带 usage（含缓存明细）。
 	// 没有它就无法在端到端里验证「token 落进用量历史」这条链路。
 	res.write(
 		`data: ${JSON.stringify({
-			id: "chan",
+			id: responseId,
 			object: "chat.completion.chunk",
 			created: Date.now(),
 			model: payload.model,
@@ -110,7 +113,19 @@ writeFileSync(
 				baseUrl: `http://127.0.0.1:${MOCK_PORT}`,
 				authHeader: true,
 				apiKey: ORIGINAL_ACTIVE,
-				models: [{ id: "chan-mock", name: "Channel Mock", input: ["text"], contextWindow: 32000, maxTokens: 4096 }],
+				models: [
+					{ id: "chan-mock", name: "Channel Mock", input: ["text"], contextWindow: 32000, maxTokens: 4096 },
+					// 同一渠道白名单内的第二个模型：验证「同渠道换模型不算漂移」。
+					{ id: "chan-mock-2", name: "Channel Mock 2", input: ["text"], contextWindow: 32000, maxTokens: 4096 },
+				],
+			},
+			// 第二个服务商：模型从渠道以外的路径被换到它上面 = 绑定不再描述这次请求。
+			othermock: {
+				api: "openai-completions",
+				baseUrl: `http://127.0.0.1:${MOCK_PORT}`,
+				authHeader: true,
+				apiKey: "sk-other-provider",
+				models: [{ id: "other-mock", name: "Other Mock", input: ["text"], contextWindow: 32000, maxTokens: 4096 }],
 			},
 		},
 	}),
@@ -454,6 +469,122 @@ try {
 		modelId: "mock/chan-mock",
 	});
 	check("白名单内的模型可正常绑定", allowed.ok === true, allowed.error ?? "");
+
+	// 7f) 绑定与实际模型对齐（真实事故回归）：模型被渠道以外的路径换掉后（channel_state 还没到
+	//     就用非渠道模式列表 set_model、cycle_model、项目默认模型），旧绑定不得继续冒充
+	//     「正在使用」，用量更不得记到旧渠道名下 —— 用户看到的是「跑 deepseek 却显示 UU apiClaude」。
+	const driftConv = client.state.conversationId;
+	const rebind = await runCommand(client, "channel_select", {
+		conversationId: driftConv,
+		channelId: "ch-a",
+		modelId: "mock/chan-mock",
+	});
+	check("漂移用例前置：活跃对话绑回 ch-a", rebind.ok === true, rebind.error ?? "");
+	check(
+		"漂移用例前置：快照里 ch-a 是生效绑定",
+		client.state?.channelBinding?.effective?.channelId === "ch-a",
+		JSON.stringify(client.state?.channelBinding?.effective ?? null),
+	);
+
+	client.send({ type: "set_model", modelId: "othermock/other-mock" });
+	await client.waitForState((s) => s.model?.provider === "othermock" && s.model?.id === "other-mock", 20000);
+	// 自愈：服务端在快照构造时对账，旧绑定被清掉并广播新状态。
+	let driftBinding = "unset";
+	for (let i = 0; i < 40; i++) {
+		await sleep(100);
+		driftBinding = client.state?.channelBinding?.effective ?? null;
+		if (driftBinding === null) break;
+	}
+	check(
+		"模型漂移到别的服务商后，生效绑定被清掉（切换器不会再标「正在使用」）",
+		driftBinding === null,
+		JSON.stringify(driftBinding),
+	);
+	check(
+		"对账结果落盘并广播：ch-a 不再挂在漂移后的对话上",
+		!(client.channelState?.bindings ?? []).some((b) => b.conversationId === driftConv),
+		JSON.stringify((client.channelState?.bindings ?? []).map((b) => `${b.conversationId}:${b.channelId}`)),
+	);
+
+	seenAuth.length = 0;
+	const beforeDriftRun = await queryHistory(client, "channel");
+	client.send({ type: "prompt", text: "ping-drift" });
+	const deadlineDrift = Date.now() + 25000;
+	while (seenAuth.length === 0 && Date.now() < deadlineDrift) await sleep(50);
+	await client.waitForState((s) => s.isStreaming === true, 15000).catch(() => undefined);
+	await client
+		.waitForState((s) => s.conversationId === driftConv && s.isStreaming === false, 30000)
+		.catch(() => undefined);
+	check(
+		"漂移后的请求用目标服务商自己的密钥（不会借到渠道那把）",
+		seenAuth[0]?.authorization === "Bearer sk-other-provider",
+		seenAuth[0]?.authorization ?? "no request seen",
+	);
+	// 用量落盘是异步的：轮询到这次请求出现为止，避免把「还没写」当成「记错了」。
+	let afterDriftRun = beforeDriftRun;
+	for (let i = 0; i < 60; i++) {
+		afterDriftRun = await queryHistory(client, "channel");
+		if (afterDriftRun.totals.requests > beforeDriftRun.totals.requests) break;
+		await sleep(250);
+	}
+	const driftRows = Object.fromEntries(afterDriftRun.rows.map((r) => [r.key, r.requests]));
+	const beforeRows = Object.fromEntries(beforeDriftRun.rows.map((r) => [r.key, r.requests]));
+	check(
+		"漂移后的用量记「未归属」而不是旧渠道（用量表的渠道列不再说假话）",
+		driftRows.unattributed === (beforeRows.unattributed ?? 0) + 1 && driftRows["ch-a"] === beforeRows["ch-a"],
+		JSON.stringify({ before: beforeRows, after: driftRows }),
+	);
+
+	// 7g) 反向保护：同一渠道白名单内的模型切换不该被当成漂移清掉（否则白名单形同虚设、
+	//     渠道凭据会在切换后静默失效）。
+	const twoModels = await runCommand(client, "channel_save", {
+		channel: {
+			id: "ch-two",
+			displayName: "双模型渠道",
+			providerId: "mock",
+			credentialRef: { providerId: "mock", keyName: "密钥 1" },
+			models: ["chan-mock", "chan-mock-2"],
+		},
+	});
+	check("可保存双模型白名单渠道", twoModels.ok === true, twoModels.error ?? "");
+	const bindTwo = await runCommand(client, "channel_select", {
+		conversationId: driftConv,
+		channelId: "ch-two",
+		modelId: "mock/chan-mock",
+	});
+	check("漂移用例前置：绑到 ch-two", bindTwo.ok === true, bindTwo.error ?? "");
+	client.send({ type: "set_model", modelId: "mock/chan-mock-2" });
+	// 靠 get_state 拿一份权威全量快照：增量 delta 在测试客户端里可能因 rev 不连续被丢弃。
+	const modelSwitched = client.waitForState((s) => s.model?.id === "chan-mock-2", 20000).catch(() => null);
+	client.send({ type: "get_state" });
+	await modelSwitched;
+	await sleep(600);
+	check(
+		"白名单内的模型切换保留渠道绑定（不误清）",
+		client.state?.model?.id === "chan-mock-2" &&
+			client.state?.channelBinding?.effective?.channelId === "ch-two" &&
+			(client.channelState?.bindings ?? []).some((b) => b.conversationId === driftConv && b.channelId === "ch-two"),
+		JSON.stringify({ model: client.state?.model, effective: client.state?.channelBinding?.effective ?? null }),
+	);
+	seenAuth.length = 0;
+	client.send({ type: "prompt", text: "ping-two" });
+	const deadlineTwo = Date.now() + 25000;
+	while (seenAuth.length === 0 && Date.now() < deadlineTwo) await sleep(50);
+	await client.waitForState((s) => s.isStreaming === true, 15000).catch(() => undefined);
+	await client
+		.waitForState((s) => s.conversationId === driftConv && s.isStreaming === false, 30000)
+		.catch(() => undefined);
+	let afterTwo = await queryHistory(client, "channel");
+	for (let i = 0; i < 60 && (afterTwo.rows.find((r) => r.key === "ch-two")?.requests ?? 0) === 0; i++) {
+		await sleep(250);
+		afterTwo = await queryHistory(client, "channel");
+	}
+	check(
+		"白名单内的模型切换仍按该渠道归属用量",
+		seenAuth[0]?.authorization === "Bearer sk-active-one" &&
+			(afterTwo.rows.find((r) => r.key === "ch-two")?.requests ?? 0) >= 1,
+		JSON.stringify({ auth: seenAuth[0]?.authorization ?? null, rows: afterTwo.rows.map((r) => [r.key, r.requests]) }),
+	);
 
 	// 7e2) 方案 A：一条 channel_save 同时写服务商（models.json）与渠道档案。
 	// 渠道面板是唯一入口，不再要求先去「管理模型」建服务商；provider 是 channel 的同级字段。

@@ -1968,8 +1968,18 @@ export class ClientSession {
 			try {
 				const key = this.channels.credentialFor(id, provider);
 				// §7：请求发出时固定渠道/凭据/模型与绑定版本（晚到的用量按此归属）。
+				// @CONTRACT 只有「绑定的服务商 == 本次真正要调用的服务商」时这份快照才描述这次请求：
+				//   模型被渠道以外的路径换掉后（绑定还挂在 ch-3/uu-api 上，实际在调 deepseek），
+				//   继续用它归属会把 deepseek 的请求记到 UU apiClaude 名下（同一把 key 也不会被借用，
+				//   见 credentialFor 的服务商校验）—— 那就成了用量表里的假归属。这里宁可记「未归属」。
 				const conv = this.convs.get(id);
-				const binding = this.channels.bindingSnapshotFor(id);
+				const snapshot = this.channels.bindingSnapshotFor(id);
+				const binding = snapshot && snapshot.providerId === provider ? snapshot : null;
+				if (conv && !binding && snapshot) {
+					console.warn(
+						`[channel] 绑定与实际请求不符：绑定 ${snapshot.channelId}(${snapshot.providerId ?? "?"})，实际服务商 ${provider} → 本次用量记未归属`,
+					);
+				}
 				if (conv) conv.lastRequestBinding = binding;
 				// 渠道端点工具能力探测：只对**绑定了渠道**的请求做（未绑定 = 走全局 active key，
 				// 不属于渠道管理范围）。后台执行、有界超时、按端点缓存，不阻塞也不抛出。
@@ -3337,6 +3347,12 @@ export class ClientSession {
 		const conv = this.conv;
 		const state = conv.session.agent.state;
 		const model = state.model;
+		// 绑定对账（§4）：绑定里的 modelId 是「选择那一刻」的快照，而模型还能被渠道以外的
+		// 路径换掉（channel_state 到达前的 set_model / cycle_model / 项目默认模型 / 扩展）。
+		// 这里在构造快照前对齐一次：不再覆盖当下模型的绑定会被清掉并广播新状态（幂等，
+		// 没漂移时什么也不写）。不对齐的话切换器会把旧渠道标成「正在使用」、用量会记到
+		// 旧渠道名下 —— 用户看到的「用 deepseek 却显示 UU apiClaude」就是这么来的。
+		this.channels.reconcileBinding(this.activeId, model ? `${model.provider}/${model.id}` : null);
 		const loadContextPolicy = this.contextPolicyLoader();
 		let stats: UiState["stats"] = {
 			totalMessages: 0,
@@ -6200,6 +6216,11 @@ export class ClientSession {
 				} catch {
 					return true;
 				}
+			},
+			// 该对话现在真的在用的模型：绑定是否还成立只能问会话本身（见 state 层的 @GOTCHA）。
+			conversationModelRef: (id) => {
+				const model = this.convs.get(id)?.session.agent.state.model;
+				return model ? `${model.provider}/${model.id}` : null;
 			},
 			cwd: () => this.cwd,
 		};

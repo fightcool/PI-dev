@@ -29,7 +29,13 @@ import { useState } from "react";
 import { FiRefreshCw, FiAlertTriangle, FiClock, FiCheckCircle } from "react-icons/fi";
 import type { ModelInfo, UiAccountStatus, UiChannelBinding, UiChannelBindingView, UiChannelInfo } from "../types";
 import { useI18n, useT } from "../i18n";
-import { channelModels, hasModelWhitelist, inferChannelIdByModel, switcherChannels } from "../channel-models";
+import {
+	bindingCoversActiveModel,
+	channelModels,
+	hasModelWhitelist,
+	inferChannelIdByModel,
+	switcherChannels,
+} from "../channel-models";
 import { channelBalanceBrief } from "../channel-account";
 import { DropdownItem } from "./Dropdown";
 import type { ChannelCommandResult } from "../use-chat";
@@ -59,6 +65,7 @@ function ChannelGroup({
 	effective,
 	pending,
 	currentByModel,
+	activeModelId,
 	keyName,
 	accounts,
 	onKeyChange,
@@ -74,6 +81,13 @@ function ChannelGroup({
 	 * @CONTRACT 非 null 时才用它标当前；与 effective 二选一，不叠加。
 	 */
 	currentByModel: string | null;
+	/**
+	 * Agent 当下实际在用的模型（`provider/id`）。
+	 * @CONTRACT 哪个模型在跑以它为准；绑定只决定「属于哪个渠道」。绑定里的 modelId 是选择时
+	 *   的快照，模型被渠道以外的路径换掉后（见 channel-state.ts 的 @GOTCHA）它不再是事实，
+	 *   拿它画 ✓ 会把勾标在已经没在跑的模型上。
+	 */
+	activeModelId: string | null;
 	keyName: string | null;
 	/** 账户快照（只读）：渠道头的余额/已用摘要。 */
 	accounts: UiAccountStatus[];
@@ -138,9 +152,10 @@ function ChannelGroup({
 						))}
 					</div>
 					{rows.map((m) => {
-						const isActive = effective
-							? effective.channelId === channel.id && effective.modelId === m.id
-							: currentByModel === m.id;
+						const inThisChannel = effective ? effective.channelId === channel.id : currentByModel !== null;
+						// 模型侧的事实：agent 实际在用的模型优先，拿不到时才退回绑定/反推里的值。
+						const runningModel = activeModelId ?? (effective ? effective.modelId : currentByModel);
+						const isActive = inThisChannel && runningModel === m.id;
 						const isPending = pending?.channelId === channel.id && pending.modelId === m.id;
 						return (
 							<DropdownItem
@@ -212,9 +227,21 @@ export function ChannelModelList({
 	// 停用的渠道不进切换器（用户自己关的；理由见 channel-models.ts 的 switcherChannels）。
 	// 当前绑定/生效渠道即使被停用也 **不** 例外显示：输入区的状态 chip 依旧会说出它在用哪个渠道。
 	const visible = switcherChannels(channels);
+	// 绑定只在**仍然描述当下模型**时才当有效（模型被渠道以外的路径换掉后它只是旧快照，
+	// 服务端会清掉它，界面不能抢在它之前把旧渠道标成「正在使用」——见 bindingCoversActiveModel）。
+	const storedEffective = binding?.effective ?? null;
+	const effective = storedEffective
+		? bindingCoversActiveModel(
+				channels.find((c) => c.id === storedEffective.channelId),
+				storedEffective,
+				activeModelId,
+			)
+			? storedEffective
+			: null
+		: null;
 	// 当前渠道：优先用对话绑定；没绑定时（新对话）用实际生效模型反推（见 inferChannelIdByModel）。
-	const inferredId = binding?.effective?.channelId ? null : inferChannelIdByModel(visible, models, activeModelId);
-	const currentId = binding?.effective?.channelId ?? inferredId;
+	const inferredId = effective ? null : inferChannelIdByModel(visible, models, activeModelId);
+	const currentId = effective?.channelId ?? inferredId;
 	// 只把当前渠道提到最前，其余顺序原样保留（稳定排序，不让列表每次打开都变样）。
 	const ordered = currentId
 		? [...visible].sort((a, b) => Number(b.id === currentId) - Number(a.id === currentId))
@@ -230,9 +257,10 @@ export function ChannelModelList({
 						channel={c}
 						models={models}
 						filter={filter}
-						effective={binding?.effective ?? null}
+						effective={effective}
 						pending={binding?.pending ?? null}
-						currentByModel={currentId === c.id && !binding?.effective ? activeModelId : null}
+						currentByModel={currentId === c.id && !effective ? activeModelId : null}
+						activeModelId={activeModelId}
 						keyName={keyName}
 						accounts={accounts}
 						onKeyChange={(next) => setKeySel((prev) => ({ ...prev, [c.id]: next }))}
@@ -244,10 +272,13 @@ export function ChannelModelList({
 	);
 }
 
-/** 「渠道名 · 模型」的紧凑标签（模型 id 去掉 provider 前缀）。 */
-function selectionLabel(channels: UiChannelInfo[], sel: UiChannelBinding): string {
+/** 「渠道名 · 模型」的紧凑标签（模型 id 去掉 provider 前缀）。
+ * @CONTRACT `activeModelId` 已知时用它（agent 实际在跑的模型）；绑定里的 modelId 只是选择时的
+ *   快照，模型被渠道以外的路径换掉后拿它当标签就会「芯片说 claude-opus-5，实际跑 deepseek」。 */
+function selectionLabel(channels: UiChannelInfo[], sel: UiChannelBinding, activeModelId?: string | null): string {
 	const name = channels.find((c) => c.id === sel.channelId)?.displayName ?? sel.channelName ?? sel.channelId;
-	const model = sel.modelId.split("/").slice(1).join("/") || sel.modelId;
+	const ref = activeModelId || sel.modelId;
+	const model = ref.split("/").slice(1).join("/") || ref;
 	return `${name} · ${model}`;
 }
 
@@ -259,17 +290,30 @@ export function ChannelStatusChips({
 	binding,
 	channels,
 	receipt,
+	activeModelId,
 	onRefresh,
 }: {
 	binding: UiChannelBindingView | null | undefined;
 	channels: UiChannelInfo[];
 	/** 最新一次 channel_select 的回执（由调用方按 commandId 匹配）。 */
 	receipt?: ChannelCommandResult | null;
+	/** Agent 实际在用的模型（`provider/id`）：已知时用它标「渠道 · 模型」，见 selectionLabel。 */
+	activeModelId?: string | null;
 	onRefresh: () => void;
 }) {
 	const t = useT();
 	const { locale } = useI18n();
-	const effective = binding?.effective ?? null;
+	// 绑定要与实际在跑的模型对得上才算「生效」（口径与选择器一致，见 bindingCoversActiveModel）。
+	const stored = binding?.effective ?? null;
+	const effective =
+		stored &&
+		bindingCoversActiveModel(
+			channels.find((c) => c.id === stored.channelId),
+			stored,
+			activeModelId,
+		)
+			? stored
+			: null;
 	const pending = binding?.pending ?? null;
 	if (!effective && !pending && !receipt) return null;
 	const receiptText = receipt
@@ -281,7 +325,7 @@ export function ChannelStatusChips({
 		<span className="chip-channel-state">
 			{effective && (
 				<span className="chan-chip effective" title={t("channelEffectiveTip", { sel: effective.modelId })}>
-					{selectionLabel(channels, effective)}
+					{selectionLabel(channels, effective, activeModelId)}
 					{binding?.source === "project" && <span className="chan-chip-src">{t("channelSourceProject")}</span>}
 					{binding?.source === "instance" && <span className="chan-chip-src">{t("channelSourceInstance")}</span>}
 				</span>

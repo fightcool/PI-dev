@@ -52,7 +52,15 @@ export function channelAccountView(input: {
 	modelProvider: string | null | undefined;
 }): ChannelAccountView {
 	const { channels, accounts, binding, modelProvider } = input;
-	const bound = binding?.effective?.channelId ? (channels.find((c) => c.id === binding.effective?.channelId) ?? null) : null;
+	const boundChannel = binding?.effective?.channelId
+		? (channels.find((c) => c.id === binding.effective?.channelId) ?? null)
+		: null;
+	// 绑定只在**服务商与当下模型一致**时才算「绑定中的渠道」。
+	// @WHY 绑定里的模型是选择那一刻的快照，模型被渠道以外的路径换掉后（见 channel-models.ts 的
+	//   bindingCoversActiveModel），再拿旧渠道的余额/账户当「当前渠道」，就是把 UU apiClaude 的余额
+	//   挂在跑 deepseek 的界面上（用户看到的「明明用的是 deepseek，却显示 UU api 渠道」）。
+	//   拒绝后走下面的反推：服务商唯一且有账户查询 → 推导到真正的渠道；否则如实说没有。
+	const bound = boundChannel && (!modelProvider || boundChannel.providerId === modelProvider) ? boundChannel : null;
 	const derived =
 		bound || !modelProvider
 			? null

@@ -370,6 +370,46 @@ env -u PI_WEB_TOKEN -u PI_WEB_MANAGED node vendor/pi-web-ui/tests/model-catalog-
 
 **未做 / 不计入验收**：没有给 `models.json` 加 fs.watch（现在靠「下次 list_models / 账户查询」自愈，够用且不会多点触发）；`provider-keys.json` / `auth.json` 的变更不走这套自愈（它们只影响鉴权可用性，不影响目录形状）；真实浏览器双标签页的人工验证未做（有真实 dist server 的双会话用例代替）。
 
+## 19. 「跑 deepseek 却显示 UU apiClaude」：绑定与实际模型脱钩与修复（2026-09-20）
+
+**症状**（操作人报告，附三张截图）：输入区模型 chip 是 `DeepSeek-V4.1-Flash`，紧挨着的渠道 chip 却是 `UU apiClaude · claude-opus-5`；模型选择器把 **UU apiClaude** 标成「正在使用」并给 `claude-opus-5` 打勾；用量面板「按来源/渠道」里 `渠道=UU apiClaude、模型=deepseek-flash`，最近请求逐条同样。操作人原话：「当前明明用的是 deepseek，为什么显示是 UU api 的渠道？？全 TM 是乱的」。
+
+**数据核对（只读元数据，不读凭据）**：`usage-history.jsonl` 11710 条记录里，**1214 条**「渠道的 provider ≠ 记录的 provider」：`ch-cctq(cctq) ← deepseek/deepseek-flash` 702 条、`ch-3(uu-api) ← deepseek/deepseek-flash` 386 条、`ch-cctq ← rightcode/gpt-6-astra` 113 条、`ch-1(CCQTCC) ← rightcode/gpt-6-astra` 11 条等。会话文件侧：`2026-09-17T15-24-56` 的 `model_change` 依次是 `uu-api/claude-opus-5`(15:24) → `deepseek/deepseek-flash`(15:58) → 同模型(16:21)，而该对话的绑定停在 `ch-3/uu-api/claude-opus-5`。
+
+**根因**：绑定记的是「选择那一刻」的渠道 + 凭据 + 模型（`channel_select` 先 `setModel` 成功才提交绑定，顺序本身是对的），但模型还有**渠道以外的改动入口**：`channel_state` 到达前界面走的是非渠道模式列表（`hasChannels = channels.length > 0`，状态未到 → 平铺列表 → `set_model`）、`cycle_model`、项目默认模型恢复、扩展直接换模型。这些路径都不碰绑定，于是绑定成了「旧快照」却仍被三处当真：
+
+1. `ChannelState.bindingViewFor` / `effectiveSelectionFor` 只比较 `channelId` 是否存在，不看现在的模型 → 切换器「正在使用」、输入区 chip、状态栏渠道项、`channelAccountView`（渠道余额/账户面板头）全部照旧绑定显示；
+2. `Agent.getApiKey(provider)` 取 `bindingSnapshotFor()` 时不校验服务商 → 用量把 `channelId` 记成旧渠道（`providerId` 来自事件、是对的，所以显示成「UU apiClaude 渠道 + deepseek-flash 模型」这种自相矛盾的行）；
+3. 绑定留在磁盘上还会被新对话 `inheritBinding` 继承、被 `hasConversationBinding` 当成「已绑定」拦住项目默认模型。
+
+**修复**（判定统一为「服务商 + 渠道白名单」，不是「模型 id 相等」——同一渠道白名单内换模型绑定仍成立）：
+
+| 位置 | 变更 |
+| --- | --- |
+| `server/dev-con/channel-model.ts` | 新增纯函数 `bindingCoversModel(binding, channel, actualModelRef)`：服务商不符/白名单不含 → 不成立；实际模型未知 → 保留（缺信息不判负） |
+| `server/dev-con/channel-state.ts` | `ChannelStateHost` 新增 `conversationModelRef(id)`；`usableStoredBinding()` 让失效绑定在**读口**上就失效（含 `credentialFor` —— 白名单外的模型不再借到渠道密钥）；新增 `reconcileBindingModel()` 从磁盘清掉失效绑定（幂等） |
+| `server/dev-con/channel-service.ts` | `reconcileBinding(conversationId, modelRef)`：状态对账（不排队、不发回执），真改了才广播 `channel_state` |
+| `server/agent-service.ts` | ① `buildLightState` 每次构造快照前对账一次（覆盖 set_model / cycle / 项目默认 / 扩展所有路径，启动后第一次快照即自愈）；② 宿主端口 `conversationModelRef`；③ `getApiKey(provider)` 只在 `snapshot.providerId === provider` 时采用该快照，不符则记「未归属」并打一行 `[channel] 绑定与实际请求不符…` |
+| `web/src/channel-models.ts` | 新增前端同口径 `bindingCoversActiveModel()`（服务端权威 + 界面不依赖对面及时打补丁） |
+| `web/src/components/ModelChannelPicker.tsx` | 切换器/列表只用「覆盖当下模型」的绑定算当前渠道；✓ 以 `activeModelId` 为准（绑定 modelId 只是快照）；chip 标签同样以实际模型为准 |
+| `web/src/components/FooterBar.tsx`、`web/src/channel-account.ts` | 状态栏渠道项、渠道余额/账户面板头（`channelAccountView`）同样拒绝服务商对不上的绑定（拒绝后回退「用实际模型反推唯一渠道」） |
+
+**实测证据**：
+
+```bash
+npm run typecheck                                        # 端口新增字段被夹具/假实现同步（typecheck 拦下漏改）
+npm --prefix vendor/pi-web-ui exec vitest run   tests/unit/channel-model.test.ts tests/unit/channel-service.test.ts   tests/unit/channel-infer-current.test.ts tests/unit/channel-picker-balance.test.ts   # 28 + 26 + 16 + 10 项
+env -u PI_WEB_TOKEN -u PI_WEB_MANAGED node vendor/pi-web-ui/tests/channel-isolation-test.mjs  # 真实 dist server + 本地替身端点
+```
+
+端到端新增 4 组断言（真实服务端、真实 SDK 请求路径、本地替身模型端点、合成凭据）：漂移后 ① 生效绑定被清掉（`channelBinding.effective === null`）② 对账结果落盘并广播（`ch-a` 不再挂在漂移对话上）③ 漂移后的请求用目标服务商自己的密钥（`Bearer sk-other-provider`，不借渠道那把）④ 用量记「未归属」（`unattributed` +1，`ch-a` 不变）；反向保护 ⑤ 同一渠道白名单内换模型**保留**绑定且用量仍按该渠道归属。
+
+**负向验证**（临时把 `usableStoredBinding` 恢复成裸绑定、`reconcileBindingModel` 改成 no-op，重新构建后跑）：① ② 两条断言直接失败，服务端日志出现 `[channel] 绑定与实际请求不符：绑定 ch-a(mock)，实际服务商 othermock → 本次用量记未归属`，而 ④ 仍通过 —— 证明「读口拒用」与「请求时归属校验」是两道独立的防线，各自都有用。
+
+**顺带修掉的测试替身假象**：`channel-isolation-test.mjs` 的替身模型端点每次复用 `id: "chan"`，而用量记录按响应 id 去重 → 同一对话的第二轮用量永远不落盘（原先被「只看第一轮」的断言掩盖）。改为每次唯一响应 id。
+
+**未做 / 不计入验收**：历史那 1214 条假归属**未改写**（当时确实按旧口径落盘，改写需要单独授权；修复后新记录不再产生）；`DrainHolder`/排空语义与本次无关；真实供应商侧的双标签页人工验证未做（有真实 dist server 的双客户端用例代替）。
+
 ## 复现方式与本次实测结果
 
 ```bash

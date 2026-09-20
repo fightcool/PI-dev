@@ -433,6 +433,7 @@ export const ModelThinking = memo(function ModelThinking({
 				binding={channelBinding}
 				channels={channels}
 				receipt={channelReceipt}
+				activeModelId={currentModelId}
 				onRefresh={() => channelApi.listChannels()}
 			/>
 

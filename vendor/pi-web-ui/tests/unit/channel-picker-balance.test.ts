@@ -4,11 +4,13 @@
  * @CONTRACT 这个文件钉住三条用户可见的口径：
  *   ① 没配账户查询的渠道 → configured:false，调用方一格都不显示（绝不拿 0 冒充余额）；
  *   ② 配了但还没查过 → queried:false，如实说「未查询」（不是 0、也不是空白）；
- *   ③ 金额走 formatAmount，与余额 chip / 设置页渠道行是同一个数字（不出现两套精度）。
+ *   ③ 金额走 formatAmount，与余额 chip / 设置页渠道行是同一个数字（不出现两套精度）；
+ *   ④ 「哪个渠道在跑」的口径（channelAccountView）：绑定只在服务商与当下模型一致时才算数
+ *      —— 否则界面会把旧渠道的余额挂在别的模型上（用户看到的「用 deepseek 却显示 UU apiClaude」）。
  */
 import { describe, expect, it } from "vitest";
 import type { UiAccountStatus, UiChannelInfo } from "../../web/src/types";
-import { channelBalanceBrief } from "../../web/src/channel-account.js";
+import { channelAccountView, channelBalanceBrief } from "../../web/src/channel-account.js";
 
 const channel = (patch: Partial<UiChannelInfo> = {}): UiChannelInfo =>
 	({
@@ -79,5 +81,61 @@ describe("channelBalanceBrief：模型选择器里的渠道余额摘要", () => 
 			[status({ accountRef: "shared-acct", balance: 7 })],
 		);
 		expect(brief.balance).toBe("7");
+	});
+});
+
+describe("channelAccountView：绑定与当下模型不一致时不冒充当前渠道", () => {
+	const withAccount = (patch: Partial<UiChannelInfo> = {}): UiChannelInfo =>
+		channel({ account: { kind: "template" } as never, ...patch });
+
+	it("绑定服务商 == 当下模型服务商 → 用绑定渠道（正常路径）", () => {
+		const view = channelAccountView({
+			channels: [withAccount({ id: "ch-3", providerId: "uu-api" })],
+			accounts: [],
+			binding: { effective: { channelId: "ch-3" } } as never,
+			modelProvider: "uu-api",
+		});
+		expect(view.channel?.id).toBe("ch-3");
+		expect(view.derived).toBe(false);
+	});
+
+	it("绑定服务商 != 当下模型服务商 → 拒绝该绑定，反推到真正在跑的渠道", () => {
+		// 真实事故：绑定还挂在 ch-3(uu-api)，模型已经换成 deepseek/deepseek-flash。
+		const view = channelAccountView({
+			channels: [
+				withAccount({ id: "ch-3", providerId: "uu-api" }),
+				withAccount({ id: "ch-deepseek", providerId: "deepseek" }),
+			],
+			accounts: [],
+			binding: { effective: { channelId: "ch-3" } } as never,
+			modelProvider: "deepseek",
+		});
+		expect(view.channel?.id).toBe("ch-deepseek");
+		expect(view.derived).toBe(true);
+	});
+
+	it("拒绝绑定且该服务商没有唯一可查渠道 → 如实说没有渠道（不硬撑一个）", () => {
+		const view = channelAccountView({
+			channels: [
+				withAccount({ id: "ch-3", providerId: "uu-api" }),
+				withAccount({ id: "ch-d1", providerId: "deepseek" }),
+				withAccount({ id: "ch-d2", providerId: "deepseek" }),
+			],
+			accounts: [],
+			binding: { effective: { channelId: "ch-3" } } as never,
+			modelProvider: "deepseek",
+		});
+		expect(view.channel).toBeNull();
+		expect(view.derived).toBe(false);
+	});
+
+	it("拿不到当下模型时不判负：仍然按绑定显示（缺信息不藏东西）", () => {
+		const view = channelAccountView({
+			channels: [withAccount({ id: "ch-3", providerId: "uu-api" })],
+			accounts: [],
+			binding: { effective: { channelId: "ch-3" } } as never,
+			modelProvider: null,
+		});
+		expect(view.channel?.id).toBe("ch-3");
 	});
 });

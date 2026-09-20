@@ -5,10 +5,10 @@
  *              @PERF=performance @CONTRACT=interface contract 📖=dev doc reference
  *
  * Breadcrumbs (changing this affects):
- *   @COUPLED components/ModelChannelPicker.tsx（渠道分组的模型行 + 切捛器过滤）,
+ *   @COUPLED components/ModelChannelPicker.tsx（渠道分组的模型行 + 切捛器过滤 + 绑定是否可用）,
  *            components/ChannelModelWhitelist.tsx（勾选白名单）,
  *            components/ChannelSettings.tsx（默认模型下拉 / 白名单摘要）,
- *            server/dev-con/channel-model.ts（validateSelection 的白名单口径）
+ *            server/dev-con/channel-model.ts（validateSelection 的白名单口径 + bindingCoversModel）
  *   📖 docs/DEV-CON-PROPOSAL.md §4（渠道 = 服务商+端点+凭据+模型白名单）、§6（编码界面与选择器）
  *   @CONTRACT 纯函数，无 React / 无 IO。白名单按**服务商内部 id** 匹配（"deepseek-flash"），
  *             模型目录里的 id 是 "provider/deepseek-flash"；空白名单 = 不限（列出全部）。
@@ -84,4 +84,30 @@ export function inferChannelIdByModel(
 	if (!activeModelId) return null;
 	const hits = channels.filter((c) => channelModels(models, c).some((m) => m.id === activeModelId));
 	return hits.length === 1 ? hits[0].id : null;
+}
+
+/**
+ * 这条对话绑定是否还描述 Agent 当下在用的模型（与 server/dev-con/channel-model.ts 的
+ * bindingCoversModel 同一口径：服务商 + 白名单，不是「模型 id 相等」）。
+ *
+ * @WHY 绑定里的 modelId 是「选择那一刻」的快照，而模型还能被渠道以外的路径换掉
+ *   （channel_state 还没到的 set_model、cycle_model、项目默认模型、扩展）。服务端会在快照构造时
+ *   对账并清掉这类绑定，但界面不能只指望对面：拿旧绑定当「正在使用」，用户看到的就是
+ *   「明明在跑 deepseek，却显示 UU apiClaude · claude-opus-5」。两边同口径就没人说谎。
+ * @CONTRACT 实际模型未知（null/undefined）时一律返回 true：缺信息不判负，宁可保留绑定，
+ *   也不要在拿不到模型时把用户显式选的渠道从界面上抹掉。
+ * @GOTCHA 模型 id 可能不止一个斜杠 —— 用 bareModelId 剥前缀（见文件头 @GOTCHA）。
+ */
+export function bindingCoversActiveModel(
+	channel: Pick<UiChannelInfo, "providerId" | "models"> | null | undefined,
+	binding: { channelId?: string | null; modelId?: string | null } | null | undefined,
+	activeModelId: string | null | undefined,
+): boolean {
+	if (!activeModelId) return true;
+	if (!binding?.channelId) return false;
+	if (!channel) return false;
+	const provider = activeModelId.split("/")[0] || "";
+	if (provider && channel.providerId !== provider) return false;
+	const whitelist = channel.models ?? [];
+	return whitelist.length === 0 || whitelist.includes(bareModelId(activeModelId));
 }

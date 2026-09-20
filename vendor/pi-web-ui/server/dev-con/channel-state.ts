@@ -17,18 +17,24 @@
  *        这样状态层不依赖命令流程，视图与绑定语义可以脱离 ChannelService 单独验证。
  *   @GOTCHA 绑定存储键是 "<clientId>::<conversationId>"：对话 id（c1/c2…）只在单个客户端内
  *           唯一，而 channels.json 是全实例共享的；直接用 conversationId 会跨端互相覆盖。
+ *   @GOTCHA 绑定里的 modelId 是「选择那一刻」的快照，而模型还能被渠道以外的路径换掉
+ *           （channel_state 到达前的 set_model、cycle_model、项目默认模型、扩展）。这种绑定
+ *           不再描述当下的请求：usableStoredBinding 会拒用它、reconcileBindingModel 会清掉它，
+ *           否则切换器会把旧渠道标成「正在使用」、用量会记到旧渠道名下（用户看到的「乱」）。
  *   @GOTCHA refresh/commitConfig 遇到文件损坏或不一致时保留内存态并重新对齐，绝不静默清空。
  *   @SECURITY 出站视图只含引用（providerId/keyName）；密钥正文只在 credentialFor() 内部返回。
  * ──────────────────────────────────────────────────
  */
 import type { ServerMessage, UiAccountStatus, UiChannelBindingView } from "../protocol.js";
 import {
+	bindingCoversModel,
 	makeBinding,
 	pruneBindings,
 	toSelection,
 	type BindingSource,
 	type ChannelBinding,
 	type ChannelCatalog,
+	type ChannelRecord,
 	type ChannelSelection,
 	type RequestBindingSnapshot,
 } from "./channel-model.js";
@@ -48,6 +54,12 @@ export interface ChannelStateHost {
 	hasProvider: (providerId: string) => boolean;
 	/** 该对话是否已经有过消息（决定项目/实例默认是否可继承）。 */
 	conversationHasMessages: (id: string) => boolean;
+	/**
+	 * 该对话当下实际在用的模型（`provider/id`），拿不到时 null。
+	 * @WHY 绑定里记的 modelId 是「选择那一刻」的快照；模型还能被渠道以外的路径换掉
+	 *   （set_model / cycle_model / 项目默认模型 / 扩展），只有问会话本身才能知道现在跑的是谁。
+	 */
+	conversationModelRef: (id: string) => string | null;
 	/** 解析命名密钥正文；仅 credentialFor() 使用，密钥值不出状态层以外的调用方。 */
 	resolveKeyValue: (providerId: string, keyName: string) => string | null;
 }
@@ -144,11 +156,27 @@ export class ChannelState {
 	// -- state -----------------------------------------------------------------
 
 	/**
+	 * 可用的存储绑定：绑定仍然覆盖「这个对话现在的模型」时才算数。
+	 * @WHY 见 bindingCoversModel 的 @WHY：绑定落在磁盘上不会自己跟着模型变。
+	 */
+	private usableStoredBinding(conversationId: string): ChannelBinding | undefined {
+		const stored = this.storedBinding(conversationId);
+		if (!stored?.channelId) return undefined;
+		return bindingCoversModel(stored, this.channelOf(stored.channelId), this.host.conversationModelRef(conversationId))
+			? stored
+			: undefined;
+	}
+
+	private channelOf(channelId: string): ChannelRecord | undefined {
+		return this.current.channels.find((c) => c.id === channelId);
+	}
+
+	/**
 	 * 有效选择：对话绑定优先；没有绑定时只有「尚未发言」的对话才继承
 	 * 项目/实例默认（§4：修改默认不悄悄重绑已运行对话）。
 	 */
 	effectiveSelectionFor(conversationId: string): { selection: ChannelSelection | null; source: BindingSource } {
-		const stored = this.storedBinding(conversationId);
+		const stored = this.usableStoredBinding(conversationId);
 		if (stored?.channelId) return { selection: toSelection(stored), source: "conversation" };
 		if (this.host.conversationHasMessages(conversationId)) return { selection: null, source: "none" };
 		const cwd = this.host.cwd();
@@ -196,6 +224,23 @@ export class ChannelState {
 	}
 
 	/**
+	 * 自愈：模型被渠道以外的路径换掉后，把不再覆盖当下模型的绑定从磁盘上清掉。
+	 * @WHY 只“拒用”不够：磁盘上留着的旧绑定会被 inheritBinding 继承到新对话、被
+	 *   hasConversationBinding 当成「已绑定」而拦住项目默认模型，也会让审计看不清。
+	 * @CONTRACT 幂等：绑定已不存在或仍然覆盖当下模型时什么都不写（不 bump 版本、不落盘）。
+	 *   模型未知（拿不到）时不判负 —— 宁可留着绑定，也不要在信息不全时替用户做决定。
+	 * @return 真的清掉了返回 true（调用方据此重新广播渠道状态）。
+	 */
+	reconcileBindingModel(conversationId: string, actualModelRef: string | null): boolean {
+		const stored = this.storedBinding(conversationId);
+		if (!stored?.channelId) return false;
+		if (bindingCoversModel(stored, this.channelOf(stored.channelId), actualModelRef)) return false;
+		this.bumpBindingRevision();
+		this.commitBindings({ [this.key(conversationId)]: null });
+		return true;
+	}
+
+	/**
 	 * 新对话继承上一对话的渠道绑定（不调用 setModel —— 模型已由 newChat 携带过去），
 	 * 否则新对话会只剩下模型而没有渠道/凭据归属。
 	 */
@@ -221,7 +266,7 @@ export class ChannelState {
 		pending: ChannelBinding | null;
 		source: BindingSource;
 	} {
-		const stored = this.storedBinding(conversationId) ?? null;
+		const stored = this.usableStoredBinding(conversationId) ?? null;
 		const { selection, source } = this.effectiveSelectionFor(conversationId);
 		const effective =
 			stored ??

@@ -39,7 +39,7 @@ Node `#usage` / `#governance` package imports 让源码与编译产物引用同�
 - `node scripts/maintenance/prepare-release.mjs <commit>`：准备候选 release（锁文件未变时复用依赖，~3 分钟省掉）。
 - `node scripts/maintenance/switch-production-release.mjs <releaseId>`：原子切换上线（含排空/验收/回滚），见 [PM2-PRODUCTION.md](PM2-PRODUCTION.md)。
 - `npm run test:channels:unit`：渠道模型/存储/服务/账户的纯逻辑单测。
-- `npm run test:channels`：端到端双对话双密钥隔离验证（先 `npm run build`，使用本地替身模型端点）。
+- `npm run test:channels`：端到端双对话双密钥隔离验证（先 `npm run build`，使用本地替身模型端点）。其中还钉住了**绑定与当下模型的对齐**：渠道以外的路径（`set_model`）把模型换到别的服务商后，生效绑定必须被清掉并落盘、用量记「未归属」且不借渠道密钥；同一渠道白名单内换模型则必须**保留**绑定（见 P0-VERIFICATION §19）。
 - `npm run test:channels:multi`：端到端多客户端验证（广播一致、外部修改冲突可恢复、绑定键按 clientId 隔离）。
 - `npm run test:channels:failures`：端到端「网关搞流 → 白烧可见 → 越线告警」（替身 anthropic 端点在 `message_start` 后收流，含自动重试救回、aborted 不算失败；也在冒烟清单里）。
 - 冒烟清单里的 `model-catalog-freshness-test`：模型目录自愈与变更广播（服务在跑时改写 `models.json` → 同一会话下一次 `list_models` 就能看到新服务商；保存/删除服务商后其他已连接会话不等请求就收到新目录）。**为什么必须有**：SDK 的 `ModelRuntime` 只在构造时读一次 `models.json`，旧会话会永久停在旧目录（症状是只有那一个渠道显示「该渠道暂无可用的模型」，且刷新页面无效——同 clientId 复用同一 ClientSession）。
