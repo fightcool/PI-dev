@@ -1,7 +1,7 @@
 /*
  * 🍞 AI Breadcrumb — @COUPLED ./jev-gate.ts（`tune` 命令）, ./jev-tune-format.ts 的消费者
- *   ../server/dev-con/jev-tune.ts（纯逻辑：统计/混淆矩阵/建议）, ../server/dev-con/jev-model.ts
- *   （阈值与三态事实源）, ../server/dev-con/jev-gate.ts（分数来源）
+ *   ../server/dev-con/jev-tune.ts（纯逻辑：统计/混淆矩阵/建议/逐命题窗口）,
+ *   ../server/dev-con/jev-model.ts（阈值与三态事实源）, ../server/dev-con/jev-gate.ts（分数来源）
  * 📖 ../../../docs/JEV-DECISION-GATE.md §4（阈值与抖动）、§5.1（命题必须正向）、§9（成本）
  *
  * `npm run jev -- tune` 的**渲染层**：只把评测结果翻译成人可读文本。
@@ -10,15 +10,20 @@
  * `--json` 输出不经本模块：直接把 JevTuneReport 序列化（机器可读，形状稳定）。
  * @CONTRACT 报告里**只有分数与元数据**，没有 state 正文、没有密钥正文：`--json` 可以安全贴进
  *   PR/CI 日志（语料是仓库里的文本，本来也不该进日志）。
+ * @WHY 「逐命题可分窗口」是**只读分析**：它不改全局建议（`suggestions` 仍是窄网格的产物），
+ *   只把「单一全局阈值为什么在结构上不可能合适」写成每个命题一行 —— 判据/建议一律来自
+ *   jev-tune.ts 的 analyzePropositionWindows，渲染层不再自己算窗口。
  */
 import type {
 	JevTuneConfusion,
 	JevTuneCorpusError,
 	JevTuneLabel,
+	JevTunePropositionAnalysis,
 	JevTuneScoreSummary,
 	JevTuneSuggestion,
+	JevTuneWindowRef,
 } from "../server/dev-con/jev-tune.js";
-import { JEV_TUNE_REPEAT_MAX } from "../server/dev-con/jev-tune.js";
+import { JEV_TUNE_DEFAULT_GRID, JEV_TUNE_REPEAT_MAX } from "../server/dev-con/jev-tune.js";
 import type { JevThresholds } from "../server/dev-con/jev-model.js";
 
 /** 一条拿不到分数的条目（调用失败 / 缓存无此条）：如实列出，绝不补一个好看的数。 */
@@ -68,6 +73,12 @@ export interface JevTuneReport {
 	failures: JevTuneFailure[];
 	summaries: JevTuneScoreSummary[];
 	current: { thresholds: JevThresholds; confusion: JevTuneConfusion };
+	/**
+	 * 逐命题可分窗口（本轮新增；**只增不改**：上面所有字段的含义与形状都不变）。
+	 * @WHY 单一全局阈值在结构上不可能同时适合三个命题（实测窗口分别在 0.4 / 0.6–0.73 / 0.77+），
+	 *   所以除全局建议外单独给出「每个命题自己的可分窗口 + 只扫该命题的最佳档」。
+	 */
+	perProposition: JevTunePropositionAnalysis[];
 	/** top 建议（无误放行的档位优先）；没有任何合法档位时为 null。 */
 	recommended: { approveAt: number; blockAt: number } | null;
 	suggestions: JevTuneSuggestion[];
@@ -90,6 +101,92 @@ function formatScore(score: number | null): string {
 function formatOutcomes(summary: JevTuneScoreSummary): string {
 	if (summary.outcomes.length === 0) return "无样本";
 	return summary.outcomes.join(",");
+}
+
+/** 分数区间 `[0.39 … 0.71]`（空数组写 `[]`：没样本就不编造范围）。 */
+function formatRange(scores: readonly number[]): string {
+	if (scores.length === 0) return "[]";
+	return `[${formatScore(scores[0]!)} … ${formatScore(scores[scores.length - 1]!)}]`;
+}
+
+/**
+ * 取极值处的条目名（并列时全列出）。
+ * @CONTRACT 只拿**重叠名单**里的极值：不可分时 max(block) 一定 >= min(pass)、min(pass) 一定
+ *   <= max(block)，所以两者必在名单里（空名单不可能出现在「不可分」分支）。
+ */
+function extremeRefs(refs: readonly JevTuneWindowRef[], kind: "max" | "min"): string {
+	if (refs.length === 0) return "—";
+	const scores = refs.map((ref) => ref.score);
+	const extreme = kind === "max" ? Math.max(...scores) : Math.min(...scores);
+	const picked = refs.filter((ref) => ref.score === extreme);
+	return `${formatScore(extreme)} ${picked.map((ref) => ref.id).join(", ")}`;
+}
+
+/** 一档最佳档的四个指标（误放行永远排第一：它是唯一不可接受的结果）。 */
+function formatTierCounts(confusion: JevTuneConfusion): string {
+	return `误放行 ${confusion.falsePass} 误拦 ${confusion.falseBlock} 转人工 ${confusion.review}`;
+}
+
+/** 最佳档短标签；无样本时不出档位（空语料下所有档位指标全为 0，那只是「最保守的一档」）。 */
+function formatBestTier(best: JevTuneSuggestion | null): string {
+	if (!best) return "无样本：不出最佳档";
+	return `最佳档 ${formatScore(best.approveAt)}/${formatScore(best.blockAt)}`;
+}
+
+/**
+ * 「逐命题可分窗口」一节：每个命题一行（+ 需要独立阈值时的建议行）。
+ * @WHY 逐命题的阈值只对**带这个命题**的条目生效，所以这里的统计刻意不跟全局那套混：
+ *   一个命题的窗口再漂亮，也不能拿来给其它命题下结论。
+ */
+function propositionWindowLines(analyses: readonly JevTunePropositionAnalysis[]): string[] {
+	if (analyses.length === 0) return ["  （没有命题：语料里没有任何条目拿到分数）"];
+	const lines: string[] = [];
+	for (const entry of analyses) {
+		const head =
+			`  ${entry.proposition}  pass n=${entry.passCount} ${formatRange(entry.passScores)}` +
+			`  block n=${entry.blockCount} ${formatRange(entry.blockScores)}`;
+		if (entry.passCount === 0 || entry.blockCount === 0) {
+			// 只有一侧样本时不下「可分」结论：拿半边数据算出的窗口比没有窗口更危险。
+			lines.push(
+				`${head}  → 无法判可分：没有 ${entry.passCount === 0 ? "should-pass" : "should-block"} 样本（不编造窗口）`,
+			);
+		} else if (entry.separable) {
+			const best = entry.best
+				? `${formatBestTier(entry.best)}（${formatTierCounts(entry.best.confusion)}）`
+				: formatBestTier(null);
+			lines.push(`${head}  → 可分 t ∈ (${formatScore(entry.windowLo)}, ${formatScore(entry.windowHi)}]  ${best}`);
+			if (entry.recommended) {
+				const advice = `approveAt = ${formatScore(entry.recommended.approveAt)} 阻断 ≤ ${formatScore(entry.recommended.blockAt)}`;
+				lines.push(
+					entry.needsOwnThreshold
+						? `    → 该命题需要独立阈值：建议 ${advice}` +
+								`（全局网格 approveAt ∈ {${JEV_TUNE_DEFAULT_GRID.approveAt.join(", ")}} 覆盖不到窗口` +
+								` (${formatScore(entry.windowLo)}, ${formatScore(entry.windowHi)}]）`
+						: `    → 窗口落在全局网格内：可用 ${advice}`,
+				);
+			} else {
+				lines.push("    → 窗口上界 < 0.05：没有可表达的 approveAt（阈值这条路走到头了，需要改判据）");
+			}
+		} else {
+			const best = formatBestTier(entry.best);
+			const tail =
+				entry.best && entry.best.confusion.falsePass > 0
+					? `${best} 仍有误放行 ${entry.best.confusion.falsePass}`
+					: entry.best
+						? `${best}（${formatTierCounts(entry.best.confusion)}）`
+						: best;
+			lines.push(
+				`${head}  → 不可分：重叠 ${formatScore(entry.overlap)}` +
+					`（should-block 最高 ${extremeRefs(entry.overlapBlockItems, "max")} / ` +
+					`should-pass 最低 ${extremeRefs(entry.overlapPassItems, "min")}）；${tail}`,
+			);
+			lines.push("    → 阈值解决不了这条命题：需要改判据（把命题写得更可判）或接受更多转人工");
+		}
+		if (entry.unusable.length > 0) {
+			lines.push(`    未参与（无可用分数，不补 0）：${entry.unusable.join(", ")}`);
+		}
+	}
+	return lines;
 }
 
 /** 四类结果 + 三态计数（人类可读一行，含最危险的误放行）。 */
@@ -185,6 +282,13 @@ export function printTuneReport(report: JevTuneReport): void {
 		);
 	}
 	if (report.summaries.length === 0) console.log("  （没有分数：没有任何条目被评测）");
+
+	console.log("\n逐命题可分窗口（阈值只对带该命题的条目生效；一条样本带多命题时每个命题各算一份，重复取均值）");
+	for (const line of propositionWindowLines(report.perProposition)) console.log(line);
+	console.log(
+		"  注：可分 = max(should-block) < min(should-pass)，窗口 (windowLo, windowHi] 里的阈值才能既不误放行也不误拦；" +
+			"不可分说明这条命题的分数分布重叠，任何阈值都只能二选一（要么误放行，要么误拦/多转人工）。",
+	);
 
 	const thresholds = report.current.thresholds;
 	console.log(`\n当前阈值（通过 ≥ ${thresholds.approveAt} / 阻断 ≤ ${thresholds.blockAt} / 其余转人工）`);

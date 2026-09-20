@@ -44,6 +44,7 @@ import {
 	JEV_TUNE_REPEAT_DEFAULT,
 	JEV_TUNE_REPEAT_MAX,
 	type JevTuneScoredItem,
+	analyzePropositionWindows,
 	confusionAt,
 	parseJevCorpus,
 	suggestThresholds,
@@ -455,6 +456,8 @@ async function runTune(
 	const summaries = summarizeScores(perItemScores, config.thresholds);
 	const current = confusionAt(scoredItems, config.thresholds);
 	const { suggestions, evaluated, skipped } = suggestThresholds(scoredItems);
+	// 逐命题窗口（加宽网格）：只增不改 —— 全局建议（suggestions/recommended）仍用窄网格。
+	const perProposition = analyzePropositionWindows(scoredItems);
 	const top = suggestions[0];
 	const report: JevTuneReport = {
 		corpus,
@@ -467,6 +470,7 @@ async function runTune(
 		failures,
 		summaries,
 		current: { thresholds: config.thresholds, confusion: current },
+		perProposition,
 		recommended: top ? { approveAt: top.approveAt, blockAt: top.blockAt } : null,
 		suggestions,
 		evaluated,

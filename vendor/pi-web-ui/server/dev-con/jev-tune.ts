@@ -500,11 +500,13 @@ function floorToStep(value: number, step = JEV_TUNE_PROPOSITION_STEP): number {
  * 一条（条目 × 命题）的重复分数取**均值**；没有有效样本时返回 null（绝不补 0）。
  * @WHY 逐命题只问「这个命题的分数落在哪」：重复采样的抖动由 summarizeScores 交代，
  *   这里若取最保守的一次，会把抖动误读成「这个命题本身不可分」。
+ * @GOTCHA 均值保留 4 位小数（与分数展示同精度）：否则 [0.6,0.3] 会得到 0.44999999999999996，
+ *   让 windowLo / overlap 这些**会被拿去做判断**的值带上看不见的尾巴。
  */
 function meanScoreOf(scores: readonly number[] | undefined): number | null {
 	const usable = (scores ?? []).filter(isScore);
 	if (usable.length === 0) return null;
-	return usable.reduce((sum, score) => sum + score, 0) / usable.length;
+	return roundScore(usable.reduce((sum, score) => sum + score, 0) / usable.length);
 }
 
 /** 命题的展示顺序：先按注册表顺序（人熟悉的那套），不在注册表里的按名字排在后面。 */
