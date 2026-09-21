@@ -252,6 +252,26 @@ try {
 	quiesced = false;
 	log(`DEPLOYED ${OLD_ID} → ${NEW_ID} pid=${s2.pid} commit=${info.commit.slice(0, 12)} protocol=${info.protocolVersion} entry=${entry}`);
 	phase("deployed", { pid: s2.pid, commit: info.commit, protocolVersion: info.protocolVersion, from: OLD_ID });
+	/**
+	 * 把宿主扩展本体同步成**刚上线的这份代码**。
+	 * @WHY 扩展（提交钩子 / 工具结果过滤）只认**运行中宿主自己那份代码**（`process.argv[1]` 所在树里的
+	 *   `vendor/pi-web-ui`，部署时即 `current` 指向的 release）。发布一换，扩展本体若还是旧副本，
+	 *   就成了「新内核 + 旧本体」的版本错位 —— 而部署切换正是纠正它的唯一时刻。
+	 * @CONTRACT 失败只告警、**绝不回滚发布**：站点可用性与扩展无关；但必须显式记下来，
+	 *   因为版本错位的表现是「判定失败 → 放行」，不写清楚就等于静默失效。
+	 * 从新 release 里装（`<release>/extensions/*` + `<release>/scripts/install-jev-hook.mjs`），
+	 * 所以装出来的本体天然与刚上线的代码同源；`agentDir` 显式取自配置，不靠默认路径猜。
+	 */
+	try {
+		const out = execFileSync(process.execPath, [join(newPath, "scripts", "install-jev-hook.mjs"), "install"], {
+			encoding: "utf8",
+			env: { ...process.env, PI_CODING_AGENT_DIR: config.agentDir },
+		});
+		const count = out.trim().split("\n").filter((line) => line.includes("已安装")).length;
+		log(`extensions synced from ${NEW_ID} into ${config.agentDir}（${count} 项）`);
+	} catch (error) {
+		log(`WARNING: 扩展本体同步失败（不影响站点，但扩展可能与内核版本不一致）：${error.message}`);
+	}
 	// 站点已经验收通过才回收磁盘：失败/回滚路径绝不碰历史版本（回滚还要用它们）。
 	if (process.env.PI_DEV_SWITCH_PRUNE !== "0") pruneAfterSwitch(OLD_ID);
 } catch (error) {

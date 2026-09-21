@@ -103,11 +103,13 @@ test("global entry auto-discovers, notifies via UI and uninstalls without touchi
     undefined,
   );
   assert.equal(existsSync(join(agentDir, "settings.json")), false);
-  // 兜底 CLI 路径必须随安装落盘（别的项目里提交时靠它找 CLI）。
-  const recorded = JSON.parse(
-    readFileSync(join(agentDir, "hooks", bodyName, "app.json"), "utf8"),
+  // 不再记录「CLI 在哪个 checkout」：解析只认运行中宿主自己的代码（见 docs/JEV-HOOK.md §解析）。
+  // 记录文件留着反而会让人以为「可以退到别的 checkout」，所以**必须不存在**。
+  assert.equal(
+    existsSync(join(agentDir, "hooks", bodyName, "app.json")),
+    false,
+    "不应再写 app.json",
   );
-  assert.match(recorded.app, /vendor\/pi-web-ui$/);
   install("uninstall");
   assert.equal(readdir(join(agentDir, "extensions")).length, 0);
   assert.equal(readdir(join(agentDir, "hooks")).length, 0);
@@ -209,18 +211,24 @@ test("installed entry is self-contained: no absolute repo/worktree path in the s
   // 第二个扩展（工具结果过滤）同样要自包含：装到宿主的副本里不能残留仓库绝对路径。
   const trimShimName = onlyEntry(join(agentDir, "extensions"), TRIM_SHIM);
   const trimBodyName = onlyEntry(join(agentDir, "hooks"), TRIM_BODY);
-  const trimShim = readFileSync(join(agentDir, "extensions", trimShimName), "utf8");
+  const trimShim = readFileSync(
+    join(agentDir, "extensions", trimShimName),
+    "utf8",
+  );
   assert.match(trimShim, /from "\.\.\/hooks\/jev-trim-[0-9a-f]{8}\/index\.ts"/);
   assert.doesNotMatch(trimShim, /\/home\/|\/tmp\/|worktree/);
   for (const name of readdirSync(join(agentDir, "hooks", trimBodyName))) {
     if (!/\.(ts|mjs)$/.test(name)) continue;
-    const body = readFileSync(join(agentDir, "hooks", trimBodyName, name), "utf8");
+    const body = readFileSync(
+      join(agentDir, "hooks", trimBodyName, name),
+      "utf8",
+    );
     assert.doesNotMatch(body, /\/home\/dev\//, `${name} 不应含仓库绝对路径`);
   }
-  // 兜底 CLI 记录必须落在**本体目录**里（app.mjs 用 `new URL("./app.json", import.meta.url)` 读它；
-  // 读到位置不对不会报错，只会静默不生效 —— 这条断言就是为了钉住它）。
-  const trimApp = JSON.parse(
-    readFileSync(join(agentDir, "hooks", trimBodyName, "app.json"), "utf8"),
+  // 同理：工具结果过滤的本体也不带 app.json —— 它只认运行中宿主自己的代码。
+  assert.equal(
+    existsSync(join(agentDir, "hooks", trimBodyName, "app.json")),
+    false,
+    "工具结果过滤本体也不应带 app.json",
   );
-  assert.match(trimApp.app, /vendor\/pi-web-ui$/);
 });

@@ -34,20 +34,51 @@ cd /home/dev/jev-hook
 PI_CODING_AGENT_DIR=/home/dev/.local/share/pi-dev/agent node scripts/install-jev-hook.mjs install
 ```
 
-| 装到哪                                     | 内容                                                                                                                        |
-| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `<agentDir>/extensions/jev-gate-<hash>.ts` | 入口 shim：`export { default } from "../hooks/jev-gate-<hash>/index.ts"`（**相对**路径 + 内容哈希；改名才能让宿主缓存失效） |
-| `<agentDir>/hooks/jev-gate/`               | 扩展本体（`index.ts` / `command.mjs` / `gate.mjs` / `state.mjs`），随 `.managed-by` 标记一起由本安装器管理                  |
+| 装到哪                                                   | 内容                                                                                                                        |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `<agentDir>/extensions/jev-gate-<hash>.ts`               | 入口 shim：`export { default } from "../hooks/jev-gate-<hash>/index.ts"`（**相对**路径 + 内容哈希；改名才能让宿主缓存失效） |
+| `<agentDir>/hooks/jev-gate-<hash>/`（不再写 `app.json`） | 扩展本体（`index.ts` / `command.mjs` / `gate.mjs` / `state.mjs`），随 `.managed-by` 标记一起由本安装器管理                  |
+
+### 破坏性接口变更（2026-09-21，已由仓库主人 override 门禁确认有意为之）
+
+这一版**主动删掉了两处接口**，不是顺手清理，是设计纠正的一部分：
+
+| 变更                                                                                                             | 类型                                                   | 为什么删 / 替代物                                                                                                                                                                                                      |
+| ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<agentDir>/hooks/jev-gate-<hash>/app.json`（及 trim 同款）                                                      | **删除产物**（本文件上一版曾把它写成安装布局的一部分） | 它唯一的存在理由是支撑「退到别的 checkout」，而旧版本不该被咨询（见下 ③）。删除后 CLI 只认运行中宿主自己的代码；**旧副本里的 `app.json` 会随内容哈希变更被当旧版本清掉，升级无需手工清理**                             |
+| `resolveAppCandidates()` / `firstSuccessful()` / `preferredApp`（`extensions/jev-trim/app.mjs`、`ask.mjs` 导出） | **删除导出**                                           | 那是「候选列表 + 逐个尝试 + 记住成功的那个」的实现，替代物是单一确定性解析 `resolveApp()`；留着就是死代码，且会诱导别人再写回自愈逻辑                                                                                  |
+| `resolveApp(cwd, env, recordPath)` → `resolveApp(cwd, env, hostEntry)`（`extensions/jev-gate/gate.mjs`）         | **第三参数含义变更**                                   | `recordPath` 是「读 app.json 的路径」，`hostEntry` 是「宿主入口脚本路径」。两者语义不同、不可混用，所以**故意不留兼容重载**：把 `recordPath` 当 `hostEntry` 传会解析失败并**告警放行**（可见），不会静默跑到别的副本上 |
+| `resolveApp(env, hostEntry)` → `resolveApp(env, hostEntry, cwd)`（`extensions/jev-trim/app.mjs`）                | **新增可选参数**                                       | 第三档 cwd 降级需要它                                                                                                                                                                                                  |
+
+> 这些符号只被**同体副本 + 单测**消费（扩展本体随安装内容寻址复制进 `<agentDir>/hooks/<name>-<hash>/`，
+> 不存在跨版本消费者），所以没有弃用期；但按「文档即接口」的口径这仍是破坏性变更，
+> CI 门禁 `change_preserves_public_api=0.09` 判的就是它 —— 判定正确，此处留档为人工确认的依据。
+
+### 发布切换会自动同步扩展本体
+
+扩展只认运行中宿主自己的代码，所以**发布一换、本体必须跟着换**（否则就是「新内核 + 旧本体」）。
+`scripts/maintenance/switch-production-release.mjs` 在站点验收通过后、回收旧 release 之前会用新 release 装一遍：
+
+```bash
+node <release>/scripts/install-jev-hook.mjs install    # env 里显式带 PI_CODING_AGENT_DIR=config.agentDir
+```
+
+失败**只告警、不回滚发布**（站点可用性与扩展无关），但一定写进切换日志 ——
+版本错位的表现是「判定失败 → 放行」，不写清楚就等于静默失效。
 
 > **为什么本体在 `hooks/` 而不在 `extensions/`**（`@GOTCHA`，都是实测踩出来的）：
 > ① pi 的全局发现规则有两条 —— `extensions/<文件名>.ts` 与 `extensions/<目录名>/index.ts`。
 > 把本体放进 `extensions/jev-gate/`，它**自己也会被当成一个扩展**发现，于是同一个钩子加载两次
 > （SDK 实测 `extensions.length === 2`）。
-> ③ **只靠会话 cwd 找 CLI 不够**：在别的项目里提交时 cwd 不含 `vendor/pi-web-ui`，钩子会找不到 CLI 而**静默放行**（实测：在 `/tmp/<临时仓库>` 提交没被拦）——所以安装时把 checkout 路径写进 `app.json` 兜底。
+> ③ **CLI 一定来自「运行中宿主自己那份代码」**（2026-09-21 修正）：解析顺序是
+> `JEV_GATE_APP` → **宿主入口脚本（`process.argv[1]`）所在树里的 `vendor/pi-web-ui`** → 会话 cwd（仅在宿主自己不带内核时降级）→ null（告警放行）。
+> 部署语义下第 2 档就是 `deploy/current` 指向的 release（`current` 是符号链接，**解析保留字面量**，所以换发布自动跟随）。
+> 曾经的做法是「env → cwd → 安装时记录的 `app.json` → 扩展源码 checkout」并逐个候选尝试（所谓「版本偏差自愈」），
+> 那是把版本不一致当常态：旧 release 会被 `switch-production-release.mjs` 回收，会话 cwd 里的副本可能是别人正在改的
+> 工作副本（实测：那份还没有 `ask` 子命令 → 每次判定先白跑 2.4s 才失败）。**旧版本不该被咨询 ——
+> 遇到「运行中的版本不支持」，正确动作是部署新版本。** 为此发布切换会自动同步扩展本体（见下）。
 > ② 第一版入口写的是「re-export 指向仓库里的绝对路径」，结果指向了一个**临时 worktree** —— 那个目录一删，
 > 所有会话加载扩展都会报错。现在入口是相对路径 + 本体内联在宿主里，**装完就与仓库位置无关**。
-
-| `<agentDir>/hooks/jev-gate-<hash>/app.json` | **兜底**：安装时记下的「门禁 CLI 在哪个 checkout」（`vendor/pi-web-ui`）。会话在**别的项目**里提交时（cwd 不含 `vendor/pi-web-ui`）靠它找到 CLI；换兜底 checkout 就在那个 checkout 里重跑 install |
 
 > ④ **同名覆盖会跑旧代码**：宿主进程按扩展**路径**缓存已加载的 factory。实测：重装同名入口后，
 > 新会话（cwd=`/tmp`）里提交时钩子仍旧行为不变 —— 服务进程里跑的还是旧副本。所以入口名带**内容哈希**：

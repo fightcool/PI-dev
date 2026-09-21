@@ -152,6 +152,9 @@ export default function jevTrim(
           ...base,
           sections: sections.length,
           ok: false,
+          // 失败时更要知道「问的是哪份代码」：`app-not-found` = 压根没找到 CLI，
+          // `deploy-outdated` = 问的那份代码太旧 —— 两者处置办法完全不同。
+          app: asked.app ?? null,
           reason: asked.reason,
           wallMs: asked.elapsedMs,
         });
