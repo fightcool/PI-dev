@@ -1,4 +1,7 @@
-# Jev 提交钩子
+# Jev 提交钩子（`extensions/jev-gate`）
+
+> 安装器现在一次装**所有** `extensions/jev-*`：本文件讲提交钩子（`tool_call`），
+> 工具结果过滤（`tool_result`）见 [JEV-TRIM.md](JEV-TRIM.md)。
 
 <!-- 🍞 AI Breadcrumb — @COUPLED ../extensions/jev-gate/index.ts, ../extensions/jev-gate/command.mjs, ../extensions/jev-gate/gate.mjs, ../extensions/jev-gate/state.mjs, ../scripts/install-jev-hook.mjs, ../tests/jev-hook.test.mjs, ../tests/jev-hook-state.test.mjs, ../tests/jev-hook-install.test.mjs, ../tests/jev/hook-live.mjs -->
 
@@ -31,10 +34,10 @@ cd /home/dev/jev-hook
 PI_CODING_AGENT_DIR=/home/dev/.local/share/pi-dev/agent node scripts/install-jev-hook.mjs install
 ```
 
-| 装到哪                              | 内容                                                                                                       |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `<agentDir>/extensions/jev-gate.ts` | 入口 shim，内容固定为 `export { default } from "../hooks/jev-gate/index.ts"`（**相对**路径）               |
-| `<agentDir>/hooks/jev-gate/`        | 扩展本体（`index.ts` / `command.mjs` / `gate.mjs` / `state.mjs`），随 `.managed-by` 标记一起由本安装器管理 |
+| 装到哪                                     | 内容                                                                                                                        |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `<agentDir>/extensions/jev-gate-<hash>.ts` | 入口 shim：`export { default } from "../hooks/jev-gate-<hash>/index.ts"`（**相对**路径 + 内容哈希；改名才能让宿主缓存失效） |
+| `<agentDir>/hooks/jev-gate/`               | 扩展本体（`index.ts` / `command.mjs` / `gate.mjs` / `state.mjs`），随 `.managed-by` 标记一起由本安装器管理                  |
 
 > **为什么本体在 `hooks/` 而不在 `extensions/`**（`@GOTCHA`，都是实测踩出来的）：
 > ① pi 的全局发现规则有两条 —— `extensions/<文件名>.ts` 与 `extensions/<目录名>/index.ts`。

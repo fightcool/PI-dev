@@ -120,7 +120,10 @@ Jev 不是「审稿人」，是**可编程的常识原语**：花一万分之一
 
 ## 6. 复用约定（避免每个用法重造一遍）
 
-- **统一入口**：`npm run jev -- ask --questions-file <path|-> [--state-file <path|->] [--json] [--raw] [--no-cache]`（`--raw` = 只要原始概率，不套阈值：成功即退出 0，排序/筛选用它） —— 通用临时命题；与 `check`/`probe` 共用同一个 gate、同一份密钥解析、同一套缓存与审计，退出码 0/1/2/3 语义一致。**新增用法不要再各写一份调用逻辑。**
+- **统一入口**：`npm run jev -- ask --questions-file <path|-> [--state-file <path|->] [--json] [--raw] [--no-cache]`（`--raw` = 只要原始概率，不套阈值：成功即退出 0，排序/筛选用它）
+  - 热路径用**瘦入口** `node --import tsx scripts/jev-ask.ts`（同样的 gate/缓存/审计/source=ask）：实测冷启动
+    **~0.65s vs 完整 CLI 2.4s** —— 差距几乎全在 `import "@earendil-works/pi-coding-agent"`（完整 CLI 只用了它的
+    `getAgentDir()`）。`agentDir` 是等价复制，有单测与 SDK 逐例对比（漂移即红）。 —— 通用临时命题；与 `check`/`probe` 共用同一个 gate、同一份密钥解析、同一套缓存与审计，退出码 0/1/2/3 语义一致。**新增用法不要再各写一份调用逻辑。**
 - **判据要具体到可分**：我们实测同一份 state（一段缓存失败日志 + 一段 CSS + 一段截图流水），
   判据写糊时三个片段都掉到 0.3x（不可分）；改成「引用 `` `sections[i].text` `` + 两侧给真实反例」后，
   相关 0.97 / CSS 0.03 / 截图 0.04（403ms、$0.0000518，三问批量）。**判据质量决定这套用法成不成。**
