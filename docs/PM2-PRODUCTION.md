@@ -187,6 +187,20 @@ journalctl --user -u pi-dev-switch.service --no-pager
 
 > 第一次升级的两次派发正是**排空门禁修复（§16）**想要的形态：旧实现会闷等 45 分钟才报「active work did not drain」，新实现在第 5 分钟就带**持有者名单**早退，并给出可选项（界面上中止那条对话 / `SWITCH_DRAIN_TOLERATE=<n>`）。这次两个持有者都是真实的在飞回合（其中一个已 5 分钟无输出），因此按规程用 tolerate 显式放宽。
 
+### 2026-09-20 生产升级（第三次：`a028fc476398` → `cfdef8abdbaa`，协议 v33）
+
+| 项 | 结果 |
+| --- | --- |
+| 提交 / PR | `cfdef8a`（底部状态栏：移除「令牌 I/O/T…」状态项、改由「缓存命中」点开用量详情、用量详情新增平均缓存命中率）。**该提交最初被误直推到默认分支**（提交前没核对当前分支，而该 checkout 被同一工作树的另一会话切走过），未走 PR；随后以 PR #67 在默认分支上 `git revert`，再以 PR #68（`b3f8d59`，`cherry-pick cfdef8a`）重新落地。被改的 14 个文件与 `cfdef8a` 逐字节一致（`git diff cfdef8a HEAD -- <这 14 个文件>` 为空）。全程未改写已推送历史、未强推 |
+| 候选构建 | `prepare-release.mjs cfdef8a` → `releases/cfdef8abdbaa`（`appVersion` 0.72.0、`protocolVersion` 33、`builtAt` 2026-09-20T09:39:50.983Z） |
+| 候选验证（产物级） | 候选目录内 `SMOKE_JOBS=3 npm run test:smoke` **46/46**（168.9s）；候选内 `node tests/channels/browser-ui.mjs` 全过，含新增断言「用量详情的平均命中率与状态栏**同一个数**」（`footer=16.0%`） |
+| 切换验收（第一次，被拦） | `FAILED: 排空停滞 5.0 分钟：active=2 drainable=0 orphaned=0；持有者：对话 c2（流式中，已 1.0 分钟 无输出）、对话 c3（流式中）` → `aborted before touching managers; instance resumed`：`current` 与 8788 服务均未变。两个持有者是**同一工作树里两条并发的 agent 会话**（本次升级会话 + 另一个在做 Jev 服务端改造的会话），都不是可让路的空转回合 |
+| 切换验收（第二次，`SWITCH_DRAIN_TOLERATE=2`） | `DEPLOYED a028fc476398 → cfdef8abdbaa pid=3424163 commit=cfdef8abdbaa protocol=33`（10:05:15.642Z）。代价：显式放宽后打断了那两条在飞回合（磁盘上未提交内容不受影响） |
+| 在线核对 | 线上产物里 `status-tokens` **0 命中**（旧元素已消失）、`status-item-clickable` 2 个资源、`Average cache hit rate` / `usageAvgCacheHitRate` 3 个资源；HTTPS 取回 `assets/index-DqzVuWNT.js` 含 `usageAvgCacheHitRate`、`assets/index-Dferwu_Z.css` 含 `status-item-clickable`；8788 在听 |
+| 回滚 | 切换时回滚点是 `a028fc476398`；两者随后都被后续升级的 prune 按「current + 回滚点 + keep」回收，当前磁盘上已无 `cfdef8abdbaa` / `a028fc476398` |
+
+> 这次升级之后的 09-21 起，Jev 门禁与渠道面板继续演进（协议 v33 → v38），本记录只补记 09-20 这第三次切换，便于回滚定位。
+
 ### 2026-09-18 生产升级（`40828ac46b82` → `cc355434275f`，协议 v31 → v31）
 
 | 项 | 结果 |
