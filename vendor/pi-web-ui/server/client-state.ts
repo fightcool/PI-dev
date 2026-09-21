@@ -489,7 +489,10 @@ export class ClientStateStore {
 			toolsWrap: settings.toolsWrap ?? cur.toolsWrap ?? false,
 			visionBridgeEnabled: settings.visionBridgeEnabled ?? cur.visionBridgeEnabled ?? true,
 			visionBridgeModel: settings.visionBridgeModel ?? cur.visionBridgeModel ?? null,
-			subagentDefaultModel: settings.subagentDefaultModel ?? cur.subagentDefaultModel ?? null,
+			subagentDefaultModel:
+				settings.subagentDefaultModel !== undefined
+					? settings.subagentDefaultModel
+					: cur.subagentDefaultModel ?? null,
 			retryMaxAttempts: normalizeRetryMaxAttempts(
 				settings.retryMaxAttempts ?? cur.retryMaxAttempts ?? DEFAULT_RETRY_MAX_ATTEMPTS,
 			),
