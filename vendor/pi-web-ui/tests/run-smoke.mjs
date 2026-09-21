@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-/* 🍞 AI Breadcrumb — @COUPLED conversation-lifecycle-test.mjs, channel-isolation-test.mjs,
- *   lib/build.mjs（跑批前统一构建一次 + PI_SMOKE_DIST_READY 信号）
+/* 🍞 AI Breadcrumb — @COUPLED conversation-lifecycle-test.mjs, usage-failure-test.mjs,
+ *   tool-capability-test.mjs, lib/build.mjs（跑批前统一构建一次 + PI_SMOKE_DIST_READY 信号）
  * 📖 ../docs/conversation-lifecycle.md, ../../docs/P0-VERIFICATION.md
  */
 /**
@@ -45,8 +45,6 @@ function smokeEnv() {
 
 const ALL = [
 	"clear-provider-key-test",
-	"channel-isolation-test",
-	"channel-multiclient-test",
 	"usage-failure-test",
 	"conv-cross-project-test",
 	"conv-cwd-test",
@@ -55,7 +53,6 @@ const ALL = [
 	"provider-keys-test",
 	"db-client-test",
 	"dsh-smoke-test",
-	"fetch-channel-models-test",
 	"fetch-models-test",
 	"global-search-test",
 	"goal-prefs-test",
@@ -88,6 +85,7 @@ const ALL = [
 	"switch-session-background-test",
 	"terminal-smoke-test",
 	"token-auth-test",
+	"tool-capability-test",
 	"vision-bridge-test",
 	"vscode-editor-plugin-test",
 ];

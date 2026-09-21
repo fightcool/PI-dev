@@ -33,19 +33,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FiAlertTriangle, FiKey, FiPlay, FiRefreshCw, FiSave } from "react-icons/fi";
 import { useI18n, useT } from "../i18n";
-import type { ChannelApi, JevUiState } from "../use-chat";
+import type { JevUiState, OpsApi } from "../use-chat";
 import type {
 	ClientMessage,
 	ModelInfo,
 	ProviderKeyInfo,
 	ProviderStatus,
-	UiAccountStatus,
-	UiChannelInfo,
 	UiJevGateConfig,
 	UiJevThresholds,
 	UiJevThresholdsInput,
 } from "../types";
 import { JevBalance, JevPropositionList, JevReceipts, JevRuntimeCards } from "./JevRuntimeView";
+import type { GatewayUsageState } from "./GatewayUsageBlock";
 import { JevReviewSection } from "./JevReviewSection";
 import {
 	brief,
@@ -86,25 +85,25 @@ type SaveBlockKey =
 export function JevSettings({
 	jev,
 	send,
-	channelApi,
+	opsApi,
+	gatewayUsage,
 	providerKeys,
 	providers,
 	models,
-	channels,
-	accounts,
-	onOpenProviderKeys,
+	onOpenGatewayTab,
 }: {
 	jev: JevUiState;
 	send: (msg: ClientMessage) => boolean;
-	channelApi: ChannelApi;
+	/** 网关自报用量 + 刷新（余额行复用，见 JevBalance）。 */
+	opsApi: OpsApi;
+	gatewayUsage: GatewayUsageState;
 	/** 命名密钥（按服务商分组；只有名称 + 是否 active）。 */
 	providerKeys: Record<string, ProviderKeyInfo[]>;
 	/** 已注册服务商（与渠道面板同一数据源）：还没存密钥的服务商也要能选，否则无从下手。 */
 	providers: ProviderStatus[];
 	models: ModelInfo[];
-	channels: UiChannelInfo[];
-	accounts: UiAccountStatus[];
-	onOpenProviderKeys: () => void;
+	/** 跳到「设置 → 网关」：单网关接入下密钥只有那一个入口。 */
+	onOpenGatewayTab: () => void;
 }) {
 	const t = useT();
 	const { locale } = useI18n();
@@ -421,12 +420,12 @@ export function JevSettings({
 									? `${config.credentialRef.providerId} / ${config.credentialRef.keyName || "—"}`
 									: t("settingsJevCredentialNone")}
 							</span>
-							<button type="button" className="chan-btn" onClick={onOpenProviderKeys}>
-								<FiKey /> {t("channelProviderKeysEntry")}
+							<button type="button" className="chan-btn" onClick={onOpenGatewayTab}>
+								<FiKey /> {t("settingsGatewayKeyEntry")}
 							</button>
 						</div>
-						{/* 没密钥就地建：Jev 只能走 OpenRouter，再让人从「管理模型」那个面板绕一圈没必要
-						    （实测没人找得到 —— 那个面板的标题叫「管理模型」）。 */}
+						{/* 没密钥就地建：Jev 的门禁调用也要有凭据，而密钥只存在网关那一处
+						    （单网关接入：不再有「内置服务商」这一层）。 */}
 						{keyMissing && (
 							<div className="jev-newkey">
 								<p className="set-hint">{t("settingsJevCredentialMissing")}</p>
@@ -661,7 +660,11 @@ export function JevSettings({
 					</div>
 
 					{/* ---- 余额：复用渠道账户查询适配器（不另写余额接口） ---- */}
-					<JevBalance channels={channels} accounts={accounts} providerId={view.providerId} channelApi={channelApi} />
+					<JevBalance
+						gatewayUsage={gatewayUsage}
+						providerId={view.providerId}
+						onRefresh={() => opsApi.queryGatewayUsage(view.providerId || undefined, true)}
+					/>
 
 					{/* ---- 运行状态 + 命题清单 ---- */}
 					<div className="set-section-title">{t("settingsJevRuntimeTitle")}</div>

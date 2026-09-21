@@ -32,19 +32,42 @@ function smokeList(): string[] {
 }
 
 /**
- * 某用例占用的固定端口。覆盖仓库里实际存在的两种写法：
- *   `const PORT = 8898;` 与 `const PORT = Number(process.argv[2] || 8955);`
- * 以及派生端口 `const MOCK_PORT = PORT + 1;`（成对占用，必须一起判唯一）。
+ * 某用例占用的固定端口。覆盖仓库里实际存在的写法：
+ *   `const PORT = 8898;`、`const PORT = Number(process.argv[2] || 8955);`、
+ *   派生端口 `const MOCK_PORT = PORT + 1;`，以及**按名字另起的第二台 server**
+ *   `const PORT2 = 8970;` + `PI_WEB_PORT: String(PORT2)`。
+ * @BUGFIX 2026-09-21：解析原来漏了 `PI_WEB_PORT: String(PORT + 1)` 这种写法，于是
+ *   left-panel-delete-test 的第二台 server（8968）与 db-client-test 的主端口撞车却判不出来
+ *   —— 并发跑批时它连到了别人的 server，表现为「启动恢复最近会话」假失败（CI 稳定复现）。
+ *   现在把 `PI_WEB_PORT` 的两种写法（常量名 / 直接写字面量）一并纳入判定。
  */
 function portsOf(name: string): number[] {
 	const src = readFileSync(join(root, "tests", `${name}.mjs`), "utf8");
 	const literal = src.match(/\bPORT\s*=\s*(\d+)\b/)?.[1];
 	const viaArgv = src.match(/process\.argv\[\d+\]\s*(?:\|\||\?\?)\s*(\d+)/)?.[1];
 	const base = Number(literal ?? viaArgv ?? 0);
-	if (!base) return [];
-	const ports = new Set<number>([base]);
-	for (const m of src.matchAll(/\b[A-Z_]*PORT\s*=\s*PORT\s*\+\s*(\d+)/g)) ports.add(base + Number(m[1]));
-	return [...ports];
+	const ports = new Set<number>();
+	if (base) ports.add(base);
+	// 同文件里按名字声明的其它端口（PORT2 / MOCK_PORT / …）：`const NAME = \d+;`
+	for (const m of src.matchAll(/\bconst\s+([A-Z][A-Z0-9_]*PORT[0-9]*)\s*=\s*(\d{4,5})\b/g)) ports.add(Number(m[2]));
+	// 派生端口：`… = PORT + 1` / `= <base> + 1`
+	for (const m of src.matchAll(/\b[A-Z_]*PORT[0-9]*\s*=\s*(?:PORT|\d+)\s*\+\s*(\d+)/g)) {
+		const baseOfRule = /^\s*([A-Z_]*PORT[0-9]*)\s*=/.exec(m[0])?.[1] ?? "";
+		if (base) ports.add(base + Number(m[1]));
+		else if (baseOfRule) void baseOfRule;
+	}
+	// 起 server 时实际用的端口：`PI_WEB_PORT: String(PORT + 1)` / `String(PORT2)` / `String(8968)`
+	for (const m of src.matchAll(/PI_WEB_PORT:\s*String\(\s*(?:(PORT[0-9]*)|(\d{4,5}))\s*(?:\+\s*(\d+))?\s*\)/g)) {
+		const named = m[1];
+		const extra = Number(m[3] ?? 0);
+		if (m[2]) ports.add(Number(m[2]) + extra);
+		else if (named === "PORT") ports.add(base + extra);
+		else {
+			const decl = new RegExp(`\\bconst\\s+${named}\\s*=\\s*(\\d{4,5})`).exec(src);
+			if (decl) ports.add(Number(decl[1]) + extra);
+		}
+	}
+	return [...ports].filter((p) => p > 0);
 }
 
 /** 跑批外会自起 server 的用例名（含浏览器 E2E）——它们同样不能共端口。 */
@@ -85,10 +108,9 @@ describe("冒烟清单端口唯一性", () => {
 		const clashes = [...owners.entries()]
 			.filter(([, who]) => who.length > 1)
 			.map(([port, who]) => `${port} → ${who.join(", ")}`);
-		expect(
-			clashes,
-			"同端口并发会互相踩（假失败）；给新用例分配未被占用的端口，见 run-smoke.mjs 的并发说明",
-		).toEqual([]);
+		expect(clashes, "同端口并发会互相踩（假失败）；给新用例分配未被占用的端口，见 run-smoke.mjs 的并发说明").toEqual(
+			[],
+		);
 	});
 
 	it("端口都在可用区间（≥8900 且非线上 8787）", () => {

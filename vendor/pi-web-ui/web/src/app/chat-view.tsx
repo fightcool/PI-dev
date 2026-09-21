@@ -1,4 +1,4 @@
-/* 🍞 @COUPLED web/src/components/ChatInput.tsx, web/src/app/app-dialogs.tsx — 📖 docs/DEV-CON-PROPOSAL.md §6 */
+/* 🍞 @COUPLED web/src/components/ChatInput.tsx, web/src/app/app-dialogs.tsx — 📖 docs/architecture-core.md */
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { LeftPanel } from "../components/LeftPanel";
 import { RightPanel } from "../components/RightPanel";
@@ -6,7 +6,7 @@ import { ChatInput } from "../components/ChatInput";
 import { GoalBar } from "../components/GoalBar";
 import { useT } from "../i18n";
 import { useWideChat } from "../chat-width-settings";
-import type { PromptAttachment, UiChannelInfo, UiMessage } from "../types";
+import type { PromptAttachment, UiMessage } from "../types";
 import type { AppConnection, ViewName } from "./types";
 import type { useAppDialogs } from "./use-app-dialogs";
 import type { useAttachments } from "./use-attachments";
@@ -22,8 +22,6 @@ const DshQuestionDialog = lazy(() =>
 	import("../components/DshQuestionDialog").then((m) => ({ default: m.DshQuestionDialog })),
 );
 const EMPTY_MESSAGES: UiMessage[] = [];
-/** 没有渠道清单时的稳定空数组（module 级常量：每次 render 新建数组会让子组件的 memo 失效）。 */
-const NO_CHANNELS: UiChannelInfo[] = [];
 
 /** @COUPLED components/MessageList.tsx: callbacks must survive token deltas. */
 export function ChatView({
@@ -39,7 +37,7 @@ export function ChatView({
 	dialogs: ReturnType<typeof useAppDialogs>;
 	uploads: ReturnType<typeof useAttachments>;
 }) {
-	const { chat, send, pushNotice, channelApi } = connection;
+	const { chat, send, pushNotice } = connection;
 	const t = useT();
 	const wide = useWideChat();
 	const {
@@ -56,7 +54,7 @@ export function ChatView({
 		isMobile,
 		panelSend,
 	} = panels;
-	const { setPreviewFile, searchJump, onJumpDone, openUsage, openNewProject } = dialogs;
+	const { setPreviewFile, searchJump, onJumpDone, openNewProject } = dialogs;
 	const {
 		attachments,
 		attach,
@@ -108,14 +106,6 @@ export function ChatView({
 		// so the object identity survives token deltas and ChatInput's memo holds.
 		[model, thinkingLevel, availableThinkingLevels],
 	);
-	// DEV-CON：channelBinding 由服务端在每个 checkpoint 重新构造（对象身份每次都变），
-	// 直接透传会击穿上面这条 memo 链；按内容键缓存，内容不变就保持同一引用。
-	const rawChannelBinding = chat.state?.channelBinding ?? null;
-	const channelBindingKey = rawChannelBinding
-		? JSON.stringify([rawChannelBinding.source, rawChannelBinding.effective, rawChannelBinding.pending])
-		: "";
-	const channelBinding = useMemo(() => rawChannelBinding, [channelBindingKey]);
-
 	// 端到端打点：会话内容「已提交到 DOM」的时刻（配合 switch 点击点算出可感知延迟）。
 	// 依赖只看 conversationId，流式 token 不会反复打点。
 	const activeConvId = chat.state?.conversationId ?? null;
@@ -172,8 +162,6 @@ export function ChatView({
 							onLoadHistory={(opts) => send({ type: "load_history", ...opts })}
 							thinkingWrap={chat.settings?.thinkingWrap ?? true}
 							toolsWrap={chat.settings?.toolsWrap ?? false}
-							// 报错卡要把消息里的 providerId 还原成渠道显示名（同站点的两个渠道很容易看反）。
-							channels={chat.channelState?.channels ?? NO_CHANNELS}
 							jumpTarget={searchJump}
 							onJumpDone={onJumpDone}
 						/>
@@ -210,17 +198,11 @@ export function ChatView({
 					modelState={modelState}
 					models={chat.models}
 					modelsLoading={chat.modelsLoading}
-					providerKeys={chat.providerKeys}
-					channelState={chat.channelState}
-					channelBinding={channelBinding}
-					channelResults={chat.channelResults}
-					channelApi={channelApi}
 					attachments={attachments}
 					onRemoveAttachment={removeAttachmentCb}
 					onAddImageFiles={addImageFilesCb}
 					onAddLocalFiles={addLocalFilesCb}
 					onNotice={pushNotice}
-					onOpenUsage={openUsage}
 					onSent={clearAttachments}
 					quickPhrases={chat.settings?.quickPhrases ?? []}
 					quickPhrasesEnabled={chat.settings?.quickPhrasesEnabled ?? true}

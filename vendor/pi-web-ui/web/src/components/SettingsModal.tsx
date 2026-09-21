@@ -1,6 +1,6 @@
-/* 🍞 @COUPLED web/src/components/ChannelSettings.tsx（渠道分区：建/改/删/查 + 白名单 + 按渠道用量）
- *   web/src/components/ChannelUsage.tsx（复用 chat.usageHistory 的按渠道聚合）
- *   📖 docs/DEV-CON-PROPOSAL.md §6 */
+/* 🍞 @COUPLED web/src/components/GatewaySettings.tsx（网关分区：baseUrl + Key + 模型清单 + 自报用量）
+ *   web/src/components/JevSettings.tsx（Jev 决策门禁分区：与网关共用同一把密钥）
+ *   📖 docs/NEWAPI-GATEWAY.md §2（单网关接入：设置里只有一个调用入口要配） */
 import { useEffect, useRef, useState } from "react";
 import {
 	FiArchive,
@@ -47,17 +47,8 @@ import type {
 	UiSkillInfo,
 	UiSubagentTemplate,
 } from "../types";
-import type {
-	ChannelApi,
-	ChannelCommandResult,
-	ChannelStateMsg,
-	DiagnosticsMsg,
-	JevUiState,
-	ResourcesMsg,
-	StorageMsg,
-	UsageHistoryMsg,
-} from "../use-chat";
-import { ChannelSettings, type ChannelModelsResult } from "./ChannelSettings";
+import type { ChatState, DiagnosticsMsg, JevUiState, OpsApi, ResourcesMsg, StorageMsg, UsageHistoryMsg } from "../use-chat";
+import { GatewaySettings } from "./GatewaySettings";
 import { JevSettings } from "./JevSettings";
 import { SystemResources } from "./SystemResources";
 import {
@@ -112,10 +103,11 @@ interface SettingsModalProps {
 			exitCode: number | null;
 			command?: CommandDef;
 		}[];
-		state?: { cwd: string; conversationId: string } | null;
+		state?: { cwd: string; conversationId: string; model?: { provider: string; id: string; name: string } | null } | null;
 		activeConversationId?: string | null;
-		/** DEV-CON 渠道快照（channel_state）+ 回执（按 commandId）。 */
-		channelState: ChannelStateMsg | null;
+		/** 单网关接入：网关配置与自报用量（设置 → 网关用；余额行也复用同一份读数）。 */
+		gateway: ChatState["gateway"];
+		gatewayUsage: ChatState["gatewayUsage"];
 		/** Jev 决策门禁：最近一次 status / 配置保存 / 自检结果（按 reqId 匹配）。 */
 		jev: JevUiState;
 		/** P4 候选：最近一次系统资源快照（只读）。 */
@@ -124,35 +116,42 @@ interface SettingsModalProps {
 		storage?: StorageMsg | null;
 		/** P4 运维：最近一次诊断包（只读元数据）。 */
 		diagnostics?: DiagnosticsMsg | null;
-		channelResults: Record<string, ChannelCommandResult>;
-		/** 命名密钥（仅名称 + 是否 active），渠道表单按名称引用。 */
+		/** 命名密钥（仅名称 + 是否 active）；单网关接入下只有网关那一组会被用到。 */
 		providerKeys: Record<string, ProviderKeyInfo[]>;
 		/** 有效模型（选默认模型用）与已注册服务商（派生可选 providerId）。 */
 		models: ModelInfo[];
 		providers: ProviderStatus[];
-		/** P4 用量历史（渠道分区的「按渠道用量」只读复用；与用量面板共享）。 */
+		/** P4 用量历史（与用量面板共享同一份查询结果）。 */
 		usageHistory: UsageHistoryMsg | null;
-		/** 渠道表单「获取接口清单」的上一次探测结果（按 reqId/providerId 匹配）。 */
-		channelModelsResult: ChannelModelsResult | null;
-		/** 自定义服务商配置（models.json）：渠道表单回填「连接」并判定 hasApiKey。 */
+		/** 自定义服务商配置（models.json）：网关配置的展示名与模型清单来源。 */
 		modelsConfig: UiProviderConfig[];
-		/** 新建服务商时探测接口清单的结果（fetch_models，按 reqId 匹配）。 */
-		fetchModelsResult: {
-			reqId: number;
-			ok: boolean;
-			models?: import("../types").UiModelConfigEntry[];
-			error?: string;
-		} | null;
+		/** 「从网关读取模型清单」的回包（按 reqId 匹配）。 */
+		refreshProviderResult: ChatState["refreshProviderResult"];
 	};
 	send: (msg: ClientMessage) => boolean;
-	/** DEV-CON 渠道命令 API（channel_save / channel_delete / 默认值 / 账户查询）。 */
-	channelApi: ChannelApi;
+	/** P4 运维 / 网关的只读查询 API。 */
+	opsApi: OpsApi;
 	terminal: SettingsTerminalBridge;
 	/** Switch the top-level view to the terminal (uninstall runs there). */
 	onSwitchToTerminal: () => void;
-	/** 打开「内置服务商与密钥」面板（原模型下拉页脚的「管理模型」，已改挂到渠道分区）。 */
-	onOpenProviderKeys: () => void;
 	onClose: () => void;
+}
+
+/**
+ * 单网关接入：把「命名密钥」收窄到网关这一个。
+ * @WHY Jev 分区的凭据选择仍然按「服务商 + 密钥名」组织（它的持久化配置就是这个形状），
+ *   但单网关实例下可选项只该有一个 —— 列出 openrouter 那种历史遗留只会让人以为还有别的入口。
+ */
+function gatewayProviderKeyOnly(providerId: string | undefined, keys: Record<string, ProviderKeyInfo[]>): Record<string, ProviderKeyInfo[]> {
+	if (!providerId) return {};
+	const own = keys[providerId];
+	return own ? { [providerId]: own } : {};
+}
+
+/** 同上：内置服务商注册表也收窄到网关（网关不在注册表里时给空表，不假装它是内置的）。 */
+function gatewayProviderStatusOnly(providerId: string | undefined, providers: ProviderStatus[]): ProviderStatus[] {
+	if (!providerId) return [];
+	return providers.filter((p) => p.id === providerId);
 }
 
 /** A row with an enable/disable switch (skill / extension). */
@@ -252,11 +251,11 @@ type SettingsTab =
 	| "vision"
 	| "presets"
 	| "subagent-templates"
-	| "channels"
+	| "gateway"
 	| "jev"
 	| "system";
 
-export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerminal, onOpenProviderKeys, onClose }: SettingsModalProps) {
+export function SettingsModal({ chat, send, opsApi, terminal, onSwitchToTerminal, onClose }: SettingsModalProps) {
 	const t = useT();
 	const { locale } = useI18n();
 	// {{token}} 元数据文案键是动态的（promptTok_<token>[,_desc]），用 tt 跳过字面量类型。
@@ -412,9 +411,6 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 	const skillCount = `${settings.skills.filter((s) => s.enabled).length}/${settings.skills.length}`;
 	const reviewSkillCount = `${settings.reviewSkills.filter((s) => s.enabled).length}/${settings.reviewSkills.length}`;
 	// 渠道表单可选的服务商：已注册服务商 + 有可用模型的服务商（去重排序；空 id 丢弃）。
-	const channelProviderIds = [...new Set([...chat.providers.map((p) => p.id), ...chat.models.map((m) => m.provider)])]
-		.filter((id) => !!id)
-		.sort((a, b) => a.localeCompare(b));
 
 	const tabs: {
 		id: SettingsTab;
@@ -444,9 +440,9 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 		// DSH：无视觉桥概念（真图片直通 vision 模型），隐藏该分区。
 		...(isDsh ? [] : [{ id: "vision" as const, icon: <FiEye />, label: t("settingsVisionBridge") }]),
 		{ id: "presets", icon: <FiSliders />, label: t("settingsPresets"), count: settings.presets.length },
-		// DEV-CON 渠道：没有渠道配置的实例也显示（这是唯一的渠道配置入口）。
-		{ id: "channels", icon: <FiRadio />, label: t("settingsChannels"), count: chat.channelState?.channels.length ?? 0 },
-		// Jev 决策门禁：凭据/渠道/阈值 + 运行状态与自检（与渠道相邻：两者共用服务商与密钥）。
+		// 网关：本实例唯一的模型调用入口（baseUrl + Key + 模型清单），没有配置也要显示。
+		{ id: "gateway", icon: <FiRadio />, label: t("settingsGateway"), count: chat.gateway.config?.models.length ?? 0 },
+		// Jev 决策门禁：凭据/阈值 + 运行状态与自检（与网关相邻：两者共用同一把密钥）。
 		{ id: "jev", icon: <FiShield />, label: t("settingsJev") },
 		{ id: "system", icon: <FiHardDrive />, label: t("settingsSystem") },
 		// DSH：无子代理概念，隐藏该分区。
@@ -2432,36 +2428,21 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 							</div>
 						)}
 
-						{/* ---- DEV-CON channels ------------------------------------------ */}
-						{tab === "channels" && (
+						{/* ---- 网关（单网关接入：baseUrl + Key + 模型清单 + 自报用量） ----- */}
+						{tab === "gateway" && (
 							<div className="set-section">
 								<div className="set-section-title">
 									<FiRadio className="set-section-icon" />
-									{t("settingsChannels")}
+									{t("settingsGateway")}
 								</div>
-								<p className="set-hint">{t("settingsChannelsDesc")}</p>
-								<ChannelSettings
-									channelState={chat.channelState}
-									channelResults={chat.channelResults}
-									channelApi={channelApi}
-									providerIds={channelProviderIds}
-									providerKeys={chat.providerKeys}
-									providerConfigs={chat.modelsConfig}
-									models={chat.models}
-									usageHistory={chat.usageHistory}
-									channelModelsResult={chat.channelModelsResult}
-									fetchProviderModelsResult={chat.fetchModelsResult}
-									onFetchChannelModels={(providerId, keyName, reqId) =>
-										send({ type: "fetch_channel_models", reqId, providerId, keyName })
-									}
-									onFetchProviderModels={({ reqId, baseUrl, apiKey, authHeader, api }) =>
-										send({ type: "fetch_models", reqId, baseUrl, apiKey, authHeader, api })
-									}
-									// 模型信息（原「管理模型」的能力）：服务端保留 cost/thinkingLevelMap 等未管理键。
-									onSaveModelConfig={(config) =>
-										send({ type: "save_model_config", providerId: config.providerId, config })
-									}
-									onOpenProviderKeys={onOpenProviderKeys}
+								<GatewaySettings
+									gateway={chat.gateway}
+									gatewayUsage={chat.gatewayUsage}
+									activeProvider={chat.state?.model?.provider ?? null}
+									refreshProviderResult={chat.refreshProviderResult}
+									settings={chat.settings}
+									opsApi={opsApi}
+									send={send}
 								/>
 							</div>
 						)}
@@ -2477,13 +2458,13 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 								<JevSettings
 									jev={chat.jev}
 									send={send}
-									channelApi={channelApi}
-									providerKeys={chat.providerKeys}
-									providers={chat.providers}
+									opsApi={opsApi}
+									gatewayUsage={chat.gatewayUsage}
+									// 单网关接入：Jev 的凭据选择也只看网关这一个（旧的注册表与多渠道列表已不再展示）。
+									providerKeys={gatewayProviderKeyOnly(chat.gateway.config?.providerId, chat.providerKeys)}
+									providers={gatewayProviderStatusOnly(chat.gateway.config?.providerId, chat.providers)}
 									models={chat.models}
-									channels={chat.channelState?.channels ?? []}
-									accounts={chat.channelState?.accounts ?? []}
-									onOpenProviderKeys={onOpenProviderKeys}
+									onOpenGatewayTab={() => setTab("gateway")}
 								/>
 							</div>
 						)}
@@ -2497,13 +2478,13 @@ export function SettingsModal({ chat, send, channelApi, terminal, onSwitchToTerm
 								</div>
 								<SystemResources
 										snapshot={chat.resources?.snapshot ?? null}
-										onRefresh={channelApi.listResources}
+										onRefresh={opsApi.listResources}
 										storage={chat.storage}
-										onLoadStorage={channelApi.listStorage}
-										onSetRetention={channelApi.setUsageRetention}
+										onLoadStorage={opsApi.listStorage}
+										onSetRetention={opsApi.setUsageRetention}
 										diagnostics={chat.diagnostics}
-										onLoadDiagnostics={channelApi.listDiagnostics}
-										onSetOpsAlerts={channelApi.setOpsAlerts}
+										onLoadDiagnostics={opsApi.listDiagnostics}
+										onSetOpsAlerts={opsApi.setOpsAlerts}
 									/>
 							</div>
 						)}

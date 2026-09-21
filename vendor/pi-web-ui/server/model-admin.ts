@@ -10,8 +10,8 @@
  *
  * 经 ModelAdminHost 与 ClientSession 解耦（同 settings/goal/slash 服务模式）。
  * UI 文案直接中文（服务端 notice 约定）。apiKey/headers 绝不下发浏览器。
- * 🍞 @COUPLED dev-con/channel-service.ts（keyNameList / resolveProviderKeyValue 供渠道凭据引用）
- *   @COUPLED server/agent-service.ts（makeChannelHost 注入）、web/src/components/ModelConfigModal.tsx
+ * 🍞 @COUPLED dev-con/jev-settings.ts（同一份「密钥只以名字引用」的口径）
+ *   @COUPLED server/agent-service.ts（装配注入）、web/src/components/ModelConfigModal.tsx
  *   📖 docs/DEV-CON-PROPOSAL.md §4
  *   @BUGFIX 2026-09: listModelsConfig 曾把 models.json 的 apiKey 原样下发浏览器；现只回 hasApiKey，
  *            保存时空值 = 保留已存密钥（否则用户只改模型列表就会丢 key）。
@@ -19,9 +19,16 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { ChannelProviderInput, ServerMessage, UiModelConfigEntry, UiProviderConfig, ProviderKeyInfo } from "./protocol.js";
+import type {
+	ServerMessage,
+	UiGatewayConfig,
+	UiModelConfigEntry,
+	UiProviderConfig,
+	ProviderKeyInfo,
+} from "./protocol.js";
 import { pick, type ServerLang } from "./i18n.js";
 import { backfillModelCapability } from "./dev-con/model-capability.js";
+import { resolveGatewayProviderId, sameGatewayDuplicates, type ProviderFacts } from "./dev-con/gateway-config.js";
 
 /** ClientSession 提供给本服务的宿主能力（窄接口）。 */
 export interface ModelAdminHost {
@@ -35,6 +42,8 @@ export interface ModelAdminHost {
 	invalidatePiConfig: () => void;
 	/** 变更后重推顶栏模型下拉。 */
 	pushModels: () => Promise<void>;
+	/** 当前生效模型所属服务商（解析「谁是网关」的第一优先级，见 dev-con/gateway-config.ts）。 */
+	activeProvider?: () => string | null;
 }
 
 /** Strip // and /* *\/ comments without touching string literals (URLs contain //). */
@@ -906,6 +915,226 @@ export class ModelAdminService {
 		this.host.emit({ type: "models_config", providers: list });
 	}
 
+	// ---------------------------------------------------------------------------
+	// 网关（单网关接入：唯一入口的 baseUrl + Key + 模型清单）
+	// ---------------------------------------------------------------------------
+
+	/** 每个已配置服务商的最小事实（解析网关与重复接入用）。 */
+	private providerFacts(): ProviderFacts[] {
+		const { providers } = this.readModelsConfig();
+		return Object.entries(providers).map(([providerId, p]) => ({
+			providerId,
+			...(typeof p.name === "string" && p.name ? { name: p.name } : {}),
+			...(typeof p.baseUrl === "string" && p.baseUrl ? { baseUrl: p.baseUrl } : {}),
+			modelCount: Array.isArray(p.models) ? p.models.length : 0,
+		}));
+	}
+
+	/**
+	 * 取「这个服务商真正会用到的密钥」（探测 /models、读用量都走它）。
+	 * @CONTRACT 顺序与真实调用一致：运行时解析（含 $ENV、命令、OAuth）→ 命名密钥库当前 active 名 →
+	 *   models.json 内联兜底。拿不到就返回 undefined，让调用方如实报错，不编造。
+	 */
+	private async resolveProbeKey(pid: string, inline?: string): Promise<string | undefined> {
+		try {
+			const resolved = await this.host.modelRuntime().getAuth(pid);
+			const key = resolved?.auth?.apiKey;
+			if (key) return key;
+		} catch {
+			// 运行时未就绪 / 该服务商不在注册表 → 回落盘上的密钥来源
+		}
+		const activeName = this.getActiveKeyName(pid);
+		const stored = activeName ? this.resolveProviderKeyValue(pid, activeName) : null;
+		if (stored) return stored;
+		return inline?.trim() ? inline.trim() : undefined;
+	}
+
+	/**
+	 * 网关用量查询用的端口（**不依赖运行时**的变体：直接读 models.json / provider-keys.json）。
+	 * @WHY 服务端的 ClientSession 用**本会话 runtime** 解析地址与密钥（能覆盖 $ENV 引用、OAuth 等）；
+	 *   而 CLI（scripts/jev-gate.ts balance）与单测没有 runtime，只有一份 agentDir —— 两边必须给出
+	 *   同一个网关，所以把「无运行时」的解析放在这里，避免 CLI 自己再解析一遍 models.json（两份真相）。
+	 * @CONTRACT 只做读取；解析不到就返回 null/undefined，由调用方如实报错，绝不编造地址或密钥。
+	 */
+	gatewayUsagePort(): import("./dev-con/gateway-usage.js").GatewayUsagePort {
+		const providersOf = () => this.readModelsConfig().providers;
+		return {
+			providerBaseUrl: (providerId) => {
+				const baseUrl = providersOf()[providerId]?.baseUrl;
+				return typeof baseUrl === "string" && baseUrl.trim() ? baseUrl : undefined;
+			},
+			providerName: (providerId) => {
+				const name = providersOf()[providerId]?.name;
+				return typeof name === "string" && name.trim() ? name : undefined;
+			},
+			resolveProviderKey: async (providerId) => {
+				const keyName = this.getActiveKeyName(providerId);
+				const stored = keyName ? this.resolveProviderKeyValue(providerId, keyName) : null;
+				if (stored) return stored;
+				// models.json 内联密钥兜底（老配置的形状）；$ENV/OAuth 引用交给运行时，这里如实返回 null。
+				const inline = providersOf()[providerId]?.apiKey;
+				return typeof inline === "string" && inline.trim() ? inline.trim() : null;
+			},
+			providerIds: () => this.configuredProviderIds(),
+		};
+	}
+
+	/** 已配置服务商 id（models.json 的键顺序）：模型目录收窄到它们（见 gateway-config.ts）。 */
+	configuredProviderIds(): string[] {
+		return this.providerFacts().map((f) => f.providerId);
+	}
+
+	/** 谁是网关（解析规则与优先级见 dev-con/gateway-config.ts）。 */
+	gatewayProviderId(): string | null {
+		const facts = this.providerFacts();
+		return resolveGatewayProviderId({
+			providerIds: facts.map((f) => f.providerId),
+			activeProvider: this.host.activeProvider?.() ?? null,
+		});
+	}
+
+	/**
+	 * 读网关配置（get_gateway）。
+	 * @CONTRACT 一个已配置服务商都没有时 ok=true 且 **不带 config**：界面据此进入「首次配置」
+	 *   形态（填 baseUrl + Key），而不是显示一个空壳或报错 —— 「还没配」不是故障。
+	 *   密钥只以 hasApiKey 回显，正文与掩码都不上 wire。
+	 */
+	async getGateway(reqId: number): Promise<void> {
+		const facts = this.providerFacts();
+		const gatewayId = resolveGatewayProviderId({
+			providerIds: facts.map((f) => f.providerId),
+			activeProvider: this.host.activeProvider?.() ?? null,
+		});
+		if (!gatewayId) {
+			this.host.emit({ type: "gateway", reqId, ok: true, duplicates: [] });
+			return;
+		}
+		const { providers } = this.readModelsConfig();
+		const p = providers[gatewayId] ?? {};
+		const config: UiGatewayConfig = {
+			providerId: gatewayId,
+			...(typeof p.name === "string" && p.name ? { name: p.name } : {}),
+			...(typeof p.baseUrl === "string" && p.baseUrl ? { baseUrl: p.baseUrl } : {}),
+			...(typeof p.api === "string" && p.api ? { api: p.api } : {}),
+			// 密钥可能在 models.json（内联）或 provider-keys.json（本实例用后者）：两处都算已配置，
+			// 界面只关心「有没有」，不关心存哪（解析顺序是 SDK 的事）。
+			hasApiKey: (typeof p.apiKey === "string" && p.apiKey.trim().length > 0) || this.hasStoredKey(gatewayId),
+			models: this.modelsOf(p),
+		};
+		const duplicates = sameGatewayDuplicates({
+			gatewayId,
+			...(config.baseUrl ? { gatewayBaseUrl: config.baseUrl } : {}),
+			providers: facts,
+		});
+		// @WHY 2026-09-21 事故：models.json 过不了 SDK 的 schema（一个模型的 cost 缺 cacheRead/
+		//   cacheWrite），于是**整个文件被拒**、运行时里没有这个服务商 —— 而面板照样显示配置与模型
+		//   清单（那是我们直接读盘的结果），看起来一切正常、实际什么都调不通。把运行时的错误原样
+		//   带给界面，是让这种「静默不可用」在面板上立刻可见的唯一办法。
+		let runtimeError: string | undefined;
+		try {
+			runtimeError = this.host.modelRuntime().getError();
+		} catch {
+			// 运行时未就绪：不编错误，界面按「无法确认」处理。
+		}
+		this.host.emit({ type: "gateway", reqId, ok: true, config, duplicates, ...(runtimeError ? { runtimeError } : {}) });
+	}
+
+	/** models.json 里某个服务商的模型清单（字段与 listModelsConfig 同口径）。 */
+	private modelsOf(p: Record<string, unknown>): UiModelConfigEntry[] {
+		if (!Array.isArray(p.models)) return [];
+		return (p.models as Record<string, unknown>[]).map((m) => ({
+			id: String(m.id ?? ""),
+			name: m.name as string | undefined,
+			reasoning: m.reasoning as boolean | undefined,
+			input: Array.isArray(m.input) ? (m.input as string[]) : undefined,
+			contextWindow: m.contextWindow as number | undefined,
+			maxTokens: m.maxTokens as number | undefined,
+		}));
+	}
+
+	/** provider-keys.json 里是否有该服务商的密钥（只看有没有，不读正文）。 */
+	private hasStoredKey(providerId: string): boolean {
+		try {
+			const entry = this.readProviderKeys()[providerId];
+			return (entry?.keys?.length ?? 0) > 0;
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * 保存网关配置（save_gateway）。
+	 * @CONTRACT 分两步、各自已有实现，失败就不做下一步：
+	 *   ① 写密钥（有值时；`""` = 显式清除）；
+	 *   ② 写 models.json 的连接与模型清单（复用 writeModelConfig：未识别的键原样保留，
+	 *      apiKey 留空 = 保留已存值）。
+	 *   顺序上先密钥后配置：连接写坏了还有密钥可查，反之会留下「地址对但没凭据」的半成品。
+	 */
+	async saveGateway(
+		reqId: number,
+		input: { baseUrl?: string; api?: string; apiKey?: string | null; models?: UiModelConfigEntry[] },
+		lang?: () => ServerLang,
+	): Promise<void> {
+		const l = lang?.() ?? "en";
+		const gatewayId = this.gatewayProviderId();
+		const fail = (error: string, errorEn?: string) =>
+			this.host.emit({ type: "gateway_saved", reqId, ok: false, error, ...(errorEn ? { errorEn } : {}) });
+		if (!gatewayId)
+			return fail(pick(l, "还没有可写的网关配置", "No gateway configuration to write yet", "gateway.save.nogateway"));
+		const apiKey = input.apiKey;
+		if (typeof apiKey === "string" && apiKey.trim()) {
+			try {
+				await this.setProviderApiKey(gatewayId, apiKey.trim());
+			} catch (err) {
+				return fail(
+					pick(
+						l,
+						`保存密钥失败：${(err as Error).message}`,
+						`Failed to save the key: ${(err as Error).message}`,
+						"gateway.save.keyfailed",
+					),
+				);
+			}
+		} else if (apiKey === "") {
+			try {
+				await this.clearProviderApiKey(gatewayId);
+			} catch (err) {
+				return fail(
+					pick(
+						l,
+						`清除密钥失败：${(err as Error).message}`,
+						`Failed to clear the key: ${(err as Error).message}`,
+						"gateway.save.clearfailed",
+					),
+				);
+			}
+		}
+		// 只改密钥/地址时不动模型清单：省略 models 就原样保留（避免把目录写空）。
+		if (input.baseUrl !== undefined || input.api !== undefined || input.models !== undefined) {
+			const current = this.readModelsConfig().providers[gatewayId] ?? {};
+			const config: UiProviderConfig = {
+				providerId: gatewayId,
+				...(input.baseUrl !== undefined
+					? { baseUrl: input.baseUrl }
+					: typeof current.baseUrl === "string"
+						? { baseUrl: current.baseUrl }
+						: {}),
+				...(input.api !== undefined ? { api: input.api } : typeof current.api === "string" ? { api: current.api } : {}),
+				// @BUGFIX 2026-09-21：name / authHeader 是 writeModelConfig 的**受管键**，config 里不给
+				//   就会被清掉。网关表单不管这两项，于是「保存一次」就把网关显示名抹成裸 id、把
+				//   authHeader: true 抹掉（实测：抹掉后探测与调用都不再带鉴权头 → 401 Invalid token）。
+				//   表单不管理的键必须在**这一层**原样带过去。
+				...(typeof current.name === "string" && current.name.trim() ? { name: current.name } : {}),
+				...(current.authHeader === true ? { authHeader: true } : {}),
+				models: input.models ?? this.modelsOf(current),
+			};
+			const result = await this.writeModelConfig(gatewayId, config);
+			if (!result.ok) return fail(result.error, result.errorEn);
+			this.host.flushSnapshot();
+		}
+		this.host.emit({ type: "gateway_saved", reqId, ok: true });
+	}
+
 	/** Numeric metadata value (NaN/string "unknown" → undefined). */
 	private static numMeta(v: unknown): number | undefined {
 		return typeof v === "number" && Number.isFinite(v) ? v : undefined;
@@ -991,98 +1220,6 @@ export class ModelAdminService {
 			this.host.emit({ type: "fetch_models_result", reqId, ok: true, models });
 		} catch (err) {
 			emitError((err as Error).message);
-		}
-	}
-
-	/**
-	 * 渠道表单的「获取接口清单」：按服务商解析 baseUrl 与凭据密钥，探测 <baseUrl>/models。
-	 * @WHY 与 fetch_models（浏览器传 baseUrl/apiKey）不同，这里让**服务端**自己解析密钥——
-	 *   渠道面板的凭据只是一个名字引用，密钥正文从不下发浏览器；顺带绕开 CORS。
-	 * @CONTRACT 只读探测：不写 models.json、不改运行时（刷新目录是 refresh_provider_models 的事）。
-	 */
-	async fetchChannelModels(
-		reqId: number,
-		providerId: string,
-		keyName?: string | null,
-		lang?: () => ServerLang,
-	): Promise<void> {
-		const l = lang?.() ?? "en";
-		const pid = providerId.trim();
-		const done = (ok: boolean, extra: { models?: UiModelConfigEntry[]; baseUrl?: string; error?: string } = {}) =>
-			this.host.emit({ type: "channel_models_result", reqId, providerId: pid, ok, ...extra });
-		if (!pid) {
-			return done(false, {
-				error: pick(l, "请先选择服务商", "Pick a provider first", "models.fetch.channel.noprovider"),
-			});
-		}
-		let baseUrl = "";
-		/** 认证头口径来自该服务商的模型（Provider 本身不带 api 字段，见 pi-ai 的 Provider）。 */
-		let api: string | undefined;
-		/** 运行时自己解析出的凭据（models.json 内联 key / $ENV 引用 / auth.json / OAuth）——
-		 *  它才是真实请求用的那把，所以「跟随服务商当前密钥」时必须用它兜底。 */
-		let runtimeAuth: { apiKey?: string; baseUrl?: string; headers?: Record<string, string> } | undefined;
-		try {
-			const mr = this.host.modelRuntime();
-			const provider = mr.getProviders().find((x) => x.id === pid);
-			baseUrl = (provider?.baseUrl ?? "").trim();
-			api = provider?.getModels()[0]?.api;
-			const resolved = await mr.getAuth(pid);
-			if (resolved) {
-				runtimeAuth = {
-					apiKey: resolved.auth.apiKey,
-					baseUrl: resolved.auth.baseUrl,
-					headers: resolved.auth.headers as Record<string, string> | undefined,
-				};
-			}
-		} catch {
-			// 运行时未就绪/凭据解析失败 → 下面按「没有 baseUrl / 没有密钥」如实报错
-		}
-		if (!baseUrl) baseUrl = (runtimeAuth?.baseUrl ?? "").replace(/\/+$/, "");
-		if (!baseUrl) {
-			return done(false, {
-				error: pick(
-					l,
-					`服务商 ${pid} 没有可探测的 baseUrl（内置服务商的地址由 pi 提供；自定义服务商请在模型配置里填 baseUrl）`,
-					`Provider ${pid} has no baseUrl to probe (built-ins get theirs from pi; custom providers need one in the model config)`,
-					"models.fetch.channel.nobaseurl",
-					{ pid },
-				),
-			});
-		}
-		// 凭据：指定了名字就必须用那把（解析不到 = 明确报错，不偷偷换密钥）；
-		// 没指定 = 该服务商当前生效的命名密钥，其次回落到运行时解析出的凭据。
-		let apiKey: string | undefined;
-		if (keyName?.trim()) {
-			const named = this.resolveProviderKeyValue(pid, keyName);
-			if (!named) {
-				return done(false, {
-					baseUrl,
-					error: pick(
-						l,
-						`命名凭据「${keyName}」已不存在，请重新选择凭据`,
-						`Named credential “${keyName}” no longer exists; pick another one`,
-						"models.fetch.channel.nokey",
-						{ keyName },
-					),
-				});
-			}
-			apiKey = named;
-		} else {
-			const active = this.keyNameList(pid).find((k) => k.active);
-			apiKey = active ? (this.resolveProviderKeyValue(pid, active.keyName) ?? undefined) : runtimeAuth?.apiKey;
-		}
-		try {
-			const models = await ModelAdminService.probeModelsEndpoint(
-				baseUrl,
-				apiKey,
-				true,
-				api,
-				runtimeAuth?.headers,
-				lang,
-			);
-			done(true, { models, baseUrl });
-		} catch (err) {
-			done(false, { baseUrl, error: (err as Error).message });
 		}
 	}
 
@@ -1273,9 +1410,14 @@ export class ModelAdminService {
 				});
 				return done(false, { error: "provider missing or no baseUrl" });
 			}
+			// @BUGFIX 2026-09-21：「从网关读取模型清单」一直 401 Invalid token —— 这里原来只把
+			//   models.json 的**内联** apiKey 传给探测，而单网关实例的密钥存在 provider-keys.json 里
+			//   （内联为空）→ 请求根本没带鉴权头。现在按与真实调用**同一条**解析顺序取密钥：
+			//   运行时 auth（覆盖 $ENV / 命令 / OAuth）→ 命名密钥库的当前 active 名 → 内联兜底。
+			const probeKey = await this.resolveProbeKey(pid, saved.apiKey);
 			const fetched = await ModelAdminService.probeModelsEndpoint(
 				saved.baseUrl,
-				saved.apiKey,
+				probeKey,
 				saved.authHeader === true ? true : undefined,
 				saved.api,
 				saved.headers as Record<string, string> | undefined,
@@ -1351,33 +1493,6 @@ export class ModelAdminService {
 	}
 
 	/**
-	 * 渠道表单的「服务商连接」入口：与 saveModelConfig 同一套落盘/热加载，但**不发通知**——
-	 * 成功/失败都由渠道命令的回执向上报，避免一次操作两条互相矛盾的提示。
-	 */
-	async upsertProviderFromChannel(
-		input: ChannelProviderInput & { providerId: string },
-	): Promise<{ ok: true } | { ok: false; error: string }> {
-		const pid = input.providerId.trim();
-		const result = await this.writeModelConfig(
-			pid,
-			{
-				providerId: pid,
-				name: input.name,
-				api: input.api,
-				baseUrl: input.baseUrl,
-				apiKey: input.apiKey,
-				authHeader: input.authHeader,
-				models: input.models ?? [],
-			},
-			// 渠道表单只表达「连接 + 用哪些模型」，不表达 reasoning/contextWindow/cost 等元数据：
-			// 用 patch 合并，避免每次改渠道就把手工对齐过的模型元数据抹掉（§4 单一事实源）。
-			{ modelMerge: "patch" },
-		);
-		if (!result.ok) return { ok: false, error: result.error };
-		return { ok: true };
-	}
-
-	/**
 	 * 真正写 models.json + 热加载运行时的单一实现（错误以返回值上报，不静默）。
 	 * @CONTRACT 表单只管理「连接 + 模型 id/名字」这些键，其余键（headers / cost / compat /
 	 *   thinkingLevelMap / modelOverrides）原样保留；apiKey 空 = 保留已存值。
@@ -1388,7 +1503,11 @@ export class ModelAdminService {
 		opts: { modelMerge?: "replace" | "patch" } = {},
 	): Promise<{ ok: true; count: number } | { ok: false; error: string; errorEn?: string }> {
 		if (!pid || !/^[\w.-]+$/.test(pid)) {
-			return { ok: false, error: "服务商 ID 无效（仅字母/数字/._-）", errorEn: "Invalid provider ID (letters/digits/._- only)" };
+			return {
+				ok: false,
+				error: "服务商 ID 无效（仅字母/数字/._-）",
+				errorEn: "Invalid provider ID (letters/digits/._- only)",
+			};
 		}
 		// @BUGFIX 2026-09-13：渠道的 /models 只返回 {id, object}（RightCode 实测如此），
 		// 表单拿不到 reasoning / contextWindow。这里先按模型 id 回填已知能力，
@@ -1414,7 +1533,10 @@ export class ModelAdminService {
 		// 改模型元数据（deepseek 就是这种），它不需要再填 baseUrl。
 		const registered = (() => {
 			try {
-				return this.host.modelRuntime().getProviders().some((p) => p.id === pid);
+				return this.host
+					.modelRuntime()
+					.getProviders()
+					.some((p) => p.id === pid);
 			} catch {
 				return false;
 			}

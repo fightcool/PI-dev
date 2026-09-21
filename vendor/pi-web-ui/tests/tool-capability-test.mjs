@@ -1,7 +1,7 @@
 /*
  * 🍞 AI Breadcrumb — @COUPLED ../server/dev-con/endpoint-capability.ts（探测请求/判读）,
- *   ../server/agent-service.ts（ClientSession.checkChannelToolCapability → warnChannelLacksTools）,
- *   ../server/dev-con/channel-service.ts（channelDisplayName）
+ *   ../server/agent-service.ts（ClientSession.checkToolCapability → warnLacksTools）,
+ *   ../server/dev-con/endpoint-capability.ts（runCapabilityProbe）、../server/agent-service.ts（告警文案）
  * 📖 ../../docs/DEV-CON-PROPOSAL.md §5（切换场景）、§9（P0 技术项）
  *
  * DEV-CON 端到端证据（渠道静默丢 tools）：网关接受带 tools 的请求、返回 200，却把 tools 丢掉，
@@ -18,7 +18,7 @@
  * @GOTCHA 替身旁路的 probe 与真实模型请求共用同一条 URL（anthropic: /v1/messages，
  *   responses: /responses），靠请求体里的 pi_capability_probe 标记区分。
  *
- * Usage: npm run build && node tests/channel-tool-capability-test.mjs [port]
+ * Usage: npm run build && node tests/tool-capability-test.mjs [port]
  */
 import { createServer } from "node:http";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -26,13 +26,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
-import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 
 // 默认端口按 PID 派生：冒烟与手工 e2e 并行时不会互撞（同一脚本两份的 PID 必不相同）。
 const PORT = Number(process.argv[2] || 9500 + (process.pid % 100) * 2);
 const MOCK_PORT = PORT + 1;
-const base = mkdtempSync(join(tmpdir(), "pi-dev-channel-toolcap-"));
+const base = mkdtempSync(join(tmpdir(), "pi-dev-toolcap-"));
 const workdir = join(base, "work");
 const dataDir = join(base, "data");
 const agentDir = join(base, "agent");
@@ -278,12 +277,6 @@ class Client {
 	}
 }
 
-const runCommand = async (client, type, payload = {}) => {
-	const commandId = randomUUID();
-	client.send({ type, commandId, ...payload });
-	return client.waitForType("channel_command_result", (m) => m.commandId === commandId);
-};
-
 /** 发一轮真实请求并等这一轮结束（assistant 消息落定且不再流式）。 */
 const runTurn = async (client, text) => {
 	const before = client.assistantCount();
@@ -291,16 +284,10 @@ const runTurn = async (client, text) => {
 	await client.waitForState((s) => s.isStreaming === false && (s.messages ?? []).filter((m) => m.role === "assistant").length > before, 30000);
 };
 
-const saveChannel = async (client, channel) => {
-	const result = await runCommand(client, "channel_save", { channel });
-	check(`渠道 ${channel.id} 保存成功`, result.ok === true, result.error ?? "");
-	return result;
-};
-
-const selectChannel = async (client, conversationId, channelId, modelId) => {
-	const result = await runCommand(client, "channel_select", { conversationId, channelId, modelId });
-	check(`对话绑定 ${channelId}/${modelId}`, result.ok === true && result.phase === "applied", JSON.stringify({ phase: result.phase, error: result.error }));
-	return result;
+/** 切模型即切服务商（渠道能力已移除）。 */
+const selectModel = async (client, modelId) => {
+	client.send({ type: "set_model", modelId });
+	await client.waitForState((s) => s.model?.id === modelId.split("/")[1], 20000);
 };
 
 try {
@@ -315,18 +302,16 @@ try {
 	const state = await client.waitForState((s) => Boolean(s.conversationId));
 	const conv = state.conversationId;
 
-	// 两个渠道：drop（anthropic-messages，网关丢 tools）与 ok（openai-responses，正常）。
-	await saveChannel(client, { id: "ch-drop", displayName: "丢工具渠道", providerId: "dropprov", models: ["drop-model"] });
-	await saveChannel(client, { id: "ch-ok", displayName: "正常工具渠道", providerId: "okprov", models: ["ok-model"] });
+	// 两个服务商：dropprov（anthropic-messages，网关丢 tools）与 okprov（openai-responses，正常）。
 
-	// ── 1) 会丢 tools 的渠道：真实请求路径触发探测 → 必须告警 ─────────────────
-	await selectChannel(client, conv, "ch-drop", "dropprov/drop-model");
+	// ── 1) 会丢 tools 的服务商：真实请求路径触发探测 → 必须告警 ───────────────
+	await selectModel(client, "dropprov/drop-model");
 	await runTurn(client, "ping-drop");
 
 	const dropProbe = await waitUntil(
 		() => requests.find((r) => r.path === "/drop/v1/messages" && r.probe),
 		20000,
-		"the drop-channel capability probe request",
+		"the drop-tools capability probe request",
 	);
 	check(
 		"丢工具渠道的探测请求带上了 tools（是我们发了、对方丢了）",
@@ -340,24 +325,24 @@ try {
 	);
 
 	const warning = await client.waitForType("notice", (m) => m.level === "warning" && String(m.text ?? "").includes(WARNING_TEXT), 30000).catch((err) => {
-		check("丢工具渠道触发明确告警", false, `${err?.message ?? err}；收到的 notice=${JSON.stringify(client.notices.map((n) => `${n.level}:${n.text}`))}`);
+		check("丢工具的服务商触发明确告警", false, `${err?.message ?? err}；收到的 notice=${JSON.stringify(client.notices.map((n) => `${n.level}:${n.text}`))}`);
 		return null;
 	});
 	if (warning) {
-		check("丢工具渠道触发明确告警（level=warning）", warning.level === "warning", JSON.stringify({ level: warning.level, text: warning.text }));
+		check("丢工具的服务商触发明确告警（level=warning）", warning.level === "warning", JSON.stringify({ level: warning.level, text: warning.text }));
 		check("告警文案明确指出「不支持工具调用」", String(warning.text ?? "").includes(WARNING_TEXT), String(warning.text ?? "").slice(0, 200));
-		check("告警点名了渠道显示名与模型（channelDisplayName 生效）", String(warning.text ?? "").includes("丢工具渠道") && String(warning.text ?? "").includes("drop-model"), String(warning.text ?? "").slice(0, 200));
+		check("告警点名了服务商名称与模型", String(warning.text ?? "").includes("dropprov") && String(warning.text ?? "").includes("drop-model"), String(warning.text ?? "").slice(0, 200));
 	}
 
 	// ── 2) 对照组：端点支持工具 → 探测发生但不得告警 ─────────────────────────
 	const warningsBefore = client.warnings().length;
-	await selectChannel(client, conv, "ch-ok", "okprov/ok-model");
+	await selectModel(client, "okprov/ok-model");
 	await runTurn(client, "ping-ok");
 
 	const okProbe = await waitUntil(
 		() => requests.find((r) => r.path === "/ok/responses" && r.probe),
 		20000,
-		"the control-channel capability probe request",
+		"the control capability probe request",
 	);
 	check(
 		"对照组的探测请求同样带上了 tools",
@@ -374,7 +359,7 @@ try {
 	await sleep(2500);
 	const newWarnings = client.warnings().slice(warningsBefore);
 	check(
-		"支持工具的渠道不产生「不支持工具调用」告警（无误报）",
+		"支持工具的服务商不产生「不支持工具调用」告警（无误报）",
 		newWarnings.length === 0,
 		JSON.stringify(newWarnings.map((n) => n.text)),
 	);
@@ -387,6 +372,6 @@ try {
 	await sleep(200);
 	mock.close();
 	rmSync(base, { recursive: true, force: true });
-	console.log(failures === 0 ? "\n✓ channel tool capability: all checks passed" : `\n✗ channel tool capability: ${failures} check(s) failed`);
+	console.log(failures === 0 ? "\n✓ tool capability: all checks passed" : `\n✗ tool capability: ${failures} check(s) failed`);
 	process.exit(failures === 0 ? 0 : 1);
 }

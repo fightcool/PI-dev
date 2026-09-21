@@ -8,7 +8,7 @@
  *   @COUPLED jev-model.ts（配置/判定/缓存键/事件聚合）, jev-settings.ts（配置来源）,
  *            jev-samples.ts（真实调用后落一条样本；唯一 hook 点，见 @GOTCHA）,
  *            jev-review.ts（复盘到期判定：snapshotStatus().review 带出去）,
- *            channel-accounts.ts（复用的有界 fetchJson）, ../agent-service.ts（唯一装配处）
+ *            http-json.ts（复用的有界 fetchJson）, ../agent-service.ts（唯一装配处）
  *   @CONTRACT 本层只负责「发一次有界请求 + 把答案归一化成三态 + 记账」：
  *             不读盘、不解析密钥（apiKey 由调用方解析后传入），密钥正文绝不进入
  *             任何返回值/事件/错误文本。
@@ -37,7 +37,7 @@
  * ──────────────────────────────────────────────────
  */
 import { dirname, join } from "node:path";
-import { fetchJson } from "./channel-accounts.js";
+import { fetchJson } from "./http-json.js";
 import {
 	appendJevSample,
 	captureJevSample,
@@ -164,7 +164,7 @@ export interface JevEvaluateInput {
 	recordSample?: boolean;
 }
 
-/** 构造选项逐字对标 AccountRegistryOptions（见 channel-accounts.ts）。 */
+/** 构造选项与 Jev 门禁的凭据配置同形（provider + 密钥名；见 dev-con/jev-settings.ts）。 */
 export interface JevGateOptions {
 	timeoutMs?: number;
 	cacheTtlMs?: number;

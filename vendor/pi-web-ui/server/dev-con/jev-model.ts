@@ -27,7 +27,7 @@
  * ──────────────────────────────────────────────────
  */
 import { createHash } from "node:crypto";
-import { looksLikeLiteralSecret } from "./account-template.js";
+import { looksLikeLiteralSecret } from "./secret-scan.js";
 
 /** 门禁三态：放行 / 拦截 / 转人工（review 是**安全的一侧**：门禁坏了也绝不自动放行）。 */
 export type JevOutcome = "approve" | "block" | "review";

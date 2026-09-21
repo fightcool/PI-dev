@@ -167,7 +167,7 @@ export class TokenUsageTracker {
   /**
    * 记一次用量事件。
    * @param normalized normalizeUsageEvent() 的输出
-   * @param attribution 请求级归属 {source, channelId, credentialKeyName, modelId, providerId, bindingRevision, configRevision}
+   * @param attribution 请求级归属 {source, conversationId, cwd, providerId, modelId}
    */
   record(normalized, now = Date.now(), attribution = {}) {
     if (!normalized) throw new Error("record() expects normalizeUsageEvent() output");
@@ -192,7 +192,7 @@ export class TokenUsageTracker {
   }
 
   /**
-   * 逐请求记录（§7：稳定请求/事件标识、对话/运行、渠道引用、模型、绑定/配置版本、用量、时间、计价依据）。
+   * 逐请求记录（§7：稳定请求/事件标识、对话/运行、服务商、模型、用量、时间、计价依据）。
    * 有界环形缓冲：只保留最近 N 条，供界面展示与后续的时间/项目汇总，不影响聚合口径。
    */
   pushRecord(tokens, normalized, now, attribution) {
@@ -205,12 +205,8 @@ export class TokenUsageTracker {
       conversationId: attribution.conversationId ?? null,
       cwd: attribution.cwd ?? null,
       source: USAGE_SOURCES.includes(attribution.source) ? attribution.source : "user",
-      channelId: attribution.channelId ?? null,
-      credentialKeyName: attribution.credentialKeyName ?? null,
       providerId: normalized.provider ?? attribution.providerId ?? "unknown",
       modelId: normalized.responseModel ?? normalized.modelId ?? attribution.modelId ?? "unknown",
-      bindingRevision: attribution.bindingRevision ?? null,
-      configRevision: attribution.configRevision ?? null,
       input: tokens.input,
       output: tokens.output,
       cacheRead: tokens.cacheRead,
@@ -240,22 +236,18 @@ export class TokenUsageTracker {
     return [...this.#records].reverse().map((r) => ({ ...r }));
   }
 
-  /** 按来源/渠道/模型归组累计（不用今天的配置推断过去：归属随事件一起记录）。 */
+  /** 按来源/服务商/模型归组累计（不用今天的配置推断过去：归属随事件一起记录）。 */
   attribute(tokens, normalized, attribution) {
     const source = USAGE_SOURCES.includes(attribution.source) ? attribution.source : "user";
     const providerId = normalized.provider ?? attribution.providerId ?? "unknown";
     const modelId = normalized.responseModel ?? normalized.modelId ?? attribution.modelId ?? "unknown";
-    const key = [source, attribution.channelId ?? "-", providerId, modelId].join("|");
+    const key = [source, providerId, modelId].join("|");
     const bucket =
       this.#attribution.get(key) ??
       {
         source,
-        channelId: attribution.channelId ?? null,
-        credentialKeyName: attribution.credentialKeyName ?? null,
         providerId,
         modelId,
-        bindingRevision: attribution.bindingRevision ?? null,
-        configRevision: attribution.configRevision ?? null,
         requests: 0,
         ...emptyTokens(),
       };

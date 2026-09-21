@@ -2,7 +2,8 @@
 /* 🍞 AI Breadcrumb — @COUPLED ../../web/src/components/JevSettings.tsx（被测件）,
  *   ../../web/src/components/JevRuntimeView.tsx（运行状态/命题/余额/自检展示）,
  *   ../../web/src/jev-decision.ts（出站消息 + 阈值校验）,
- *   ../../web/src/channel-account.ts（余额口径复用）, ../../server/protocol.ts（UiJev* 类型）
+ *   ../../web/src/components/GatewayUsageBlock.tsx（余额行复用的网关自报用量口径）,
+ *   ../../server/protocol.ts（UiJev* 类型）
  * 📖 docs/DEV-CON-PROPOSAL.md §6（设置页）
  * @CONTRACT 「非黑盒」的可验证口径：
  *   ① 密钥只按名称出现：面板里没有密钥正文、没有 password 输入框，提交的载荷也只有 {providerId,keyName}；
@@ -19,11 +20,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { act } from "react-dom/test-utils";
 import { JevSettings } from "../../web/src/components/JevSettings.js";
 import { LanguageProvider } from "../../web/src/i18n.js";
-import type { ChannelApi, JevProbeResultMsg, JevUiState } from "../../web/src/use-chat.js";
+import type { JevProbeResultMsg, JevUiState } from "../../web/src/use-chat.js";
 import type {
 	ClientMessage,
-	UiAccountStatus,
-	UiChannelInfo,
 	UiJevGateConfig,
 	UiJevProposition,
 	UiJevReviewStatus,
@@ -133,39 +132,10 @@ const PROBE_FAIL: JevProbeResultMsg = {
 	errorEn: "No usable Jev credential: pick a key name in the gate settings",
 };
 
-const CHANNELS: UiChannelInfo[] = [
-	{
-		id: "or-main",
-		displayName: "OpenRouter 主号",
-		providerId: "openrouter",
-		endpointId: "",
-		credentialRef: null,
-		accountRef: "or-acc",
-		models: [],
-		enabled: true,
-		keys: [{ keyName: "prod", active: true }],
-		keyMissing: false,
-		providerMissing: false,
-		// 配了账户查询方式（kind 非空）—— 余额行才会出现（channelAccountView 的口径）。
-		account: { kind: "openai-gateway" },
-	},
-];
-const ACCOUNTS: UiAccountStatus[] = [
-	{
-		accountRef: "or-acc",
-		kind: "openai-gateway",
-		status: "ok",
-		balance: 45.43301698,
-		unit: "USD",
-		checkedAt: 1758000000000,
-	},
-];
 
 function mount(
 	initial: {
 		jev?: JevUiState;
-		channels?: UiChannelInfo[];
-		accounts?: UiAccountStatus[];
 		providerKeys?: Record<string, { name: string; active: boolean }[]>;
 		providers?: { id: string; name: string; configured: boolean }[];
 	} = {},
@@ -178,12 +148,10 @@ function mount(
 		sent.push(msg);
 		return true;
 	};
-	const queryChannelAccount = vi.fn(() => "cmd-1");
-	const channelApi = { queryChannelAccount } as unknown as ChannelApi;
+	// 网关自报用量：余额行现在读的是这份读数（不再有渠道账户查询）。
+	const gatewayUsage = { ok: null as boolean | null, usage: undefined, duplicates: [] } as never;
 	const render = (props: {
 		jev?: JevUiState;
-		channels?: UiChannelInfo[];
-		accounts?: UiAccountStatus[];
 		providerKeys?: Record<string, { name: string; active: boolean }[]>;
 		providers?: { id: string; name: string; configured: boolean }[];
 	}) =>
@@ -194,7 +162,8 @@ function mount(
 				createElement(JevSettings, {
 					jev: props.jev ?? statusOf(),
 					send,
-					channelApi,
+					opsApi: { queryGatewayUsage: () => 1, getGateway: () => 1, saveGateway: () => 1, refreshProviderModels: () => 1 } as never,
+					gatewayUsage,
 					providerKeys: props.providerKeys ?? {
 						openrouter: [
 							{ name: "prod", active: true },
@@ -203,14 +172,12 @@ function mount(
 					},
 					providers: props.providers ?? [{ id: "openrouter", name: "OpenRouter", configured: true }],
 					models: [],
-					channels: props.channels ?? CHANNELS,
-					accounts: props.accounts ?? ACCOUNTS,
-					onOpenProviderKeys: () => {},
+					onOpenGatewayTab: () => {},
 				}) as ReactNode,
 			),
 		);
 	act(() => render(initial));
-	return { container, sent, queryChannelAccount, rerender: (p: Parameters<typeof render>[0]) => act(() => render(p)) };
+	return { container, sent, rerender: (p: Parameters<typeof render>[0]) => act(() => render(p)) };
 }
 
 const textOf = (c: HTMLElement) => c.textContent ?? "";
@@ -362,7 +329,9 @@ describe("Jev 决策门禁分区（设置面板）", () => {
 		expect(c["缓存命中"]).toBe("4");
 		expect(c["输入"]).toBe("4200");
 		expect(c["输出"]).toBe("310");
-		expect(c["费用"]).toBe("0.42");
+		// 费用口径与用量面板同源（web/src/gateway-usage.ts 的 formatUsd）：带币种、按量级给精度。
+		// 0.421 在这种量级下给 3 位小数（旧口径固定 2 位会把它显示成 0.42，丢精度）。
+		expect(c["费用"]).toBe("$0.421");
 		expect(c["平均耗时"]).toBe("812 ms");
 	});
 
@@ -543,13 +512,13 @@ describe("Jev 决策门禁分区（设置面板）", () => {
 		expect(textOf(container)).toContain("配置已生效");
 	});
 
-	it("余额复用渠道账户查询：有渠道显示格式化余额，没有则如实说明（不显示 0）", () => {
-		const withChannel = mount();
-		expect(textOf(withChannel.container)).toContain("45.43");
-		expect(textOf(withChannel.container)).toContain("OpenRouter 主号");
-		act(() => root?.unmount());
-		const withoutChannel = mount({ channels: [], accounts: [] });
-		expect(textOf(withoutChannel.container)).toContain("没有可用于余额查询的渠道");
+	it("余额行复用网关自报用量：没有读数时如实说明，绝不显示 0", () => {
+		// 单网关接入后余额只有一个来源（网关自己的账单接口，见 GatewayUsageBlock）；
+		// 这里只钉住「没读数时不编数字」这一条底线，具体格式由 gateway-usage 单测覆盖。
+		const { container } = mount();
+		expect(container.querySelector(".gw-usage")).not.toBeNull();
+		expect(textOf(container)).toContain("网关自报用量");
+		expect(textOf(container)).not.toContain("$0.00");
 	});
 });
 

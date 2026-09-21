@@ -7,11 +7,11 @@
  * Breadcrumbs (changing this affects):
  *   @COUPLED components/JevSettings.tsx（唯一挂载点：设置面板「Jev 决策门禁」分区）,
  *            jev-decision.ts（协议类型 + 校验/格式化辅助）,
- *            channel-account.ts（余额/状态口径：本文件只复用，不另写一套）,
+ *            GatewayUsageBlock.tsx（网关自报用量的展示口径：本文件只复用，不另写一套）,
  *            use-chat.ts（jev_status / jev_probe_result → ChatState.jev）,
  *            server/dev-con/jev-model.ts（UiJevRuntimeStatus / UiJevDecision 的产出方）
- *   @CONTRACT 只读展示：不发起任何配置写入。余额行会发 channel_query_account（只读命令），
- *             走渠道面板同一适配器与同一数字口径（formatAmount / balanceTextOf）。
+ *   @CONTRACT 只读展示：不发起任何配置写入。余额行显示的是**网关自报用量**
+ *             （GatewayUsageBlock，与状态栏/用量面板同一份读数）。
  *   @GOTCHA 取不到的字段一律显示「—」或明确文案，不用 0 顶替：0 次失败与「没读到」是两件事。
  *   @WHY 命题清单默认只显示一行摘要，展开才看判定口径；自检结果把 checks 逐项分数、判定理由、
  *        审计（模型/令牌/费用/缓存）全部摊开 —— 「非黑盒」的最低要求是让运营者看到真实回包。
@@ -20,16 +20,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FiAlertTriangle, FiCheck } from "react-icons/fi";
 import { useT } from "../i18n";
-import {
-	accountStateView,
-	balanceTextOf,
-	channelAccountView,
-	formatAmount,
-	isAccountQueryFailed,
-	startBalanceRefresh,
-} from "../channel-account";
-import type { UiAccountStatus, UiChannelInfo, UiJevDecision, UiJevProposition, UiJevRuntimeStatus } from "../types";
-import type { ChannelApi, JevConfigResultMsg, JevProbeResultMsg, JevStatusMsg } from "../use-chat";
+import type { UiJevDecision, UiJevProposition, UiJevRuntimeStatus } from "../types";
+import type { JevConfigResultMsg, JevProbeResultMsg, JevStatusMsg } from "../use-chat";
+import { GatewayUsageBlock, type GatewayUsageState } from "./GatewayUsageBlock";
+import { formatCostOrDash } from "../gateway-usage";
 import {
 	brief,
 	cacheClearHint,
@@ -54,8 +48,9 @@ export function JevRuntimeCards({
 }) {
 	const t = useT();
 	if (!runtime) return <p className="set-hint">{t("settingsJevRuntimeEmpty")}</p>;
-	// 费用口径与用量面板一致（formatAmount）；服务端没给价格时显示「—」，不写 0（0 会被读成「免费」）。
-	const cost = formatAmount(runtime.cost);
+	// 费用口径与用量面板同源（web/src/gateway-usage.ts 的 formatUsd）；服务端没给价格时显示「—」，
+	// 不写 0（0 会被读成「免费」）。
+	const cost = formatCostOrDash(runtime.cost);
 	const cards: { title: string; value: string }[] = [
 		{ title: t("settingsJevTotalCalls"), value: String(runtime.total) },
 		{ title: t("settingsJevOutcomeApprove"), value: String(runtime.approve) },
@@ -141,74 +136,23 @@ export function JevPropositionList({ propositions }: { propositions: UiJevPropos
 }
 
 /**
- * 余额行：**复用渠道的账户查询适配器**（同一个数字口径、同一套状态色）。
- * 不写新的余额接口调用；渠道按「凭据服务商下唯一一个配了账户查询的启用渠道」匹配
- * （channelAccountView 的多义不猜口径），匹配不到就如实说没有可用渠道。
+ * 余额行：**复用网关自报用量**（同一个数字口径、同一套状态色，见 GatewayUsageBlock）。
+ * @WHY 以前这里自己去找「配了账户查询的渠道」——多渠道时代的产物；单网关接入后余额只有一个
+ *   来源（网关自己的账单接口），再留一条并行查询路径就是两份真相、两个可能不一致的数字。
+ * @CONTRACT Jev 用的模型如果不在网关上，GatewayUsageBlock 会明确标注读数归属
+ *   （gatewayUsageMismatch），不假装这是 Jev 那个服务商的余额。
  */
 export function JevBalance({
-	channels,
-	accounts,
+	gatewayUsage,
 	providerId,
-	channelApi,
+	onRefresh,
 }: {
-	channels: UiChannelInfo[];
-	accounts: UiAccountStatus[];
+	gatewayUsage: GatewayUsageState;
 	providerId: string;
-	/** 渠道只读 API：查询动作直接由本组件发出，避免调用方每次渲染都新建回调。 */
-	channelApi: ChannelApi;
+	/** 手动刷新（force）。 */
+	onRefresh: () => void;
 }) {
-	const t = useT();
-	const view = useMemo(
-		() => channelAccountView({ channels, accounts, binding: null, modelProvider: providerId || null }),
-		[channels, accounts, providerId],
-	);
-	const channel = view.channel;
-	const status = view.account;
-	// 自动刷新与渠道面板同源：进面板查一次、之后每周期一次、失败超限降级（见 channel-account.ts）。
-	const checkedRef = useRef(status?.checkedAt ?? 0);
-	checkedRef.current = status?.checkedAt ?? 0;
-	const failedRef = useRef(isAccountQueryFailed(status));
-	failedRef.current = isAccountQueryFailed(status);
-	const statusRef = useRef(status?.status);
-	statusRef.current = status?.status;
-	const channelId = channel?.id ?? null;
-	// @GOTCHA 依赖必须是**稳定**引用：若依赖调用方传入的内联回调（每次渲染都新建），
-	//   effect 会在每次渲染重跑 → 立即发 channel_query_account → 回包触发重渲染 → 请求风暴
-	//   （实测空闲 3 秒发出 559 帧）。与 ModelThinking.tsx 同形：依赖 channelApi 这类稳定对象。
-	useEffect(() => {
-		if (!channelId) return;
-		return startBalanceRefresh({
-			channelId,
-			query: () => channelApi.queryChannelAccount(channelId),
-			statusOf: () => statusRef.current,
-			queryFailedOf: () => failedRef.current,
-			lastCheckedAt: () => checkedRef.current,
-		});
-	}, [channelId, channelApi]);
-	const state = accountStateView(status);
-	return (
-		<div className="chan-account-row">
-			<span className="field-label">{t("settingsJevBalanceTitle")}</span>
-			{channel ? (
-				<>
-					<span className="chan-meta">
-						{channel.displayName} · {balanceTextOf(status, t as (k: string) => string)}
-					</span>
-					<span className="chan-meta">{t(state.labelKey)}</span>
-					{typeof status?.checkedAt === "number" && (
-						<span className="chan-meta">
-							{t("channelAccountCheckedAt")} {new Date(status.checkedAt).toLocaleString()}
-						</span>
-					)}
-					<button type="button" className="chan-btn" onClick={() => channelApi.queryChannelAccount(channel.id)}>
-						{t("channelAccountRefresh")}
-					</button>
-				</>
-			) : (
-				<span className="set-hint">{t("settingsJevBalanceNoChannel")}</span>
-			)}
-		</div>
-	);
+	return <GatewayUsageBlock state={gatewayUsage} activeProvider={providerId} onRefresh={onRefresh} />;
 }
 
 /**
@@ -282,7 +226,7 @@ function JevDecisionView({ decision, locale }: { decision: UiJevDecision; locale
 				<span className="chan-meta">
 					{audit.model ?? "—"} · {audit.provider ?? "—"} · {formatMs(audit.elapsedMs)} · {t("usageColInput")}{" "}
 					{audit.inputTokens ?? "—"} / {t("usageColOutput")} {audit.outputTokens ?? "—"} · {t("usageColCost")}{" "}
-					{formatAmount(audit.cost) || "—"} · {cacheSourceLabel(audit.cache, locale, t)}
+					{formatCostOrDash(audit.cost)} · {cacheSourceLabel(audit.cache, locale, t)}
 				</span>
 			</div>
 		</>

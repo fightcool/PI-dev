@@ -2,9 +2,8 @@
  * Wire protocol between the browser client and the pi-web-ui server.
  * Pure JSON over WebSocket. The web frontend mirrors these types in
  * web/src/types.ts (kept in sync by hand — types only, no shared runtime code).
- * 🍞 @COUPLED dev-con/channel-service.ts (channel_state / channel_command_result 的发出方)
- *   @COUPLED web/src/use-chat.ts（reducer 消费）、web/src/components/ModelChannelPicker.tsx
- *   📖 docs/DEV-CON-PROPOSAL.md §4–§7、docs/P0-VERIFICATION.md
+ * 🍞 @COUPLED web/src/use-chat.ts（reducer 消费）、server/agent-service.ts（各消息的实现方）
+ *   📖 docs/NEWAPI-GATEWAY.md（单网关接入：网关配置与网关自报用量）、docs/P0-VERIFICATION.md
  *   @CONTRACT 本文件必须保持纯类型导出（scripts/check-protocol-sync.mjs 守护）；改动需同步 bump
  *              server/protocol-version.ts 与 web/src/protocol-version.ts。
  */
@@ -87,103 +86,7 @@ export interface UiModelInfo {
 // DEV-CON channels (渠道配置 / 绑定 / 账户) — 见 docs/DEV-CON-PROPOSAL.md §4–§7
 // ---------------------------------------------------------------------------
 
-/** 渠道里的命名凭据引用（只有名称，没有密钥正文/掩码）。keyName="active" 表示
- *  跟随该服务商当前 active key。 */
-export interface UiCredentialRef {
-	providerId: string;
-	keyName: string;
-}
-
-/** 一次「渠道 + 端点 + 凭据 + 模型」选择。 */
-export interface UiChannelSelection {
-	channelId: string;
-	endpointId: string;
-	credentialRef: UiCredentialRef | null;
-	/** 完整模型 id（"provider/model"）。 */
-	modelId: string;
-}
-
-/** 渠道档案视图（引用 models.json/runtime 的服务商，不复制模型目录或密钥）。 */
-export interface UiChannelInfo {
-	id: string;
-	displayName: string;
-	providerId: string;
-	endpointId: string;
-	credentialRef: UiCredentialRef | null;
-	accountRef: string | null;
-	/**
-	 * 账户查询配置回显（**不含任何密钥值**）：kind/url/method/apiKeyHeader/apiKeyPrefix/body/
-	 * mapping/items/unit/scale/credentialKeyName。必须完整回显，否则「已存模板无法编辑」。
-	 * body/mapping 里只有 {apiKey} 之类的占位符与字段路径，不含密钥正文。
-	 */
-	account?: Record<string, unknown> | null;
-	enabled: boolean;
-	/** 该渠道限定的模型（provider 内 id）；空数组 = 不限制（列出全部）。 */
-	models: string[];
-	/** 该服务商的命名密钥（仅名称 + 是否 active）。 */
-	keys: { keyName: string; active: boolean }[];
-	/** 引用的命名凭据已不存在（UI 需提示重新选择）。 */
-	keyMissing: boolean;
-	/** 引用的服务商已不在 runtime。 */
-	providerMissing: boolean;
-}
-
-/** 对话绑定（含配置版本与绑定版本，旧回执据此被拒绝）。 */
-export interface UiChannelBinding extends UiChannelSelection {
-	conversationId: string;
-	bindingRevision: number;
-	configRevision: number;
-	lastUsedAt: number;
-	/** 渠道显示名（渠道可能已被删除，此时为 null）。 */
-	channelName?: string | null;
-}
-
-/** 等待本轮结束再生效的选择。 */
-export interface UiChannelPending extends UiChannelSelection {
-	conversationId: string;
-	bindingRevision: number;
-	/** 提交该选择的命令 id（回执对应用）。 */
-	commandId: string;
-}
-
-/** 账户余额/配额状态。status 语义见 DEV-CON §7：
- *  unsupported=该渠道无可用查询方式；ok=本次成功；failed=本次失败；
- *  stale=本次失败但保留了上次成功结果（checkedAt 是上次成功时间）。 */
-export interface UiAccountStatus {
-	accountRef: string;
-	kind: string;
-	status: "unsupported" | "ok" | "failed" | "stale";
-	scope?: string;
-	unit?: string;
-	balance?: number;
-	quota?: { used?: number; limit?: number; remaining?: number; unit?: string };
-	checkedAt?: number;
-	staleSince?: number;
-	/**
-	 * `status === "stale"` 的原因，界面据此说实话：
-	 *   - `ttl`    = 缓存里的数据超过 TTL 没更新（渠道本身没有报错，只是数字旧了）；
-	 *   - `failed` = 最近一次查询失败，下面是上次成功的结果。
-	 * @WHY 两者以前共用同一个 stale：用户看到「已过期」无法判断是不是渠道坏了，
-	 *   而「只是没刷新」和「查询失败」该给的引导（刷新 vs 重试）完全不同。
-	 */
-	staleReason?: "ttl" | "failed";
-	error?: string;
-	/** 多币种明细（如 DeepSeek 官方可能同时返回 CNY/USD）：逐条展示，不做无依据相加。 */
-	breakdown?: { currency: string; total: number; granted: number; toppedUp: number }[];
-	/** 供应商标注的状态说明（例如 DeepSeek 的 is_available=false = 余额不足以调用）。 */
-	note?: string;
-}
-
-/** 当前对话的绑定视图（有效 + 待生效 + 来源）。 */
-export interface UiChannelBindingView {
-	effective: UiChannelBinding | null;
-	pending: UiChannelBinding | null;
-	/** 有效选择的来源：对话自身 / 项目默认 / 实例默认 / 未设置。 */
-	source: "conversation" | "project" | "instance" | "none";
-}
-
-/** 用量归属桶（§7）：按来源/渠道/模型归组；只含引用，不含密钥。 */
-/** 逐请求用量记录（§7：稳定标识、对话/运行、渠道引用、模型、绑定/配置版本、用量、时间、计价依据）。 */
+/** 逐请求用量记录（§7：稳定标识、对话/运行、服务商、模型、用量、时间、计价依据）。 */
 export interface UiUsageRecord {
 	/** 稳定请求/事件标识：provider 响应 id，或 role+timestamp，或 run 内序号。 */
 	id: string;
@@ -194,12 +97,8 @@ export interface UiUsageRecord {
 	cwd: string | null;
 	/** 来源：user / retry / subagent / compaction / vision / review / wizard / probe / system。 */
 	source: string;
-	channelId: string | null;
-	credentialKeyName: string | null;
 	providerId: string;
 	modelId: string;
-	bindingRevision: number | null;
-	configRevision: number | null;
 	input: number;
 	output: number;
 	cacheRead: number;
@@ -219,12 +118,8 @@ export interface UiUsageRecord {
 export interface UiUsageAttribution {
 	/** 来源：user / retry / subagent / compaction / vision / review / wizard / probe / system。 */
 	source: string;
-	channelId: string | null;
-	credentialKeyName: string | null;
 	providerId: string;
 	modelId: string;
-	bindingRevision: number | null;
-	configRevision: number | null;
 	requests: number;
 	input: number;
 	output: number;
@@ -317,12 +212,6 @@ export interface UiState {
 	 * API key form directly; false → offer auto-install first.
 	 */
 	piAgentInstalled: boolean;
-	/**
-	 * DEV-CON 渠道绑定视图（当前对话）：有效选择 + 待生效选择 + 来源。
-	 * 有效值来自服务端认可的绑定；待生效值表示「已受理、等本轮结束后应用」。
-	 * 缺省/undefined = 该实例没有渠道功能（例如未启用或 DSH 引擎）。
-	 */
-	channelBinding?: UiChannelBindingView | null;
 	/** Live session stats for the footer status bar. */
 	stats: {
 		totalMessages: number;
@@ -332,18 +221,18 @@ export interface UiState {
 			cacheRead: number;
 			cacheWrite: number;
 			total: number;
-				/** Tokens consumed by the current request/run. */
-				request?: { input: number; output: number; total: number };
-				run?: { input: number; output: number; total: number };
-			};
-			/** 按来源/渠道/模型归组的累计用量（§7）。缺省 = 未提供归属。 */
-			attribution?: UiUsageAttribution[];
-			/** 本次 run 的标识（服务端生成；用于把晚到事件归回原运行）。 */
-			runId?: string | null;
-			/** 最近若干条逐请求记录（新→旧，有界；含时间与计价依据）。 */
-			recentRequests?: UiUsageRecord[];
-			cost: number;
-			contextUsage: {
+			/** Tokens consumed by the current request/run. */
+			request?: { input: number; output: number; total: number };
+			run?: { input: number; output: number; total: number };
+		};
+		/** 按来源/渠道/模型归组的累计用量（§7）。缺省 = 未提供归属。 */
+		attribution?: UiUsageAttribution[];
+		/** 本次 run 的标识（服务端生成；用于把晚到事件归回原运行）。 */
+		runId?: string | null;
+		/** 最近若干条逐请求记录（新→旧，有界；含时间与计价依据）。 */
+		recentRequests?: UiUsageRecord[];
+		cost: number;
+		contextUsage: {
 			tokens: number | null;
 			contextWindow: number;
 			percent: number | null;
@@ -442,13 +331,36 @@ export interface UiOpsThresholds {
 export interface UiDiagnostics {
 	generatedAt: number;
 	app: { node: string; pid: number; uptimeSec: number; engine: string; protocolVersion: number };
-	release: { commit: string | null; appVersion: string | null; protocolVersion: number | null; builtAt: string | null; source: string | null };
-	instance: { configDir: string; dataDir: string; agentDir: string; workspaceDir: string; host: string | null; port: number | null; profile: string | null };
+	release: {
+		commit: string | null;
+		appVersion: string | null;
+		protocolVersion: number | null;
+		builtAt: string | null;
+		source: string | null;
+	};
+	instance: {
+		configDir: string;
+		dataDir: string;
+		agentDir: string;
+		workspaceDir: string;
+		host: string | null;
+		port: number | null;
+		profile: string | null;
+	};
 	units: { unit: string; active: string; enabled: string }[];
 	resources: UiResourceSnapshot;
 	storage: UiStorageSnapshot;
-	channels: { configRevision: number; count: number; enabledCount: number; bindings: number; pending: number; accounts: number; brokenRefs: number };
-	usage: { windowDays: number; requests: number; totalTokens: number; cost: number; unpricedRequests: number; bySource: Record<string, number>; byChannel: Record<string, number> };
+	/** 单网关实例：只报已注册服务商数量（渠道概念已移除，见 docs/NEWAPI-GATEWAY.md）。 */
+	providers: { count: number };
+	usage: {
+		windowDays: number;
+		requests: number;
+		totalTokens: number;
+		cost: number;
+		unpricedRequests: number;
+		bySource: Record<string, number>;
+		byProvider: Record<string, number>;
+	};
 	environment: { platform: string; cpuCount: number; totalMemBytes: number };
 	warnings: string[];
 }
@@ -858,62 +770,27 @@ export type ClientMessage =
 	 *  active key, the first remaining key becomes active (or the provider
 	 *  returns to unconfigured when no key is left). */
 	| { type: "remove_provider_key"; provider: string; keyName: string }
-	// -- DEV-CON channels (配置 / 组合切换 / 账户查询) --------------------------
-	/** 请求渠道状态（也由服务端在 attach 与每次变更后主动推送）。 */
-	| { type: "list_channels" }
+	// -- 网关用量（NewAPI 一类聚合网关） ---------------------------------------
+	/** 只读：查一次网关自报的用量（有界超时、限频、缓存；失败保留上次结果）。
+	 *  providerId 省略 = 用当前生效模型所属服务商。reqId 回显在 gateway_usage 里。
+	 *  force 省略/false = 命中 60s 缓存就直接复用（自动轮询用）；true = 绕过缓存（用户点刷新）。 */
+	| { type: "query_gateway_usage"; reqId: number; providerId?: string; force?: boolean }
+	// -- 网关配置（唯一接入：baseUrl + Key + 模型清单） --------------------------
+	/** 只读：读当前网关的配置（baseUrl / 协议 / 是否已有密钥 / 模型清单）与重复接入提示。 */
+	| { type: "get_gateway"; reqId: number }
 	/**
-	 * 组合命令：一次提交渠道 + 命名凭据 + 模型。服务端校验版本、按「空闲立即 /
-	 * 正在生成则待生效」应用，并用 channel_command_result 回执确认最终状态。
-	 * credentialKeyName 省略时用渠道档案的默认凭据；null = 跟随服务商 active key。
-	 * expectedConfigRevision / expectedBindingRevision 用于拒绝基于旧状态的提交。
+	 * 写网关配置（回执 gateway_saved）。
+	 * @CONTRACT apiKey 省略/null = 保留已存密钥（只改地址/模型不会丢 key）；空串 = 显式清除。
+	 *   models 省略 = 不动模型清单（只改地址/密钥时用）。
 	 */
 	| {
-			type: "channel_select";
-			commandId: string;
-			conversationId?: string;
-			channelId: string;
-			credentialKeyName?: string | null;
-			modelId: string;
-			expectedConfigRevision?: number;
-			expectedBindingRevision?: number;
+			type: "save_gateway";
+			reqId: number;
+			baseUrl?: string;
+			api?: string;
+			apiKey?: string | null;
+			models?: UiModelConfigEntry[];
 	  }
-	/** 清除当前对话的渠道绑定（回到项目/实例默认或全局 active key）。 */
-	| { type: "channel_binding_clear"; commandId: string; conversationId?: string; expectedBindingRevision?: number }
-	/** 新增/更新渠道档案；可选**同帧**upsert 它引用的服务商（models.json）。
-	 *  @CONTRACT 「新建服务商」不再需要先去「管理模型」建一遍：渠道表单把连接字段（baseUrl/
-	 *  协议/密钥/模型）跟渠道一起提交，服务端先写 models.json（失败就不动 channels.json），
-	 *  再写渠道档案。密钥只在这一帧里上行一次，之后只以 hasApiKey 回显，绝不回传。 */
-	| {
-			type: "channel_save";
-			commandId: string;
-			channel: {
-				id?: string;
-				displayName: string;
-				providerId: string;
-				endpointId?: string;
-				credentialRef?: UiCredentialRef | null;
-				accountRef?: string | null;
-				/** 该渠道允许的模型（provider 内 id）；空数组 = 不限制。 */
-				models?: string[];
-				enabled?: boolean;
-				extra?: Record<string, unknown>;
-			};
-			/** 与该渠道一起写入的服务商（省略 = 只引用已注册服务商，不碰 models.json）。 */
-			provider?: ChannelProviderInput;
-			expectedConfigRevision?: number;
-	  }
-	/** 删除渠道（同时清理引用它的默认值与绑定）。 */
-	| { type: "channel_delete"; commandId: string; channelId: string; expectedConfigRevision?: number }
-	/** 设置项目/实例默认（只影响尚未发言的对话，不重绑正在运行的对话）。 */
-	| {
-			type: "channel_set_default";
-			commandId: string;
-			scope: "instance" | "project";
-			selection: { channelId: string; credentialKeyName?: string | null; modelId: string } | null;
-			expectedConfigRevision?: number;
-	  }
-	/** 查询渠道账户余额/配额（有界超时、限频、缓存；不支持时明确报 unsupported）。 */
-	| { type: "channel_query_account"; commandId: string; channelId: string }
 	// -- DEV-CON Jev 决策门禁 -------------------------------------------------
 	/** 只读：门禁状态（清洗后的配置 + 运行聚合 + 可用命题）。reqId 回显在 jev_status 里。 */
 	| { type: "jev_status"; reqId: number }
@@ -943,7 +820,7 @@ export type ClientMessage =
 	| {
 			type: "usage_history_query";
 			reqId: number;
-			groupBy: "channel" | "project" | "model" | "source" | "day";
+			groupBy: "provider" | "project" | "model" | "source" | "day";
 			/** 时间窗（含端点，ms）；省略 = 不限。 */
 			from?: number;
 			to?: number;
@@ -972,10 +849,6 @@ export type ClientMessage =
 	/** Re-probe a SAVED provider's /models endpoint and merge the result into
 	 *  its models.json entry. Credentials stay server-side (the browser never
 	 *  sees apiKey/headers); reqId is echoed in refresh_provider_result. */
-	/** 渠道表单「获取接口清单」：按服务商 + 命名凭据在后端探测 <baseUrl>/models。
-	 *  @WHY 密钥只在服务端解析（浏览器本来就拿不到密钥正文），顺带绕开 CORS；
-	 *  keyName 为空 = 用该服务商当前生效的密钥。 */
-	| { type: "fetch_channel_models"; reqId: number; providerId: string; keyName?: string | null }
 	| { type: "refresh_provider_models"; providerId: string; reqId: number }
 	/** Copy a BUILT-IN provider (baseUrl + current model catalog) into an
 	 *  editable custom-provider draft — the point is running a second API key
@@ -1031,6 +904,10 @@ export type ClientMessage =
 			/** 内置服务商里从「管理模型」列表移除（= 隐藏）的 providerId 集合。
 			 *  纯 UI 偏好：不动运行时、不触发 reload；密钥的清除走 clear_provider_api_key。 */
 			hiddenBuiltinProviders?: string[];
+			/** 选择器里隐藏的模型（"provider/id" 或裸 id）。纯 UI 偏好：不动运行时、不触发 reload。
+			 *  @WHY 单网关实例下模型清单由网关公布（可能几十个），而常用的只有几个；
+			 *  这个开关让操作者把不用的收起来，切换模型时不必在一长串里找。 */
+			hiddenModels?: string[];
 			/** 模型路由规则：不再出现在选择器里的路由（"id" 或 "provider/id"）。
 			 *  三态：缺省 = 保留现值；[] / {} = 自定义（[] 表示真的不隐藏任何路由）；
 			 *  null = 清除自定义，回到出厂默认（defaultModelRouting）。 */
@@ -1358,22 +1235,62 @@ export interface UiModelConfigEntry {
 }
 
 /**
- * 渠道表单里的「服务商连接」（channel_save.provider）：写 models.json 所需的最小字段集。
- * @CONTRACT 不承载模型元数据（cost/contextWindow/thinkingLevelMap 等仍由「模型目录」管理）；
- *   `apiKey` 只在服务端落盘，永不回传；留空 = 保留已存密钥（只改地址/模型不丢 key）。
+ * 网关（NewAPI 一类聚合网关）自报的用量/额度快照。
+ * @CONTRACT 数字来自网关的账单接口，**不是**本地按 token 估算的费用；两者不得相加。
+ *   usedUsd/limitUsd/remainingUsd 已按网关自己的口径换算成 USD；
+ *   网关只报用量、不报真实额度（NewAPI 对不限额度令牌给 1e8 占位）时 limitUsd/remainingUsd 为 null。
+ * @GOTCHA NewAPI 的账单口径：`total_usage` 是「显示币种的分」= USD × 100 × (display_in_currency ? usd_exchange_rate : 1)。
+ *   实测（2026-09-21，api.ftai.cc，deepseek-flash）：一次 432 in / 16 out 的请求使 total_usage 增加 0.72416，
+ *   而该模型公开的计价表达式为 p*2.0 + c*8.0（USD/1M）→ 0.000992 USD；0.72416 / 0.000992 = 730 = 100 × 7.3（该站显示汇率）。
+ *   所以换算必须读 /api/status 的 display_in_currency 与 usd_exchange_rate，不能想当然当地美分。
+ * @GOTCHA 日期窗口在这台部署上被忽略（实测 2020 年的窗口与不带窗口同值）→ windowDays 缺省表示
+ *   「网关报的是累计值」，界面不得擅自说成「近 N 天」。见 docs/NEWAPI-GATEWAY.md。
  */
-export interface ChannelProviderInput {
-	/** 服务商 id；省略时服务端由渠道显示名生成（见 channel-model 的 providerIdFromName）。 */
-	providerId?: string;
-	name?: string;
-	/** 协议：anthropic-messages / openai-completions / openai-responses / google-generative-ai。 */
-	api?: string;
+export interface UiGatewayUsage {
+	/** 该网关对应的服务商 id（它的 baseUrl 就是网关地址）。 */
+	providerId: string;
+	providerName?: string;
 	baseUrl?: string;
-	apiKey?: string;
-	/** true = 另发 Authorization: Bearer（只认该头的网关需要；anthropic 系常见）。 */
-	authHeader?: boolean;
-	/** 服务商模型清单（至少一个 id；空 = 服务端拒绝）。 */
-	models?: UiModelConfigEntry[];
+	/** 网关自报的已用额度（USD）；null = 网关没给这个字段。 */
+	usedUsd: number | null;
+	/** 网关自报的总额度（USD）；null = 没给，或给的是「不限额度」占位值。 */
+	limitUsd: number | null;
+	remainingUsd: number | null;
+	/** true = 网关返回的是「不限额度」占位值（NewAPI 的 1e8），此时只能显示已用。 */
+	unlimited: boolean;
+	/** 数字的统计窗口（天）；**缺省 = 网关报的是累计值**（该部署不按窗口细分）。 */
+	windowDays?: number;
+	/** 查询成功时间（ms）。 */
+	checkedAt: number;
+}
+
+/**
+ * 网关（本实例**唯一**的模型调用入口）的配置视图。
+ * @CONTRACT providerId 只是 models.json 里的存储键（回写时用），界面不把它当成「服务商」展示；
+ *   密钥正文/掩码永不下发，读取一律看 hasApiKey。models 就是网关提供的全部可选模型。
+ * @WHY 单网关接入把「服务商」降级成实现细节：用户只需要知道一个 baseUrl + 一把 Key，
+ *   不再需要在多个服务商之间选择、绑定、切换（旧渠道模型的失败模式见
+ *   docs/history/dev-con/ 与 docs/NEWAPI-GATEWAY.md §1）。
+ */
+export interface UiGatewayConfig {
+	/** models.json 里的服务商键（存储细节，界面不解释它）。 */
+	providerId: string;
+	name?: string;
+	baseUrl?: string;
+	/** 协议：openai-completions / openai-responses / anthropic-messages / google-generative-ai。 */
+	api?: string;
+	/** true = 已配置密钥（正文永不回传）。 */
+	hasApiKey: boolean;
+	/** 网关的模型清单（唯一目录来源）。 */
+	models: UiModelConfigEntry[];
+}
+
+/** 与网关指向同一地址的**其它**已配置项：重复接入，界面提示清理（不静默删除）。 */
+export interface UiGatewayDuplicate {
+	providerId: string;
+	name?: string;
+	baseUrl?: string;
+	modelCount: number;
 }
 
 /** A custom provider block in models.json (providers.<id>). */
@@ -1668,6 +1585,8 @@ export interface UiSettingsState {
 	/** 内置服务商里被用户从「管理模型」列表移除（隐藏）的 providerId。
 	 *  pi 运行时的内置注册表无法真删，这里只控制面板是否展示（UI-only）。 */
 	hiddenBuiltinProviders: string[];
+	/** 选择器里隐藏的模型（"provider/id" 或裸 id）。 */
+	hiddenModels: string[];
 	/** 当前生效的模型路由规则（设置面板可改；出厂默认见 defaultModelRouting）。 */
 	retiredModelRoutes: string[];
 	modelRouteAliases: Record<string, string>;
@@ -1808,7 +1727,7 @@ export type ServerMessage =
 				total: number;
 				request?: { input: number; output: number; total: number };
 				run?: { input: number; output: number; total: number };
-		} | null;
+			} | null;
 			assistantMessageEvent: { type: string; contentIndex?: number; delta?: string };
 	  }
 	/** A tool FINISHED executing (SDK tool_execution_end). Unlike toolResult
@@ -1907,25 +1826,41 @@ export type ServerMessage =
 	| { type: "providers_status"; providers: ProviderStatus[] }
 	/** All stored API keys per built-in provider (masked). Keyed by providerId. */
 	| { type: "provider_keys"; keys: Record<string, ProviderKeyInfo[]> }
-	/** DEV-CON 渠道状态（服务端权威，attach 时与每次变更后推送；密钥值/掩码不出现）。 */
+	/** 网关用量快照（NewAPI 一类；只读，来自网关自己的账单接口）。
+	 *  ok=false 时带 error；用量本身缺失时 ok=true 且 usedUsd=null（界面如实写「未报告」）。
+	 *  unsupported=true = 该服务商根本没有账单接口（直连上游），不是故障 —— 界面应停止重试。 */
 	| {
-			type: "channel_state";
-			/** 渠道配置版本（渠道/默认值变更时 +1）。 */
-			configRevision: number;
-			/** 全局绑定版本（任何对话绑定变更时 +1）。 */
-			bindingRevision: number;
-			channels: UiChannelInfo[];
-			instanceDefault: UiChannelSelection | null;
-			/** 当前项目的默认选择（其他项目的默认不下发）。 */
-			projectDefault: UiChannelSelection | null;
-			bindings: UiChannelBinding[];
-			pending: UiChannelPending[];
-			accounts: UiAccountStatus[];
-			/** 账户查询模板预设（一键填充到模板编辑器；用户可继续修改）。 */
-			accountPresets?: { id: string; label: string; description: string; template: Record<string, unknown> }[];
+			type: "gateway_usage";
+			reqId: number;
+			ok: boolean;
+			usage?: UiGatewayUsage;
+			error?: string;
+			unsupported?: boolean;
 	  }
+	/** 网关配置（get_gateway 的回执）：配置 + 重复接入提示 + 运行时的组合错误。
+	 *  runtimeError 非空 = SDK 拒绝了 models.json（例如某个模型的 cost 缺字段），此时
+	 *  **整个文件都不生效**、运行时里没有这个服务商 —— 界面必须显著提示，不能看起来一切正常。 */
+	| {
+			type: "gateway";
+			reqId: number;
+			ok: boolean;
+			error?: string;
+			config?: UiGatewayConfig;
+			duplicates?: UiGatewayDuplicate[];
+			runtimeError?: string;
+	  }
+	/** 网关配置保存回执（save_gateway）。失败时 error 就是原因，界面不得假装已保存。 */
+	| { type: "gateway_saved"; reqId: number; ok: boolean; error?: string; errorEn?: string }
 	/** P4 运维：诊断包（只含元数据）+ 当前告警开关与阈值。 */
-	| { type: "diagnostics"; reqId: number; ok: boolean; error?: string; bundle?: UiDiagnostics; alertsEnabled?: boolean; thresholds?: UiOpsThresholds }
+	| {
+			type: "diagnostics";
+			reqId: number;
+			ok: boolean;
+			error?: string;
+			bundle?: UiDiagnostics;
+			alertsEnabled?: boolean;
+			thresholds?: UiOpsThresholds;
+	  }
 	/** DEV-CON Jev 门禁状态（config 已清洗：只回密钥**名**，绝不回密钥值）。 */
 	| {
 			type: "jev_status";
@@ -1968,7 +1903,7 @@ export type ServerMessage =
 			reqId: number;
 			ok: boolean;
 			error?: string;
-			groupBy: "channel" | "project" | "model" | "source" | "day";
+			groupBy: "provider" | "project" | "model" | "source" | "day";
 			from: number | null;
 			to: number | null;
 			rows: {
@@ -2013,22 +1948,6 @@ export type ServerMessage =
 			/** true = 触到扫描上限，结果不完整（界面需说明）。 */
 			truncated: boolean;
 	  }
-	/** 渠道命令回执：commandId 对应请求，phase 说明最终状态。
-	 *  applied=已生效；pending=已受理待本轮结束；rejected=失败（原绑定保留）；
-	 *  conflict=版本冲突需刷新；superseded=被更新的选择取代。 */
-	| {
-			type: "channel_command_result";
-			commandId: string;
-			ok: boolean;
-			phase: "applied" | "pending" | "rejected" | "conflict" | "superseded";
-			conversationId?: string;
-			channelId?: string;
-			error?: string;
-			errorEn?: string;
-			binding?: UiChannelBinding;
-			configRevision: number;
-			bindingRevision: number;
-	  }
 	/** Result of a fetch_models probe: ok + the advertised models (id plus
 	 *  whatever metadata the endpoint provided — contextWindow / vision input /
 	 *  reasoning / name / maxTokens — same shape as models.json rows), or an
@@ -2038,18 +1957,6 @@ export type ServerMessage =
 			reqId: number;
 			ok: boolean;
 			models?: UiModelConfigEntry[];
-			error?: string;
-	  }
-	/** Result of fetch_channel_models: the endpoint's model entries + the baseUrl
-	 *  actually probed (echoed so the user can verify which address answered). */
-	| {
-			type: "channel_models_result";
-			reqId: number;
-			/** 回显请求的服务商：用户可能在等结果时换了服务商，前端据此丢弃过期结果。 */
-			providerId: string;
-			ok: boolean;
-			models?: UiModelConfigEntry[];
-			baseUrl?: string;
 			error?: string;
 	  }
 	/** Result of refresh_provider_models: merged into the saved entry; added =
