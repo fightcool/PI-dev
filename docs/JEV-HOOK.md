@@ -39,6 +39,21 @@ PI_CODING_AGENT_DIR=/home/dev/.local/share/pi-dev/agent node scripts/install-jev
 | `<agentDir>/extensions/jev-gate-<hash>.ts`               | 入口 shim：`export { default } from "../hooks/jev-gate-<hash>/index.ts"`（**相对**路径 + 内容哈希；改名才能让宿主缓存失效） |
 | `<agentDir>/hooks/jev-gate-<hash>/`（不再写 `app.json`） | 扩展本体（`index.ts` / `command.mjs` / `gate.mjs` / `state.mjs`），随 `.managed-by` 标记一起由本安装器管理                  |
 
+### 破坏性接口变更（2026-09-21，已由仓库主人 override 门禁确认有意为之）
+
+这一版**主动删掉了两处接口**，不是顺手清理，是设计纠正的一部分：
+
+| 变更 | 类型 | 为什么删 / 替代物 |
+| --- | --- | --- |
+| `<agentDir>/hooks/jev-gate-<hash>/app.json`（及 trim 同款） | **删除产物**（本文件上一版曾把它写成安装布局的一部分） | 它唯一的存在理由是支撑「退到别的 checkout」，而旧版本不该被咨询（见下 ③）。删除后 CLI 只认运行中宿主自己的代码；**旧副本里的 `app.json` 会随内容哈希变更被当旧版本清掉，升级无需手工清理** |
+| `resolveAppCandidates()` / `firstSuccessful()` / `preferredApp`（`extensions/jev-trim/app.mjs`、`ask.mjs` 导出） | **删除导出** | 那是「候选列表 + 逐个尝试 + 记住成功的那个」的实现，替代物是单一确定性解析 `resolveApp()`；留着就是死代码，且会诱导别人再写回自愈逻辑 |
+| `resolveApp(cwd, env, recordPath)` → `resolveApp(cwd, env, hostEntry)`（`extensions/jev-gate/gate.mjs`） | **第三参数含义变更** | `recordPath` 是「读 app.json 的路径」，`hostEntry` 是「宿主入口脚本路径」。两者语义不同、不可混用，所以**故意不留兼容重载**：把 `recordPath` 当 `hostEntry` 传会解析失败并**告警放行**（可见），不会静默跑到别的副本上 |
+| `resolveApp(env, hostEntry)` → `resolveApp(env, hostEntry, cwd)`（`extensions/jev-trim/app.mjs`） | **新增可选参数** | 第三档 cwd 降级需要它 |
+
+> 这些符号只被**同体副本 + 单测**消费（扩展本体随安装内容寻址复制进 `<agentDir>/hooks/<name>-<hash>/`，
+> 不存在跨版本消费者），所以没有弃用期；但按「文档即接口」的口径这仍是破坏性变更，
+> CI 门禁 `change_preserves_public_api=0.09` 判的就是它 —— 判定正确，此处留档为人工确认的依据。
+
 ### 发布切换会自动同步扩展本体
 
 扩展只认运行中宿主自己的代码，所以**发布一换、本体必须跟着换**（否则就是「新内核 + 旧本体」）。
