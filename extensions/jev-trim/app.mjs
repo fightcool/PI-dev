@@ -52,11 +52,15 @@ export function resolveAppCandidates(
     if (!candidates.includes(abs)) candidates.push(abs);
   };
   push(env.JEV_GATE_APP);
+  // 顺序：env → **安装时记录的 checkout** → 会话 cwd → 本体自带。
+  // @WHY 为什么记录排在 cwd 前面：记录的那个就是**本体所在的那份 checkout**，协议/子命令与本体同版本；
+  //   而会话 cwd 里的 checkout 可能是别人的工作副本（实测就吃过：那份还没有 `ask` 子命令 → 每次判定
+  //   先白跑 2.4s 才失败）。记录路径不存在时 `push` 会直接跳过，所以「优先」不会付代价。
+  push(readRecordedApp(recordPath));
   for (let dir = cwd ? resolve(cwd) : null; dir; dir = dirname(dir)) {
     push(join(dir, "vendor", "pi-web-ui"));
     if (dirname(dir) === dir) break;
   }
-  push(readRecordedApp(recordPath));
   push(resolve(SELF_ROOT, "vendor", "pi-web-ui"));
   return candidates;
 }

@@ -247,6 +247,16 @@ test("app 候选：按优先级去重列出全部，entry 选择随 checkout 内
     [other, app],
     "env 指定的 app 排最前，其次 cwd",
   );
+  // 有安装记录时它**优先于 cwd**（版本与本体一致，避免拿到别人的旧副本 —— 实测吃过这个亏）。
+  const recordPath = join(cwd, "app.json");
+  writeFileSync(recordPath, JSON.stringify({ app: other }));
+  assert.deepEqual(
+    resolveAppCandidates(cwd, {}, recordPath).slice(0, 2),
+    [other, app],
+  );
+  // 记录指向已删除的 checkout → 直接跳过，不付代价。
+  writeFileSync(recordPath, JSON.stringify({ app: "/gone" }));
+  assert.equal(resolveAppCandidates(cwd, {}, recordPath)[0], app);
   const envMissing = resolveAppCandidates(
     cwd,
     { JEV_GATE_APP: "/nope" },
