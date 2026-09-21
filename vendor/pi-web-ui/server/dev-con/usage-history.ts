@@ -5,7 +5,7 @@
  *              @PERF=performance @CONTRACT=interface contract 📖=dev doc reference
  *
  * Breadcrumbs (changing this affects):
- *   @COUPLED channel-service.ts / channel-state.ts（同目录的实例私有元数据），
+ *   @COUPLED usage-history 的读方：../ops-diagnostics.ts（诊断包只含元数据）,
  *            protocol.ts（usage_history_query / usage_history 的载荷），
  *            ../agent-service.ts（recordUsage → append；queryUsageHistory → query）
  *   📖 docs/DEV-CON-PROPOSAL.md §7（逐请求记录字段）与 §8 P4 首个切片（跨渠道/项目/时间历史）
@@ -41,12 +41,8 @@ export interface UsageHistoryRecord {
 	conversationId: string | null;
 	cwd: string | null;
 	source: string;
-	channelId: string | null;
-	credentialKeyName: string | null;
 	providerId: string;
 	modelId: string;
-	bindingRevision: number | null;
-	configRevision: number | null;
 	input: number;
 	output: number;
 	cacheRead: number;
@@ -63,7 +59,7 @@ export interface UsageHistoryRecord {
 	failureReason?: string;
 }
 
-export type UsageHistoryGroup = "channel" | "project" | "model" | "source" | "day";
+export type UsageHistoryGroup = "provider" | "project" | "model" | "source" | "day";
 
 export interface UsageHistoryQuery {
 	/** 时间窗（含端点，ms）；省略表示不限。 */
@@ -73,7 +69,7 @@ export interface UsageHistoryQuery {
 }
 
 export interface UsageHistoryRow {
-	/** 分组键：channelId / cwd / "provider/model" / source / YYYY-MM-DD(UTC)；无归属用 "unattributed"。 */
+	/** 分组键：providerId / cwd / "provider/model" / source / YYYY-MM-DD(UTC)；无归属用 "unattributed"。 */
 	key: string;
 	requests: number;
 	input: number;
@@ -162,8 +158,8 @@ function addTo(row: UsageHistoryRow, record: UsageHistoryRecord): void {
 /** 分组键：只用记录里已有的引用，缺失即 "unattributed"（绝不按今天的配置推断）。 */
 export function groupKeyOf(record: UsageHistoryRecord, groupBy: UsageHistoryGroup): string {
 	switch (groupBy) {
-		case "channel":
-			return record.channelId ?? UNATTRIBUTED;
+		case "provider":
+			return record.providerId || UNATTRIBUTED;
 		case "project":
 			return record.cwd ?? UNATTRIBUTED;
 		case "model":

@@ -6,39 +6,13 @@
  *   ⚠️ 报错原文里的 request id 是噪音：解析必须能容忍 JSON 后面追加的尾巴，否则真实报错会退化成原文。
  */
 import { describe, expect, it } from "vitest";
-import { channelErrorView, channelOfError, upstreamErrorFacts } from "../../web/src/error-hint.js";
-import type { UiChannelInfo } from "../../web/src/types.js";
+import { upstreamErrorFacts, upstreamErrorView } from "../../web/src/error-hint.js";
 
 /** 真实报错原文（实测自 www.cctq.ai 的 new-api 网关，request id 已替换为占位）。 */
 const CCTQ_QUOTA_ERROR =
 	'OpenAI API error (403): {"message":"用户额度不足, 剩余额度: ¥-0.013362 (request id: 202609121538353343706438268d9d6vAofL5Y9)","type":"new_api_error","param":"","code":"insufficient_user_quota"}';
 
-function channel(over: Partial<UiChannelInfo> & { id: string }): UiChannelInfo {
-	return {
-		displayName: over.id,
-		providerId: "cctq",
-		endpointId: "default",
-		credentialRef: null,
-		accountRef: null,
-		enabled: true,
-		models: [],
-		keys: [],
-		keyMissing: false,
-		providerMissing: false,
-		...over,
-	};
-}
 
-const CHANNELS: UiChannelInfo[] = [
-	channel({ id: "ch-cctq", displayName: "CCTQ 网关", providerId: "cctq" }),
-	channel({
-		id: "ch-1",
-		displayName: "CCCQclaude",
-		providerId: "CCQTCC",
-		models: ["claude-opus-5"],
-		account: { kind: "openai-gateway", topupUrl: "https://www.cctq.ai/console/topup" },
-	}),
-];
 
 describe("上游报错识别", () => {
 	it("认出网关的用户额度不足，并取出网关自报的剩余额度", () => {
@@ -74,55 +48,31 @@ describe("上游报错识别", () => {
 	});
 });
 
-describe("报错属于哪个渠道", () => {
-	it("服务商唯一匹配时给出渠道", () => {
-		expect(channelOfError({ provider: "cctq", channels: CHANNELS })?.displayName).toBe("CCTQ 网关");
-	});
-
-	it("绑定优先：同服务商有多个渠道时按当前对话绑定取", () => {
-		const both = [channel({ id: "ch-a", displayName: "A" }), channel({ id: "ch-b", displayName: "B" })];
-		expect(channelOfError({ provider: "cctq", channels: both, boundChannelId: "ch-b" })?.displayName).toBe("B");
-		// 没有绑定 → 多义不猜（宁可退回 providerId，也不显示错的渠道名）
-		expect(channelOfError({ provider: "cctq", channels: both })).toBeNull();
-	});
-
-	it("同服务商多渠道时用模型白名单消歧", () => {
-		const a = channel({ id: "ch-a", displayName: "A", models: ["gpt-6-astra"] });
-		const b = channel({ id: "ch-b", displayName: "B", models: ["gpt-5.6-sol"] });
-		expect(channelOfError({ provider: "cctq", modelId: "gpt-5.6-sol", channels: [a, b] })?.displayName).toBe("B");
-	});
-
-	it("没有服务商信息（非模型调用报错）时不指派渠道", () => {
-		expect(channelOfError({ provider: null, channels: CHANNELS })).toBeNull();
-	});
-});
-
-describe("报错卡视图", () => {
-	it("CCTQ 实测那条：渠道名 + 模型 + 剩余额度 + 充值页一站齐", () => {
-		const view = channelErrorView({
+describe("报错卡视图（服务商 + 模型 + 人话原因）", () => {
+	it("CCTQ 实测那条：认得类别、带上剩余额度与服务商/模型", () => {
+		const view = upstreamErrorView({
 			errorMessage: CCTQ_QUOTA_ERROR,
 			provider: "cctq",
 			modelId: "gpt-6-astra",
-			channels: CHANNELS,
-			boundChannelId: "ch-cctq",
 		});
 		expect(view).toMatchObject({
 			kind: "quota",
-			channelName: "CCTQ 网关",
 			providerId: "cctq",
 			modelId: "gpt-6-astra",
 			remaining: "¥-0.013362",
 		});
 	});
 
-	it("换到 CCCQclaude 的模型不会串到另一个渠道（本次误判的根因）", () => {
-		const view = channelErrorView({
-			errorMessage: CCTQ_QUOTA_ERROR,
-			provider: "CCQTCC",
-			modelId: "claude-opus-5",
-			channels: CHANNELS,
-		});
-		expect(view.channelName).toBe("CCCQclaude");
-		expect(view.topupUrl).toBe("https://www.cctq.ai/console/topup");
+	it("认不出的报错：kind=null，调用方按原文显示（不编造原因）", () => {
+		const view = upstreamErrorView({ errorMessage: "fetch failed", provider: "newapi", modelId: "deepseek-flash" });
+		expect(view.kind).toBeNull();
+		expect(view.providerId).toBe("newapi");
+		expect(view.modelId).toBe("deepseek-flash");
+	});
+
+	it("没有服务商/模型信息时两个字段都是 null（不指派、不猜）", () => {
+		const view = upstreamErrorView({ errorMessage: CCTQ_QUOTA_ERROR });
+		expect(view.providerId).toBeNull();
+		expect(view.modelId).toBeNull();
 	});
 });

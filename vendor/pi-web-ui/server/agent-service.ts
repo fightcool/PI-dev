@@ -23,8 +23,6 @@ import { delimiter, dirname, join, resolve, sep } from "node:path";
 // @ts-expect-error Host runtime module is JavaScript by design.
 import { isFailedStopReason, normalizeUsageEvent, TokenUsageTracker } from "#usage";
 import { PROTOCOL_VERSION } from "./protocol-version.js";
-import { ChannelService } from "./dev-con/channel-service.js";
-import { AccountRegistry } from "./dev-con/channel-accounts.js";
 import { JevGate, type JevDecision } from "./dev-con/jev-gate.js";
 import { jevCachePath } from "./dev-con/jev-cache.js";
 import { jevSamplesPath } from "./dev-con/jev-samples.js";
@@ -37,17 +35,16 @@ import {
 	redactJevGateConfigForEcho,
 } from "./dev-con/jev-model.js";
 import { loadJevSettings, saveJevSettings } from "./dev-con/jev-settings.js";
-import type { ChannelRecord, RequestBindingSnapshot } from "./dev-con/channel-model.js";
-import type { ChannelServiceHost } from "./dev-con/channel-service.js";
 import { UsageHistoryStore, type UsageHistoryRecord } from "./dev-con/usage-history.js";
 import { collectResources } from "./dev-con/system-resources.js";
-import { setProviderBaseUrlLookup } from "./dev-con/channel-accounts.js";
 import { modelCatalogStale, modelConfigStamp, modelsConfigPathOf } from "./model-catalog-freshness.js";
 import { measureAreas } from "./dev-con/storage-usage.js";
 import { buildDiagnostics, usageSummaryOf } from "./dev-con/ops-diagnostics.js";
 import { capabilityFixHint, runCapabilityProbe, type CapabilityVerdict } from "./dev-con/endpoint-capability.js";
 import { evaluateAlerts, ALERT_COOLDOWN_MS, ALERT_CRITICAL_PERCENT, ALERT_WARN_PERCENT, type OpsAlert } from "./dev-con/ops-alerts.js";
-import { evaluateChannelFailureAlerts, CHANNEL_FAILURE_WINDOW_MS, type ChannelFailureAlert, type FailureSample } from "./dev-con/channel-failure-alert.js";
+import { GatewayUsageService } from "./dev-con/gateway-usage.js";
+import { filterCatalogToProviders } from "./dev-con/gateway-config.js";
+import { evaluateFailureAlerts, FAILURE_WINDOW_MS, type FailureAlert, type FailureSample } from "./dev-con/failure-alert.js";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
@@ -136,7 +133,6 @@ import {
 } from "./prompt-composer.js";
 import type {
 	BgServer,
-	ChannelProviderInput,
 	ClientMessage,
 	CommandDef,
 	ConversationSummary,
@@ -145,8 +141,8 @@ import type {
 	QuestionAnswer,
 	ServerMessage,
 	SessionSummary,
-	UiChannelBindingView,
 	UiMessage,
+	UiModelConfigEntry,
 	UiQuestion,
 	UiState,
 	UiSubagentTemplate,
@@ -745,7 +741,7 @@ export interface Conversation {
 	 * 请求发出时固定的渠道/凭据/模型与绑定版本（§7）：在 Agent.getApiKey 被调用
 	 * （= SDK 每次 provider 请求前）时写入，使晚到的用量结果仍归属到当时的绑定。
 	 */
-	lastRequestBinding: RequestBindingSnapshot | null;
+	lastRequestBinding: { providerId: string; modelId: string | null } | null;
 	/** 最近一条已写入用量历史记录的 id（避免同一记录重复落盘）。 */
 	lastPersistedUsageId: string | null;
 	/** 压缩前的会话统计基线：压缩摘要的 token 用会话统计差值归属为 source=compaction。 */
@@ -1742,6 +1738,9 @@ export class ClientSession {
 			flushSnapshot: () => this.flushSnapshot(),
 			isDisposed: () => this.disposed,
 			modelRuntime: () => this.runtime.services.modelRuntime,
+			// 「谁是网关」的第一优先级：正在被调用的那个入口最没有歧义
+			// （见 dev-con/gateway-config.ts 的 resolveGatewayProviderId）。
+			activeProvider: () => this.session.agent.state.model?.provider ?? null,
 			invalidatePiConfig: () => {
 				this.piCheckCache = null;
 			},
@@ -1755,15 +1754,20 @@ export class ClientSession {
 		// Prune dead background tasks every 30s (only spawns netstat/lsof while
 		// the list is non-empty). unref: must not keep the process alive.
 		this.bg.start();
-		// P4 运维：资源与渠道失败告警周期检查（默认 60 秒，见 OPS_ALERT_CHECK_MS；
-		// unref 不阻止退出；开关与冷却见 checkResourceAlerts / checkChannelFailureAlerts）。
+		// P4 运维：资源与网关失败告警周期检查（默认 60 秒，见 OPS_ALERT_CHECK_MS；
+		// unref 不阻止退出；开关与冷却见 checkResourceAlerts / checkFailureAlerts）。
 		this.alertTimer = setInterval(() => {
 			this.checkResourceAlerts();
-			this.checkChannelFailureAlerts();
+			this.checkFailureAlerts();
 		}, OPS_ALERT_CHECK_MS);
 		this.alertTimer.unref?.();
-		this.accounts = new AccountRegistry();
-		this.channels = new ChannelService(this.makeChannelHost(agentDir), this.accounts);
+		// 网关用量（NewAPI 一类）：只读网关自己的账单接口，地址/密钥都用**本会话** runtime 解析。
+		this.gatewayUsage = new GatewayUsageService({
+			providerBaseUrl: (providerId) => this.providerBaseUrlOf(providerId),
+			providerName: (providerId) => this.providerNameOf(providerId),
+			resolveProviderKey: (providerId) => this.resolveProviderKey(providerId),
+			providerIds: () => this.providerIds(),
+		});
 		// Jev 门禁：配置在装配时读一次（损坏则回落默认值 + parseError，不阻塞启动）；
 		// cachePath = 磁盘持久决策缓存（派生、可丢：删了只损失一次调用费用，见 jev-cache.ts）。
 		// samplesPath = 真实调用后的样本（被审内容截断落盘，供一周后复盘校准，见 jev-samples.ts）。
@@ -1773,14 +1777,6 @@ export class ClientSession {
 			samplesPath: jevSamplesPath(agentDir),
 		});
 		this.usageHistory = new UsageHistoryStore(join(agentDir, "dev-con", "usage-history.jsonl"));
-		// 模板里的 {baseUrl} 取自运行时模型目录（服务商 baseUrl 由 models.json 拥有）。
-		setProviderBaseUrlLookup((providerId) => {
-			try {
-				return this.runtime.services.modelRuntime.getProviders().find((p) => p.id === providerId)?.baseUrl;
-			} catch {
-				return undefined;
-			}
-		});
 	}
 
 	static async create(
@@ -2071,35 +2067,26 @@ export class ClientSession {
 
 	/** Wrap a fresh runtime as a new conversation record. */
 	private makeConversation(runtime: AgentSessionRuntime, id: string, terminals: TerminalManager): Conversation {
-		// DEV-CON 凭据隔离（P0）：SDK 在每次请求前调用 Agent.getApiKey(provider)
-		// （pi-agent-core agent-loop.js:191），显式返回值优先于 auth.json / runtime
-		// override（pi-ai auth/resolve.js:33）。这里按「对话绑定」返回命名凭据正文，
-		// 从而让两个对话用同一服务商的不同 key 而互不改写全局 auth.json。
-		// 未绑定时返回 undefined → 完全保留原有全局解析行为。
+		// 这里只挂一个观测钩子，**不返回自定义密钥**：凭据完全交给 SDK 的全局解析
+		// （auth.json / runtime override / 环境变量），与本项目只对接单一网关的定位一致。
+		// 钩子的用处是拿到「本次真正要调用的 provider + 当下模型」：
+		//   - 用量归属（§7）：晚到的用量按请求发出时的实际服务商/模型记录；
+		//   - 端点工具能力探测：网关静默丢弃 tools 时要告警一次（见 checkToolCapability）。
 		runtime.session.agent.getApiKey = (provider: string) => {
 			try {
-				const key = this.channels.credentialFor(id, provider);
-				// §7：请求发出时固定渠道/凭据/模型与绑定版本（晚到的用量按此归属）。
-				// @CONTRACT 只有「绑定的服务商 == 本次真正要调用的服务商」时这份快照才描述这次请求：
-				//   模型被渠道以外的路径换掉后（绑定还挂在 ch-3/uu-api 上，实际在调 deepseek），
-				//   继续用它归属会把 deepseek 的请求记到 UU apiClaude 名下（同一把 key 也不会被借用，
-				//   见 credentialFor 的服务商校验）—— 那就成了用量表里的假归属。这里宁可记「未归属」。
+				const model = runtime.session.agent.state.model;
+				const modelRef = model ? `${model.provider}/${model.id}` : null;
 				const conv = this.convs.get(id);
-				const snapshot = this.channels.bindingSnapshotFor(id);
-				const binding = snapshot && snapshot.providerId === provider ? snapshot : null;
-				if (conv && !binding && snapshot) {
-					console.warn(
-						`[channel] 绑定与实际请求不符：绑定 ${snapshot.channelId}(${snapshot.providerId ?? "?"})，实际服务商 ${provider} → 本次用量记未归属`,
-					);
+				if (conv) conv.lastRequestBinding = { providerId: provider, modelId: modelRef };
+				if (modelRef) {
+					void this.resolveProviderKey(provider)
+						.then((key) => this.ensureToolCapability(provider, modelRef, key ?? undefined))
+						.catch(() => undefined);
 				}
-				if (conv) conv.lastRequestBinding = binding;
-				// 渠道端点工具能力探测：只对**绑定了渠道**的请求做（未绑定 = 走全局 active key，
-				// 不属于渠道管理范围）。后台执行、有界超时、按端点缓存，不阻塞也不抛出。
-				if (binding?.channelId) this.ensureChannelToolCapability(binding.channelId, provider, binding.modelId, key);
-				return key;
 			} catch {
-				return undefined;
+				/* 观测失败绝不影响真实请求 */
 			}
+			return undefined;
 		};
 		return {
 			id,
@@ -2194,9 +2181,6 @@ export class ClientSession {
 		// Reconnect: push the built-in provider key list (multi-key grouping in the
 		// model picker needs it even before the client asks).
 		this.modelAdmin.listProviderKeys();
-		// Reconnect：推送渠道状态（渠道列表/默认值/本对话绑定），否则重连后
-		// 底栏只能显示快照里的那一个绑定。
-		this.pushChannelState();
 		// PTYs are conversation-owned and survive a socket reconnect.
 		this.pushTerminals();
 	}
@@ -2485,11 +2469,10 @@ export class ClientSession {
 	}
 
 	/**
-	 * 告警主体：优先渠道绑定，没有绑定时回落到服务商（provider 总是记录得到）。
-	 * 两者都没有才返回 null → 该样本不参与告警。
+	 * 告警主体：服务商（`provider:<id>`）。取不到具体服务商时返回 null → 该样本不参与告警。
+	 * @WHY 渠道级主体已随「渠道」概念一起移除：现在凭据与用量归属都只到服务商/模型这一层。
 	 */
 	private static failureSubjectKey(record: UsageHistoryRecord): string | null {
-		if (record.channelId) return `channel:${record.channelId}`;
 		if (record.providerId && record.providerId !== "unknown") return `provider:${record.providerId}`;
 		return null;
 	}
@@ -2524,21 +2507,6 @@ export class ClientSession {
 	 * @WHY 落定依赖「会话真的空闲」：`agent_end` 时 isStreaming 仍可能为 true，
 	 *      而 `agent_settled` 之后工具/排队消息也可能紧接着再来一轮；用有限重试覆盖这两种时序，
 	 *      超过上限就停（下一次事件仍会再试），不做无限轮询。
-	 * @MAGIC 5 次 × 700ms ≈ 3.5s 的窗口。
-	 */
-	private settlePendingChannelSwitch(conv: Conversation, attempt = 0): void {
-		const timer = setTimeout(() => {
-			if (this.disposed) return;
-			void this.channels
-				.onConversationSettled(conv.id)
-				.then(() => {
-					if (this.channels.pendingSelectionFor(conv.id) && attempt < 5) this.settlePendingChannelSwitch(conv, attempt + 1);
-				})
-				.catch(() => undefined);
-		}, attempt === 0 ? 50 : 700);
-		timer.unref?.();
-	}
-
 	/**
 	 * P4 运维：资源告警（磁盘/内存/unit 内存越线提示一次，冷却 1 小时）。
 	 * 由 ClientSession 的周期定时器调用；同一实例的多个客户端共享模块级冷却表，
@@ -2565,14 +2533,14 @@ export class ClientSession {
 	}
 
 	/**
-	 * P4 运维：渠道失败告警。网关搞流（stream 半途断开）时请求照旧计费输入 token、
+	 * P4 运维：网关失败告警。网关搞流（stream 半途断开）时请求照旧计费输入 token、
 	 * 产出为空：钱一直在烧，但「请求数/费用」看上去完全正常，所以必须单独报。
-	 * 阈值/冷却见 channel-failure-alert.ts；用户主动中止不计入（那是有意为之）。
+	 * 阈值/冷却见 failure-alert.ts；用户主动中止不计入（那是有意为之）。
 	 */
-	checkChannelFailureAlerts(): void {
+	checkFailureAlerts(): void {
 		if (!this.opsAlertsEnabled()) return;
 		try {
-			const alerts = evaluateChannelFailureAlerts({
+			const alerts = evaluateFailureAlerts({
 				samples: ClientSession.failureSamples,
 				lastFired: Object.fromEntries(ClientSession.alertLastFired),
 				now: Date.now(),
@@ -2583,33 +2551,29 @@ export class ClientSession {
 			this.emit({
 				type: "notice",
 				level: "warning",
-				text: alerts.map((a) => this.channelFailureText(a)).join("；"),
-				textEn: alerts.map((a) => this.channelFailureTextEn(a)).join("; "),
+				text: alerts.map((a) => this.failureAlertText(a)).join("；"),
+				textEn: alerts.map((a) => this.failureAlertTextEn(a)).join("; "),
 			});
 		} catch {
 			/* 告警检查失败绝不影响服务 */
 		}
 	}
 
-	private channelFailureText(alert: ChannelFailureAlert): string {
-		const minutes = Math.round(CHANNEL_FAILURE_WINDOW_MS / 60_000);
+	private failureAlertText(alert: FailureAlert): string {
+		const minutes = Math.round(FAILURE_WINDOW_MS / 60_000);
 		return `${this.failureSubjectLabel(alert)} 近 ${minutes} 分钟 ${alert.requests} 次请求中 ${alert.failed} 次失败（${Math.round(alert.rate * 100)}%），白烧约 ${alert.wastedInput} 输入 token`;
 	}
 
-	private channelFailureTextEn(alert: ChannelFailureAlert): string {
-		const minutes = Math.round(CHANNEL_FAILURE_WINDOW_MS / 60_000);
+	private failureAlertTextEn(alert: FailureAlert): string {
+		const minutes = Math.round(FAILURE_WINDOW_MS / 60_000);
 		return `${this.failureSubjectLabel(alert)}: ${alert.failed} of ${alert.requests} requests failed in the last ${minutes} min (${Math.round(alert.rate * 100)}%), wasting ~${alert.wastedInput} input tokens`;
 	}
 
-	/** 告警文案里的主体名：渠道用展示名，服务商回落用其注册名（都取不到就用 id）。 */
-	private failureSubjectLabel(alert: ChannelFailureAlert): string {
+	/** 告警文案里的主体名：服务商注册名（取不到就用 id）。 */
+	private failureSubjectLabel(alert: FailureAlert): string {
 		const [kind, id] = alert.subjectKey.split(":", 2);
-		if (kind === "channel") return this.channels.channelDisplayName(id) ?? alert.subjectLabel;
-		try {
-			return this.runtime.services.modelRuntime.getProviders().find((p) => p.id === id)?.name ?? alert.subjectLabel;
-		} catch {
-			return alert.subjectLabel;
-		}
+		if (kind !== "provider") return alert.subjectLabel;
+		return this.providerNameOf(id) ?? alert.subjectLabel;
 	}
 
 	private alertText(alert: OpsAlert): string {
@@ -2705,11 +2669,10 @@ export class ClientSession {
 			const areas = measureAreas([
 				{ path: join(this.stateStore.dataDir, "uploads"), label: "uploads", note: "uploads-cleanable" },
 				{ path: join(this.agentDir, "sessions"), label: "sessions", note: "sessions-user-data" },
-				{ path: join(this.agentDir, "dev-con"), label: "channel-metadata", note: "channel-metadata-user-data" },
+				{ path: join(this.agentDir, "dev-con"), label: "usage-and-jev-metadata", note: "dev-con-metadata-user-data" },
 			]);
 			const usageFull = this.usageHistory.query({ groupBy: "source" });
-			const usageByChannel = this.usageHistory.query({ groupBy: "channel" });
-			const channels = this.channels.stateMessage();
+			const usageByProvider = this.usageHistory.query({ groupBy: "provider" });
 			const bundle = buildDiagnostics({
 				now: Date.now(),
 				app: { node: process.version, pid: process.pid, uptimeSec: Math.round(process.uptime()), engine: ClientSession.ENGINE, protocolVersion: PROTOCOL_VERSION },
@@ -2731,16 +2694,10 @@ export class ClientSession {
 					totalBytes: areas.reduce((sum, area) => sum + area.bytes, 0),
 					retention: { ...this.usageHistory.readSettings(), fileBytes: this.usageHistory.fileBytes(), choices: [0, 7, 30, 90, 365] },
 				},
-				channels: {
-					configRevision: channels.configRevision,
-					count: channels.channels.length,
-					enabledCount: channels.channels.filter((c) => c.enabled).length,
-					bindings: channels.bindings.length,
-					pending: channels.pending.length,
-					accounts: channels.accounts.length,
-					brokenRefs: channels.channels.filter((c) => c.keyMissing || c.providerMissing).length,
+				providers: {
+					count: this.providerIds().length,
 				},
-				usage: { ...usageSummaryOf(usageFull), byChannel: usageSummaryOf(usageByChannel).byChannel },
+				usage: { ...usageSummaryOf(usageFull), byProvider: usageSummaryOf(usageByProvider).byProvider },
 				environment: { platform: process.platform, cpuCount: resources.host.cpuCount, totalMemBytes: resources.host.mem.totalBytes },
 				warnings: [...resources.warnings, ...areas.filter((a) => a.truncated).map((a) => `storage:${a.label} 已达遍历上限`)],
 			});
@@ -2769,7 +2726,7 @@ export class ClientSession {
 				{ path: join(this.agentDir, "sessions"), label: "sessions", note: "sessions-user-data" },
 				{ path: join(this.stateStore.dataDir, "subagent-archive"), label: "subagent-archive", note: "sessions-user-data" },
 				{ path: retentionPath, label: "usage-history", note: "usage-history-cleanable" },
-				{ path: join(this.agentDir, "dev-con"), label: "channel-metadata", note: "channel-metadata-user-data" },
+				{ path: join(this.agentDir, "dev-con"), label: "dev-con-metadata", note: "dev-con-metadata-user-data" },
 				{ path: join(this.stateStore.dataDir, "plugins"), label: "plugin-data", note: "plugin-data-user-data" },
 			]);
 			const settings = this.usageHistory.readSettings();
@@ -2805,7 +2762,7 @@ export class ClientSession {
 	/** P4：只读用量历史聚合（按渠道/项目/模型/来源/天）。 */
 	async queryUsageHistory(
 		reqId: number,
-		query: { groupBy: "channel" | "project" | "model" | "source" | "day"; from?: number; to?: number },
+		query: { groupBy: "provider" | "project" | "model" | "source" | "day"; from?: number; to?: number },
 	): Promise<void> {
 		try {
 			const result = this.usageHistory.query({ groupBy: query.groupBy, from: query.from, to: query.to });
@@ -2895,8 +2852,8 @@ export class ClientSession {
 	}
 
 	/**
-	 * 由「请求时绑定」生成归属字段。modelId 取裸模型 id（与消息事件里的
-	 * message.model 同名），保证旁路/压缩与普通请求在归属表里同一行可合并。
+	 * 由「请求时归属」（getApiKey 钩子记下的服务商 + 当下模型）生成归属字段。modelId 取裸模型 id
+	 * （与消息事件里的 message.model 同名），保证旁路/压缩与普通请求在归属表里同一行可合并。
 	 */
 	private bindingAttribution(conv: Conversation, source: string): Record<string, unknown> {
 		const binding = conv.lastRequestBinding;
@@ -2906,12 +2863,8 @@ export class ClientSession {
 			source,
 			conversationId: conv.id,
 			cwd: conv.cwd,
-			channelId: binding?.channelId,
-			credentialKeyName: binding?.credentialKeyName,
 			providerId: binding?.providerId,
 			modelId: slash > 0 ? ref.slice(slash + 1) : ref || undefined,
-			bindingRevision: binding?.bindingRevision,
-			configRevision: binding?.configRevision,
 		};
 	}
 
@@ -2946,12 +2899,8 @@ export class ClientSession {
 				source: this.usageSource(conv),
 				conversationId: conv.id,
 				cwd: conv.cwd,
-				channelId: binding?.channelId,
-				credentialKeyName: binding?.credentialKeyName,
 				modelId: binding?.modelId,
 				providerId: binding?.providerId,
-				bindingRevision: binding?.bindingRevision,
-				configRevision: binding?.configRevision,
 			});
 		}
 		// Any SDK event proves the run is alive — feeds the stall watchdog below.
@@ -2960,11 +2909,6 @@ export class ClientSession {
 		switch (event.type) {
 			case "agent_settled":
 				this.maintenance.schedule();
-				// @BUGFIX 2026-09-11（真实验收发现）：agent_end 触发时 `isStreaming` 仍为 true
-				// （SDK 注释：agent 只有在 agent_end 的监听器结束后才真正空闲），于是待生效的渠道
-				// 选择在 onConversationSettled 的 busy 判定里被直接丢弃、永不应用。
-				// agent_settled 是 SDK 真正的空闲边界（`_isAgentRunActive=false` 后才发），在这里落定。
-				void this.settlePendingChannelSwitch(conv);
 				break;
 			case "bash_execution_update": {
 				if (event.id) {
@@ -3173,10 +3117,7 @@ export class ClientSession {
 					// 结束信号丢失等），清掉，否则横幅会卡住不消失。
 					conv.retryState = null;
 				}
-				// DEV-CON 切换时点：本轮真正结束（不会自动重试）才应用待生效选择，
-				// 在途请求与工具已按原绑定跑完（docs/DEV-CON-PROPOSAL.md §5）。
-				// 此时 isStreaming 可能仍为 true，因此这里只做「带重试的尝试」，真正落定靠 agent_settled。
-				if (!event.willRetry) void this.settlePendingChannelSwitch(conv);
+				// 本轮结束后没有后续重试，无需额外动作（模型切换已随 set_model 走 SDK 自己的边界）。
 				// 轨迹事件：本轮结束（放最前——aborted 中断路径也会 break，
 				// 轨迹里必须留下「已停止」而不是凭空消失）。
 				try {
@@ -3459,12 +3400,6 @@ export class ClientSession {
 		const conv = this.conv;
 		const state = conv.session.agent.state;
 		const model = state.model;
-		// 绑定对账（§4）：绑定里的 modelId 是「选择那一刻」的快照，而模型还能被渠道以外的
-		// 路径换掉（channel_state 到达前的 set_model / cycle_model / 项目默认模型 / 扩展）。
-		// 这里在构造快照前对齐一次：不再覆盖当下模型的绑定会被清掉并广播新状态（幂等，
-		// 没漂移时什么也不写）。不对齐的话切换器会把旧渠道标成「正在使用」、用量会记到
-		// 旧渠道名下 —— 用户看到的「用 deepseek 却显示 UU apiClaude」就是这么来的。
-		this.channels.reconcileBinding(this.activeId, model ? `${model.provider}/${model.id}` : null);
 		const loadContextPolicy = this.contextPolicyLoader();
 		let stats: UiState["stats"] = {
 			totalMessages: 0,
@@ -3553,8 +3488,6 @@ export class ClientSession {
 			version: ++this.version,
 			piConfigured: this.isPiConfigured(),
 			piAgentInstalled: this.isPiCliInstalled(),
-			// DEV-CON：当前对话的有效/待生效渠道绑定（无渠道时 null）。
-			channelBinding: this.channels.bindingViewMessage(this.activeId),
 			stats,
 		};
 	}
@@ -4034,12 +3967,10 @@ export class ClientSession {
 	/** 模型/服务商配置管理 —— 自包含模块，见 model-admin.ts。 */
 	private readonly modelAdmin!: ModelAdminService;
 	/**
-	 * DEV-CON 渠道服务（渠道档案 / 对话绑定 / 组合切换 / 账户查询）。
-	 * 见 docs/DEV-CON-PROPOSAL.md §4–§7；宿主能力在构造器里注入，服务本体不碰 fs 细节。
+	 * 网关用量查询（NewAPI 一类聚合网关的账单接口；只读、有界、带缓存）。
+	 * 见 dev-con/gateway-usage.ts；地址/密钥都用**本会话**的 runtime 解析。
 	 */
-	private readonly channels!: ChannelService;
-	/** 账户查询注册表（有界超时/限频/缓存）；默认适配器见 channel-accounts.ts。 */
-	private readonly accounts!: AccountRegistry;
+	private readonly gatewayUsage!: GatewayUsageService;
 	/**
 	 * Jev 决策门禁（有界 HTTP + TTL 缓存 + 单飞去重 + 事件计数）。
 	 * 见 dev-con/jev-gate.ts；配置落盘在 <agentDir>/dev-con/jev-settings.json（只存密钥**名**）。
@@ -4049,10 +3980,8 @@ export class ClientSession {
 	 * P4 首个切片：逐请求用量历史的实例私有存储（append-only JSONL）。
 	 * 写入只发生在 recordUsage()；查询是只读聚合，不参与计费、不改写会话。
 	 */
+	/** 用量与 Jev 元数据目录（实例私有，不进 Git）。 */
 	private readonly usageHistory!: UsageHistoryStore;
-	/** 渠道状态是实例级事实：由 AgentService 广播给全部客户端（多端看到同一有效绑定）。
-	 *  未设置时退化为单端推送（如纯单机测试）。 */
-	onChannelBroadcast: ((msg: ServerMessage) => void) | undefined = undefined;
 	/** 模型目录变化（服务商增删改）→ 让**其他**会话也重算目录。
 	 *  @WHY 每个会话有自己的 ModelRuntime（连接时构造的快照），models 消息只发给当前会话时，
 	 *    别的标签页会一直拿着旧目录：新服务商显示「该渠道暂无可用的模型」。 */
@@ -4079,10 +4008,6 @@ export class ClientSession {
 	}
 	refreshProviderModels(providerId: string, reqId: number): Promise<void> {
 		return this.modelAdmin.refreshProviderModels(providerId, reqId, () => this.getLang());
-	}
-	/** 渠道表单「获取接口清单」：服务端解析 baseUrl + 凭据密钥后探测 /models。 */
-	fetchChannelModels(reqId: number, providerId: string, keyName?: string | null): Promise<void> {
-		return this.modelAdmin.fetchChannelModels(reqId, providerId, keyName, () => this.getLang());
 	}
 	/** Copy a built-in provider into an editable custom-provider draft
 	 *  (clone_provider_result) — lets the user run a second API key without
@@ -4184,8 +4109,6 @@ export class ClientSession {
 	 *  project gets the remembered model; an in-progress one keeps what it had and
 	 *  the user switches via the picker. Silent on failure (model no longer in catalog). */
 	private async restoreProjectModelForCwd(cwd: string): Promise<void> {
-		// 有显式渠道绑定的对话以绑定为准，不被旧的“项目默认模型/key”覆盖。
-		if (this.channels.hasConversationBinding(this.activeId)) return;
 		const savedModel = this.stateStore.getProjectModel(this.clientId, cwd);
 		if (!savedModel) return;
 		try {
@@ -4970,8 +4893,6 @@ export class ClientSession {
 		}
 		// Completed work is an evictable cache, not a reason to reject new chats.
 		this.maintenance.reap();
-		// The carried-over model must keep its channel/credential attribution.
-		const previousConversationId = this.activeId;
 		// The outgoing conversation is left behind — apply the running-list
 		// lifecycle. Removal is deferred until the new chat exists so the active
 		// conversation stays valid during the (async) runtime creation.
@@ -4997,6 +4918,7 @@ export class ClientSession {
 			this.invalidateSessionInfos();
 			// 多端：新会话让其他端的列表也跟上。
 			this.onSessionsListChanged?.(this.cwd);
+			this.emitConversations();
 			// New session seeds with the ModelRuntime default model — restore the
 			// model the user had selected in the previous chat.
 			if (prevModel && this.sharedModelRuntime) {
@@ -5009,9 +4931,6 @@ export class ClientSession {
 					// model no longer resolvable — keep the default
 				}
 			}
-			// DEV-CON：把上一对话的渠道绑定一并带过去（模型已经带过去了）。
-			this.channels.inheritBinding(previousConversationId, conv.id);
-			this.emitConversations();
 			this.goalSvc.emitGoalStatus();
 			this.pushTerminals();
 			// The new runtime re-discovered skills/templates — refresh the catalog
@@ -6154,7 +6073,15 @@ export class ClientSession {
 			// 被「模型路由规则」判为退役的 id 不再作为可选路由（历史绑定仍能经 getModel 解析）。
 			// 规则来自设置面板（settings.retiredModelRoutes / modelRouteAliases），缺省 = 出厂默认；
 			// 见 server/model-routing.ts 与 docs/MODEL-ROUTING.md。
-			const models = filterRoutableModels(available, this.settingsSvc.modelRoutingRules).map((m) => ({
+			//
+			// 单网关接入：目录只保留**已配置服务商**（models.json）的模型。内置服务商（pi 注册表里
+			// 那些没配、也管不了的）与重复接入的第二份拷贝都不该出现在选择器里。一个都没配时
+			// 不收窄（全新实例不能因此没有可选模型），见 dev-con/gateway-config.ts。
+			const configured = this.modelAdmin.configuredProviderIds();
+			const models = filterCatalogToProviders(
+				filterRoutableModels(available, this.settingsSvc.modelRoutingRules),
+				configured,
+			).map((m) => ({
 				id: `${m.provider}/${m.id}`,
 				name: m.name,
 				provider: m.provider,
@@ -6250,119 +6177,68 @@ export class ClientSession {
 	}
 
 	// ---------------------------------------------------------------------------
-	// DEV-CON channels（渠道配置 / 组合切换 / 账户查询）
-	// 唯一基准：docs/DEV-CON-PROPOSAL.md §4（配置所有权/组合命令/回执）、§5（切换场景）
+	// ---------------------------------------------------------------------------
+	// 单网关辅助（服务商目录 / 密钥 / 工具能力探测 / 网关用量）
+	// 本项目只对接一个聚合网关（NewAPI 一类）：模型选择、按模型调用照旧，
+	// 余额与用量直接问网关自己的账单接口（见 dev-con/gateway-usage.ts 与 docs/NEWAPI-GATEWAY.md）。
 	// ---------------------------------------------------------------------------
 
-	/** 宿主能力注入：渠道服务不直接依赖 ClientSession 内部结构（同 ModelAdminHost 模式）。 */
-	private makeChannelHost(agentDir: string): ChannelServiceHost {
-		return {
-			agentDir,
-			// 对话 id 只在客户端内唯一（c1/c2…），绑定存储键需要 clientId 防碰撞。
-			clientId: this.clientId,
-			emit: (msg) => this.emit(msg),
-			broadcast: (msg) => (this.onChannelBroadcast ? this.onChannelBroadcast(msg) : this.emit(msg)),
-			flushSnapshot: () => this.flushSnapshot(),
-			hasProvider: (providerId) => {
-				try {
-					return this.runtime.services.modelRuntime.getProviders().some((p) => p.id === providerId);
-				} catch {
-					return false;
-				}
-			},
-			providerIds: () => {
-				try {
-					return this.runtime.services.modelRuntime.getProviders().map((p) => p.id);
-				} catch {
-					return [];
-				}
-			},
-			// 账户查询模板里的 {baseUrl} **必须用本会话的 runtime** 解析。
-			// @BUGFIX 2026-09-18：以前只有一个模块级全局 lookup（由最后创建的 ClientSession 覆写），
-			//   于是查到的是「别的标签页」的服务商表：旧会话自己能查出 uucodex 的余额（借了别人
-			//   已热加载的 runtime），而它自己的模型目录里根本没有这个服务商 —— 一个 bug 掩盖另一个。
-			providerBaseUrl: (providerId) => {
-				try {
-					return this.runtime.services.modelRuntime.getProviders().find((p) => p.id === providerId)?.baseUrl;
-				} catch {
-					return undefined;
-				}
-			},
-			// 账户查询前的目录自愈：模板 {baseUrl} 依赖服务商表，配置新加的服务商要能立刻查到。
-			ensureModelCatalogFresh: () => this.ensureFreshModelCatalog(),
-			// 渠道表单的「服务商连接」写入：与「管理模型」共用同一套落盘/热加载路径，
-			// 但错误以返回值上报，让渠道回执能说清「服务商未写入，渠道未保存」。
-			upsertProvider: (input) => this.modelAdmin.upsertProviderFromChannel(input),
-			getModel: (providerId, modelId) => {
-				try {
-					const m = this.runtime.services.modelRuntime.getModel(providerId, modelId);
-					return m ? { id: m.id, name: m.name ?? m.id } : null;
-				} catch {
-					return null;
-				}
-			},
-			keyNames: (providerId) => this.modelAdmin.keyNameList(providerId),
-			resolveKeyValue: (providerId, keyName) => this.modelAdmin.resolveProviderKeyValue(providerId, keyName),
-			// 渠道没绑定命名凭据时的兜底：用运行时真正解析出来的那把（models.json 内联 key /
-			// $ENV / 命令 / auth.json / OAuth），与模型调用走同一套优先级，不在服务层重实现一遍。
-			resolveProviderKey: async (providerId) => {
-				try {
-					const resolved = await this.runtime.services.modelRuntime.getAuth(providerId);
-					return resolved?.auth.apiKey ?? null;
-				} catch {
-					return null;
-				}
-			},
-			setConversationModel: (conversationId, modelId) => this.setConversationModel(conversationId, modelId),
-			activeConversationId: () => this.activeId,
-			conversationExists: (id) => this.convs.has(id),
-			isBusy: (id) => this.convs.get(id)?.session.isStreaming ?? false,
-			hasQueue: (id) => {
-				const conv = this.convs.get(id);
-				return !!conv && (conv.queueSteering.length > 0 || conv.queueFollowUp.length > 0);
-			},
-			// 取不到统计时保守地当成「已有消息」，避免默认值静默重绑未知对话。
-			conversationHasMessages: (id) => {
-				try {
-					return (this.convs.get(id)?.session.getSessionStats().totalMessages ?? 0) > 0;
-				} catch {
-					return true;
-				}
-			},
-			// 该对话现在真的在用的模型：绑定是否还成立只能问会话本身（见 state 层的 @GOTCHA）。
-			conversationModelRef: (id) => {
-				const model = this.convs.get(id)?.session.agent.state.model;
-				return model ? `${model.provider}/${model.id}` : null;
-			},
-			cwd: () => this.cwd,
-		};
+	/** 已注册的服务商 id（取不到就空数组：宁可少说，也不编造目录）。 */
+	private providerIds(): string[] {
+		try {
+			return this.runtime.services.modelRuntime.getProviders().map((p) => p.id);
+		} catch {
+			return [];
+		}
 	}
 
-	/** 渠道端点工具能力探测的入口（同步返回，实际探测在后台跑完）。
-	 *  credentialKey 必须是**该对话当前解析出的那把**（与真实请求同一把，见 §9 凭据隔离）。 */
-	private ensureChannelToolCapability(
-		channelId: string,
-		providerId: string,
-		modelRef: string,
-		credentialKey: string | undefined,
-	): void {
-		void this.checkChannelToolCapability(channelId, providerId, modelRef, credentialKey).catch(() => {
+	/** 该服务商注册的 baseUrl。
+	 *  @CONTRACT 必须用**本会话**的 runtime 回答：模块级全局 lookup 会让旧会话借到别的
+	 *    客户端已热加载的目录，用一个 bug 掩盖另一个。 */
+	private providerBaseUrlOf(providerId: string): string | undefined {
+		try {
+			return this.runtime.services.modelRuntime.getProviders().find((p) => p.id === providerId)?.baseUrl;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** 服务商展示名（告警/用量标签用；取不到返回 undefined，调用方回落 id）。 */
+	private providerNameOf(providerId: string): string | undefined {
+		try {
+			return this.runtime.services.modelRuntime.getProviders().find((p) => p.id === providerId)?.name;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** 该服务商当前真正解析出的密钥正文（models.json 内联 key / $ENV / 命令 / auth.json / OAuth），
+	 *  与模型调用走同一套优先级，不在服务层重实现一遍。密钥只在服务端内部使用。 */
+	private async resolveProviderKey(providerId: string): Promise<string | null> {
+		try {
+			const resolved = await this.runtime.services.modelRuntime.getAuth(providerId);
+			return resolved?.auth.apiKey ?? null;
+		} catch {
+			return null;
+		}
+	}
+
+	/** 工具能力探测入口（同步返回，实际探测在后台跑完）。 */
+	private ensureToolCapability(providerId: string, modelRef: string, credentialKey: string | undefined): void {
+		void this.checkToolCapability(providerId, modelRef, credentialKey).catch(() => {
 			/* 探测链路自身的问题不得影响正常请求 */
 		});
 	}
 
 	/**
-	 * 探测「该渠道 + 该模型」的端点是否真的支持工具调用，不支持就告警一次。
+	 * 探测「该服务商 + 该模型」的端点是否真的支持工具调用，不支持就告警一次。
+	 * @WHY 单网关场景下这件事更重要：网关静默丢弃 tools 时，请求与费用看上去完全正常，
+	 *   只有编码能力退化成纯对话 —— 不说出来用户只会以为模型变笨了。
 	 * @CONTRACT 结论按 provider/model/api/baseUrl 缓存 30 分钟（配置一变 key 就变，自然失效）；
 	 *   同一端点并发只探一次；**只有确定的 unsupported 才告警**，unverified（网络/超时/
-	 *   HTTP 错误/HTML）一律保持沉默 —— 探测不确定时宁可不打扰，也不误报渠道不能用。
+	 *   HTTP 错误/HTML）一律保持沉默 —— 探测不确定时宁可不打扰，也不误报网关不能用。
 	 */
-	private async checkChannelToolCapability(
-		channelId: string,
-		providerId: string,
-		modelRef: string,
-		credentialKey: string | undefined,
-	): Promise<void> {
+	private async checkToolCapability(providerId: string, modelRef: string, credentialKey: string | undefined): Promise<void> {
 		const slash = modelRef.indexOf("/");
 		const modelId = slash > 0 ? modelRef.slice(slash + 1) : modelRef;
 		if (!providerId || !modelId) return;
@@ -6381,8 +6257,7 @@ export class ClientSession {
 		if (this.capabilityProbesInFlight.has(key)) return;
 		this.capabilityProbesInFlight.add(key);
 		try {
-			// 认证头与密钥都与真实调用走同一口径：对话绑定优先，没绑定才回落到运行时解析的那把。
-			// @GOTCHA 不能直接用运行时的 active key —— 那是别的密钥的配额，还会破坏对话级凭据隔离。
+			// 认证头与密钥都与真实调用走同一口径（credentialKey 由 getApiKey 钩子传入同一把）。
 			const resolved = credentialKey ? undefined : await this.runtime.services.modelRuntime.getAuth(providerId);
 			const verdict = await runCapabilityProbe({
 				api,
@@ -6392,116 +6267,59 @@ export class ClientSession {
 				headers: resolved?.auth.headers as Record<string, string> | undefined,
 			});
 			this.capabilityProbes.set(key, { verdict, at: Date.now() });
-			if (verdict.kind === "unsupported") this.warnChannelLacksTools(channelId, modelId, api, baseUrl);
+			if (verdict.kind === "unsupported") this.warnLacksTools(providerId, modelId, api, baseUrl);
 		} finally {
 			this.capabilityProbesInFlight.delete(key);
 		}
 	}
 
-	/** 渠道端点不支持工具调用时的告警文案（沉默失败 → 可见失败）。 */
-	private warnChannelLacksTools(channelId: string, modelId: string, api: string, baseUrl: string): void {
-		let name = channelId;
-		try {
-			name = this.channels.channelDisplayName(channelId) ?? channelId;
-		} catch {
-			/* 渠道目录不可读时用 id 兜底 */
-		}
+	/** 端点不支持工具调用时的告警文案（沉默失败 → 可见失败）。 */
+	private warnLacksTools(providerId: string, modelId: string, api: string, baseUrl: string): void {
+		const name = this.providerNameOf(providerId) ?? providerId;
 		const hint = capabilityFixHint({ api, baseUrl });
 		const remedyZh = hint ? `另外：${hint}。` : "如果网关只支持某一种协议（例如只透传 Codex/Responses），请把服务商协议改成那一种。";
 		const remedyEn = hint ? `Also: ${hint}.` : "If the gateway only supports one protocol (e.g. Codex/Responses), switch the provider to that protocol.";
 		this.emit({
 			type: "notice",
 			level: "warning",
-			text: `渠道「${name}」的模型 ${modelId} 实测不支持工具调用：端点返回 200，但始终没有工具调用（网关很可能丢弃了 tools）。用它做开发任务会退化成纯对话，读写文件、执行命令都不可用。建议换一个渠道。${remedyZh}`,
-			textEn: `Channel “${name}” / ${modelId} does not support tool calls: the endpoint returns 200 but never emits one (the gateway most likely drops “tools”). Dev tasks on it degrade to plain chat — no file or terminal access. Use another channel. ${remedyEn}`,
+			text: `服务商「${name}」的模型 ${modelId} 实测不支持工具调用：端点返回 200，但始终没有工具调用（网关很可能丢弃了 tools）。用它做开发任务会退化成纯对话，读写文件、执行命令都不可用。${remedyZh}`,
+			textEn: `Provider “${name}” / ${modelId} does not support tool calls: the endpoint returns 200 but never emits one (the gateway most likely drops “tools”). Dev tasks on it degrade to plain chat — no file or terminal access. ${remedyEn}`,
 		});
 	}
 
-	/** 渠道命令的唯一生效点：只改目标对话的 SDK 会话模型，不写全局 auth/models。 */
-	private async setConversationModel(conversationId: string, modelId: string): Promise<void> {
-		const conv = this.convs.get(conversationId);
-		if (!conv) throw new Error("对话不存在");
-		const slash = modelId.indexOf("/");
-		if (slash <= 0 || slash === modelId.length - 1) throw new Error(`无效的模型 ID：${modelId}`);
-		const model = this.runtime.services.modelRuntime.getModel(modelId.slice(0, slash), modelId.slice(slash + 1));
-		if (!model) throw new Error(`模型不存在：${modelId}`);
-		await conv.session.setModel(model);
+	/** 只读：读网关配置（单网关接入）。全部实现委托给 ModelAdminService（同一个 models.json 写者）。 */
+	async getGateway(reqId: number): Promise<void> {
+		return this.modelAdmin.getGateway(reqId);
 	}
 
-	/** 快照里当前对话的绑定视图（读内存，无 IO）。 */
-	channelBindingView(): UiChannelBindingView {
-		return this.channels.bindingViewMessage(this.activeId);
-	}
-
-	/** list_channels：只回本端当前状态（不广播，避免多端刷屏）。先从磁盘对齐，
-	 *  否则另一端/外部修改后本端会一直回旧值且无法从冲突中恢复。 */
-	pushChannelState(): void {
-		this.channels.refresh();
-		this.emit(this.channels.stateMessage());
-	}
-
-	async selectChannel(input: {
-		commandId: string;
-		conversationId?: string;
-		channelId: string;
-		credentialKeyName?: string | null;
-		modelId: string;
-		expectedConfigRevision?: number;
-		expectedBindingRevision?: number;
-	}): Promise<void> {
-		await this.channels.select({
-			commandId: input.commandId,
-			conversationId: input.conversationId,
-			selection: {
-				channelId: input.channelId,
-				credentialKeyName: input.credentialKeyName,
-				modelId: input.modelId,
-			},
-			expectedConfigRevision: input.expectedConfigRevision,
-			expectedBindingRevision: input.expectedBindingRevision,
-		});
-	}
-
-	async clearChannelBinding(commandId: string, conversationId?: string): Promise<void> {
-		await this.channels.clearBinding({ commandId, conversationId });
-	}
-
-	async saveChannelConfig(
-		commandId: string,
-		channel: Partial<ChannelRecord> & { id?: string },
-		provider?: ChannelProviderInput,
-		expectedConfigRevision?: number,
+	/** 写网关配置；省略的字段保持不动。 */
+	async saveGateway(
+		reqId: number,
+		input: { baseUrl?: string; api?: string; apiKey?: string | null; models?: UiModelConfigEntry[] },
 	): Promise<void> {
-		await this.channels.saveChannel({ commandId, channel, provider, expectedConfigRevision });
+		return this.modelAdmin.saveGateway(reqId, input, () => this.getLang());
 	}
 
-	async deleteChannelConfig(commandId: string, channelId: string, expectedConfigRevision?: number): Promise<void> {
-		await this.channels.deleteChannel({ commandId, channelId, expectedConfigRevision });
+	/** 查询网关自报的用量（只读；providerId 省略 = 当前生效模型所属服务商）。 */
+	async queryGatewayUsage(reqId: number, providerId?: string, force?: boolean): Promise<void> {
+		try {
+			// 目录自愈：刚在设置里加的服务商要能立刻查到，而不是等重启（见 §4 目录时效性）。
+			await this.ensureFreshModelCatalog();
+			const target = (providerId ?? this.session.agent.state.model?.provider ?? "").trim();
+			if (!target) {
+				this.emit({ type: "gateway_usage", reqId, ok: false, error: "当前没有生效模型，无法确定要查询的网关" });
+				return;
+			}
+			// force 由调用方决定：手动刷新绕过 60s 缓存，自动轮询复用（见 gateway-usage.ts 的 TTL）。
+			const result = await this.gatewayUsage.query(target, { force: force === true });
+			if (!result.ok)
+				this.emit({ type: "gateway_usage", reqId, ok: false, error: result.error, unsupported: result.unsupported });
+			else this.emit({ type: "gateway_usage", reqId, ok: true, usage: result.usage });
+		} catch (err) {
+			this.emit({ type: "gateway_usage", reqId, ok: false, error: (err as Error).message });
+		}
 	}
 
-	async setChannelDefault(input: {
-		commandId: string;
-		scope: "instance" | "project";
-		selection: { channelId: string; credentialKeyName?: string | null; modelId: string } | null;
-		expectedConfigRevision?: number;
-	}): Promise<void> {
-		await this.channels.setDefault({
-			commandId: input.commandId,
-			scope: input.scope,
-			selection: input.selection
-				? {
-						channelId: input.selection.channelId,
-						credentialKeyName: input.selection.credentialKeyName,
-						modelId: input.selection.modelId,
-					}
-				: null,
-			expectedConfigRevision: input.expectedConfigRevision,
-		});
-	}
-
-	async queryChannelAccount(commandId: string, channelId: string): Promise<void> {
-		await this.channels.queryAccount({ commandId, channelId });
-	}
 
 	/** DEV-CON：Jev 门禁只读状态（配置已清洗：只回密钥名 + 运行聚合 + 可用命题）。 */
 	async pushJevStatus(reqId: number): Promise<void> {
@@ -7017,12 +6835,6 @@ export class AgentService {
 		// 节点完成 → 对方刷新列表 + 若持有同一会话则从磁盘接力重载；
 		// 列表变化（新建/删除/改名）→ 对方只刷新列表。
 		cs.onSessionPersisted = (file, cwd) => this.broadcastSessionPersisted(cs.clientId, file, cwd);
-		// DEV-CON：渠道状态是实例级事实 → 广播给所有客户端（多端看到同一有效绑定）。
-		cs.onChannelBroadcast = (msg) => {
-			for (const other of this.clients.values()) {
-				if (!other.isDisposedSession()) other.emitExternal(msg);
-			}
-		};
 		// 服务商/模型目录变化 → 其他会话各自重算（每个会话有自己的 runtime 快照，
 		// 要先自愈再列；见 ClientSession.ensureFreshModelCatalog）。不广播的话，
 		// 别人已打开的标签页会一直停在旧目录（新服务商 =「该渠道暂无可用的模型」）。

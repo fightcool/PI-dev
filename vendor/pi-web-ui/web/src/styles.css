@@ -1,8 +1,8 @@
 /* pi-web-ui — dark theme, pi-flavored
- * 🍞 @COUPLED web/src/components/ChannelForm.tsx / ChannelModelWhitelist.tsx / ChannelAccountModal.tsx /
- *   ChannelUsage.tsx / ChannelSettings.tsx（渠道表单的 .chan-* 类；类名改动要同步这四处）
- * @GOTCHA 渠道相关样式集中在「设置页：渠道列表 / 表单 / 默认值」区块，新增类请紧随同区块，
- *   不要把 .chan-* 拆到文件别处（主题覆盖按顺序生效）。
+ * 🍞 @COUPLED web/src/components/GatewaySettings.tsx（网关表单的 .gw-* / .chan-input / .chan-btn 类）/
+ *   web/src/components/GatewayUsageBlock.tsx（.gw-usage*）/ web/src/components/JevSettings.tsx
+ * @GOTCHA 网关与 Jev 的样式集中在「设置页」区块，新增类请紧随同区块，
+ *   不要把 .gw-* 拆到文件别处（主题覆盖按顺序生效）。
  * @GOTCHA 桌面放大：设置/模型弹窗的「PC（>640px）放大版式」写在各自的 @media
  *   (min-width:641px) 追加块里（尺寸靠 clamp(…vw…) 跟随窗口）。新增 set-* / chan-* /
  *   provider-* 类要在对应区块里补桌面尺寸，否则桌面端会出现「一块大一块小」。移动端
@@ -8785,7 +8785,7 @@ button.source-default-toggle {
  *   原始尺寸（移动端明确不改），桌面放大是纯增量覆盖，不动移动端渲染路径。
  * @GOTCHA 尺寸用 clamp(…vw…) 跟随窗口宽度，窄桌面窗口不会比旧版更挤。
  * @COUPLED web/src/components/SettingsModal.tsx（.set-* 类）、
- *   components/ChannelSettings.tsx 等（.chan-* 的桌面覆盖在「设置页：渠道」区块）。 */
+ *   components/GatewaySettings.tsx / GatewayUsageBlock.tsx（.gw-* / .chan-* 的桌面覆盖在设置页区块）。 */
 @media (min-width: 641px) {
 	.settings-modal {
 		width: min(1180px, 94vw);
@@ -9601,7 +9601,7 @@ button.source-default-toggle {
  * 同设置弹窗的桌面放大策略：弹窗更宽（640 → 900px）、供应商行/输入框/按钮
  * 整体上调一档，方便在长列表里定位和操作。颜色全走主题变量。
  * @GOTCHA 全部规则包在 min-width:641px（≤640px 移动端保持原尺寸不变）。
- * @COUPLED web/src/components/ModelConfigModal.tsx（.provider-* / .key-input）、
+ * @COUPLED web/src/components/GatewaySettings.tsx（.gw-* / .chan-input / .chan-btn）、
  *   web/src/app/app-dialogs.tsx（挂载入口）。 */
 @media (min-width: 641px) {
 	.model-modal {
@@ -11166,16 +11166,13 @@ button.source-default-toggle {
 	padding: 0;
 }
 
-/* ---- 底栏：有效渠道 + 待生效 ---- */
-.status-channel {
+/* ---- 底栏：网关自报用量（有读数才出现，见 FooterBar 的 @CONTRACT） ---- */
+.status-gateway {
 	color: var(--text);
 }
-.status-channel-src {
-	font-size: 10px;
-	color: var(--text-faint);
-}
-.status-channel-pending {
-	color: var(--amber);
+.status-gateway b {
+	font-family: var(--mono);
+	font-weight: 600;
 }
 /* 可点的状态栏项（目前是「缓存命中」：点开用量详情）。保留状态栏的小字号与内边距。 */
 .status-item-clickable {
@@ -11958,7 +11955,167 @@ button.source-default-toggle {
 .chan-usage-table td {
 	color: var(--text-dim);
 }
-/* 「没有记录」≠ 0：整行淡出并写明原因（见 ChannelUsage.tsx 的 @GOTCHA）。 */
+/* ---- 设置 → 网关 / 用量面板：网关自报用量与网关表单 ----
+ * @COUPLED web/src/components/GatewaySettings.tsx / GatewayUsageBlock.tsx（唯一生产者）
+ * @GOTCHA 金额一律等宽字体：数字会随刷新跳动，非等宽会左右抖。 */
+.gw-usage {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 8px 10px;
+	background: var(--bg-elev);
+}
+.gw-usage-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+.gw-usage-title {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--text);
+}
+.gw-usage-refresh {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	border: 1px solid var(--border);
+	background: transparent;
+	color: var(--text-dim);
+	border-radius: 7px;
+	padding: 2px 8px;
+	font-size: 11px;
+	cursor: pointer;
+}
+.gw-usage-refresh:hover:not(:disabled) {
+	color: var(--text);
+	border-color: var(--accent-soft);
+}
+.gw-usage-refresh:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+.gw-usage-refresh .spin {
+	animation: gw-spin 1s linear infinite;
+}
+@keyframes gw-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+.gw-usage-figures {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 14px;
+}
+.gw-usage-figure {
+	display: flex;
+	align-items: baseline;
+	gap: 5px;
+}
+.gw-usage-figure b {
+	font-family: var(--mono);
+	font-size: 13px;
+	color: var(--text);
+}
+.gw-usage-label {
+	font-size: 11px;
+	color: var(--text-faint);
+}
+.gw-usage-note {
+	margin: 0;
+}
+.gw-usage-error {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin: 0;
+	font-size: 12px;
+	color: var(--red);
+}
+.gw-field {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin-top: 8px;
+}
+.gw-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+	margin-top: 8px;
+}
+.gw-ok {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	font-size: 12px;
+	color: var(--green, var(--accent));
+}
+.gw-check {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 11px;
+	color: var(--text-dim);
+	cursor: pointer;
+}
+.gw-count {
+	font-family: var(--mono);
+	font-size: 11px;
+	color: var(--text-faint);
+}
+.gw-models {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 5px;
+}
+.gw-model-chip {
+	font-family: var(--mono);
+	font-size: 11px;
+	color: var(--text-dim);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 2px 6px;
+	background: var(--bg-elev);
+}
+.gw-dup {
+	margin-top: 10px;
+	border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--border));
+	border-radius: 8px;
+	padding: 8px 10px;
+}
+.gw-dup-head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--amber);
+}
+.gw-dup-list {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin-top: 6px;
+}
+.gw-dup-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+.gw-dup-id {
+	font-family: var(--mono);
+	font-size: 12px;
+	color: var(--text);
+}
+
+/* 「没有记录」≠ 0：整行淡出并写明原因（见 UsageDetail.tsx 的 usage-empty 口径）。 */
 .chan-usage-empty-row td {
 	color: var(--text-faint);
 }
@@ -11973,8 +12130,8 @@ button.source-default-toggle {
  * 同「设置弹窗」的桌面放大策略（最小字号 12px → 12.5px 起，控件内边距上调），
  * 只作用在设置弹窗内（.settings-modal 前缀），颜色全部走主题变量。
  * @GOTCHA 与上方设置区块一致：≤640px 移动端不受影响。
- * @COUPLED web/src/components/ChannelSettings.tsx / ChannelRow.tsx / ChannelForm.tsx /
- *   ChannelModelWhitelist.tsx / ChannelUsage.tsx（.chan-* 类名）。 */
+ * @COUPLED web/src/components/GatewaySettings.tsx / GatewayUsageBlock.tsx / JevSettings.tsx
+ *   （.gw-* 与 .chan-* 类名）。 */
 @media (min-width: 641px) {
 	.settings-modal .chan-settings {
 		gap: 12px;

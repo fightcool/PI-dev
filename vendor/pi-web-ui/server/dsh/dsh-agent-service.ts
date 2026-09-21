@@ -3492,57 +3492,48 @@ export class DshClientSession {
 		this.emit({ type: "provider_keys", keys: {} });
 	}
 
-	// DEV-CON 渠道能力：DSH 换模型 = 重启运行时（会中止全部运行），不能提供 Pi 式热切换，
-	// 因此这里明确回「不支持」而不是假装成功（docs/DEV-CON-PROPOSAL.md §2/§5）。
-	pushChannelState(): void {
+	/** 网关用量：DSH 引擎不认识本项目新增的网关查询，明确回不支持（不假装成功）。 */
+	async queryGatewayUsage(reqId: number): Promise<void> {
 		this.emit({
-			type: "channel_state",
-			configRevision: 0,
-			bindingRevision: 0,
-			channels: [],
-			instanceDefault: null,
-			projectDefault: null,
-			bindings: [],
-			pending: [],
-			accounts: [],
-		});
-	}
-
-	private channelUnsupported(commandId: string): void {
-		this.emit({
-			type: "channel_command_result",
-			commandId,
+			type: "gateway_usage",
+			reqId,
 			ok: false,
-			phase: "rejected",
-			error: "DSH 引擎不支持渠道热切换（换模型即重启运行时）",
-			errorEn: "The DSH engine does not support hot channel switching (changing the model restarts the runtime)",
-			configRevision: 0,
-			bindingRevision: 0,
+			error: pick(
+				this.getLang(),
+				"DSH 引擎不支持网关用量查询（只支持 pi 引擎）",
+				"The DSH engine does not support gateway usage queries (pi engine only)",
+				"dsh.gateway.usage.unsupported",
+			),
 		});
 	}
 
-	async selectChannel(msg: { commandId: string }): Promise<void> {
-		this.channelUnsupported(msg.commandId);
+	/** 网关配置：DSH 引擎没有 models.json 目录（模型表在 runtime/override.patch.yml），明确回不支持。 */
+	async getGateway(reqId: number): Promise<void> {
+		this.emit({
+			type: "gateway",
+			reqId,
+			ok: false,
+			error: pick(
+				this.getLang(),
+				"DSH 引擎不支持网关配置（模型表在 dsh 运行时的 override.patch.yml 里）",
+				"The DSH engine does not support gateway configuration (its model table lives in the dsh runtime override.patch.yml)",
+				"dsh.gateway.config.unsupported",
+			),
+		});
 	}
 
-	async clearChannelBinding(commandId: string): Promise<void> {
-		this.channelUnsupported(commandId);
-	}
-
-	async saveChannelConfig(commandId: string): Promise<void> {
-		this.channelUnsupported(commandId);
-	}
-
-	async deleteChannelConfig(commandId: string): Promise<void> {
-		this.channelUnsupported(commandId);
-	}
-
-	async setChannelDefault(input: { commandId: string }): Promise<void> {
-		this.channelUnsupported(input.commandId);
-	}
-
-	async queryChannelAccount(commandId: string): Promise<void> {
-		this.channelUnsupported(commandId);
+	async saveGateway(reqId: number): Promise<void> {
+		this.emit({
+			type: "gateway_saved",
+			reqId,
+			ok: false,
+			error: pick(
+				this.getLang(),
+				"DSH 引擎不支持网关配置写入（只支持 pi 引擎）",
+				"The DSH engine does not support writing gateway configuration (pi engine only)",
+				"dsh.gateway.save.unsupported",
+			),
+		});
 	}
 
 	/** DEV-CON：DSH 引擎没有渠道/密钥库，Jev 门禁无凭据可解析，因此明确回不支持。 */
@@ -3603,10 +3594,10 @@ export class DshClientSession {
 					units: [],
 					resources,
 					storage: { at: Date.now(), areas: [], totalBytes: 0, retention: { maxAgeDays: 0, maxBytes: 0, fileBytes: 0, choices: [0, 7, 30, 90, 365] } },
-					channels: { configRevision: 0, count: 0, enabledCount: 0, bindings: 0, pending: 0, accounts: 0, brokenRefs: 0 },
-					usage: { windowDays: 0, requests: 0, totalTokens: 0, cost: 0, unpricedRequests: 0, bySource: {}, byChannel: {} },
+					providers: { count: 0 },
+					usage: { windowDays: 0, requests: 0, totalTokens: 0, cost: 0, unpricedRequests: 0, bySource: {}, byProvider: {} },
 					environment: { platform: process.platform, cpuCount: resources.host.cpuCount, totalMemBytes: resources.host.mem.totalBytes },
-					warnings: ["DSH 引擎不提供渠道/用量历史元数据"],
+					warnings: ["DSH 引擎不提供用量历史元数据"],
 				},
 				alertsEnabled: false,
 				thresholds: { warnPercent: 85, criticalPercent: 90, cooldownMs: 3_600_000 },
@@ -3631,7 +3622,7 @@ export class DshClientSession {
 	}
 
 	/** P4 用量历史：DSH 引擎不记录逐请求归属，明确回空结果而不是伪造数据。 */
-	async queryUsageHistory(reqId: number, query: { groupBy: "channel" | "project" | "model" | "source" | "day" }): Promise<void> {
+	async queryUsageHistory(reqId: number, query: { groupBy: "provider" | "project" | "model" | "source" | "day" }): Promise<void> {
 		this.emit({
 			type: "usage_history",
 			reqId,
@@ -3705,22 +3696,6 @@ export class DshClientSession {
 				"DSH 引擎不支持自定义 provider",
 				"The DSH engine does not support custom providers",
 				"dsh.provider.custom.unsupported",
-			),
-		});
-	}
-
-	/** 渠道表单「获取接口清单」：DSH 侧没有模型目录/密钥库，明确回不支持。 */
-	async fetchChannelModels(_reqId: number, _providerId: string, _keyName?: string | null): Promise<void> {
-		this.emit({
-			type: "channel_models_result",
-			reqId: _reqId,
-			providerId: _providerId,
-			ok: false,
-			error: pick(
-				this.getLang(),
-				"DSH 引擎不支持自定义 provider 探测",
-				"The DSH engine does not support custom provider probing",
-				"dsh.provider.probing.unsupported",
 			),
 		});
 	}

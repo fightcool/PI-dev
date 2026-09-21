@@ -61,7 +61,7 @@ git push -u origin HEAD
 
 ## 测试分层与验证节奏（重要：不要每次改动都跑全量）
 
-全量门禁（应用冒烟 41 项 + 三套渠道 e2e + 应用单测 + root 测试 + 类型检查）**只在里程碑执行**，
+全量门禁（应用冒烟 41 项 + 应用单测 + root 测试 + 类型检查 + 相关 e2e）**只在里程碑执行**，
 不在每次编辑后执行。历史教训：把全量当成「每次改动」的默认动作，单轮反馈要 30 分钟，严重拖慢开发。
 
 ### 三层
@@ -69,7 +69,7 @@ git push -u origin HEAD
 | 层 | 何时跑 | 命令 | 实测耗时（2026-09-11，4 vCPU） |
 | --- | --- | --- | --- |
 | **T0 快检** | 每次改动后（含中间小步） | `npm run typecheck`；受影响的定向单测 `npm --prefix vendor/pi-web-ui exec vitest run tests/unit/<area>-` | typecheck ~25s；定向单测秒级 |
-| **T1 目标验证** | 提交前一次（按改动范围选） | `npm test`（~9s）、`npm run check:publish`（秒级）、相关 e2e：`test:channels`(~60s) / `test:channels:multi`(~20s) / `test:channels:browser`(~30s) | ~1–2 分钟 |
+| **T1 目标验证** | 提交前一次（按改动范围选） | `npm test`（~9s）、`npm run check:publish`（秒级）、相关 e2e：`test:jev:browser`(~30s) | ~1–2 分钟 |
 | **T2 里程碑全量** | **准备合并 PR** 或 **构建候选/上线** 时 | `npm run test:smoke`（并行，~190s）+ 相关 e2e + `npm run test:performance` | ~5 分钟 |
 
 ### 规则
@@ -93,11 +93,11 @@ git push -u origin HEAD
 ```bash
 # T0（每次改动）
 npm run typecheck
-npm --prefix vendor/pi-web-ui exec vitest run tests/unit/channel-      # 例：渠道相关
+npm --prefix vendor/pi-web-ui exec vitest run tests/unit/gateway-      # 例：网关相关
 
 # T1（提交前）
 npm test && npm run check:publish
-npm run test:channels && npm run test:channels:browser
+npm --prefix vendor/pi-web-ui exec vitest run tests/unit/gateway-   # 改到网关相关时
 
 # T2（里程碑：合并前 / 候选验证）
 SMOKE_JOBS=3 npm run test:smoke

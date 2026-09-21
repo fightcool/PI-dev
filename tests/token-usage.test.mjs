@@ -1,7 +1,9 @@
 /*
  * 🍞 AI Breadcrumb — @COUPLED vendor/pi-web-ui/lib/usage/token-usage.mjs
- * 📖 docs/DEV-CON-PROPOSAL.md §7（Token/费用口径）与 §9「用量身份」：
- *    累计/增量/终结的区分、同一消息去重、重试/子代理来源标注、缓存与费用字段。
+ * 📖 docs/NEWAPI-GATEWAY.md §4（两条口径：本地估算 vs 网关自报）与 docs/DEV-CON-PROPOSAL.md §7/§9
+ *    「用量身份」（历史留档）：累计/增量/终结的区分、同一消息去重、重试/子代理来源标注、缓存与费用字段。
+ * @CONTRACT 归属只到**服务商 + 模型**这一层：渠道概念已随单网关接入移除（见 NEWAPI-GATEWAY §1），
+ *    所以这里的规格用例不再断言 channelId/凭据名/绑定版本，而是钉住「服务商/模型分辨 + 未归属诚实标记」。
  * 用例按真实 SDK 事件顺序（message_start → N×message_update → message_end → turn_end）重放。
  */
 import test from "node:test";
@@ -62,8 +64,8 @@ test("counts every retry attempt separately and labels the source", () => {
   t.startRun(0);
   const failed = assistant(sdkUsage({ output: 5, totalTokens: 1905 }), 10, { stopReason: "error" });
   const ok = assistant(sdkUsage(), 20);
-  t.record(normalizeUsageEvent({ type: "message_end", message: failed }), 10, { source: "retry", channelId: "ch-1", modelId: "main/m1" });
-  t.record(normalizeUsageEvent({ type: "message_end", message: ok }), 20, { source: "retry", channelId: "ch-1", modelId: "main/m1" });
+  t.record(normalizeUsageEvent({ type: "message_end", message: failed }), 10, { source: "retry", modelId: "main/m1" });
+  t.record(normalizeUsageEvent({ type: "message_end", message: ok }), 20, { source: "retry", modelId: "main/m1" });
   const snap = t.snapshot();
   assert.equal(snap.turn.total, 1905 + 1970, "each attempt is its own request");
   assert.equal(snap.requests, 2);
@@ -71,34 +73,50 @@ test("counts every retry attempt separately and labels the source", () => {
   assert.equal(t.attributionList()[0].source, "retry");
 });
 
-test("attributes usage per source, channel and model and never merges channels", () => {
+test("attributes usage per source, provider and model and never merges providers", () => {
   const t = new TokenUsageTracker();
   t.startRun(0);
   t.record(normalizeUsageEvent({ type: "message_end", message: assistant(sdkUsage(), 1) }), 1, {
     source: "user",
-    channelId: "ch-1",
-    credentialKeyName: "密钥 1",
     modelId: "main/m1",
-    bindingRevision: 3,
-    configRevision: 9,
   });
   t.record(normalizeUsageEvent({ type: "message_end", message: assistant(sdkUsage({ input: 10, output: 1, totalTokens: 11, cost: { total: 0.5 } }), 2) }), 2, {
     source: "subagent",
-    channelId: null,
-    credentialKeyName: null,
     modelId: null,
   });
   const buckets = t.attributionList();
   assert.equal(buckets.length, 2);
   const user = buckets.find((b) => b.source === "user");
+  // 归属随事件记录：服务商/模型来自那次消息本身，不用今天的配置回推。
   assert.deepEqual(
-    { channelId: user.channelId, key: user.credentialKeyName, model: user.modelId, rev: user.bindingRevision, cfg: user.configRevision },
-    { channelId: "ch-1", key: "密钥 1", model: "m1", rev: 3, cfg: 9 },
+    { provider: user.providerId, model: user.modelId },
+    { provider: "main", model: "m1" },
   );
-  // 未归属（子代理/未知渠道）诚实标记，不推断成今天的配置。
+  // 子代理那次也带自己的 provider/model（同一批 SDK 事件里就有），不推断、不合并。
   const child = buckets.find((b) => b.source === "subagent");
-  assert.equal(child.channelId, null);
+  assert.equal(child.providerId, "main");
   assert.equal(child.modelId, "m1");
+});
+
+test("keeps different providers in different buckets (the old 'never merges channels' rule)", () => {
+  const t = new TokenUsageTracker();
+  t.startRun(0);
+  // 两条消息必须有不同的稳定标识（无 responseId 时 id 由 role+timestamp 派生）——
+  // 否则第二条会被当成同一条响应去重掉，测试就测不到「分桶」这件事。
+  let at = 1;
+  for (const provider of ["newapi", "othergw"]) {
+    t.record(
+      normalizeUsageEvent({
+        type: "message_end",
+        message: { role: "assistant", model: "m1", provider, timestamp: at, responseId: `resp-${provider}`, usage: sdkUsage() },
+      }),
+      at++,
+      { source: "user", modelId: `${provider}/m1` },
+    );
+  }
+  const buckets = t.attributionList();
+  assert.equal(buckets.length, 2, "同一模型在两个服务商下必须是两个桶");
+  assert.deepEqual(buckets.map((b) => b.providerId).sort(), ["newapi", "othergw"]);
 });
 
 test("records mark usage as unreported instead of claiming zero tokens (real-provider finding)", () => {
@@ -106,7 +124,7 @@ test("records mark usage as unreported instead of claiming zero tokens (real-pro
   t.startRun(1_000);
   // 供应商返回成功但整条 usage 全 0 / 未带 usage（真实链路上某网关如此）。
   const bare = normalizeUsageEvent({ type: "message_end", message: { role: "assistant", model: "m", provider: "p", timestamp: 1, usage: { input: 0, output: 0, totalTokens: 0 } } });
-  t.record(bare, 1_000, { source: "user", channelId: "ch-x", conversationId: "c1" });
+  t.record(bare, 1_000, { source: "user", conversationId: "c1" });
   const [record] = t.snapshot().records;
   assert.equal(record.usageKnown, false, "全 0 且无费用 → 未上报");
   assert.equal(record.total, 0);
@@ -120,19 +138,17 @@ test("per-request records carry a stable id, run/conversation refs, time and a p
   t.startRun(1_000);
   const message = assistant(sdkUsage(), 1_000, { responseId: "resp-7" });
   t.record(normalizeUsageEvent({ type: "message_end", message }), 1_500, {
-    source: "user", conversationId: "c1", cwd: "/proj", channelId: "ch-a", credentialKeyName: "密钥 1",
-    bindingRevision: 4, configRevision: 7,
+    source: "user", conversationId: "c1", cwd: "/proj",
   });
   // 同一消息的 turn_end 不得再产生一条记录（去重与聚合口径一致）。
   t.record(normalizeUsageEvent({ type: "turn_end", message }), 1_600, { source: "user", conversationId: "c1" });
   const [record] = t.snapshot().records;
   assert.deepEqual(
     { id: record.id, at: record.at, runId: record.runId, conversationId: record.conversationId, cwd: record.cwd,
-      source: record.source, channelId: record.channelId, key: record.credentialKeyName, provider: record.providerId,
-      model: record.modelId, binding: record.bindingRevision, config: record.configRevision,
+      source: record.source, provider: record.providerId, model: record.modelId,
       total: record.total, cost: record.cost, costBasis: record.costBasis, currency: record.currency },
     { id: "r:resp-7", at: 1_500, runId: "run-1", conversationId: "c1", cwd: "/proj", source: "user",
-      channelId: "ch-a", key: "密钥 1", provider: "main", model: "m1", binding: 4, config: 7,
+      provider: "main", model: "m1",
       total: 1970, cost: 0.033, costBasis: "sdk-model-pricing", currency: "USD" },
   );
   assert.equal(t.snapshot().records.length, 1);
@@ -197,7 +213,7 @@ test("per-request records carry the failure verdict and a bounded reason (白烧
       message: assistant(sdkUsage({ output: 0, totalTokens: 1920 }), 1, { responseId: "resp-err", stopReason: "error", errorMessage: longReason }),
     }),
     1,
-    { source: "user", channelId: "ch-a" },
+    { source: "user" },
   );
   const failed = t.snapshot().records[0];
   assert.equal(failed.stopReason, "error");

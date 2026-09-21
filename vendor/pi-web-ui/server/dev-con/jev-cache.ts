@@ -7,7 +7,7 @@
  * Breadcrumbs (changing this affects):
  *   @COUPLED jev-gate.ts（唯一消费者：evaluate 的第二级缓存）,
  *            ../agent-service.ts（装配时传 cachePath）, ../../scripts/jev-gate.ts（cache stats / clear）,
- *            usage-history.ts（轮转/逐行容错的同款范本）, channel-store.ts（同目录 tmp/0600 的范本）
+ *            usage-history.ts（轮转/逐行容错的同款范本，同目录、同 0600 权限）
  *   📖 docs/JEV-DECISION-GATE.md §9（成本与限额：省钱的正确做法是缓存）
  *   @CONTRACT 这是**派生、可丢**的缓存，不是事实源：删掉只损失一次调用费用，
  *             不参与计费、不参与用量统计、不回写会话。

@@ -19,6 +19,16 @@ import { setTimeout as sleep } from "node:timers/promises";
 const REPO_ROOT = fileURLToPath(new globalThis.URL("../", import.meta.url));
 const PORT = 8967;
 const URL = `ws://localhost:${PORT}/ws`;
+/**
+ * 第二套环境（删除「当前对话」的自动切走行为）用的端口。
+ * @BUGFIX 2026-09-21：原来这里是 `PORT + 1` = 8968，而 8968 是 db-client-test 的主端口
+ *   —— 两者同时在冒烟跑批里（并发 3）就会互相踩：本用例第二台 server 绑不上 8968，
+ *   紧接着的 connect() 连到**别人**的 server（agentDir/cwd 都不是本用例的），
+ *   表现为「启动恢复最近会话」假失败 + 后续 FATAL 超时。CI 上稳定复现，单跑/换并发度可能侥幸通过。
+ * @GOTCHA 端口唯一性由 tests/unit/smoke-port-uniqueness.test.ts 强制（它的解析已覆盖
+ *   `PI_WEB_PORT: String(...)` 写法，别再靠人记得）。改端口前先跑那个单测。
+ */
+const PORT2 = 8970;
 
 let failures = 0;
 function check(name, ok, extra = "") {
@@ -224,13 +234,13 @@ async function runCurrentSessionCases() {
 	const sessActive = seedSession(null, "cur-target", workDir2, "要删除的当前对话", 1722700802000, agentDir2);
 
 	await startServer({
-		PI_WEB_PORT: String(PORT + 1),
+		PI_WEB_PORT: String(PORT2),
 		PI_WEB_DATA_DIR: dataDir2,
 		PI_CODING_AGENT_DIR: agentDir2,
 		PI_WEB_CWD: workDir2,
 		PI_SUBAGENTS_TEMP_ROOT: subRoot,
 	});
-	const URL2 = `ws://localhost:${PORT + 1}/ws`;
+	const URL2 = `ws://localhost:${PORT2}/ws`;
 	const c = await connect(URL2);
 	const stateMsg = (m) =>
 		(m.type === "snapshot" || m.type === "snapshot_delta") && m.state && typeof m.state === "object";

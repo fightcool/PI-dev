@@ -6,7 +6,6 @@
 import { useCallback, type CSSProperties } from "react";
 import { TopBar } from "./components/TopBar";
 import { FooterBar } from "./components/FooterBar";
-import { resetBalanceFailures } from "./channel-account";
 import { TemplateProvider } from "./components/PromptTemplates";
 import { useChat } from "./use-chat";
 import { useT } from "./i18n";
@@ -18,6 +17,7 @@ import { NoticeToast } from "./app/notices";
 import { usePanels } from "./app/panels";
 import { useAppDialogs } from "./app/use-app-dialogs";
 import { useAppEffects } from "./app/use-app-effects";
+import { useGatewayUsageAutoRefresh } from "./app/use-gateway-usage";
 import { useAppViews } from "./app/use-app-views";
 import { useAttachments } from "./app/use-attachments";
 import { ChromeCollapseProvider } from "./app/use-chrome-collapse";
@@ -39,6 +39,13 @@ export function App() {
 	const dialogs = useAppDialogs();
 	const uploads = useAttachments(chat, pushNotice);
 	const { sound, setSound, themes, theme, switchTheme } = useAppEffects(chat, send);
+	// 网关自报用量：就绪后查一次、换服务商重查、之后按间隔刷新（手动刷新在状态栏/设置页）。
+	useGatewayUsageAutoRefresh({
+		opsApi: connection.opsApi,
+		ready: chat.ready,
+		activeProvider: chat.state?.model?.provider ?? null,
+		unsupported: chat.gatewayUsage.unsupported,
+	});
 	const { setView, chooseView } = views;
 	const { setDrawer } = panels;
 	const onViewChange = useCallback(
@@ -107,14 +114,9 @@ export function App() {
 				<FooterBar
 					chat={chat}
 					send={send}
-					onQueryUsageHistory={connection.channelApi.queryUsageHistory}
+					opsApi={connection.opsApi}
 					usageOpen={dialogs.usageOpen}
 					onUsageOpenChange={dialogs.setUsageOpen}
-					onRetryAccount={(channelId) => {
-						// 连续失败后自动刷新会停：重试要同时清零计数，否则下一次 tick 还是不发请求。
-						resetBalanceFailures(channelId);
-						connection.channelApi.queryChannelAccount(channelId);
-					}}
 					onOpenSettings={() => dialogs.setSettingsOpen(true)}
 				/>
 				<AppDialogs

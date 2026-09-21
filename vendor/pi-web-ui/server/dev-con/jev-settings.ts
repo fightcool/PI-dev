@@ -14,14 +14,13 @@
  *         同目录的 ops-settings.json 就是整份覆盖写（setOpsAlerts 只写 {alertsEnabled}，
  *         未知字段一律丢失）——那是既有的缺陷，不照抄（见 @GOTCHA）。
  *   @GOTCHA 磁盘文件缺失/损坏时返回默认值 + parseError 标记，**绝不静默清空**：
- *         调用方看到 parseError 应当保留内存态并暴露问题（对标 channel-store.loadCatalog）。
+ *         调用方看到 parseError 应当保留内存态并暴露问题（同一份「损坏不静默」口径）。
  *   @MAGIC 落盘版本号 JEV_SETTINGS_VERSION=1（结构不兼容变更时 +1）。
  * ──────────────────────────────────────────────────
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { looksLikeLiteralSecret } from "./account-template.js";
-import { findSecretMaterial } from "./channel-model.js";
+import { findSecretMaterial, looksLikeLiteralSecret } from "./secret-scan.js";
 import { defaultJevGateConfig, validateJevGateConfig, type JevGateConfig } from "./jev-model.js";
 
 /** 落盘版本号：结构不兼容变更时 +1 并给出迁移路径。 */

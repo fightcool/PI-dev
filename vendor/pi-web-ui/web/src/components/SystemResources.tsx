@@ -64,7 +64,8 @@ export const SystemResources = memo(function SystemResources({
 
 	if (!snapshot) return <p className="set-hint">{t("resourcesLoading")}</p>;
 	const { host, app, disks } = snapshot;
-	const memUsedPercent = host.mem.totalBytes > 0 ? Math.round((host.mem.usedBytes / host.mem.totalBytes) * 1000) / 10 : 0;
+	const memUsedPercent =
+		host.mem.totalBytes > 0 ? Math.round((host.mem.usedBytes / host.mem.totalBytes) * 1000) / 10 : 0;
 
 	return (
 		<div className="resources">
@@ -86,8 +87,10 @@ export const SystemResources = memo(function SystemResources({
 						<span style={{ width: `${Math.min(100, memUsedPercent)}%` }} />
 					</div>
 					<div className="resource-meta">
-						{bytes(host.mem.usedBytes)} / {bytes(host.mem.totalBytes)} · {t("resourcesAvailable", { v: bytes(host.mem.availableBytes) })}
-						{host.mem.swapTotalBytes > 0 && ` · swap ${bytes(host.mem.swapUsedBytes)} / ${bytes(host.mem.swapTotalBytes)}`}
+						{bytes(host.mem.usedBytes)} / {bytes(host.mem.totalBytes)} ·{" "}
+						{t("resourcesAvailable", { v: bytes(host.mem.availableBytes) })}
+						{host.mem.swapTotalBytes > 0 &&
+							` · swap ${bytes(host.mem.swapUsedBytes)} / ${bytes(host.mem.swapTotalBytes)}`}
 					</div>
 					<div className="resource-source">{t("resourcesSourceMem", { src: snapshot.sources.mem })}</div>
 				</div>
@@ -104,7 +107,10 @@ export const SystemResources = memo(function SystemResources({
 						{/* cgroup 是 systemd unit（含 PM2 supervisor 与子进程），与上面的进程 RSS 不是同一口径。 */}
 						{app.cgroup.currentBytes === null
 							? t("resourcesCgroupUnavailable")
-							: t("resourcesCgroup", { current: bytes(app.cgroup.currentBytes), max: app.cgroup.maxBytes === null ? t("resourcesNoLimit") : bytes(app.cgroup.maxBytes) })}
+							: t("resourcesCgroup", {
+									current: bytes(app.cgroup.currentBytes),
+									max: app.cgroup.maxBytes === null ? t("resourcesNoLimit") : bytes(app.cgroup.maxBytes),
+								})}
 					</div>
 					<div className="resource-source">{t("resourcesSourceCgroup", { src: snapshot.sources.cgroup })}</div>
 				</div>
@@ -114,7 +120,9 @@ export const SystemResources = memo(function SystemResources({
 					<div className="resource-meta">
 						{host.platform} · {t("resourcesUptime", { v: duration(host.uptimeSec) })}
 					</div>
-					<div className="resource-source">{t("resourcesSampledAt", { at: new Date(snapshot.at).toLocaleTimeString() })}</div>
+					<div className="resource-source">
+						{t("resourcesSampledAt", { at: new Date(snapshot.at).toLocaleTimeString() })}
+					</div>
 				</div>
 			</div>
 
@@ -125,10 +133,15 @@ export const SystemResources = memo(function SystemResources({
 					<div key={disk.path} className="resource-disk">
 						<div className="resource-disk-head">
 							<span className="resource-disk-label">{disk.label}</span>
-							<span className={`resource-disk-percent${disk.usedPercent >= DISK_WARN_PERCENT ? " warn" : ""}`}>{percent(disk.usedPercent)}</span>
+							<span className={`resource-disk-percent${disk.usedPercent >= DISK_WARN_PERCENT ? " warn" : ""}`}>
+								{percent(disk.usedPercent)}
+							</span>
 						</div>
 						<div className="resource-bar">
-							<span className={disk.usedPercent >= DISK_WARN_PERCENT ? "warn" : ""} style={{ width: `${Math.min(100, disk.usedPercent)}%` }} />
+							<span
+								className={disk.usedPercent >= DISK_WARN_PERCENT ? "warn" : ""}
+								style={{ width: `${Math.min(100, disk.usedPercent)}%` }}
+							/>
 						</div>
 						<div className="resource-meta" title={disk.path}>
 							{bytes(disk.usedBytes)} / {bytes(disk.totalBytes)} · {t("resourcesFree", { v: bytes(disk.freeBytes) })}
@@ -199,7 +212,9 @@ export const SystemResources = memo(function SystemResources({
 											{days === 0 ? t("storageRetentionOff") : t("storageRetentionDays", { n: days })}
 										</button>
 									))}
-									<span className="resource-source">{t("storageRetentionNote", { size: bytes(storage.storage.retention.fileBytes) })}</span>
+									<span className="resource-source">
+										{t("storageRetentionNote", { size: bytes(storage.storage.retention.fileBytes) })}
+									</span>
 								</div>
 							)}
 						</>
@@ -234,25 +249,37 @@ export const SystemResources = memo(function SystemResources({
 							</button>
 						)}
 						{onSetOpsAlerts && (
-							<button type="button" className="chan-btn" onClick={() => onSetOpsAlerts(!(diagnostics?.alertsEnabled ?? true))}>
+							<button
+								type="button"
+								className="chan-btn"
+								onClick={() => onSetOpsAlerts(!(diagnostics?.alertsEnabled ?? true))}
+							>
 								{diagnostics?.alertsEnabled === false ? t("diagnosticsAlertsOff") : t("diagnosticsAlertsOn")}
 							</button>
 						)}
 					</div>
-					{diagnostics && !diagnostics.ok && <div className="set-hint">{diagnostics.error ?? t("diagnosticsUnavailable")}</div>}
+					{diagnostics && !diagnostics.ok && (
+						<div className="set-hint">{diagnostics.error ?? t("diagnosticsUnavailable")}</div>
+					)}
 					{diagnostics?.ok && diagnostics.bundle && (
 						<>
-							<pre className="diagnostics-summary">{t("diagnosticsSummary", {
-								commit: diagnostics.bundle.release.commit?.slice(0, 12) ?? "—",
-								protocol: String(diagnostics.bundle.release.protocolVersion ?? diagnostics.bundle.app.protocolVersion),
-								engine: diagnostics.bundle.app.engine,
-								units: diagnostics.bundle.units.map((u) => `${u.unit}=${u.active}`).join(" "),
-							})}</pre>
+							<pre className="diagnostics-summary">
+								{t("diagnosticsSummary", {
+									commit: diagnostics.bundle.release.commit?.slice(0, 12) ?? "—",
+									protocol: String(
+										diagnostics.bundle.release.protocolVersion ?? diagnostics.bundle.app.protocolVersion,
+									),
+									engine: diagnostics.bundle.app.engine,
+									units: diagnostics.bundle.units.map((u) => `${u.unit}=${u.active}`).join(" "),
+								})}
+							</pre>
 							<div className="resource-source">{t("diagnosticsPrivacy")}</div>
 							{diagnostics.bundle.warnings.length > 0 && (
 								<div className="resources-warnings">
 									{diagnostics.bundle.warnings.map((w) => (
-										<div key={w} className="chan-warn">{w}</div>
+										<div key={w} className="chan-warn">
+											{w}
+										</div>
 									))}
 								</div>
 							)}
@@ -262,7 +289,7 @@ export const SystemResources = memo(function SystemResources({
 			)}
 			<div className="resources-actions">
 				<button type="button" className="chan-btn" onClick={onRefresh}>
-					{t("channelRefresh")}
+					{t("resourcesRefresh")}
 				</button>
 				{onLoadStorage && (
 					<button type="button" className="chan-btn" onClick={onLoadStorage}>

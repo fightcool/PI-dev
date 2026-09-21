@@ -75,6 +75,7 @@ import type {
 	CommandDef,
 	PromptAttachment,
 	ServerMessage,
+	UiModelConfigEntry,
 	UiSubagentTemplate,
 } from "./protocol.js";
 
@@ -808,24 +809,16 @@ export interface DispatchSession {
 	uploadFile(dirPath: string, name: string, data: string): Promise<void>;
 	listModels(): Promise<void>;
 	setModel(modelId: string): Promise<void>;
-	// -- DEV-CON channels（接口由 ClientSession 实现；DSH 引擎给出显式不支持回执） --
-	pushChannelState(): void;
-	selectChannel(msg: Extract<ClientMessage, { type: "channel_select" }>): Promise<void>;
-	clearChannelBinding(commandId: string, conversationId?: string): Promise<void>;
-	saveChannelConfig(
-		commandId: string,
-		channel: Extract<ClientMessage, { type: "channel_save" }>["channel"],
-		provider: Extract<ClientMessage, { type: "channel_save" }>["provider"],
-		expectedConfigRevision?: number,
+	// -- 网关用量（NewAPI 一类；接口由 ClientSession 实现，DSH 引擎给出显式不支持回执） --
+	/** 只读：查一次网关自报的用量（providerId 省略 = 当前生效模型所属服务商）。 */
+	queryGatewayUsage(reqId: number, providerId?: string, force?: boolean): Promise<void>;
+	/** 只读：读网关配置（单网关接入：baseUrl / 协议 / 是否已有密钥 / 模型清单 + 重复接入提示）。 */
+	getGateway(reqId: number): Promise<void>;
+	/** 写网关配置（省略的字段不动）。 */
+	saveGateway(
+		reqId: number,
+		input: { baseUrl?: string; api?: string; apiKey?: string | null; models?: UiModelConfigEntry[] },
 	): Promise<void>;
-	deleteChannelConfig(commandId: string, channelId: string, expectedConfigRevision?: number): Promise<void>;
-	setChannelDefault(input: {
-		commandId: string;
-		scope: "instance" | "project";
-		selection: { channelId: string; credentialKeyName?: string | null; modelId: string } | null;
-		expectedConfigRevision?: number;
-	}): Promise<void>;
-	queryChannelAccount(commandId: string, channelId: string): Promise<void>;
 	// -- DEV-CON Jev 决策门禁（接口由 ClientSession 实现；DSH 引擎给出显式不支持回执） --
 	/** 只读：门禁状态（清洗后的配置 + 运行聚合 + 可用命题），reqId 回显。 */
 	pushJevStatus(reqId: number): Promise<void>;
@@ -843,10 +836,10 @@ export interface DispatchSession {
 	listDiagnostics(reqId: number): Promise<void>;
 	/** P4 运维：开关资源告警。 */
 	setOpsAlerts(enabled: boolean): void;
-	/** P4 首个切片：跨渠道/项目/时间的用量历史（只读聚合）。 */
+	/** P4 首个切片：跨服务商/项目/时间的用量历史（只读聚合）。 */
 	queryUsageHistory(
 		reqId: number,
-		query: { groupBy: "channel" | "project" | "model" | "source" | "day"; from?: number; to?: number },
+		query: { groupBy: "provider" | "project" | "model" | "source" | "day"; from?: number; to?: number },
 	): Promise<void>;
 	setThinking(level: string): void;
 	setCwd(path: string): Promise<void>;
@@ -862,8 +855,6 @@ export interface DispatchSession {
 	saveModelConfig(providerId: string, config: unknown): Promise<void>;
 	deleteModelConfig(providerId: string): Promise<void>;
 	listProviders(): Promise<void>;
-	/** 渠道表单「获取接口清单」（服务端解析密钥，不下发浏览器）。 */
-	fetchChannelModels(reqId: number, providerId: string, keyName?: string | null): Promise<void>;
 	listProviderKeys(): void;
 	addProviderKey(provider: string, apiKey: string, name?: string): Promise<void>;
 	activateProviderKey(provider: string, keyName: string): Promise<void>;
@@ -1358,9 +1349,6 @@ wss.on("connection", (ws) => {
 			case "refresh_provider_models":
 				void cs.refreshProviderModels(msg.providerId, msg.reqId);
 				break;
-			case "fetch_channel_models":
-				void cs.fetchChannelModels(msg.reqId, msg.providerId, msg.keyName);
-				break;
 			case "clone_provider":
 				void cs.cloneProvider(msg.provider, msg.reqId);
 				break;
@@ -1539,32 +1527,20 @@ wss.on("connection", (ws) => {
 			case "delete_preset":
 				void cs.deletePreset(msg.name);
 				break;
-			// -- DEV-CON channels ----------------------------------------
-			case "list_channels":
-				cs.pushChannelState();
-				break;
-			case "channel_select":
-				void cs.selectChannel(msg);
-				break;
-			case "channel_binding_clear":
-				void cs.clearChannelBinding(msg.commandId, msg.conversationId);
-				break;
-			case "channel_save":
-				void cs.saveChannelConfig(msg.commandId, msg.channel, msg.provider, msg.expectedConfigRevision);
-				break;
-			case "channel_delete":
-				void cs.deleteChannelConfig(msg.commandId, msg.channelId, msg.expectedConfigRevision);
-				break;
-			case "channel_set_default":
-				void cs.setChannelDefault({
-					commandId: msg.commandId,
-					scope: msg.scope,
-					selection: msg.selection,
-					expectedConfigRevision: msg.expectedConfigRevision,
+			// -- 网关（用量 + 配置） --------------------------------------
+			case "query_gateway_usage":
+				void cs.queryGatewayUsage(msg.reqId, msg.providerId, msg.force);
+				break
+			case "get_gateway":
+				void cs.getGateway(msg.reqId);
+				break
+			case "save_gateway":
+				void cs.saveGateway(msg.reqId, {
+					baseUrl: msg.baseUrl,
+					api: msg.api,
+					apiKey: msg.apiKey,
+					models: msg.models,
 				});
-				break;
-			case "channel_query_account":
-				void cs.queryChannelAccount(msg.commandId, msg.channelId);
 				break;
 			case "jev_status":
 				void cs.pushJevStatus(msg.reqId);

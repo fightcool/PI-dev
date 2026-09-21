@@ -39,12 +39,9 @@ Node `#usage` / `#governance` package imports 让源码与编译产物引用同�
 - `npm run test:performance`：模拟HTTP/WS的浏览器回归；不接触真实服务或模型。
 - `node scripts/maintenance/prepare-release.mjs <commit>`：准备候选 release（锁文件未变时复用依赖，~3 分钟省掉）。
 - `node scripts/maintenance/switch-production-release.mjs <releaseId>`：原子切换上线（含排空/验收/回滚），见 [PM2-PRODUCTION.md](PM2-PRODUCTION.md)。
-- `npm run test:channels:unit`：渠道模型/存储/服务/账户的纯逻辑单测。
-- `npm run test:channels`：端到端双对话双密钥隔离验证（先 `npm run build`，使用本地替身模型端点）。其中还钉住了**绑定与当下模型的对齐**：渠道以外的路径（`set_model`）把模型换到别的服务商后，生效绑定必须被清掉并落盘、用量记「未归属」且不借渠道密钥；同一渠道白名单内换模型则必须**保留**绑定（见 P0-VERIFICATION §19）。
-- `npm run test:channels:multi`：端到端多客户端验证（广播一致、外部修改冲突可恢复、绑定键按 clientId 隔离）。
-- `npm run test:channels:failures`：端到端「网关搞流 → 白烧可见 → 越线告警」（替身 anthropic 端点在 `message_start` 后收流，含自动重试救回、aborted 不算失败；也在冒烟清单里）。
+- `npm --prefix vendor/pi-web-ui exec vitest run tests/unit/gateway-`：网关规格单测——换算口径（显示币种的分 → USD）、日期窗口口径（该部署忽略窗口 → 累计）、`unsupported` 与传输故障的分流、谁是网关的解析优先级、目录收窄的兜底。改网关相关代码时必须全绿（见 [NEWAPI-GATEWAY.md](NEWAPI-GATEWAY.md) §6）。
+- `npm --prefix vendor/pi-web-ui exec vitest run tests/unit/gateway-usage-view`：前端展示口径（小额金额精度、累计/窗口措辞、读数归属）。
 - 冒烟清单里的 `model-catalog-freshness-test`：模型目录自愈与变更广播（服务在跑时改写 `models.json` → 同一会话下一次 `list_models` 就能看到新服务商；保存/删除服务商后其他已连接会话不等请求就收到新目录）。**为什么必须有**：SDK 的 `ModelRuntime` 只在构造时读一次 `models.json`，旧会话会永久停在旧目录（症状是只有那一个渠道显示「该渠道暂无可用的模型」，且刷新页面无效——同 clientId 复用同一 ClientSession）。
-- `npm run test:channels:browser`：真实 Chromium 下的渠道界面断言（合成数据 + 模拟 WS）。
 - `npm run check:publish`：交付文件及常见秘密检查。
 
 开发数据 `.dev/`、依赖、构建输出与Python虚拟环境均不进入Git。测试夹具自行生成配置及测试令牌；测试不能调用 `loadConfig()` 去读取操作人的实际凭据。
@@ -63,9 +60,9 @@ Node `#usage` / `#governance` package imports 让源码与编译产物引用同�
 
 同一服务仅由一个主要进程管理器管理。systemd适用于当前Linux工作站，PM2使用单实例fork；Docker Compose使用自身重启策略。会话、PTY和WS状态尚未设计为多进程共享，不能直接启用PM2 cluster实现横向扩容。
 
-## 渠道模块的落位
+## 网关与用量模块的落位
 
-当前功能（含 P0 结论）的唯一依据为 [DEV-CON-PROPOSAL.md](DEV-CON-PROPOSAL.md) 与 [P0-VERIFICATION.md](P0-VERIFICATION.md)。渠道元数据落在实例私有目录 `<agentDir>/dev-con/channels.json`（0600，只存 providerId/keyName/modelId 引用）；用量历史落在同目录的 `usage-history.jsonl`（append-only、0600、超过 8 MiB 轮转保留一代，保留天数在 `usage-settings.json`），告警开关在 `ops-settings.json`；Jev 决策门禁的配置在 `jev-settings.json`、决策缓存在 `jev-decisions-cache.jsonl`（两者均 0600；缓存是**派生可丢**数据，只存 cacheKey 摘要/命题分数/审计元数据，不含 `state`、密钥或被审文本，见 [JEV-DECISION-GATE.md](JEV-DECISION-GATE.md)）；密钥仍由 `provider-keys.json`/`auth.json` 拥有，模型目录仍由 `models.json` 拥有，不新增第二份可写事实源。历史 `dev-con/` 只读原型及其专用测试已移除，记录留在 [历史归档](history/dev-con/readonly-prototype.md)。
+当前接入方式（单网关：`https://api.ftai.cc/`）的依据为 [NEWAPI-GATEWAY.md](NEWAPI-GATEWAY.md)；多渠道模型及其结论已整体移除，历史材料见 [历史归档](history/dev-con/README.md)（不再作为实现起点）。网关配置**没有**自己的落盘文件：地址/协议/模型清单在 `models.json`、密钥在 `provider-keys.json`/`auth.json`，两者本来就是它们的唯一拥有者，本功能只提供读写入口而不新增第二份可写事实源。用量历史落在实例私有目录 `<agentDir>/dev-con/usage-history.jsonl`（append-only、0600、超过 8 MiB 轮转保留一代，保留天数在 `usage-settings.json`），告警开关在 `ops-settings.json`；Jev 决策门禁的配置在 `jev-settings.json`、决策缓存在 `jev-decisions-cache.jsonl`（两者均 0600；缓存是**派生可丢**数据，只存 cacheKey 摘要/命题分数/审计元数据，不含 `state`、密钥或被审文本，见 [JEV-DECISION-GATE.md](JEV-DECISION-GATE.md)）；密钥仍由 `provider-keys.json`/`auth.json` 拥有，模型目录仍由 `models.json` 拥有，不新增第二份可写事实源。历史 `dev-con/` 只读原型及其专用测试已移除，记录留在 [历史归档](history/dev-con/readonly-prototype.md)。
 
 端口约定：8788在线UI、8790发布候选、8791后续运维预留、8890开发后端；协议/浏览器测试使用独立空闲端口或完全模拟网络。
 

@@ -27,7 +27,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSy
 import { dirname } from "node:path";
 import { join } from "node:path";
 import type { JevOutcome } from "./jev-model.js";
-import { looksLikeLiteralSecret } from "./account-template.js";
+import { looksLikeLiteralSecret } from "./secret-scan.js";
 
 /** 落盘版本号：结构不兼容变更时 +1。 */
 export const JEV_SAMPLES_VERSION = 1;

@@ -2,7 +2,7 @@
 /*
  * 🍞 AI Breadcrumb — @COUPLED ../server/dev-con/jev-model.ts, ../server/dev-con/jev-gate.ts,
  *   ../server/dev-con/jev-cache.ts, ../server/dev-con/jev-settings.ts, ../server/model-admin.ts,
- *   ../server/dev-con/channel-accounts.ts（openRouterAdapter）, ./jev-gate-format.ts,
+ *   ../server/dev-con/gateway-usage.ts（网关自报用量：balance 的唯一实现）, ./jev-gate-format.ts,
  *   ../server/dev-con/jev-tune.ts（tune 的纯逻辑）, ./jev-tune-format.ts（tune 的渲染）
  * 📖 ../../../docs/JEV-DECISION-GATE.md §「CLI」、§4（阈值与抖动）、§5.1（命题必须正向）、§9（成本）
  *
@@ -69,8 +69,7 @@ import {
 import { JevAskError, askExitCode, parseAskQuestions } from "../server/dev-con/jev-ask.js";
 import { jevSettingsPath, loadJevSettings, saveJevSettings } from "../server/dev-con/jev-settings.js";
 import { ModelAdminService, type ModelAdminHost } from "../server/model-admin.js";
-import { openRouterAdapter } from "../server/dev-con/channel-accounts.js";
-import type { ChannelRecord } from "../server/dev-con/channel-model.js";
+import { GatewayUsageService } from "../server/dev-con/gateway-usage.js";
 import {
 	PROBE_STATE,
 	printCacheClear,
@@ -457,42 +456,56 @@ function applyConfigPatch(
 	return patch;
 }
 
-async function runBalance(
-	agentDir: string,
-	config: Parameters<typeof requireApiKey>[1],
-	asJson: boolean,
-): Promise<number> {
-	const apiKey = requireApiKey(agentDir, config);
-	if (!apiKey) return 3;
-	const cred = config.credentialRef!;
-	const channel = {
-		id: "cli",
-		displayName: "CLI",
-		providerId: cred.providerId,
-		endpointId: null,
-		credentialRef: null,
-		accountRef: null,
-		models: [],
-		enabled: true,
-		extra: { account: { kind: "openrouter" } },
-	} as unknown as ChannelRecord;
-	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), HARD_TIMEOUT_MS);
-	try {
-		const res = await openRouterAdapter.query({ channel, apiKey, signal: controller.signal });
-		if (asJson) {
-			console.log(JSON.stringify(res, null, 2));
-		} else if (res.status === "ok") {
-			console.log(`状态: ${res.status}  单位: ${res.unit ?? "-"}`);
-			if (res.balance !== undefined) console.log(`余额: ${res.balance}`);
-			if (res.quota) console.log(`已用: ${res.quota.used ?? "-"} / 额度: ${res.quota.limit ?? "-"}`);
-		} else {
-			console.error(`查询失败(${res.status}): ${res.error ?? "未知错误"}`);
-		}
-		return res.status === "ok" ? 0 : 3;
-	} finally {
-		clearTimeout(timer);
+/**
+ * `balance`：显示**网关自报**的用量/额度（只读，密钥只在进程内使用，不打印不落盘）。
+ * @WHY 单网关接入后余额只有一个来源：网关自己的账单接口。旧实现挂的是 OpenRouter 的账户适配器
+ *   —— 多渠道时代的产物，网关根本不在那条路径上，读出来的数字与真实扣费无关。
+ * @CONTRACT 复用的是服务端同一个 GatewayUsageService（同一套单位换算与「不猜余额」口径），
+ *   不是 CLI 自己写一遍解析；地址/密钥经 ModelAdminService 的**无运行时**端口解析。
+ * @GOTCHA 该部署忽略日期窗口，所以打印的是**累计**用量，不写「近 N 天」。
+ */
+async function runBalance(agentDir: string, config: Parameters<typeof requireApiKey>[1], asJson: boolean): Promise<number> {
+	const unreachable = () => {
+		throw new Error("CLI 不应触发 ModelAdminHost 的运行时成员");
+	};
+	const host = {
+		agentDir,
+		emit: unreachable,
+		flushSnapshot: unreachable,
+		isDisposed: () => false,
+		modelRuntime: unreachable,
+		invalidatePiConfig: unreachable,
+		pushModels: unreachable,
+	} as unknown as ModelAdminHost;
+	const admin = new ModelAdminService(host);
+	// Jev 的凭据指向哪个服务商就查哪个；没配就用网关本身（单网关接入下两者通常同一个）。
+	const providerId = (config.credentialRef?.providerId || admin.gatewayProviderId() || "").trim();
+	if (!providerId) {
+		console.error("没有可查询的网关：models.json 里还没有配置服务商");
+		return 3;
 	}
+	const service = new GatewayUsageService(admin.gatewayUsagePort());
+	const result = await service.query(providerId, { force: true });
+	if (asJson) {
+		console.log(JSON.stringify(result, null, 2));
+		return result.ok ? 0 : 3;
+	}
+	if (!result.ok) {
+		if (result.unsupported) {
+			console.error(`该服务商没有账单接口（不是网关）：${result.error ?? ""}`);
+		} else {
+			console.error(`查询失败: ${result.error ?? "未知错误"}`);
+		}
+		return 3;
+	}
+	const u = result.usage!;
+	const money = (v: number | null) => (v === null ? "未报告" : `$${v}`);
+	console.log(`网关: ${u.baseUrl ?? "-"}${u.providerName ? `（${u.providerName}）` : ""}`);
+	console.log(`已用: ${money(u.usedUsd)}`);
+	console.log(`额度: ${u.unlimited ? "未设上限（网关返回占位值）" : money(u.limitUsd)}`);
+	if (u.remainingUsd !== null) console.log(`剩余: ${money(u.remainingUsd)}`);
+	console.log("口径: 累计（该部署不按时间窗口细分）");
+	return 0;
 }
 
 /**

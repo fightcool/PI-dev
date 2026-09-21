@@ -12,22 +12,22 @@ const bypass = (tracker: unknown, source: string, usage: Record<string, number>)
 	(tracker as { record: (u: unknown, now?: number, a?: unknown) => unknown }).record(
 		{ scope: "final", identity: null, role: "assistant", ...usage },
 		Date.now(),
-		// agent-service#bindingAttribution 把绑定的 "provider/model" 拆成裸 model id，
+		// agent-service#bindingAttribution 把 "provider/model" 拆成裸 model id，
 	// 与消息事件里的 message.model 同名（同一行才能在归属表里合并）。
-	{ source, channelId: "ch-a", credentialKeyName: "密钥 1", modelId: "m1", providerId: "main", bindingRevision: 2, configRevision: 3 },
+	{ source, modelId: "m1", providerId: "main" },
 	);
 
 describe("bypass call attribution", () => {
-	it("records compaction and vision usage as separate sources without inventing a channel", () => {
+	it("records compaction and vision usage as separate sources without inventing attribution", () => {
 		const t = new TokenUsageTracker();
 		t.startRun(1_000);
 		bypass(t, "compaction", { input: 900, output: 120, cacheRead: 0, cacheWrite: 0, total: 1020, cost: 0.02 });
 		bypass(t, "vision", { input: 300, output: 40, cacheRead: 0, cacheWrite: 0, total: 340, cost: 0.01 });
 		const buckets = t.attributionList();
 		expect(buckets.map((b: { source: string }) => b.source).sort()).toEqual(["compaction", "vision"]);
-		// 归属随事件记录：渠道/凭据/模型与绑定版本都在，而不是用今天的配置推断。
+		// 归属随事件记录：服务商与模型都在，而不是用今天的配置推断。
 		const compaction = buckets.find((b: { source: string }) => b.source === "compaction");
-		expect(compaction).toMatchObject({ channelId: "ch-a", credentialKeyName: "密钥 1", modelId: "m1", bindingRevision: 2, configRevision: 3 });
+		expect(compaction).toMatchObject({ providerId: "main", modelId: "m1" });
 		expect(t.snapshot().turn.total).toBe(1360);
 		expect(t.snapshot().requests).toBe(2);
 	});

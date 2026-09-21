@@ -5,30 +5,23 @@
  *              @PERF=performance @CONTRACT=interface contract 📖=dev doc reference
  *
  * Breadcrumbs (changing this affects):
- *   @COUPLED components/FooterBar.tsx (打开本面板的触发点 + 有效渠道显示),
- *            use-chat.ts (channelState.channels 用于把 channelId 解析成显示名),
- *            channel-account.ts（formatAmount = 全局唯一金额口径；余额/已用两行经
- *            balanceTextOf/usedTextOf 走它，与 chip、设置页渠道行同数字）
- *   📖 docs/DEV-CON-PROPOSAL.md §7（请求/运行/会话口径、渠道归属、未知归属诚实地标未归属）
- *   @CONTRACT 只读展示。归属按「请求发出时」记录的 channelId 展示——渠道改名/删除不会把旧用量
- *             挪到新渠道；channelId 缺失一律显示「未归属」，解析不到名字时显示原 id 而不是猜名字。
+ *   @COUPLED components/FooterBar.tsx (打开本面板的触发点 + 状态栏网关项),
+ *            components/GatewayUsageBlock.tsx（网关自报用量：本面板与设置页共用同一实现）,
+ *            components/UsageHistory.tsx（跨服务商/项目/时间的历史）
+ *   📖 docs/NEWAPI-GATEWAY.md §4（两条费用口径为什么不能相加）
+ *   @CONTRACT 只读展示。归属按**请求发出时**记录的 providerId 展示：解析不到名字就显示原 id，
+ *             绝不按今天的配置猜（旧渠道时代的同名错误见 docs/P0-VERIFICATION.md）。
+ *   @GOTCHA 本地估算（stats.cost）与网关自报（GatewayUsageBlock）是两个数字、两套来源：
+ *             同屏展示时必须各自标注来源，**绝不相加**，也不要把其中一个说成另一个。
  *   @GOTCHA 缓存读写只来自 SDK 的真实字段；为 0 时整行不渲染（不显示误导性的 0）。
  * ──────────────────────────────────────────────────
  */
-import { useEffect, useRef } from "react";
 import { cacheMetrics } from "../cache-stats";
-import type { UiChannelInfo, UiState, UiUsageAttribution, UiUsageRecord } from "../types";
+import type { UiState, UiUsageAttribution, UiUsageRecord } from "../types";
 import { useT, type Translate } from "../i18n";
 import type { UsageHistoryMsg, UsageHistoryWindow } from "../use-chat";
-import {
-	accountStateView,
-	BALANCE_REFRESH_MS,
-	balanceTextOf,
-	isAccountQueryFailed,
-	type ChannelAccountView,
-	topupUrlOf,
-	usedTextOf,
-} from "../channel-account";
+import type { GatewayUsageState } from "./GatewayUsageBlock";
+import { GatewayUsageBlock } from "./GatewayUsageBlock";
 import { UsageHistory } from "./UsageHistory";
 
 /** 令牌数的人类可读格式（FooterBar 与明细表共用）。 */
@@ -56,10 +49,6 @@ function ScopeRow({ label, tok }: { label: string; tok: { input: number; output:
 	);
 }
 
-/**
- * 用量详情面板：请求/本轮/会话口径 + 缓存读写（非零才显示）+ 按来源/渠道/模型的归属表。
- * 由底栏的令牌项点开（overlay，不占用输入区）。
- */
 // 来源标识符 → 文案键（服务端只发标识符；未知来源按「系统」显示，绝不猜具体来源）。
 const SOURCE_LABELS: Record<string, Parameters<Translate>[0]> = {
 	user: "usageSourceUser",
@@ -73,6 +62,16 @@ const SOURCE_LABELS: Record<string, Parameters<Translate>[0]> = {
 	system: "usageSourceSystem",
 };
 
+/**
+ * 服务商单元格：记录里只有 providerId。
+ * @CONTRACT 有展示名就用展示名（models.json 里配的），没有就显示原 id —— 不猜、不翻译、不隐藏。
+ */
+function providerCell(providerId: string, names: Record<string, string> | undefined, t: Translate) {
+	if (!providerId) return <span className="usage-unattributed">{t("usageUnattributed")}</span>;
+	const name = names?.[providerId];
+	return name ? <span title={providerId}>{name}</span> : <span className="usage-unknown-channel">{providerId}</span>;
+}
+
 export function UsageDetail({
 	tokens,
 	cost,
@@ -81,127 +80,38 @@ export function UsageDetail({
 	usageHistory,
 	onQueryUsageHistory,
 	runId,
-	channels,
-	accountView,
-	onRetryAccount,
+	gatewayUsage,
+	activeProvider,
+	providerNames,
+	onRefreshGatewayUsage,
 }: {
 	tokens: UiState["stats"]["tokens"];
 	cost: number;
 	attribution?: UiUsageAttribution[];
 	/** §7 最近若干条逐请求记录（时间 + 计价依据）。 */
 	recentRequests?: UiUsageRecord[];
-	/** P4：用量历史（跨渠道/项目/时间）；null = 尚未查询。 */
+	/** P4：用量历史（跨服务商/项目/时间）；null = 尚未查询。 */
 	usageHistory?: UsageHistoryMsg | null;
 	onQueryUsageHistory?: (groupBy: UsageHistoryMsg["groupBy"], window: UsageHistoryWindow) => void;
 	runId?: string | null;
-	channels: UiChannelInfo[];
-	/** 当前对话对应渠道的账户快照（chip 点开就看这里；主界面只说「余额未知」，细节在这里）。 */
-	accountView?: ChannelAccountView;
-	/** 手动重试余额查询（连续失败后自动刷新会降级成慢速探测，点一下立即恢复）。 */
-	onRetryAccount?: (channelId: string) => void;
+	/** 网关自报用量（与本地估算并列展示，两者不得相加）。 */
+	gatewayUsage: GatewayUsageState;
+	/** 当前生效模型所属服务商（标注读数归属，见 GatewayUsageBlock）。 */
+	activeProvider?: string | null;
+	/** 服务商展示名（models.json 的 name）；缺省时显示 providerId。 */
+	providerNames?: Record<string, string>;
+	onRefreshGatewayUsage?: () => void;
 }) {
 	const t = useT();
-	// 面板一打开就补一次（手机后台会把定时器挂起，回到前台不一定有 visibilitychange）。
-	// @CONTRACT 只在「打开这一刻」查一次：快照后面再变也不会反复打接口（服务端另有 10 秒限频）。
-	const accountChannel = accountView?.channel ?? null;
-	const accountStatus = accountView?.account;
-	const accountFreshRef = useRef(false);
-	accountFreshRef.current =
-		accountStatus?.status === "ok" && Date.now() - (accountStatus.checkedAt ?? 0) < BALANCE_REFRESH_MS;
-	const queryAccountRef = useRef(onRetryAccount);
-	queryAccountRef.current = onRetryAccount;
-	useEffect(() => {
-		if (!accountChannel || accountFreshRef.current) return;
-		queryAccountRef.current?.(accountChannel.id);
-	}, [accountChannel]);
 	const request = tokens.request ?? tokens;
 	const run = tokens.run ?? tokens;
 	/** 会话级缓存指标：与底部状态栏同一个 cacheMetrics（单一口径，不另算一套）。 */
 	const sessionCache = cacheMetrics(tokens);
 	const rows = attribution ?? [];
 	const requests = recentRequests ?? [];
-	// A07：没有任何归属记录但会话有用量时，明确说明「这些历史用量没有渠道归属」，
+	// A07：没有任何归属记录但会话有用量时，明确说明这些历史用量没有归属，
 	// 而不是显示一张空表让人以为没花过 token（未知/缺失归属要诚实展示）。
 	const unattributedHistory = rows.length === 0 && tokens.total > 0;
-	/** 渠道列：记录里的 channelId 优先解析成显示名；解析不到就显示原 id（绝不猜名字）。 */
-	const channelCell = (row: UiUsageAttribution) => {
-		if (!row.channelId) return <span className="usage-unattributed">{t("channelUnattributed")}</span>;
-		const known = channels.find((c) => c.id === row.channelId);
-		// 渠道已被删除/改名：显示的只能是当时记录的原 id，并明确标为未归属，不显示成正常渠道。
-		if (!known)
-			return (
-				<span className="usage-unknown-channel" title={t("channelUnknownTip")}>
-					{t("channelUnattributed")} · {row.channelId}
-				</span>
-			);
-		return (
-			<span>
-				{known.displayName}
-				{row.credentialKeyName && <span className="usage-key">{row.credentialKeyName}</span>}
-			</span>
-		);
-	};
-	/**
-	 * 渠道账户区：主界面只说「余额未知」，一切细节（余额/已用/查询时间/说明/原始报错）在这里。
-	 * @CONTRACT 面向用户：标签用人话，说明用一句话；技术原因只在失败时附在后面。
-	 *   stale 要分出两种：数据只是旧了（中性，给「刷新」）vs 上次查询失败（警示，给「重试」）。
-	 */
-	const accountSection = (() => {
-		const view = accountView;
-		const channel = view?.channel ?? null;
-		if (!view || !channel) return null;
-		const status = view.account;
-		const used = usedTextOf(status);
-		const state = accountStateView(status);
-		const failed = isAccountQueryFailed(status);
-		return (
-			<div className="usage-account">
-				<div className="usage-account-head">
-					{t("channelAccountDetailTitle")}
-					<span className="usage-account-channel">{channel.displayName}</span>
-					<span className={`chan-acct ${status?.status ?? "unknown"} ${state.tone}`}>{t(state.labelKey)}</span>
-				</div>
-				<div className="usage-account-rows">
-					<span>
-						{t("channelAccountBalance")}：{balanceTextOf(status, t as (k: string) => string)}
-					</span>
-					{used !== null && (
-						<span>
-							{t("channelAccountUsed")}：{used}
-						</span>
-					)}
-					{typeof status?.checkedAt === "number" && (
-						<span>
-							{t("channelAccountCheckedAt")}：{new Date(status.checkedAt).toLocaleString()}
-						</span>
-					)}
-					{/* 让用户知道这是自动更新的，不用自己反复点。 */}
-					<span className="usage-account-auto">{t("channelAccountAutoRefresh")}</span>
-				</div>
-				{state.tipKey && <div className="usage-account-note">{t(state.tipKey)}</div>}
-				{(status?.note || status?.error) && (
-					<div className="usage-account-note">
-						{status?.note}
-						{status?.note && status?.error ? " · " : ""}
-						{status?.error}
-					</div>
-				)}
-				{view.derived && <div className="usage-account-note">{t("channelBalanceDerived")}</div>}
-				{/* 手动入口：失败时叫「重试」（自动刷新已降级），成功/数据旧时叫「刷新」——
-				   不给用户一个「只能等自动刷新」的死角。 */}
-				{(failed || state.tone === "aging" || state.tone === "unknown") && onRetryAccount && (
-					<div className="usage-account-retry">
-						{failed && <span>{t("channelAccountRetryHint")}</span>}
-						<button type="button" className="usage-topup" onClick={() => onRetryAccount(channel.id)}>
-							{failed ? t("channelAccountRetry") : t("channelAccountRefresh")}
-						</button>
-					</div>
-				)}
-			</div>
-		);
-	})();
-	/** 「去充值」：标题右侧的直达链接（渠道配置了充值时地址才出现）。 */
-	const topupUrl = topupUrlOf(accountView?.channel);
 	return (
 		<div className="usage-panel" onClick={(e) => e.stopPropagation()}>
 			<div className="usage-panel-head">
@@ -211,13 +121,11 @@ export function UsageDetail({
 						{t("usageRunId")}: {runId}
 					</span>
 				)}
-				{topupUrl && (
-					<a className="usage-topup" href={topupUrl} target="_blank" rel="noopener noreferrer">
-						{t("channelTopUp")}
-					</a>
-				)}
 			</div>
-			{accountSection}
+
+			{/* 网关自报用量放在最上面：它是「账户还剩多少」的答案，本地估算回答的是另一个问题。 */}
+			<GatewayUsageBlock state={gatewayUsage} activeProvider={activeProvider} onRefresh={onRefreshGatewayUsage} />
+
 			<table className="usage-scope">
 				<thead>
 					<tr>
@@ -272,7 +180,7 @@ export function UsageDetail({
 					<thead>
 						<tr>
 							<th>{t("usageColSource")}</th>
-							<th>{t("usageColChannel")}</th>
+							<th>{t("usageColProvider")}</th>
 							<th>{t("usageColModel")}</th>
 							<th>{t("usageColRequests")}</th>
 							<th>{t("usageColInput")}</th>
@@ -283,9 +191,9 @@ export function UsageDetail({
 					</thead>
 					<tbody>
 						{rows.map((row) => (
-							<tr key={`${row.source}|${row.channelId ?? "-"}|${row.providerId}|${row.modelId}`}>
+							<tr key={`${row.source}|${row.providerId}|${row.modelId}`}>
 								<td>{t(SOURCE_LABELS[row.source] ?? "usageSourceSystem")}</td>
-								<td>{channelCell(row)}</td>
+								<td>{providerCell(row.providerId, providerNames, t)}</td>
 								<td title={row.modelId}>{row.modelId}</td>
 								<td>{row.requests}</td>
 								<td>{formatTokens(row.input)}</td>
@@ -310,7 +218,7 @@ export function UsageDetail({
 							<tr>
 								<th>{t("usageColTime")}</th>
 								<th>{t("usageColSource")}</th>
-								<th>{t("usageColChannel")}</th>
+								<th>{t("usageColProvider")}</th>
 								<th>{t("usageColModel")}</th>
 								<th>{t("usageColTotal")}</th>
 								<th>{t("usageColCost")}</th>
@@ -321,7 +229,7 @@ export function UsageDetail({
 								<tr key={r.id}>
 									<td>{new Date(r.at).toLocaleTimeString()}</td>
 									<td>{t(SOURCE_LABELS[r.source] ?? "usageSourceSystem")}</td>
-									<td>{requestsChannelCell(r, channels, t)}</td>
+									<td>{providerCell(r.providerId, providerNames, t)}</td>
 									<td title={r.modelId}>{r.modelId}</td>
 									<td>{formatTokens(r.total)}</td>
 									<td>
@@ -341,33 +249,8 @@ export function UsageDetail({
 				</>
 			)}
 			{onQueryUsageHistory && (
-				<UsageHistory history={usageHistory ?? null} channels={channels} onQuery={onQueryUsageHistory} />
+				<UsageHistory history={usageHistory ?? null} providerNames={providerNames} onQuery={onQueryUsageHistory} />
 			)}
 		</div>
-	);
-}
-
-/**
- * 逐请求记录的渠道单元格：与聚合表同样的「不猜名字」规则 —— 记录里只有 channelId 引用，
- * 名字用当前渠道表解析；解析不到（已删除/改名）就只显示原 id 并标未归属，绝不写成本渠道。
- */
-function requestsChannelCell(
-	row: { channelId: string | null; credentialKeyName: string | null },
-	channels: UiChannelInfo[],
-	t: Translate,
-) {
-	if (!row.channelId) return <span className="usage-unattributed">{t("channelUnattributed")}</span>;
-	const known = channels.find((c) => c.id === row.channelId);
-	if (!known)
-		return (
-			<span className="usage-unknown-channel" title={t("channelUnknownTip")}>
-				{t("channelUnattributed")} · {row.channelId}
-			</span>
-		);
-	return (
-		<span>
-			{known.displayName}
-			{row.credentialKeyName && <span className="usage-key">{row.credentialKeyName}</span>}
-		</span>
 	);
 }

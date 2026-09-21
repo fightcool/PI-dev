@@ -1,7 +1,7 @@
 /*
  * 🍞 AI Breadcrumb — @COUPLED ../server/dev-con/usage-history.ts,
- *   ../lib/usage/token-usage.mjs, ../server/dev-con/channel-failure-alert.ts,
- *   ../server/agent-service.ts（failureSamples / checkChannelFailureAlerts）
+ *   ../lib/usage/token-usage.mjs, ../server/dev-con/failure-alert.ts,
+ *   ../server/agent-service.ts（failureSamples / checkFailureAlerts）
  * 📖 ../../docs/P0-VERIFICATION.md §14「失败请求与白烧可见」
  *
  * 端到端证明「网关掐流 → 白烧可见 → 越线告警」这条链在真实服务里成立。替身
@@ -15,7 +15,7 @@
  *      这类请求在「请求数 / 费用」上看起来完全正常，不单独记账就永远不可见；
  *   3) 磁盘记录带 stopReason=error 与截断到 120 字的 failureReason；
  *   4) 用户主动中止（aborted）不算失败 —— 口径只认 error，否则告警变噪声；
- *   5) 失败越线时真的发出告警，且**点名渠道**（不是 provider，也不是沉默）。
+ *   5) 失败越线时真的发出告警，且**点名服务商**（不是沉默）。
  *
  * 阈值/窗口是分钟级常量，检查周期由 PI_WEB_OPS_ALERT_MS 压到 1 秒，用例才不用等一个
  * 60 秒 tick；窗口与冷却本身仍按生产值走（这里只验证「判定到了会发」）。
@@ -226,6 +226,8 @@ writeFileSync(
 				models: [{ id: "p1-model", name: "Flaky Once Mock", input: ["text"], contextWindow: 32000, maxTokens: 4096 }],
 			},
 			p2: {
+				// 告警按「服务商注册名」点名（providerNameOf）：没有 name 字段时会回落到裸 id。
+				name: "Always Truncating Mock",
 				api: "anthropic-messages",
 				baseUrl: `http://127.0.0.1:${MOCK_PORT}/p2`,
 				apiKey: "sk-mock-p2",
@@ -343,17 +345,12 @@ class Client {
 	assistantCount() {
 		return (this.state?.messages ?? []).filter((m) => m.role === "assistant").length;
 	}
-	/** 渠道失败告警：文案形如「<渠道名> 近 30 分钟 N 次请求中 M 次失败…白烧约 T 输入 token」。 */
+	/** 失败告警：文案形如「<服务商名> 近 30 分钟 N 次请求中 M 次失败…白烧约 T 输入 token」。 */
 	failureNotices() {
 		return this.notices.filter((n) => String(n.text ?? "").includes("白烧"));
 	}
 }
 
-const runCommand = async (client, type, payload = {}) => {
-	const commandId = randomUUID();
-	client.send({ type, commandId, ...payload });
-	return client.waitForType("channel_command_result", (m) => m.commandId === commandId);
-};
 const queryHistory = async (client, groupBy) => {
 	const reqId = Math.floor(Math.random() * 1e6);
 	client.send({ type: "usage_history_query", reqId, groupBy });
@@ -377,21 +374,11 @@ try {
 	const state = await client.waitForState((s) => Boolean(s.conversationId));
 	const conv = state.conversationId;
 
-	for (const channel of [
-		{ id: "ch-p1", displayName: "偶发掐流渠道", providerId: "p1", models: ["p1-model"] },
-		{ id: "ch-p2", displayName: "持续掐流渠道", providerId: "p2", models: ["p2-model"] },
-		{ id: "ch-p3", displayName: "慢流渠道", providerId: "p3", models: ["p3-model"] },
-	]) {
-		const saved = await runCommand(client, "channel_save", { channel });
-		check(`渠道 ${channel.id} 保存成功`, saved.ok === true, saved.error ?? "");
-	}
-	const select = async (channelId, modelId) => {
-		const result = await runCommand(client, "channel_select", { conversationId: conv, channelId, modelId });
-		check(
-			`对话绑定 ${channelId}/${modelId}`,
-			result.ok === true && result.phase === "applied",
-			JSON.stringify({ phase: result.phase, error: result.error }),
-		);
+	/** 切模型即切服务商（渠道能力已移除：归属按 provider 记录）。 */
+	const select = async (modelId) => {
+		client.send({ type: "set_model", modelId });
+		const bare = modelId.split("/")[1];
+		await client.waitForState((s) => s.model?.id === bare, 20000);
 	};
 	const runTurn = async (text) => {
 		const before = client.assistantCount();
@@ -403,7 +390,7 @@ try {
 	};
 
 	// ── 1) 掐流一次 → 重试救回（线上 136/136 都是这么活的） ─────────────────────
-	await select("ch-p1", "p1/p1-model");
+	await select("p1/p1-model");
 	await runTurn("ping-flaky");
 	const lastAssistant = (client.state?.messages ?? []).filter((m) => m.role === "assistant").at(-1);
 	const replyText = JSON.stringify(lastAssistant?.content ?? []).includes("pong");
@@ -414,9 +401,9 @@ try {
 	);
 
 	// ── 2) 白烧进得了用量历史（这是本次改动的核心） ─────────────────────────────
-	const byChannel = await queryHistory(client, "channel");
-	const rowP1 = byChannel.rows.find((r) => r.key === "ch-p1");
-	check("用量历史按渠道分组里能看到 ch-p1", Boolean(rowP1));
+	const byProvider = await queryHistory(client, "provider");
+	const rowP1 = byProvider.rows.find((r) => r.key === "p1");
+	check("用量历史按服务商分组里能看到 p1", Boolean(rowP1));
 	check("失败请求数 = 1", rowP1?.failedRequests === 1, `failedRequests=${rowP1?.failedRequests}`);
 	check(
 		"白烧输入 = 8000（miss+读缓存+写缓存）",
@@ -430,12 +417,12 @@ try {
 	);
 	check(
 		"totals 同样带上失败与白烧字段",
-		byChannel.totals?.failedRequests === 1 && byChannel.totals?.wastedInput === TRUNCATED_WASTE,
-		`totals.failedRequests=${byChannel.totals?.failedRequests} wastedInput=${byChannel.totals?.wastedInput}`,
+		byProvider.totals?.failedRequests === 1 && byProvider.totals?.wastedInput === TRUNCATED_WASTE,
+		`totals.failedRequests=${byProvider.totals?.failedRequests} wastedInput=${byProvider.totals?.wastedInput}`,
 	);
 	check(
-		"未失败渠道的 failedRequests 是 0（不是缺失）",
-		byChannel.rows.filter((r) => r.key !== "ch-p1").every((r) => r.failedRequests === 0),
+		"未失败服务商的 failedRequests 是 0（不是缺失）",
+		byProvider.rows.filter((r) => r.key !== "p1").every((r) => r.failedRequests === 0),
 	);
 
 	// ── 3) 磁盘记录带 stopReason / 有界 failureReason ───────────────────────────
@@ -452,20 +439,20 @@ try {
 		`max=${Math.max(0, ...errored.map((r) => String(r.failureReason ?? "").length))}`,
 	);
 	check(
-		"失败记录只挂在 ch-p1 上（不串渠道）",
-		errored.every((r) => r.channelId === "ch-p1"),
-		JSON.stringify([...new Set(errored.map((r) => r.channelId))]),
+		"失败记录只挂在 p1 上（不串服务商）",
+		errored.every((r) => r.providerId === "p1"),
+		JSON.stringify([...new Set(errored.map((r) => r.providerId))]),
 	);
 
 	// ── 4) 用户主动中止不算失败 ────────────────────────────────────────────────
-	await select("ch-p3", "p3/p3-model");
+	await select("p3/p3-model");
 	client.send({ type: "prompt", text: "ping-slow" });
 	await sleep(800);
 	client.send({ type: "abort" });
 	await client.waitForState((s) => s.isStreaming === false, 20000);
 	await sleep(500);
-	const byChannel2 = await queryHistory(client, "channel");
-	const rowP3 = byChannel2.rows.find((r) => r.key === "ch-p3");
+	const byProvider2 = await queryHistory(client, "provider");
+	const rowP3 = byProvider2.rows.find((r) => r.key === "p3");
 	check(
 		"中止的请求不算失败（failedRequests 保持 0）",
 		rowP3?.failedRequests === 0,
@@ -474,8 +461,8 @@ try {
 	const aborted = readHistoryRecords().filter((r) => r.stopReason === "aborted");
 	check("但中止事实照记在盘上（stopReason=aborted，留证据）", aborted.length >= 1, `count=${aborted.length}`);
 
-	// ── 5) 失败越线 → 告警点名渠道（不是 provider，也不是沉默） ─────────────────
-	await select("ch-p2", "p2/p2-model");
+	// ── 5) 失败越线 → 告警点名服务商（不是沉默） ───────────────────────────────
+	await select("p2/p2-model");
 	// 每次 prompt 都会在重试里反复失败；跑到 ≥5 次失败样本即可（阈值：≥5 次且失败率 ≥5%）。
 	let failedSamples = 0;
 	for (let round = 0; round < 3 && failedSamples < 6; round++) {
@@ -484,7 +471,7 @@ try {
 		await sleep(300);
 		failedSamples = readHistoryRecords().filter((r) => r.stopReason === "error").length;
 	}
-	check("持续掐流渠道积累了 ≥5 次失败样本", failedSamples >= 5, `failedSamples=${failedSamples}`);
+	check("持续掐流的服务商积累了 ≥5 次失败样本", failedSamples >= 5, `failedSamples=${failedSamples}`);
 
 	const alert = await (async () => {
 		const started = Date.now();
@@ -496,7 +483,7 @@ try {
 		return null;
 	})();
 	check("失败越线后真的发出白烧告警", Boolean(alert), alert?.text ?? "(15 秒内没有告警)");
-	check("告警点名的是渠道显示名", String(alert?.text ?? "").includes("持续掐流渠道"), alert?.text ?? "");
+	check("告警点名的是服务商名称", String(alert?.text ?? "").includes("Always Truncating Mock"), alert?.text ?? "");
 	check(
 		"告警给出失败率与白烧 token 量",
 		/近 30 分钟 \d+ 次请求中 \d+ 次失败（\d+%）/.test(String(alert?.text ?? "")) &&
@@ -504,8 +491,8 @@ try {
 		alert?.text ?? "",
 	);
 	check(
-		"只有 1 次失败的渠道不触发告警（次数下限挡住偶发）",
-		!client.failureNotices().some((n) => String(n.text ?? "").includes("偶发掐流渠道")),
+		"只有 1 次失败的服务商不触发告警（次数下限挡住偶发）",
+		!client.failureNotices().some((n) => String(n.text ?? "").includes("Flaky Once Mock")),
 	);
 	check("告警文案有英文版（UI 双语）", Boolean(alert?.textEn), alert?.textEn ?? "");
 } catch (error) {

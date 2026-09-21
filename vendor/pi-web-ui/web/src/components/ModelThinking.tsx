@@ -1,24 +1,20 @@
-/* 🍞 @COUPLED web/src/components/ModelChannelPicker.tsx, web/src/channel-models.ts, web/src/use-chat.ts — 📖 docs/DEV-CON-PROPOSAL.md §6
- * @CONTRACT 有渠道时模型行交给 ChannelModelList（按渠道分组），那里按 channel.models 白名单过滤；
- *           无渠道时保持原有「服务商 + 命名密钥」分组行为，零回归。
- * @GOTCHA 渠道分组下也要有「没有匹配的模型」提示：搜索词与白名单叠加时，
- *         没有这行用户只会看到一个空列表。 */
+/* 🍞 @COUPLED web/src/components/ChatInput.tsx（唯一挂载点）, web/src/use-chat.ts
+ * @CONTRACT 模型目录是**网关的**模型清单（服务端已收窄，见 dev-con/gateway-config.ts）：
+ *   平铺列表 —— 没有服务商侧栏、没有命名密钥、也不显示服务商名（单网关实例下这些都是噪声，
+ *   用户只有一个入口要选）。
+ * @GOTCHA 搜索词过滤后也要有「没有匹配的模型」提示：没有这行用户只会看到一个空列表。 */
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { FiCpu, FiSearch, FiZap } from "react-icons/fi";
-import type { ModelInfo, ProviderKeyInfo, UiChannelBindingView, UiState } from "../types";
-import { accountStateView, balanceTextOf, channelAccountView, isAccountQueryFailed, startBalanceRefresh } from "../channel-account";
+import type { ModelInfo, UiState } from "../types";
 import { Dropdown, DropdownItem } from "./Dropdown";
-import { ChannelModelList, ChannelStatusChips } from "./ModelChannelPicker";
 import { useT } from "../i18n";
 import { loadModelUsage, sortByUsage } from "../model-usage";
-import type { ChannelApi, ChannelCommandResult, ChannelStateMsg } from "../use-chat";
 
 /** Messages this component sends (a subset shared by TopBar and ChatInput). */
 export type ModelThinkingMsg =
 	| { type: "list_models" }
 	| { type: "set_model"; modelId: string }
-	| { type: "set_thinking"; level: string }
-	| { type: "activate_provider_key"; provider: string; keyName: string };
+	| { type: "set_thinking"; level: string };
 
 const THINKING_VALUES = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
@@ -31,22 +27,8 @@ interface Props {
 	models: ModelInfo[];
 	modelsLoading: boolean;
 	send: (msg: ModelThinkingMsg) => boolean;
-	/** Stored API keys per built-in provider (masked) — a provider with several
-	 *  keys renders its model list once per key so clicking a model under a key
-	 *  switches the active key on the fly (no static model-list copy). */
-	providerKeys: Record<string, ProviderKeyInfo[]>;
-	/** 已配置渠道快照（null / channels 为空 → 完全按原有服务商分组行为渲染）。 */
-	channelState: ChannelStateMsg | null;
-	/** 当前对话的有效/待生效绑定视图（每个快照都带）。 */
-	channelBinding: UiChannelBindingView | null | undefined;
-	/** 渠道命令回执，按 commandId 匹配最新一次结果。 */
-	channelResults: Record<string, ChannelCommandResult>;
-	/** DEV-CON 渠道命令 API（含 revision 提交与 commandId 注册）。 */
-	channelApi: ChannelApi;
 	/** Compact triggers for narrow toolbars (mobile input row). */
 	compact?: boolean;
-	/** 打开用量明细面板（余额 chip 点击；状态在 App 层，见 use-app-dialogs.ts）。 */
-	onOpenUsage?: () => void;
 }
 
 /** Model picker + thinking-level picker. Rendered in the composer toolbar
@@ -57,99 +39,17 @@ export const ModelThinking = memo(function ModelThinking({
 	models,
 	modelsLoading,
 	send,
-	providerKeys,
-	channelState,
-	channelBinding,
-	channelResults,
-	channelApi,
-	onOpenUsage,
 	compact = false,
 }: Props) {
 	const t = useT();
 	const model = state?.model;
-	// DEV-CON：有渠道时模型按渠道分组（渠道+命名凭据+模型一次提交）；没有渠道时
-	// 完全走原有「服务商 + 命名密钥」分组，行为零回归。
-	const channels = useMemo(() => channelState?.channels ?? [], [channelState]);
-	const hasChannels = channels.length > 0;
-	/** 最近一次 channel_select 的 commandId —— 回执只展示它对应的那一条。 */
-	const [lastChannelCommand, setLastChannelCommand] = useState<string | null>(null);
-	const channelReceipt = lastChannelCommand ? (channelResults[lastChannelCommand] ?? null) : null;
 
-	// -- DEV-CON 余额 chip：直接显示在「思考强度」右侧（PC 与移动端同一处）----------
-	// @WHY 余额原本只在「设置 → 渠道」的行里，用户要一层层翻进去；但它是「这个渠道还能不能跑」的
-	//   第一信号，应该和当前模型/思考强度放在同一行。
-	// @CONTRACT 面向用户：主标签只说人话 —— 有余额就给数值，拿不到余额就写「余额未知」；
-	//   接口字段名/报错细节一律不上主界面，点击 chip 打开用量明细看详情（§7 + 产品口径）。
-	const balanceView = useMemo(
-		() =>
-			channelAccountView({
-				channels,
-				accounts: channelState?.accounts ?? [],
-				binding: channelBinding,
-				modelProvider: state?.model?.provider ?? null,
-			}),
-		[channels, channelState?.accounts, channelBinding, state?.model?.provider],
-	);
-	const balanceChannel = balanceView.channel;
-	const accountStatus = balanceView.account;
-	const hasAccountQuery = !!balanceChannel;
-	/**
-	 * 余额的自动更新：进入/切换渠道立刻查一次，之后每 {@link BALANCE_REFRESH_MS} 刷新一次；
-	 * 从后台标签页切回来时，若数据已经超过一个周期就补一次。
-	 * @WHY 余额是「还能不能继续跑」的信号，只在进入时查一次会一直停在旧值上。
-	 * @MAGIC 5 分钟与服务端的账户缓存 TTL 对齐（channel-accounts.ts 的 CACHE_TTL_MS）：
-	 *   比它更快只是重复打供应商接口（服务端 10 秒限频会挡掉过密的请求）。
-	 * @CONTRACT 后台标签页不刷（省电省流量）；切换渠道时旧定时器会被清掉，不会给别的渠道发查询。
-	 */
-	const lastCheckedAt = accountStatus?.checkedAt ?? 0;
-	const lastCheckedRef = useRef(lastCheckedAt);
-	lastCheckedRef.current = lastCheckedAt;
-	/** 失败计数用「最近一次结果是不是失败了」判断，放 ref 里避免把状态写进 effect 依赖。
-	 *  @GOTCHA 服务端把「查询失败但保留了上次余额」记成 stale，只判 status==="failed" 会漏掉。 */
-	const failedRef = useRef(isAccountQueryFailed(accountStatus));
-	failedRef.current = isAccountQueryFailed(accountStatus);
-	/** 状态机只关心「上次成功时间」，状态本身仍然从快照取（每个渲染周期刷新到 ref）。 */
-	const statusRef = useRef(accountStatus?.status);
-	statusRef.current = accountStatus?.status;
-	const balanceChannelId = balanceChannel?.id ?? null;
-	useEffect(() => {
-		if (!hasAccountQuery || !balanceChannelId) return;
-		// 调度细节（周期/后台跳过/回前台补一次）在 channel-account.ts，那里有假时钟单测。
-		return startBalanceRefresh({
-			channelId: balanceChannelId,
-			query: () => channelApi.queryChannelAccount(balanceChannelId),
-			statusOf: () => statusRef.current,
-			queryFailedOf: () => failedRef.current,
-			lastCheckedAt: () => lastCheckedRef.current,
-		});
-	}, [hasAccountQuery, balanceChannelId, channelApi]);
-	const balanceText = balanceTextOf(accountStatus, t as (k: string) => string);
-	/** 状态点：ok 绿；数据旧了中性；查询失败/不支持 警示；尚未查过中性。 */
-	const balanceState = accountStatus?.status ?? "unknown";
-	const balanceViewState = accountStateView(accountStatus);
-	const balanceStateLabel = t(balanceViewState.labelKey);
-	const balanceTitle = [
-		balanceChannel ? balanceChannel.displayName : "",
-		balanceStateLabel,
-		balanceViewState.tipKey ? t(balanceViewState.tipKey) : "",
-		balanceView.derived ? t("channelBalanceDerived") : "",
-		typeof accountStatus?.checkedAt === "number"
-			? `${t("channelAccountCheckedAt")} ${new Date(accountStatus.checkedAt).toLocaleString()}`
-			: "",
-		t("usageDetailTip"),
-	]
-		.filter(Boolean)
-		.join(" · ");
 	// snapshot model.id is the bare id; list ids are "provider/id".
 	const currentModelId = model ? `${model.provider}/${model.id}` : null;
 	const [modelOpen, setModelOpen] = useState(false);
 	const [thinkingOpen, setThinkingOpen] = useState(false);
-	// Model dropdown filter — the list can be long (all providers × models),
-	// so a type-to-filter box sits above it, plus a provider sidebar on the
-	// left that narrows the list to one service. Reset both when the dropdown
-	// closes.
+	// 模型下拉的搜索过滤（网关的模型清单可能不短，长列表没有过滤就只能靠肉眼找）。
 	const [modelFilter, setModelFilter] = useState("");
-	const [providerFilter, setProviderFilter] = useState<{ provider: string; keyName: string | null } | null>(null);
 	// 使用次数（模型下拉按此排序）：每次打开时重新读取 localStorage，保证最新。
 	const [usage, setUsage] = useState<Record<string, number>>({});
 	// 模型列表滚动容器（打开时自动聚焦当前选择的模型）。
@@ -176,65 +76,17 @@ export const ModelThinking = memo(function ModelThinking({
 		if (modelOpen) setUsage(loadModelUsage());
 	}, [modelOpen]);
 	useEffect(() => {
-		if (!modelOpen) {
-			setModelFilter("");
-			setProviderFilter(null);
-		}
+		if (!modelOpen) setModelFilter("");
 	}, [modelOpen]);
-	// Sidebar filter entries (sorted by provider name). A provider with several
-	// stored keys yields ONE entry per key (shown as the provider name with the key
-	// name under it), so picking an entry narrows to that provider AND that key;
-	// a single-key/keyless provider yields one plain entry. `count` is the provider's
-	// model count (keys never change the catalog, so every key entry shows the same).
-	const providerEntries = useMemo(() => {
-		const counts = new Map<string, number>();
-		for (const m of models) counts.set(m.provider, (counts.get(m.provider) ?? 0) + 1);
-		const entries: { provider: string; keyName: string | null; count: number }[] = [];
-		for (const [name, count] of [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-			const keys = providerKeys[name];
-			if (keys && keys.length > 1) {
-				for (const k of keys) entries.push({ provider: name, keyName: k.name, count });
-			} else {
-				entries.push({ provider: name, keyName: null, count });
-			}
-		}
-		return entries;
-	}, [models, providerKeys]);
 	// 按使用次数降序（次数相同保持原有顺序，不重排未用过的模型）。
 	const sortedModels = useMemo(() => sortByUsage(models, usage), [models, usage]);
 	const filteredModels = useMemo(() => {
-		let list = sortedModels;
-		if (providerFilter) list = list.filter((m) => m.provider === providerFilter.provider);
 		const q = modelFilter.trim().toLowerCase();
-		if (!q) return list;
-		return list.filter(
+		if (!q) return sortedModels;
+		return sortedModels.filter(
 			(m) => m.name.toLowerCase().includes(q) || m.provider.toLowerCase().includes(q) || m.id.toLowerCase().includes(q),
 		);
-	}, [sortedModels, modelFilter, providerFilter]);
-	// Each model renders ONCE. A multi-key provider is shown under whichever key
-	// entry is selected in the sidebar (or, in the "all"/single-key views, under the
-	// provider's ACTIVE key) so a click routes through exactly one key — no per-key
-	// duplication of the model list. The model entries are the SAME (provider's
-	// default system catalog); the key only drives which credential is used.
-	const displayRows = useMemo(() => {
-		const rows: { model: ModelInfo; key: ProviderKeyInfo | null }[] = [];
-		for (const m of filteredModels) {
-			const keys = providerKeys[m.provider];
-			if (!keys || keys.length <= 1) {
-				rows.push({ model: m, key: null });
-				continue;
-			}
-			// Narrowed key (if this provider's specific key entry is selected),
-			// else the provider's currently-active key.
-			let key = keys.find((k) => k.active) ?? keys[0];
-			if (providerFilter?.provider === m.provider && providerFilter.keyName) {
-				const sel = keys.find((k) => k.name === providerFilter.keyName);
-				if (sel) key = sel;
-			}
-			rows.push({ model: m, key });
-		}
-		return rows;
-	}, [filteredModels, providerKeys, providerFilter]);
+	}, [sortedModels, modelFilter]);
 	// Local loading flag for the model dropdown (list arrives via props.models).
 	const [reqLoading, setReqLoading] = useState(false);
 
@@ -288,7 +140,6 @@ export const ModelThinking = memo(function ModelThinking({
 								🖼
 							</span>
 						)}
-						{!compact && model && <span className="chip-sub">{model.provider}</span>}
 					</>
 				}
 				open={modelOpen}
@@ -309,133 +160,50 @@ export const ModelThinking = memo(function ModelThinking({
 						onChange={(e) => setModelFilter(e.target.value)}
 					/>
 				</div>
-				{/* Scrollable middle band — provider sidebar (left) + model list
-				    (right). The header/search above and footer below stay fixed. */}
+				{/* 平铺模型列表：单网关实例下只有一份目录，侧栏/分组只会增加噪声。 */}
 				<div className="dd-model-body">
-					{!hasChannels && providerEntries.length > 1 && (
-						<div className="dd-provider-col">
-							<div className="dd-provider-head">{t("providers")}</div>
-							<button
-								type="button"
-								className={`dd-provider-item ${providerFilter === null ? "active" : ""}`}
-								onClick={() => setProviderFilter(null)}
-							>
-								<span>{t("allProviders")}</span>
-							</button>
-							{providerEntries.map((entry) => {
-								const active = providerFilter?.provider === entry.provider && providerFilter?.keyName === entry.keyName;
-								return (
-									<button
-										type="button"
-										key={entry.keyName ? `${entry.provider}::${entry.keyName}` : entry.provider}
-										className={`dd-provider-item ${active ? "active" : ""}`}
-										onClick={() =>
-											setProviderFilter(active ? null : { provider: entry.provider, keyName: entry.keyName })
-										}
-										title={
-											entry.keyName ? `${entry.provider} · ${entry.keyName}` : `${entry.provider} · ${entry.count}`
-										}
-									>
-										<span className="dd-provider-txt">
-											<span className="dd-provider-name">{entry.provider}</span>
-											{entry.keyName && <span className="dd-provider-key">{entry.keyName}</span>}
-										</span>
-										<span className="dd-provider-count">{entry.count}</span>
-									</button>
-								);
-							})}
-						</div>
-					)}
 					<div className="dd-model-scroll" ref={modelScrollRef}>
 						{(reqLoading || modelsLoading) && <div className="dd-loading">{t("loading")}</div>}
 						{models.length === 0 && !reqLoading && !modelsLoading && <div className="dd-loading">{t("noModels")}</div>}
-						{!hasChannels && filteredModels.length === 0 && models.length > 0 && (
+						{filteredModels.length === 0 && models.length > 0 && (
 							<div className="dd-loading">{t("noModelMatches")}</div>
 						)}
-						{/* 渠道分组下的空结果提示（白名单/搜索词叠加时，见 @GOTCHA）。 */}
-						{hasChannels && filteredModels.length === 0 && models.length > 0 && (
-							<div className="dd-loading">{t("noModelMatches")}</div>
-						)}
-						{hasChannels && (
-							<ChannelModelList
-								channels={channels}
-								models={sortedModels}
-								filter={modelFilter}
-								binding={channelBinding}
-								accounts={channelState?.accounts ?? []}
-								activeModelId={currentModelId}
-								onSelect={(channelId, credentialKeyName, modelId) => {
-									const commandId = channelApi.selectChannel({ channelId, credentialKeyName, modelId });
-									if (commandId) setLastChannelCommand(commandId);
+						{filteredModels.map((m) => (
+							<DropdownItem
+								key={m.id}
+								active={currentModelId === m.id}
+								onClick={() => {
+									if (currentModelId !== m.id) send({ type: "set_model", modelId: m.id });
 									setModelOpen(false);
 								}}
-							/>
-						)}
-						{!hasChannels &&
-							displayRows.map((row) => {
-								const m = row.model;
-								const isActive = currentModelId === m.id && (!row.key || row.key.active);
-								return (
-									<DropdownItem
-										key={row.key ? `${m.id}::${row.key.name}` : m.id}
-										active={isActive}
-										onClick={() => {
-											// Clicking a model under a non-active key switches to it first,
-											// then selects the model (no static model-list copy — the
-											// provider's default system catalog is reused as-is).
-											if (row.key && !row.key.active) {
-												send({ type: "activate_provider_key", provider: m.provider, keyName: row.key.name });
-											}
-											if (currentModelId !== m.id) {
-												send({ type: "set_model", modelId: m.id });
-											}
-											setModelOpen(false);
-										}}
-									>
-										<span className="dd-model-cell">
-											<span className="dd-model-name">{m.name}</span>
-											<span className="dd-model-meta">
-												<span className="dd-model-provider">{m.provider}</span>
-												{row.key && (
-													<span className={`dd-model-key ${row.key.active ? "active" : ""}`}>
-														{row.key.active ? "●" : "○"} {row.key.name}
-													</span>
-												)}
-												{(usage[m.id] ?? 0) > 0 && (
-													<span className="dd-model-usage">{t("modelUsedCount", { n: usage[m.id] })}</span>
-												)}
-												{(m.reasoning || m.vision) && (
-													<span className="dd-model-badges">
-														{m.reasoning && <span className="dd-model-badge">{t("reasoning")}</span>}
-														{m.vision && <span className="dd-model-badge">{t("vision")}</span>}
-													</span>
-												)}
+							>
+								<span className="dd-model-cell">
+									<span className="dd-model-name">{m.name}</span>
+									<span className="dd-model-meta">
+										{(usage[m.id] ?? 0) > 0 && (
+											<span className="dd-model-usage">{t("modelUsedCount", { n: usage[m.id] })}</span>
+										)}
+										{(m.reasoning || m.vision) && (
+											<span className="dd-model-badges">
+												{m.reasoning && <span className="dd-model-badge">{t("reasoning")}</span>}
+												{m.vision && <span className="dd-model-badge">{t("vision")}</span>}
 											</span>
-										</span>
-									</DropdownItem>
-								);
-							})}
+										)}
+									</span>
+								</span>
+							</DropdownItem>
+						))}
 					</div>
 				</div>
 				{/* Fixed footer — refresh never scrolls away.
-				    @WHY 2026-09-17 撑掉了「⚙ 管理模型」：渠道/服务商/模型信息已经全在「设置 → 渠道」，
-				    这里再给一个入口就是两处改同一批东西（交叉管理的根源）。模型元数据的编辑
-				    已搬到渠道行的「模型信息」（ChannelModelMeta.tsx）。 */}
+				    @WHY 2026-09-17 撑掉了「⚙ 管理模型」：模型名称/上下文窗口等元数据由服务端的
+				    模型目录（models.json）决定，这里只负责挑一个在跑的模型。 */}
 				<div className="dd-footer">
 					<button type="button" className="dd-refresh" onClick={() => send({ type: "list_models" })}>
 						{t("refreshModels")}
 					</button>
 				</div>
 			</Dropdown>
-
-			{/* DEV-CON：有效/待生效渠道绑定与最新回执（只在渠道功能启用时出现）。 */}
-			<ChannelStatusChips
-				binding={channelBinding}
-				channels={channels}
-				receipt={channelReceipt}
-				activeModelId={currentModelId}
-				onRefresh={() => channelApi.listChannels()}
-			/>
 
 			<Dropdown
 				trigger={
@@ -470,20 +238,6 @@ export const ModelThinking = memo(function ModelThinking({
 					</DropdownItem>
 				))}
 			</Dropdown>
-			{/* 渠道余额 chip：紧贴在「思考强度」右侧（移动端同一位置，见 styles.css 的 .chan-balance）。 */}
-			{hasAccountQuery && balanceChannel && (
-				<button
-					type="button"
-					className={`chip chan-balance ${balanceState}${balanceViewState.tone === "aging" ? " aging" : ""}`}
-					title={balanceTitle}
-					onClick={onOpenUsage}
-				>
-					<span className="chan-balance-dot" />
-					<span className="chip-sub">
-						{t("channelAccountBalance")} <span className="chan-balance-value">{balanceText}</span>
-					</span>
-				</button>
-			)}
 		</>
 	);
 });

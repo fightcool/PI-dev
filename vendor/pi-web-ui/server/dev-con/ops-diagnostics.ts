@@ -8,7 +8,7 @@
  *   @COUPLED system-resources.ts / storage-usage.ts（复用其快照）, ../protocol.ts
  *            （list_diagnostics / diagnostics 载荷）, ../agent-service.ts（组装并下发）
  *   📖 docs/DEV-CON-PROPOSAL.md §8 P4 候选「必要运维」
- *   @CONTRACT 诊断包只含**元数据**：版本/提交/路径/单位状态/资源与存储汇总量/渠道计数/用量汇总。
+ *   @CONTRACT 诊断包只含**元数据**：版本/提交/路径/单位状态/资源与存储汇总量/服务商计数/用量汇总。
  *             绝不含密钥值、会话内容、提示词、日志正文或环境变量值 —— 由 buildDiagnostics 组装，
  *             并由单测用「合成密钥字符串不得出现在结果里」强约束。
  *   @WHY 运维排查最常见的问题是「你需要哪条信息」；把固定的一小撮元数据一次性给出，
@@ -29,7 +29,7 @@ export interface DiagnosticsInput {
 	units: OpsDiagnostics["units"];
 	resources: UiResourceSnapshot;
 	storage: UiStorageSnapshot;
-	channels: OpsDiagnostics["channels"];
+	providers: OpsDiagnostics["providers"];
 	usage: OpsDiagnostics["usage"];
 	environment: OpsDiagnostics["environment"];
 	warnings?: string[];
@@ -45,8 +45,8 @@ export function buildDiagnostics(input: DiagnosticsInput): OpsDiagnostics {
 		units: input.units.map((u) => ({ ...u })),
 		resources: input.resources,
 		storage: input.storage,
-		channels: { ...input.channels },
-		usage: { ...input.usage, bySource: { ...input.usage.bySource }, byChannel: { ...input.usage.byChannel } },
+		providers: { ...input.providers },
+		usage: { ...input.usage, bySource: { ...input.usage.bySource }, byProvider: { ...input.usage.byProvider } },
 		environment: { ...input.environment },
 		warnings: [...(input.warnings ?? [])],
 	};
@@ -59,10 +59,10 @@ export function usageSummaryOf(result: {
 	groupBy: string;
 }): OpsDiagnostics["usage"] {
 	const bySource: Record<string, number> = {};
-	const byChannel: Record<string, number> = {};
+	const byProvider: Record<string, number> = {};
 	for (const row of result.rows) {
 		if (result.groupBy === "source") bySource[row.key] = row.requests;
-		if (result.groupBy === "channel") byChannel[row.key] = row.requests;
+		if (result.groupBy === "provider") byProvider[row.key] = row.requests;
 	}
 	return {
 		windowDays: 0,
@@ -71,6 +71,6 @@ export function usageSummaryOf(result: {
 		cost: result.totals.cost,
 		unpricedRequests: result.totals.unpricedRequests,
 		bySource,
-		byChannel,
+		byProvider,
 	};
 }

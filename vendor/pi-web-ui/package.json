@@ -67,9 +67,6 @@
 		"test": "cross-env NODE_ENV=test vitest run",
 		"test:unit": "cross-env NODE_ENV=test vitest run",
 		"test:smoke": "node tests/run-smoke.mjs",
-		"test:channels:unit": "cross-env NODE_ENV=test vitest run tests/unit/channel-",
-		"test:channels": "node tests/channel-isolation-test.mjs",
-		"test:channels:multi": "node tests/channel-multiclient-test.mjs",
 		"check:protocol": "node scripts/check-protocol-sync.mjs",
 		"i18n:diff": "node scripts/i18n-diff.mjs",
 		"release:notes": "node scripts/release-notes.mjs",
@@ -80,7 +77,6 @@
 		"format:check": "prettier --check server/ web/src/ extensions/ scripts/ bin/ tests/*.mjs tests/unit/ *.mjs",
 		"lint": "oxlint server/ web/src/ extensions/ scripts/",
 		"lint:fix": "oxlint --fix server/ web/src/ extensions/ scripts/",
-		"test:channels:failures": "node tests/usage-failure-test.mjs",
 		"jev": "node --import tsx scripts/jev-gate.ts"
 	},
 	"dependencies": {
