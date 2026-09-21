@@ -1,8 +1,10 @@
 # Jev 决策门禁（Jev Decision Gate）
 
-<!-- 🍞 AI Breadcrumb — @COUPLED ../vendor/pi-web-ui/server/dev-con/jev-model.ts, ../vendor/pi-web-ui/server/dev-con/jev-gate.ts, ../vendor/pi-web-ui/server/dev-con/jev-cache.ts, ../vendor/pi-web-ui/server/dev-con/jev-settings.ts, ../vendor/pi-web-ui/scripts/jev-gate.ts, ../vendor/pi-web-ui/server/protocol.ts, ./MODEL-ROUTING.md -->
+<!-- 🍞 AI Breadcrumb — @COUPLED ./JEV-HARNESS-PLAN.md, ../vendor/pi-web-ui/server/dev-con/jev-model.ts, ../vendor/pi-web-ui/server/dev-con/jev-gate.ts, ../vendor/pi-web-ui/server/dev-con/jev-cache.ts, ../vendor/pi-web-ui/server/dev-con/jev-settings.ts, ../vendor/pi-web-ui/scripts/jev-gate.ts, ../vendor/pi-web-ui/server/protocol.ts, ./MODEL-ROUTING.md -->
 
 用 TypeSafe **Jev**（System One 模型）在编码过程中处理**二元判断类事务**：给出「是 / 否」的概率，由代码按阈值决定「通过 / 阻断 / 转人工」。
+
+> **大门另有其文。** 本文只讲「提交/PR 时的门禁」这一种用法；Jev 作为**可编程决策原语**在 harness 里的完整用法（省 token 的上下文裁剪、重排、路由升级、通用护栏、轨迹校验）见 [JEV-HARNESS-PLAN.md](JEV-HARNESS-PLAN.md)。
 
 > **Jev 不是对话模型。** 它不生成文本、不写代码、不解释理由。输入是 `state` + 类型化 `questions`，输出是类型化 `answers`（概率）。因此 **chat/completions 那套接口与 SDK 完全不可用**（OpenRouter 页面亦明确写了这一点）。
 
