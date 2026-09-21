@@ -669,11 +669,11 @@ export const JEV_PROPOSITIONS: readonly JevProposition[] = [
 			inspect:
 				"the diff: every added and removed line that declares or changes a public export, signature, type, parameter, or published behavior",
 			focus:
-				"Public means what other code or other people already depend on: exported names, public function or method parameters and return values, exported type declarations, and published protocol, CLI or i18n contracts. Renaming or deleting any of them is incompatible even when the new name looks clearer.",
+				"Public means what other code or other people already depend on: exported names, public function or method parameters and return values, exported type declarations, and published protocol, CLI or i18n contracts. Renaming or deleting any of them is incompatible even when the new name looks clearer. THE REPOSITORY DECIDES WHAT COUNTS AS PUBLIC: when the change is judged for a repository that has a public-surface declaration (e.g. docs/PUBLIC-SURFACE.md, included in the state), that declaration governs. It usually lists the real surface (protocol, HTTP routes, CLI commands and exit codes, config schemas and install layout, data formats) AND says that exports internal to a subsystem with no external consumer do not count - for example an extension whose body is copied verbatim into the agent directory and whose only consumers are the repository's own tests. Deleting or reshaping such an internal export is COMPATIBLE, not a break.",
 		},
 		criteria: {
 			true: {
-				what: `Yes: every already published export keeps its name and kind, every public signature keeps its parameters and return value, no type is tightened, and no published behavior changes. Adding a new export, adding an OPTIONAL parameter or optional property, widening a type, and refactoring internals are all compatible. ${JEV_STATE_NOT_EVIDENCE}`,
+				what: `Yes: every already published export keeps its name and kind, every public signature keeps its parameters and return value, no type is tightened, and no published behavior changes. Adding a new export, adding an OPTIONAL parameter or optional property, widening a type, refactoring internals, and deleting or reshaping symbols that only the repository's own modules and tests consume are all compatible. ${JEV_STATE_NOT_EVIDENCE}`,
 				examples: [
 					"adds a new exported helper without touching any existing export",
 					"adds an optional parameter such as `useCache?: boolean`",
@@ -681,7 +681,7 @@ export const JEV_PROPOSITIONS: readonly JevProposition[] = [
 				],
 			},
 			false: {
-				what: `No: the change deletes or renames a published export, adds a REQUIRED parameter or required property to a published signature, changes a public return type or shape, tightens a type, or changes behavior that callers already rely on. ${JEV_STATE_NOT_EVIDENCE}`,
+				what: `No: the change deletes or renames a published export, adds a REQUIRED parameter or required property to a published signature, changes a public return type or shape, tightens a type, or changes behavior that callers already rely on. Undoing an earlier break by restoring a name or a signature is compatible (the published surface is intact again). ${JEV_STATE_NOT_EVIDENCE}`,
 				examples: [
 					"renames a published id constant to a new name",
 					"changes an exported function from returning an array to returning a record",

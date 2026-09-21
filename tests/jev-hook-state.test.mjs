@@ -3,11 +3,18 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { DIFF_LIMIT, runProcess, sanitizeDiff, stagedState } from "../extensions/jev-gate/state.mjs";
+import {
+  DIFF_LIMIT,
+  PUBLIC_SURFACE_LIMIT,
+  publicSurfaceAt,
+  runProcess,
+  sanitizeDiff,
+  stagedState,
+} from "../extensions/jev-gate/state.mjs";
 
 function fixture(t) {
   const cwd = mkdtempSync(join(tmpdir(), "jev-index-test-"));
@@ -67,4 +74,30 @@ test("sensitive files and secret-shaped content never enter state", () => {
 
 test("child timeout is bounded and raw output is hidden", async () => {
   await assert.rejects(runProcess(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { timeout: 50 }), /超时/);
+});
+
+test("state 带上「对外接口声明」，让判据按本仓口径判断什么是公共接口", async (t) => {
+  const { cwd, git, write } = fixture(t);
+  // 没有声明文件 → 字段缺席（判定照旧，不能因为拿不到声明就跳过门禁）。
+  write("a.txt", "hello\n");
+  git("add", "a.txt");
+  assert.equal((await stagedState({ cwd, amend: false })).publicSurface, undefined);
+  // 有声明 → 原样带上。
+  mkdirSync(join(cwd, "docs"), { recursive: true });
+  writeFileSync(join(cwd, "docs/PUBLIC-SURFACE.md"), "# 对外接口\n- 协议\n");
+  git("add", "docs/PUBLIC-SURFACE.md");
+  assert.match((await stagedState({ cwd, amend: false })).publicSurface, /协议/);
+  // 超长按上限截断，且必须带截断标记。
+  writeFileSync(
+    join(cwd, "docs/PUBLIC-SURFACE.md"),
+    "x".repeat(PUBLIC_SURFACE_LIMIT + 500),
+  );
+  git("add", "docs/PUBLIC-SURFACE.md");
+  const clipped = (await stagedState({ cwd, amend: false })).publicSurface;
+  assert.ok(clipped.length < PUBLIC_SURFACE_LIMIT + 200);
+  assert.match(clipped, /已截断/);
+  assert.equal(await publicSurfaceAt(cwd), clipped);
+  // 空白文件 = 没有声明（不塞一个空字段进去）。
+  writeFileSync(join(cwd, "docs/PUBLIC-SURFACE.md"), "   \n");
+  assert.equal(await publicSurfaceAt(cwd), "");
 });
