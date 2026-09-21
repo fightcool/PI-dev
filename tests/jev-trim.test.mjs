@@ -21,6 +21,7 @@ import {
   messageText,
   objectiveFromEntries,
 } from "../extensions/jev-trim/objective.mjs";
+import { askKeep, budgetSections } from "../extensions/jev-trim/ask.mjs";
 import { splitSections } from "../extensions/jev-trim/sections.mjs";
 import {
   applyTrimmedText,
@@ -56,16 +57,16 @@ test("config：默认 off，非法值回退默认，不因配错崩溃", () => {
   );
 });
 
-test("sections：不丢字（拼接回来等于原文）；超上限时合并而不是丢弃", () => {
+test("sections：不丢字（拼接回来等于原文）；超上限时取样，绝不允许把片段合大", () => {
   const text = Array.from(
     { length: 6 },
     (_, i) => `${long(`para${i}`, 300)}`,
   ).join("\n\n");
-  const { sections, merged } = splitSections(text, {
+  const { sections, sampled } = splitSections(text, {
     sectionChars: 700,
     maxSections: 24,
   });
-  assert.equal(merged, false);
+  assert.equal(sampled, false);
   assert.ok(sections.length >= 2, "应切成多段");
   assert.equal(
     sections.map((s) => s.text).join("\n\n"),
@@ -74,12 +75,31 @@ test("sections：不丢字（拼接回来等于原文）；超上限时合并而
   );
 
   const tiny = splitSections(text, { sectionChars: 400, maxSections: 2 });
-  assert.equal(tiny.merged, true);
+  assert.equal(tiny.sampled, true);
   assert.ok(tiny.sections.length <= 2);
-  assert.equal(
-    tiny.sections.map((s) => s.text).join("\n\n"),
-    text,
-    "合并也不能丢字",
+});
+
+/**
+ * @BUGFIX 回归：片段数超上限时**不允许合并**。
+ * 第一版合并相邻片段 → 每段变成 `总长/上限`，90k 字的结果变成 22 段 × 4.1k 字，
+ * 等于整份结果全进 state；上游按 token 限流（state + 最长问题 ≤ 32k token）→ 每次 HTTP 400，
+ * 功能静默失效（看起来装了、其实每次都在失败放行）。
+ */
+test("sections：大结果 + 段数上限时，每段仍只有 ~sectionChars（不再合并成大段）", () => {
+  const text = Array.from(
+    { length: 400 },
+    (_, i) => `第 ${i} 段：${long(`line${i}`, 400)}`,
+  ).join("\n\n");
+  const { sections, sampled } = splitSections(text, {
+    sectionChars: 1_500,
+    maxSections: 24,
+  });
+  assert.equal(sampled, true);
+  assert.ok(sections.length <= 24, `段数必须收敛到上限内，实际 ${sections.length}`);
+  const longest = Math.max(...sections.map((s) => s.text.length));
+  assert.ok(
+    longest <= 3_000,
+    `最大段 ${longest} 字 —— 合并成大段会让 state 爆掉（上限实测约 32k 字）`,
   );
 });
 
@@ -342,4 +362,78 @@ test("ask 判据：引用 state 路径、英文、两侧给反例、片段正文
     tool: "bash",
     sections: [{ index: 3, text: "T" }],
   });
+});
+
+/**
+ * state 预算闸门：上游按 token 限流（state + 最长问题 ≤ 32k token），这里只能按字符保守收口。
+ * @BUGFIX 回归：没有这道闸门时，大结果的 state 直接是整份输出 → 每次 HTTP 400 → 功能静默失效。
+ */
+test("state 预算：只把预算内的片段放进 state，超出的不判（不判=原样保留）", () => {
+  const sections = Array.from({ length: 30 }, (_, i) => ({
+    index: i,
+    text: `片段 ${i} ` + "z".repeat(1_000),
+    firstLine: `片段 ${i}`,
+  }));
+  const judged = budgetSections(sections, 5_000);
+  assert.equal(judged.length, 4, "4 × ~1007 字进预算，第 5 段就越界了");
+  assert.ok(
+    judged.reduce((a, s) => a + s.text.length, 0) <= 5_000,
+    "进 state 的总量不许超预算",
+  );
+  // 单个片段本身就超预算：跳过它（不截断后判，截断判整段是误删）
+  const oneHuge = [{ index: 0, text: "h".repeat(9_000), firstLine: "h" }];
+  assert.deepEqual(budgetSections(oneHuge, 5_000), []);
+});
+
+test("askKeep：超预算的片段不进 questions，返回 judged/dropped 供留痕", async () => {
+  let seen = null;
+  const runner = async ({ questions, state }) => {
+    seen = { questions, state };
+    return { ok: true, scores: Object.fromEntries(Object.keys(questions).map((id) => [id, 0.9])), audit: {} };
+  };
+  const sections = Array.from({ length: 10 }, (_, i) => ({
+    index: i,
+    text: `片段 ${i} ` + "z".repeat(2_000),
+    firstLine: `片段 ${i}`,
+  }));
+  const res = await askKeep({
+    objective: "只看配置读取",
+    tool: "bash",
+    sections,
+    maxStateChars: 6_000,
+    runner,
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.judged.length, 2);
+  assert.equal(res.dropped, 8);
+  assert.equal(Object.keys(seen.questions).length, 2, "只问判得到的片段");
+  assert.ok(
+    JSON.stringify(seen.state).length <= 7_000,
+    `state 必须留在预算内，实际 ${JSON.stringify(seen.state).length}`,
+  );
+  // 未判到的片段没有分数 → planTrim 必须整体保留它们
+  const plan = planTrim({
+    text: sections.map((s) => s.text).join("\n\n"),
+    sections,
+    scores: res.scores,
+    keepAt: 0.5,
+  });
+  assert.equal(plan, null, "全判保留时不该改写");
+});
+
+test("askKeep：连一个片段都放不进预算时不发请求（宁可没省，不可白花一次）", async () => {
+  let called = 0;
+  const res = await askKeep({
+    objective: "x",
+    tool: "bash",
+    sections: [{ index: 0, text: "y".repeat(50_000), firstLine: "y" }],
+    maxStateChars: 20_000,
+    runner: async () => {
+      called += 1;
+      return { ok: true, scores: {}, audit: {} };
+    },
+  });
+  assert.equal(res.ok, false);
+  assert.match(String(res.reason), /state-budget/);
+  assert.equal(called, 0);
 });

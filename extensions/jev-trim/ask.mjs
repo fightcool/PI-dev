@@ -74,12 +74,33 @@ export function buildTrimState({ objective, tool, sections }) {
  * @property {JevAudit} [audit]
  * @property {number} elapsedMs 墙钟（含 CLI 冷启动）
  * @property {string} [reason] `ok:false` 时的原因
+ * @property {number[]} [judged] 真正进了 state 的片段 index（其余未判 = 原样保留）
+ * @property {number} [dropped] 因 state 预算没判的片段数
  */
+
+/**
+ * 把要判的片段收进 state 预算：超过预算的片段**不判**（不判 = 按安全规则原样保留）。
+ * @WHY 上游硬限 `state` + 最长那个问题 ≤ 32k token（官方 docs/models.md）；我们无法在这里分词，
+ *   只能按字符保守估。实测（真实 `git log -p` 文本）：30k 字能过，33k 字稳定 400 —— 所以默认取 20k 字。
+ * @CONTRACT 单个片段本身就超预算时**跳过它**（不截断）：拿部分内容判「整段要不要」是误删。
+ *   一个都不剩时返回空数组，调用方必须放行（宁可没省，不可误删）。
+ */
+export function budgetSections(sections, maxStateChars) {
+  const judged = [];
+  let chars = 0;
+  for (const section of sections) {
+    if (section.text.length > maxStateChars) continue;
+    if (chars + section.text.length > maxStateChars) break;
+    chars += section.text.length;
+    judged.push(section);
+  }
+  return judged;
+}
 
 /**
  * 问一次「哪些片段要留」。
  * @param {{objective:string, tool:string, sections:{index:number,text:string}[], cwd?:string,
- *   signal?:AbortSignal, timeoutMs?:number, runner?:Function}} input
+ *   signal?:AbortSignal, timeoutMs?:number, maxStateChars?:number, runner?:Function}} input
  * @returns {Promise<AskResult>} `ok:false` 时调用方**必须原样放行**（失败绝不裁剪）。
  */
 export async function askKeep({
@@ -89,16 +110,29 @@ export async function askKeep({
   cwd,
   signal,
   timeoutMs,
+  maxStateChars = 20_000,
   runner,
 }) {
-  const state = buildTrimState({ objective, tool, sections });
-  const questions = buildTrimQuestions(sections);
+  const judged = budgetSections(sections, maxStateChars);
+  if (judged.length === 0)
+    return {
+      ok: false,
+      elapsedMs: 0,
+      reason: `state-budget:${sections.length} 段都超过 ${maxStateChars} 字`,
+    };
+  const state = buildTrimState({ objective, tool, sections: judged });
+  const questions = buildTrimQuestions(judged);
   const started = Date.now();
   const run = runner ?? defaultRunner;
   const result = await run({ questions, state, cwd, signal, timeoutMs });
   const elapsedMs = Date.now() - started;
-  if (!result.ok) return { ok: false, elapsedMs, reason: result.reason };
-  return { ok: true, scores: result.scores, audit: result.audit, elapsedMs };
+  // @GOTCHA 未判到的片段**不在** questions 里，也不在 scores 里 —— `planTrim` 会当它们没分而整体保留。
+  const meta = {
+    judged: judged.map((s) => s.index),
+    dropped: sections.length - judged.length,
+  };
+  if (!result.ok) return { ok: false, elapsedMs, reason: result.reason, ...meta };
+  return { ok: true, scores: result.scores, audit: result.audit, elapsedMs, ...meta };
 }
 
 /**
