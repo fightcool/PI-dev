@@ -221,18 +221,18 @@ export interface UiState {
 			cacheRead: number;
 			cacheWrite: number;
 			total: number;
-				/** Tokens consumed by the current request/run. */
-				request?: { input: number; output: number; total: number };
-				run?: { input: number; output: number; total: number };
-			};
-			/** 按来源/渠道/模型归组的累计用量（§7）。缺省 = 未提供归属。 */
-			attribution?: UiUsageAttribution[];
-			/** 本次 run 的标识（服务端生成；用于把晚到事件归回原运行）。 */
-			runId?: string | null;
-			/** 最近若干条逐请求记录（新→旧，有界；含时间与计价依据）。 */
-			recentRequests?: UiUsageRecord[];
-			cost: number;
-			contextUsage: {
+			/** Tokens consumed by the current request/run. */
+			request?: { input: number; output: number; total: number };
+			run?: { input: number; output: number; total: number };
+		};
+		/** 按来源/渠道/模型归组的累计用量（§7）。缺省 = 未提供归属。 */
+		attribution?: UiUsageAttribution[];
+		/** 本次 run 的标识（服务端生成；用于把晚到事件归回原运行）。 */
+		runId?: string | null;
+		/** 最近若干条逐请求记录（新→旧，有界；含时间与计价依据）。 */
+		recentRequests?: UiUsageRecord[];
+		cost: number;
+		contextUsage: {
 			tokens: number | null;
 			contextWindow: number;
 			percent: number | null;
@@ -331,14 +331,36 @@ export interface UiOpsThresholds {
 export interface UiDiagnostics {
 	generatedAt: number;
 	app: { node: string; pid: number; uptimeSec: number; engine: string; protocolVersion: number };
-	release: { commit: string | null; appVersion: string | null; protocolVersion: number | null; builtAt: string | null; source: string | null };
-	instance: { configDir: string; dataDir: string; agentDir: string; workspaceDir: string; host: string | null; port: number | null; profile: string | null };
+	release: {
+		commit: string | null;
+		appVersion: string | null;
+		protocolVersion: number | null;
+		builtAt: string | null;
+		source: string | null;
+	};
+	instance: {
+		configDir: string;
+		dataDir: string;
+		agentDir: string;
+		workspaceDir: string;
+		host: string | null;
+		port: number | null;
+		profile: string | null;
+	};
 	units: { unit: string; active: string; enabled: string }[];
 	resources: UiResourceSnapshot;
 	storage: UiStorageSnapshot;
 	/** 单网关实例：只报已注册服务商数量（渠道概念已移除，见 docs/NEWAPI-GATEWAY.md）。 */
 	providers: { count: number };
-	usage: { windowDays: number; requests: number; totalTokens: number; cost: number; unpricedRequests: number; bySource: Record<string, number>; byProvider: Record<string, number> };
+	usage: {
+		windowDays: number;
+		requests: number;
+		totalTokens: number;
+		cost: number;
+		unpricedRequests: number;
+		bySource: Record<string, number>;
+		byProvider: Record<string, number>;
+	};
 	environment: { platform: string; cpuCount: number; totalMemBytes: number };
 	warnings: string[];
 }
@@ -882,6 +904,10 @@ export type ClientMessage =
 			/** 内置服务商里从「管理模型」列表移除（= 隐藏）的 providerId 集合。
 			 *  纯 UI 偏好：不动运行时、不触发 reload；密钥的清除走 clear_provider_api_key。 */
 			hiddenBuiltinProviders?: string[];
+			/** 选择器里隐藏的模型（"provider/id" 或裸 id）。纯 UI 偏好：不动运行时、不触发 reload。
+			 *  @WHY 单网关实例下模型清单由网关公布（可能几十个），而常用的只有几个；
+			 *  这个开关让操作者把不用的收起来，切换模型时不必在一长串里找。 */
+			hiddenModels?: string[];
 			/** 模型路由规则：不再出现在选择器里的路由（"id" 或 "provider/id"）。
 			 *  三态：缺省 = 保留现值；[] / {} = 自定义（[] 表示真的不隐藏任何路由）；
 			 *  null = 清除自定义，回到出厂默认（defaultModelRouting）。 */
@@ -1559,6 +1585,8 @@ export interface UiSettingsState {
 	/** 内置服务商里被用户从「管理模型」列表移除（隐藏）的 providerId。
 	 *  pi 运行时的内置注册表无法真删，这里只控制面板是否展示（UI-only）。 */
 	hiddenBuiltinProviders: string[];
+	/** 选择器里隐藏的模型（"provider/id" 或裸 id）。 */
+	hiddenModels: string[];
 	/** 当前生效的模型路由规则（设置面板可改；出厂默认见 defaultModelRouting）。 */
 	retiredModelRoutes: string[];
 	modelRouteAliases: Record<string, string>;
@@ -1699,7 +1727,7 @@ export type ServerMessage =
 				total: number;
 				request?: { input: number; output: number; total: number };
 				run?: { input: number; output: number; total: number };
-		} | null;
+			} | null;
 			assistantMessageEvent: { type: string; contentIndex?: number; delta?: string };
 	  }
 	/** A tool FINISHED executing (SDK tool_execution_end). Unlike toolResult
@@ -1824,7 +1852,15 @@ export type ServerMessage =
 	/** 网关配置保存回执（save_gateway）。失败时 error 就是原因，界面不得假装已保存。 */
 	| { type: "gateway_saved"; reqId: number; ok: boolean; error?: string; errorEn?: string }
 	/** P4 运维：诊断包（只含元数据）+ 当前告警开关与阈值。 */
-	| { type: "diagnostics"; reqId: number; ok: boolean; error?: string; bundle?: UiDiagnostics; alertsEnabled?: boolean; thresholds?: UiOpsThresholds }
+	| {
+			type: "diagnostics";
+			reqId: number;
+			ok: boolean;
+			error?: string;
+			bundle?: UiDiagnostics;
+			alertsEnabled?: boolean;
+			thresholds?: UiOpsThresholds;
+	  }
 	/** DEV-CON Jev 门禁状态（config 已清洗：只回密钥**名**，绝不回密钥值）。 */
 	| {
 			type: "jev_status";

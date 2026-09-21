@@ -9,7 +9,7 @@
  */
 /* 🍞 @COUPLED server/client-state.ts（ClientSettings 字段与默认值）、server/protocol.ts（UiSettingsState）、
  *   server/index.ts（set_settings 转发）、web/src/components/SettingsModal.tsx（面板开关）。
- *   @GOTCHA 纯 UI 偏好（disabledPlugins / hiddenBuiltinProviders）不进 needsReload，也不进预设：
+ *   @GOTCHA 纯 UI 偏好（disabledPlugins / hiddenBuiltinProviders / hiddenModels）不进 needsReload，也不进预设：
  *   新增这类字段必须在 applyPreset 里显式「保留当前值」，否则应用预设会把它们清空。
  */
 import { existsSync, readdirSync } from "node:fs";
@@ -84,6 +84,11 @@ export class SettingsService {
 
 	/** 当前生效的模型路由规则：设置里填过就用它（空数组 = 真的不隐藏任何路由），
 	 *  没填过（undefined）才回落到出厂默认。 */
+	/** 选择器里隐藏的模型（纯 UI 偏好；读取方按 "provider/id" 或裸 id 匹配）。 */
+	get hiddenModels(): string[] {
+		return [...(this.settings.hiddenModels ?? [])];
+	}
+
 	get modelRoutingRules(): ModelRoutingRules {
 		const stored = this.settings.retiredModelRoutes;
 		if (stored === undefined && this.settings.modelRouteAliases === undefined) return defaultModelRoutingRules();
@@ -258,6 +263,7 @@ export class SettingsService {
 				reviewDisabledSkills: [...this.settings.reviewDisabledSkills],
 				disabledPlugins: [...(this.settings.disabledPlugins ?? [])],
 				hiddenBuiltinProviders: [...(this.settings.hiddenBuiltinProviders ?? [])],
+				hiddenModels: [...(this.settings.hiddenModels ?? [])],
 				// 生效的模型路由规则（空 = 用出厂默认）+ 出厂默认（面板「恢复默认」用）。
 				retiredModelRoutes: [...this.modelRoutingRules.retired],
 				modelRouteAliases: { ...this.modelRoutingRules.aliases },
@@ -362,6 +368,7 @@ export class SettingsService {
 		reviewDisabledSkills?: string[];
 		disabledPlugins?: string[];
 		hiddenBuiltinProviders?: string[];
+		hiddenModels?: string[];
 		retiredModelRoutes?: string[] | null;
 		modelRouteAliases?: Record<string, string> | null;
 		subagentDefaultModel?: string | null;
@@ -409,6 +416,10 @@ export class SettingsService {
 		// 内置服务商隐藏同理：纯 UI 展示偏好，运行时无需重载。
 		if (partial.hiddenBuiltinProviders !== undefined) {
 			this.settings.hiddenBuiltinProviders = partial.hiddenBuiltinProviders;
+		}
+		// 模型隐藏（选择器里不显示）同样：纯 UI 偏好，运行时无需重载，下次 listModels 立即生效。
+		if (partial.hiddenModels !== undefined) {
+			this.settings.hiddenModels = [...new Set(partial.hiddenModels.map((x) => x.trim()).filter(Boolean))];
 		}
 		// 模型路由规则同样是纯选择偏好（只影响选择器里能看到什么），运行时无需重载：
 		// 归一化后落盘（去空行/去重/丢掉自映射别名），下次 listModels 立即生效。
@@ -590,6 +601,8 @@ export class SettingsService {
 			quickPhrasesEnabled: this.settings.quickPhrasesEnabled,
 			// 隐藏的内置服务商同样不进预设——保留当前值（否则应用预设会把列表弹回来）。
 			hiddenBuiltinProviders: [...(this.settings.hiddenBuiltinProviders ?? [])],
+			// 隐藏的模型同理：纯 UI 偏好，不进预设。
+			hiddenModels: [...(this.settings.hiddenModels ?? [])],
 		};
 		this.host.stateStore.saveSettings(this.host.clientId, this.settings);
 		// 预设可能改了重试次数：即时注入（流式中延迟的 reload 之后还会由调用方重放）。

@@ -2440,6 +2440,7 @@ export function SettingsModal({ chat, send, opsApi, terminal, onSwitchToTerminal
 									gatewayUsage={chat.gatewayUsage}
 									activeProvider={chat.state?.model?.provider ?? null}
 									refreshProviderResult={chat.refreshProviderResult}
+									settings={chat.settings}
 									opsApi={opsApi}
 									send={send}
 								/>

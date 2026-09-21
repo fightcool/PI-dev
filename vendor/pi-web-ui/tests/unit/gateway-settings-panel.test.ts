@@ -52,6 +52,7 @@ function mount(props: {
 	gateway?: Partial<ChatState["gateway"]>;
 	usage?: Partial<ChatState["gatewayUsage"]>;
 	activeProvider?: string | null;
+	settings?: { hiddenModels?: string[] } | null;
 }) {
 	const sent: unknown[] = [];
 	const opsApi = {
@@ -86,6 +87,7 @@ function mount(props: {
 					gatewayUsage: { ok: null, ...props.usage } as ChatState["gatewayUsage"],
 					activeProvider: props.activeProvider === undefined ? "newapi" : props.activeProvider,
 					refreshProviderResult: null,
+					settings: (props.settings === undefined ? null : props.settings) as never,
 					opsApi,
 					send: send as never,
 				}) as ReactNode,
@@ -122,13 +124,27 @@ describe("GatewaySettings：地址 + 密钥 + 模型清单", () => {
 		expect(key.placeholder).toContain("留空 = 不修改");
 	});
 
-	it("模型清单来自网关（中文计数 + 逐个 id 展示）", () => {
-		const { container } = mount({});
-		expect(textOf(container)).toContain("2 个");
-		expect([...container.querySelectorAll(".gw-model-chip")].map((c) => c.textContent)).toEqual([
-			"deepseek-flash",
-			"gpt-5.6-sol",
-		]);
+	it("模型清单来自网关：逐个展示 + 每个都能开关（启用计数）", () => {
+		const { container, send, opsApi } = mount({});
+		expect(textOf(container)).toContain("已启用 2 / 共 2");
+		const chips = [...container.querySelectorAll(".gw-model-chip")];
+		expect(chips.map((c) => c.textContent?.replace(/^[●○] /, ""))).toEqual(["deepseek-flash", "gpt-5.6-sol"]);
+		// 点一下 = 收起来（写 settings.hiddenModels，纯 UI 偏好；不动 models.json）。
+		act(() => (chips[0] as HTMLElement).dispatchEvent(new MouseEvent("click", { bubbles: true })));
+		expect(send).toHaveBeenCalledWith({ type: "set_settings", hiddenModels: ["newapi/deepseek-flash"] });
+		expect(opsApi.saveGateway).not.toHaveBeenCalled();
+	});
+
+	it("被收起来的模型在面板上显示为关（○ + 划线），再点一下恢复", () => {
+		const { container, send } = mount({
+			gateway: { config: { ...CONFIG, models: [{ id: "deepseek-flash" }] } },
+			settings: { hiddenModels: ["newapi/deepseek-flash"] },
+		});
+		expect(textOf(container)).toContain("已启用 0 / 共 1");
+		const chip = container.querySelector(".gw-model-chip") as HTMLElement;
+		expect(chip.className).toContain("off");
+		act(() => chip.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+		expect(send).toHaveBeenCalledWith({ type: "set_settings", hiddenModels: [] });
 	});
 
 	it("留空保存 = 不上行 apiKey（只改地址不会把密钥清掉）", () => {

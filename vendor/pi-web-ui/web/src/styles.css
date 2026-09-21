@@ -12427,3 +12427,12 @@ button.source-default-toggle {
 	white-space: pre-wrap;
 	word-break: break-word;
 }
+
+/* 网关页的模型开关：● = 启用（出现在选择器里），○ = 收起。 */
+.gw-model-chip.off {
+	opacity: 0.45;
+	text-decoration: line-through;
+}
+.gw-model-chip {
+	cursor: pointer;
+}

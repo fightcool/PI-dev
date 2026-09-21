@@ -41,10 +41,21 @@ import { modelCatalogStale, modelConfigStamp, modelsConfigPathOf } from "./model
 import { measureAreas } from "./dev-con/storage-usage.js";
 import { buildDiagnostics, usageSummaryOf } from "./dev-con/ops-diagnostics.js";
 import { capabilityFixHint, runCapabilityProbe, type CapabilityVerdict } from "./dev-con/endpoint-capability.js";
-import { evaluateAlerts, ALERT_COOLDOWN_MS, ALERT_CRITICAL_PERCENT, ALERT_WARN_PERCENT, type OpsAlert } from "./dev-con/ops-alerts.js";
+import {
+	evaluateAlerts,
+	ALERT_COOLDOWN_MS,
+	ALERT_CRITICAL_PERCENT,
+	ALERT_WARN_PERCENT,
+	type OpsAlert,
+} from "./dev-con/ops-alerts.js";
 import { GatewayUsageService } from "./dev-con/gateway-usage.js";
 import { filterCatalogToProviders } from "./dev-con/gateway-config.js";
-import { evaluateFailureAlerts, FAILURE_WINDOW_MS, type FailureAlert, type FailureSample } from "./dev-con/failure-alert.js";
+import {
+	evaluateFailureAlerts,
+	FAILURE_WINDOW_MS,
+	type FailureAlert,
+	type FailureSample,
+} from "./dev-con/failure-alert.js";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
@@ -745,7 +756,14 @@ export interface Conversation {
 	/** 最近一条已写入用量历史记录的 id（避免同一记录重复落盘）。 */
 	lastPersistedUsageId: string | null;
 	/** 压缩前的会话统计基线：压缩摘要的 token 用会话统计差值归属为 source=compaction。 */
-	compactionBaseline: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost: number } | null;
+	compactionBaseline: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		total: number;
+		cost: number;
+	} | null;
 	/** Last time any SDK event arrived for this conversation. */
 	lastSdkEventAt: number;
 	/** Set once the stall notice has been sent for the current silent period;
@@ -1722,7 +1740,11 @@ export class ClientSession {
 			// DEV-CON §7：复核/调研用独立 ModelRuntime，用量单独标注来源并归到发起它的对话。
 			recordUsage: (source, usage) => {
 				const conv = this.conv;
-				this.recordUsage(conv, { scope: "final", identity: null, role: "assistant", ...usage }, this.bindingAttribution(conv, source));
+				this.recordUsage(
+					conv,
+					{ scope: "final", identity: null, role: "assistant", ...usage },
+					this.bindingAttribution(conv, source),
+				);
 			},
 			activeConvId: () => this.activeId,
 			activeConv: () => this.conv,
@@ -1986,14 +2008,17 @@ export class ClientSession {
 				},
 			});
 			const baseReserveTokens = services.settingsManager.getCompactionReserveTokens.bind(services.settingsManager);
-			const baseKeepRecentTokens = services.settingsManager.getCompactionKeepRecentTokens.bind(services.settingsManager);
+			const baseKeepRecentTokens = services.settingsManager.getCompactionKeepRecentTokens.bind(
+				services.settingsManager,
+			);
 			// 每次调用都重新让策略加载器取一次（内部按 mtime 缓存）——改 context-policy.json
 			// 无需重启，下一个请求就生效。
 			services.settingsManager.getCompactionReserveTokens = () =>
 				resolveContextBudget(liveModel()?.contextWindow, loadContextPolicy(), modelKeyOf(liveModel()))?.reserveTokens ??
 				baseReserveTokens();
 			// 策略可选地接管「压缩后保留最近原文」的 token 预算（null = 跟随 settings.json）。
-			services.settingsManager.getCompactionKeepRecentTokens = () => loadContextPolicy().keepRecentTokens ?? baseKeepRecentTokens();
+			services.settingsManager.getCompactionKeepRecentTokens = () =>
+				loadContextPolicy().keepRecentTokens ?? baseKeepRecentTokens();
 			const created = await createAgentSessionFromServices({
 				services,
 				sessionManager,
@@ -2436,7 +2461,12 @@ export class ClientSession {
 	 * 记录用量并落盘到用量历史（唯一入口）。所有 record() 调用点都必须走这里，
 	 * 否则「界面能看到、历史查不到」的缺口会再次出现。
 	 */
-	private recordUsage(conv: Conversation, normalized: unknown, attribution: Record<string, unknown>, now = Date.now()): void {
+	private recordUsage(
+		conv: Conversation,
+		normalized: unknown,
+		attribution: Record<string, unknown>,
+		now = Date.now(),
+	): void {
 		conv.usageTracker.record(normalized, now, attribution);
 		const newest = conv.usageTracker.records()[0] as UsageHistoryRecord | undefined;
 		if (!newest || newest.id === conv.lastPersistedUsageId) return;
@@ -2462,7 +2492,8 @@ export class ClientSession {
 				input: (record.input ?? 0) + (record.cacheRead ?? 0) + (record.cacheWrite ?? 0),
 			});
 			const limit = ClientSession.FAILURE_SAMPLE_LIMIT;
-			if (ClientSession.failureSamples.length > limit) ClientSession.failureSamples.splice(0, ClientSession.failureSamples.length - limit);
+			if (ClientSession.failureSamples.length > limit)
+				ClientSession.failureSamples.splice(0, ClientSession.failureSamples.length - limit);
 		} catch {
 			/* 采样失败绝不阻断编码 */
 		}
@@ -2516,8 +2547,17 @@ export class ClientSession {
 	checkResourceAlerts(): void {
 		if (!this.opsAlertsEnabled()) return;
 		try {
-			const snapshot = collectResources({ disks: [{ path: this.cwd, label: "workspace" }, { path: this.agentDir, label: "agent" }] });
-			const alerts = evaluateAlerts({ resources: snapshot, lastFired: Object.fromEntries(ClientSession.alertLastFired), now: Date.now() });
+			const snapshot = collectResources({
+				disks: [
+					{ path: this.cwd, label: "workspace" },
+					{ path: this.agentDir, label: "agent" },
+				],
+			});
+			const alerts = evaluateAlerts({
+				resources: snapshot,
+				lastFired: Object.fromEntries(ClientSession.alertLastFired),
+				now: Date.now(),
+			});
 			if (alerts.length === 0) return;
 			const now = Date.now();
 			for (const alert of alerts) ClientSession.alertLastFired.set(alert.key, now);
@@ -2590,7 +2630,13 @@ export class ClientSession {
 	private static readonly ENGINE = "pi";
 
 	/** 诊断用：构建与来源信息（读不到就是 null，不编造）。 */
-	private releaseInfo(): { commit: string | null; appVersion: string | null; protocolVersion: number | null; builtAt: string | null; source: string | null } {
+	private releaseInfo(): {
+		commit: string | null;
+		appVersion: string | null;
+		protocolVersion: number | null;
+		builtAt: string | null;
+		source: string | null;
+	} {
 		const distDir = dirname(fileURLToPath(import.meta.url)); // <release>/vendor/pi-web-ui/dist/server
 		const read = (path: string): Record<string, unknown> | null => {
 			try {
@@ -2621,7 +2667,13 @@ export class ClientSession {
 		return ["pi-dev-pm2.service", "pi-web-ui-dev.service", "pi-web-ui-dev-watchdog.timer"].map((unit) => {
 			const read = (property: "is-active" | "is-enabled"): string => {
 				try {
-					return execFileSync("systemctl", ["--user", property, unit], { encoding: "utf8", timeout: 3_000, stdio: ["ignore", "pipe", "ignore"] }).trim() || "unknown";
+					return (
+						execFileSync("systemctl", ["--user", property, unit], {
+							encoding: "utf8",
+							timeout: 3_000,
+							stdio: ["ignore", "pipe", "ignore"],
+						}).trim() || "unknown"
+					);
 				} catch (err) {
 					return (err as { stdout?: string }).stdout?.trim() || "unknown";
 				}
@@ -2648,7 +2700,9 @@ export class ClientSession {
 	setOpsAlerts(enabled: boolean): void {
 		try {
 			mkdirSync(join(this.agentDir, "dev-con"), { recursive: true });
-			writeFileSync(this.opsSettingsPath(), JSON.stringify({ alertsEnabled: enabled === true }, null, 2) + "\n", { mode: 0o600 });
+			writeFileSync(this.opsSettingsPath(), JSON.stringify({ alertsEnabled: enabled === true }, null, 2) + "\n", {
+				mode: 0o600,
+			});
 			this.emit({
 				type: "notice",
 				level: "info",
@@ -2665,7 +2719,12 @@ export class ClientSession {
 	async listDiagnostics(reqId: number): Promise<void> {
 		try {
 			const addr = this.instanceAddress();
-			const resources = collectResources({ disks: [{ path: this.cwd, label: "workspace" }, { path: this.agentDir, label: "agent" }] });
+			const resources = collectResources({
+				disks: [
+					{ path: this.cwd, label: "workspace" },
+					{ path: this.agentDir, label: "agent" },
+				],
+			});
 			const areas = measureAreas([
 				{ path: join(this.stateStore.dataDir, "uploads"), label: "uploads", note: "uploads-cleanable" },
 				{ path: join(this.agentDir, "sessions"), label: "sessions", note: "sessions-user-data" },
@@ -2675,7 +2734,13 @@ export class ClientSession {
 			const usageByProvider = this.usageHistory.query({ groupBy: "provider" });
 			const bundle = buildDiagnostics({
 				now: Date.now(),
-				app: { node: process.version, pid: process.pid, uptimeSec: Math.round(process.uptime()), engine: ClientSession.ENGINE, protocolVersion: PROTOCOL_VERSION },
+				app: {
+					node: process.version,
+					pid: process.pid,
+					uptimeSec: Math.round(process.uptime()),
+					engine: ClientSession.ENGINE,
+					protocolVersion: PROTOCOL_VERSION,
+				},
 				release: this.releaseInfo(),
 				instance: {
 					configDir: dirname(this.agentDir),
@@ -2692,14 +2757,25 @@ export class ClientSession {
 					at: Date.now(),
 					areas,
 					totalBytes: areas.reduce((sum, area) => sum + area.bytes, 0),
-					retention: { ...this.usageHistory.readSettings(), fileBytes: this.usageHistory.fileBytes(), choices: [0, 7, 30, 90, 365] },
+					retention: {
+						...this.usageHistory.readSettings(),
+						fileBytes: this.usageHistory.fileBytes(),
+						choices: [0, 7, 30, 90, 365],
+					},
 				},
 				providers: {
 					count: this.providerIds().length,
 				},
 				usage: { ...usageSummaryOf(usageFull), byProvider: usageSummaryOf(usageByProvider).byProvider },
-				environment: { platform: process.platform, cpuCount: resources.host.cpuCount, totalMemBytes: resources.host.mem.totalBytes },
-				warnings: [...resources.warnings, ...areas.filter((a) => a.truncated).map((a) => `storage:${a.label} 已达遍历上限`)],
+				environment: {
+					platform: process.platform,
+					cpuCount: resources.host.cpuCount,
+					totalMemBytes: resources.host.mem.totalBytes,
+				},
+				warnings: [
+					...resources.warnings,
+					...areas.filter((a) => a.truncated).map((a) => `storage:${a.label} 已达遍历上限`),
+				],
 			});
 			this.emit({
 				type: "diagnostics",
@@ -2707,7 +2783,11 @@ export class ClientSession {
 				ok: true,
 				bundle,
 				alertsEnabled: this.opsAlertsEnabled(),
-				thresholds: { warnPercent: ALERT_WARN_PERCENT, criticalPercent: ALERT_CRITICAL_PERCENT, cooldownMs: ALERT_COOLDOWN_MS },
+				thresholds: {
+					warnPercent: ALERT_WARN_PERCENT,
+					criticalPercent: ALERT_CRITICAL_PERCENT,
+					cooldownMs: ALERT_COOLDOWN_MS,
+				},
 			});
 		} catch (err) {
 			this.emit({ type: "diagnostics", reqId, ok: false, error: (err as Error).message });
@@ -2724,7 +2804,11 @@ export class ClientSession {
 			const areas = measureAreas([
 				{ path: join(this.stateStore.dataDir, "uploads"), label: "uploads", note: "uploads-cleanable" },
 				{ path: join(this.agentDir, "sessions"), label: "sessions", note: "sessions-user-data" },
-				{ path: join(this.stateStore.dataDir, "subagent-archive"), label: "subagent-archive", note: "sessions-user-data" },
+				{
+					path: join(this.stateStore.dataDir, "subagent-archive"),
+					label: "subagent-archive",
+					note: "sessions-user-data",
+				},
 				{ path: retentionPath, label: "usage-history", note: "usage-history-cleanable" },
 				{ path: join(this.agentDir, "dev-con"), label: "dev-con-metadata", note: "dev-con-metadata-user-data" },
 				{ path: join(this.stateStore.dataDir, "plugins"), label: "plugin-data", note: "plugin-data-user-data" },
@@ -2738,7 +2822,12 @@ export class ClientSession {
 					at: Date.now(),
 					areas,
 					totalBytes: areas.reduce((sum, area) => sum + area.bytes, 0),
-					retention: { maxAgeDays: settings.maxAgeDays, maxBytes: settings.maxBytes, fileBytes: this.usageHistory.fileBytes(), choices: [0, 7, 30, 90, 365] },
+					retention: {
+						maxAgeDays: settings.maxAgeDays,
+						maxBytes: settings.maxBytes,
+						fileBytes: this.usageHistory.fileBytes(),
+						choices: [0, 7, 30, 90, 365],
+					},
 				},
 			});
 		} catch (err) {
@@ -2753,8 +2842,14 @@ export class ClientSession {
 		this.emit({
 			type: "notice",
 			level: "info",
-			text: settings.maxAgeDays === 0 ? "用量历史保留：只按大小轮转（不做时间清理）" : `用量历史保留：仅保留最近 ${settings.maxAgeDays} 天（本次清理 ${pruned.removed} 条）`,
-			textEn: settings.maxAgeDays === 0 ? "Usage history retention: size-based rotation only" : `Usage history retention: last ${settings.maxAgeDays} days (removed ${pruned.removed} records)`,
+			text:
+				settings.maxAgeDays === 0
+					? "用量历史保留：只按大小轮转（不做时间清理）"
+					: `用量历史保留：仅保留最近 ${settings.maxAgeDays} 天（本次清理 ${pruned.removed} 条）`,
+			textEn:
+				settings.maxAgeDays === 0
+					? "Usage history retention: size-based rotation only"
+					: `Usage history retention: last ${settings.maxAgeDays} days (removed ${pruned.removed} records)`,
 		});
 		this.flushSnapshot();
 	}
@@ -2793,12 +2888,45 @@ export class ClientSession {
 				truncated: result.truncated,
 			});
 		} catch (err) {
-			this.emit({ type: "usage_history", reqId, ok: false, error: (err as Error).message, groupBy: query.groupBy, from: null, to: null, rows: [], totals: { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, unpricedRequests: 0, unreportedRequests: 0, failedRequests: 0, wastedInput: 0, cacheHitRate: null }, scanned: 0, skipped: 0, truncated: false });
+			this.emit({
+				type: "usage_history",
+				reqId,
+				ok: false,
+				error: (err as Error).message,
+				groupBy: query.groupBy,
+				from: null,
+				to: null,
+				rows: [],
+				totals: {
+					requests: 0,
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					total: 0,
+					cost: 0,
+					unpricedRequests: 0,
+					unreportedRequests: 0,
+					failedRequests: 0,
+					wastedInput: 0,
+					cacheHitRate: null,
+				},
+				scanned: 0,
+				skipped: 0,
+				truncated: false,
+			});
 		}
 	}
 
 	/** 会话统计总量（缺失时为 null）；压缩用量归属的唯一来源。 */
-	private sessionUsageTotals(): { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost: number } | null {
+	private sessionUsageTotals(): {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		total: number;
+		cost: number;
+	} | null {
 		try {
 			const s = this.session.getSessionStats();
 			return {
@@ -2880,7 +3008,11 @@ export class ClientSession {
 		modelId: string;
 	}): void {
 		const conv = this.conv;
-		this.recordUsage(conv, { scope: "final", identity: null, ...usage, role: "assistant" }, this.bindingAttribution(conv, "vision"));
+		this.recordUsage(
+			conv,
+			{ scope: "final", identity: null, ...usage, role: "assistant" },
+			this.bindingAttribution(conv, "vision"),
+		);
 	}
 
 	/** 用量来源标注（§7）：子代理/重试/压缩摘要分别标注，其余为用户请求。 */
@@ -4192,6 +4324,8 @@ export class ClientSession {
 		disabledPlugins?: string[];
 		/** 内置服务商「删除」= 从管理模型列表隐藏（纯 UI 偏好，不 reload）。 */
 		hiddenBuiltinProviders?: string[];
+		/** 选择器里隐藏的模型（"provider/id" 或裸 id；纯 UI 偏好，不 reload）。 */
+		hiddenModels?: string[];
 		/** 模型路由规则：不再出现在选择器里的路由 + 别名映射（纯选择偏好，无需 reload）。 */
 		retiredModelRoutes?: string[];
 		modelRouteAliases?: Record<string, string>;
@@ -5146,10 +5280,7 @@ export class ClientSession {
 	}
 
 	/** 会话列表缓存：签名 gate（磁盘没变就不重新解析 jsonl）+ 运行中会话豁免。 */
-	private makeSessionCache(
-		load: (cwd: string) => Promise<SessionInfo[]>,
-		ttlMs?: number,
-	): SessionHistoryCache {
+	private makeSessionCache(load: (cwd: string) => Promise<SessionInfo[]>, ttlMs?: number): SessionHistoryCache {
 		return new SessionHistoryCache(load, ttlMs, undefined, undefined, {
 			signature: () => scanSessionStamps(sessionsRootDir(this.agentDir)),
 			adopted: (path) => this.liveSessionFiles.has(path),
@@ -6054,12 +6185,45 @@ export class ClientSession {
 	async ensureFreshModelCatalog(): Promise<void> {
 		const path = modelsConfigPathOf(this.agentDir);
 		const next = modelConfigStamp(path);
-		if (!modelCatalogStale(this.modelsConfigStamp, next)) return;
+		if (!modelCatalogStale(this.modelsConfigStamp, next)) {
+			await this.ensureModelOnGateway();
+			return;
+		}
 		try {
 			await this.runtime.services.modelRuntime.refresh({ allowNetwork: false });
 			this.modelsConfigStamp = next;
 		} catch (err) {
 			console.warn(`[models] models.json reload failed: ${(err as Error).message}`);
+		}
+		await this.ensureModelOnGateway();
+	}
+
+	/**
+	 * 单网关自愈：当前模型不在**已配置服务商**里时，换到网关的第一个可用模型。
+	 *
+	 * @WHY 会话的模型来自「上次用的那个」或 runtime 默认值，可能落在网关之外（本实例实测：
+	 *   新会话起手就是 openrouter 的模型，而它是地域封锁的 → 一发消息就 403，用户看到的是
+	 *   「怎么都调不通」）。单网关实例下这类模型没有可用凭据，留着只会让人以为坏了。
+	 * @CONTRACT 只在「确实配了服务商」且「当前模型不属于它们」时动手；用户自己选的网关内模型
+	 *   一律不碰。失败只记日志，绝不阻塞 list_models / 网关查询这些只读路径。
+	 */
+	private async ensureModelOnGateway(): Promise<void> {
+		try {
+			const configured = this.modelAdmin.configuredProviderIds();
+			if (configured.length === 0) return;
+			const current = this.session.agent.state.model;
+			const currentId = current ? `${current.provider}/${current.id}` : "";
+			if (current && configured.includes(current.provider)) return;
+			const hidden = new Set(this.settingsSvc.hiddenModels);
+			const available = this.runtime.services.modelRuntime.getAvailableSnapshot();
+			const pick = available.find(
+				(m) => configured.includes(m.provider) && !hidden.has(`${m.provider}/${m.id}`) && !hidden.has(m.id),
+			);
+			if (!pick) return;
+			console.warn(`[models] 当前模型 ${currentId || "(未设置)"} 不在网关内，自动切换到 ${pick.provider}/${pick.id}`);
+			await this.setModel(`${pick.provider}/${pick.id}`);
+		} catch (err) {
+			console.warn(`[models] 网关模型自愈失败（不阻塞）：${(err as Error).message}`);
 		}
 	}
 
@@ -6078,16 +6242,20 @@ export class ClientSession {
 			// 那些没配、也管不了的）与重复接入的第二份拷贝都不该出现在选择器里。一个都没配时
 			// 不收窄（全新实例不能因此没有可选模型），见 dev-con/gateway-config.ts。
 			const configured = this.modelAdmin.configuredProviderIds();
+			// 操作者在「设置 → 网关」里收起来的模型不出现（纯 UI 偏好，运行时不动）。
+			const hidden = new Set(this.settingsSvc.hiddenModels);
 			const models = filterCatalogToProviders(
 				filterRoutableModels(available, this.settingsSvc.modelRoutingRules),
 				configured,
-			).map((m) => ({
-				id: `${m.provider}/${m.id}`,
-				name: m.name,
-				provider: m.provider,
-				reasoning: m.reasoning,
-				vision: m.input?.includes("image") ?? false,
-			}));
+			)
+				.filter((m) => !hidden.has(`${m.provider}/${m.id}`) && !hidden.has(m.id))
+				.map((m) => ({
+					id: `${m.provider}/${m.id}`,
+					name: m.name,
+					provider: m.provider,
+					reasoning: m.reasoning,
+					vision: m.input?.includes("image") ?? false,
+				}));
 			this.emit({ type: "models", models });
 		} catch (err) {
 			this.emit({
@@ -6238,7 +6406,11 @@ export class ClientSession {
 	 *   同一端点并发只探一次；**只有确定的 unsupported 才告警**，unverified（网络/超时/
 	 *   HTTP 错误/HTML）一律保持沉默 —— 探测不确定时宁可不打扰，也不误报网关不能用。
 	 */
-	private async checkToolCapability(providerId: string, modelRef: string, credentialKey: string | undefined): Promise<void> {
+	private async checkToolCapability(
+		providerId: string,
+		modelRef: string,
+		credentialKey: string | undefined,
+	): Promise<void> {
 		const slash = modelRef.indexOf("/");
 		const modelId = slash > 0 ? modelRef.slice(slash + 1) : modelRef;
 		if (!providerId || !modelId) return;
@@ -6277,8 +6449,12 @@ export class ClientSession {
 	private warnLacksTools(providerId: string, modelId: string, api: string, baseUrl: string): void {
 		const name = this.providerNameOf(providerId) ?? providerId;
 		const hint = capabilityFixHint({ api, baseUrl });
-		const remedyZh = hint ? `另外：${hint}。` : "如果网关只支持某一种协议（例如只透传 Codex/Responses），请把服务商协议改成那一种。";
-		const remedyEn = hint ? `Also: ${hint}.` : "If the gateway only supports one protocol (e.g. Codex/Responses), switch the provider to that protocol.";
+		const remedyZh = hint
+			? `另外：${hint}。`
+			: "如果网关只支持某一种协议（例如只透传 Codex/Responses），请把服务商协议改成那一种。";
+		const remedyEn = hint
+			? `Also: ${hint}.`
+			: "If the gateway only supports one protocol (e.g. Codex/Responses), switch the provider to that protocol.";
 		this.emit({
 			type: "notice",
 			level: "warning",
@@ -6305,9 +6481,22 @@ export class ClientSession {
 		try {
 			// 目录自愈：刚在设置里加的服务商要能立刻查到，而不是等重启（见 §4 目录时效性）。
 			await this.ensureFreshModelCatalog();
-			const target = (providerId ?? this.session.agent.state.model?.provider ?? "").trim();
+			// 默认查**网关**（本实例唯一的模型调用入口），而不是「当前生效模型的服务商」：
+			// 会话可能还停在网关之外的历史模型上（例如 openrouter），拿它去查账单只会得到
+			// 「该服务商没有账单接口」——查的不是我们要的那台网关。仅在没有网关时才回落到当前模型。
+			const target = (
+				providerId ??
+				this.modelAdmin.gatewayProviderId() ??
+				this.session.agent.state.model?.provider ??
+				""
+			).trim();
 			if (!target) {
-				this.emit({ type: "gateway_usage", reqId, ok: false, error: "当前没有生效模型，无法确定要查询的网关" });
+				this.emit({
+					type: "gateway_usage",
+					reqId,
+					ok: false,
+					error: "还没有可查询的网关：先在「设置 → 网关」里配置接口地址与密钥",
+				});
 				return;
 			}
 			// force 由调用方决定：手动刷新绕过 60s 缓存，自动轮询复用（见 gateway-usage.ts 的 TTL）。
@@ -6319,7 +6508,6 @@ export class ClientSession {
 			this.emit({ type: "gateway_usage", reqId, ok: false, error: (err as Error).message });
 		}
 	}
-
 
 	/** DEV-CON：Jev 门禁只读状态（配置已清洗：只回密钥名 + 运行聚合 + 可用命题）。 */
 	async pushJevStatus(reqId: number): Promise<void> {

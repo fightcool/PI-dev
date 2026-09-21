@@ -36,6 +36,7 @@ export function GatewaySettings({
 	gatewayUsage,
 	activeProvider,
 	refreshProviderResult,
+	settings,
 	opsApi,
 	send,
 }: {
@@ -47,11 +48,14 @@ export function GatewaySettings({
 	activeProvider: string | null;
 	/** 「从网关读取模型清单」的回包（chat.refreshProviderResult，按 reqId 匹配）。 */
 	refreshProviderResult: ChatState["refreshProviderResult"];
+	/** 客户端设置（读 hiddenModels：哪些模型被收起来了）。 */
+	settings: ChatState["settings"];
 	opsApi: OpsApi;
 	/** 只用于删除重复接入（delete_model_config）；保存走 opsApi。 */
 	send: (msg: ClientMessage) => boolean;
 }) {
 	const t = useT();
+	const chatSettings = settings ?? { hiddenModels: [] };
 	const gw = gateway;
 	const config = gw.config;
 	const [baseUrl, setBaseUrl] = useState("");
@@ -92,6 +96,20 @@ export function GatewaySettings({
 			opsApi.queryGatewayUsage(undefined, true);
 		}
 	}, [gw.saveOk, gw.saveError, opsApi]);
+
+	/** 关掉的模型（选择器里不显示）。与设置面板同一份（settings.hiddenModels），点一下即保存。 */
+	const hiddenHere = useMemo(() => new Set(chatSettings.hiddenModels ?? []), [chatSettings.hiddenModels]);
+	const toggleModel = (id: string) => {
+		const key = `${config?.providerId}/${id}`;
+		const next = new Set(hiddenHere);
+		if (next.has(key) || next.has(id)) {
+			next.delete(key);
+			next.delete(id);
+		} else {
+			next.add(key);
+		}
+		send({ type: "set_settings", hiddenModels: [...next] });
+	};
 
 	/** 模型清单读取结果（refreshProviderResult 按 reqId 匹配）。 */
 	const probe = refreshProviderResult && refreshProviderResult.reqId === probeReqId ? refreshProviderResult : null;
@@ -235,17 +253,30 @@ export function GatewaySettings({
 			{/* 模型清单：来源是网关自己（只读 + 合并式刷新），不在这里手工编辑。 */}
 			<div className="gw-field">
 				<span className="field-label">
-					{t("gatewayModels")} <span className="gw-count">{t("gatewayModelsCount", { n: String(modelCount) })}</span>
+					{t("gatewayModels")}{" "}
+					<span className="gw-count">
+						{t("gatewayModelsEnabled", { on: String(modelNames.length - hiddenHere.size), total: String(modelCount) })}
+					</span>
 				</span>
+				<p className="set-hint">{t("gatewayModelsToggleHint")}</p>
 				<div className="gw-models">
 					{modelNames.length === 0 ? (
 						<span className="set-hint">{t("gatewayModelsEmpty")}</span>
 					) : (
-						modelNames.map((id) => (
-							<span key={id} className="gw-model-chip">
-								{id}
-							</span>
-						))
+						modelNames.map((id) => {
+							const off = hiddenHere.has(`${config?.providerId}/${id}`) || hiddenHere.has(id);
+							return (
+								<button
+									key={id}
+									type="button"
+									className={`gw-model-chip${off ? " off" : ""}`}
+									title={off ? t("gatewayModelEnable") : t("gatewayModelDisable")}
+									onClick={() => toggleModel(id)}
+								>
+									{off ? "○" : "●"} {id}
+								</button>
+							);
+						})
 					)}
 				</div>
 				<div className="gw-actions">
