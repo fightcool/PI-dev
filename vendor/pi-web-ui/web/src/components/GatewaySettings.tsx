@@ -98,7 +98,13 @@ export function GatewaySettings({
 	}, [gw.saveOk, gw.saveError, opsApi]);
 
 	/** 关掉的模型（选择器里不显示）。与设置面板同一份（settings.hiddenModels），点一下即保存。 */
-	const hiddenHere = useMemo(() => new Set(chatSettings.hiddenModels ?? []), [chatSettings.hiddenModels]);
+	const serverHidden = useMemo(() => new Set(chatSettings.hiddenModels ?? []), [chatSettings.hiddenModels]);
+	/** 乐观值：点下去立刻变色，等服务器把设置推回来就丢掉（否则连点两下会用旧值算下一状态）。 */
+	const [optimisticHidden, setOptimisticHidden] = useState<Set<string> | null>(null);
+	useEffect(() => {
+		setOptimisticHidden(null);
+	}, [chatSettings.hiddenModels]);
+	const hiddenHere = optimisticHidden ?? serverHidden;
 	const toggleModel = (id: string) => {
 		const key = `${config?.providerId}/${id}`;
 		const next = new Set(hiddenHere);
@@ -108,6 +114,7 @@ export function GatewaySettings({
 		} else {
 			next.add(key);
 		}
+		setOptimisticHidden(next);
 		send({ type: "set_settings", hiddenModels: [...next] });
 	};
 
