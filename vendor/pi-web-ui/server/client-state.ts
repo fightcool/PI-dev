@@ -456,6 +456,7 @@ export class ClientStateStore {
 			quickPhrases: stored?.quickPhrases ?? [],
 			quickPhrasesEnabled: stored?.quickPhrasesEnabled ?? true,
 			hiddenBuiltinProviders: stored?.hiddenBuiltinProviders ?? [],
+			hiddenModels: stored?.hiddenModels ?? [],
 			// 三态：缺省（undefined）= 用出厂默认；[] = 显式「不隐藏任何路由」；数组 = 自定义。
 			retiredModelRoutes: stored?.retiredModelRoutes,
 			modelRouteAliases: stored?.modelRouteAliases ? { ...stored.modelRouteAliases } : undefined,
@@ -488,7 +489,10 @@ export class ClientStateStore {
 			toolsWrap: settings.toolsWrap ?? cur.toolsWrap ?? false,
 			visionBridgeEnabled: settings.visionBridgeEnabled ?? cur.visionBridgeEnabled ?? true,
 			visionBridgeModel: settings.visionBridgeModel ?? cur.visionBridgeModel ?? null,
-			subagentDefaultModel: settings.subagentDefaultModel ?? cur.subagentDefaultModel ?? null,
+			subagentDefaultModel:
+				settings.subagentDefaultModel !== undefined
+					? settings.subagentDefaultModel
+					: cur.subagentDefaultModel ?? null,
 			retryMaxAttempts: normalizeRetryMaxAttempts(
 				settings.retryMaxAttempts ?? cur.retryMaxAttempts ?? DEFAULT_RETRY_MAX_ATTEMPTS,
 			),
@@ -500,6 +504,7 @@ export class ClientStateStore {
 			quickPhrases: settings.quickPhrases ?? cur.quickPhrases ?? [],
 			quickPhrasesEnabled: settings.quickPhrasesEnabled ?? cur.quickPhrasesEnabled ?? true,
 			hiddenBuiltinProviders: settings.hiddenBuiltinProviders ?? cur.hiddenBuiltinProviders ?? [],
+			hiddenModels: settings.hiddenModels ?? cur.hiddenModels ?? [],
 		};
 		// 模型路由规则是三态（见 getSettings）：null = 清除自定义 → 回到出厂默认。
 		const rr = settings.retiredModelRoutes !== undefined ? settings.retiredModelRoutes : cur.retiredModelRoutes;

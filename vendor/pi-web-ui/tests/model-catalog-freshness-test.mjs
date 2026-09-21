@@ -161,17 +161,35 @@ try {
 	check("基线含 main/mock-a", first.includes("main/mock-a"));
 	check("基线不含 extra/mock-b", !first.includes("extra/mock-b"));
 
-	console.log("② 服务在跑时改写 models.json（用户新加服务商）→ 同一会话应自愈");
+	console.log("② 模型过滤同步：A 设置 hiddenModels → A/B 都立即收到设置和过滤后的目录");
+	a.clear();
+	b.clear();
+	a.send({ type: "set_settings", hiddenModels: ["main/mock-a"] });
+	const aSettings = await a.waitFor("settings_state", 15000, (m) => m.settings.hiddenModels?.includes("main/mock-a"));
+	const bSettings = await b.waitFor("settings_state", 15000, (m) => m.settings.hiddenModels?.includes("main/mock-a"));
+	const aFiltered = await a.waitFor("models", 15000, (m) => !m.models.some((x) => x.id === "main/mock-a"));
+	const bFiltered = await b.waitFor("models", 15000, (m) => !m.models.some((x) => x.id === "main/mock-a"));
+	check("A settings_state 回显 hiddenModels", aSettings.settings.hiddenModels.includes("main/mock-a"));
+	check("B 无需请求即收到 settings_state", bSettings.settings.hiddenModels.includes("main/mock-a"));
+	check("A 无需手动刷新即收到过滤后的目录", !aFiltered.models.some((m) => m.id === "main/mock-a"));
+	check("B 无需手动刷新即收到过滤后的目录", !bFiltered.models.some((m) => m.id === "main/mock-a"));
+	// 后续目录自愈断言需要模型可见，清除 UI 过滤并等待发起端完成回显。
+	a.send({ type: "set_settings", hiddenModels: [] });
+	await a.waitFor("settings_state", 15000, (m) => Array.isArray(m.settings.hiddenModels) && m.settings.hiddenModels.length === 0);
+	await a.waitFor("models", 15000, (m) => m.models.some((x) => x.id === "main/mock-a"));
+	await b.waitFor("models", 15000, (m) => m.models.some((x) => x.id === "main/mock-a"));
+
+	console.log("④ 服务在跑时改写 models.json（用户新加服务商）→ 同一会话应自愈");
 	writeModels({ ...mockProvider("main", [{ id: "mock-a" }]), ...mockProvider("extra", [{ id: "mock-b" }]) });
 	const healed = await listModels(a);
 	check("自愈后能看到 extra/mock-b", healed.includes("extra/mock-b"));
 	check("原有 main/mock-a 仍在", healed.includes("main/mock-a"));
 
-	console.log("③ 文件没变时不自愈（等价性：再列一次结果一致）");
+	console.log("⑤ 文件没变时不自愈（等价性：再列一次结果一致）");
 	const again = await listModels(a);
 	check("目录稳定（两次一致）", JSON.stringify([...again].sort()) === JSON.stringify([...healed].sort()));
 
-	console.log("④ A 保存服务商 → B 会话不等请求就收到新目录（广播）");
+	console.log("⑥ A 保存服务商 → B 会话不等请求就收到新目录（广播）");
 	b.clear();
 	// save_model_config 会走 models.json 写入 + runtime 热加载 + 推送所有会话。
 	// 缺 baseUrl 的自定义服务商会被拒，所以带上一个必然连不上的地址（本测试不发模型请求）。
@@ -194,7 +212,7 @@ try {
 	);
 	check("写入后 models.json 确实落盘", readFileSync(modelsPath, "utf8").includes("pushed"));
 
-	console.log("⑤ 删除服务商 → 同样广播（目录变小也跟得上）");
+	console.log("⑦ 删除服务商 → 同样广播（目录变小也跟得上）");
 	b.clear();
 	a.send({ type: "delete_model_config", providerId: "pushed" });
 	const shrunk = await b.waitFor("models", 15000, (m) => !m.models.some((x) => x.id === "pushed/mock-c"));

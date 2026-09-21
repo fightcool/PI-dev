@@ -7,6 +7,7 @@
  *   components/JevRuntimeView.tsx（运行状态卡 + 命题清单 + 余额行 + 三条回执）,
  *   components/JevReviewSection.tsx（样本复盘：待复盘条数 / 转人工条数 / 最老一条 / 触发条件
  *   + 导出语料与 ack 两条命令；底栏浮层与设置面板同一份）,
+ *   web/src/styles.css + themes/white.css（§10a：桌面/手机浅色卡片实际对比度与主题切换）,
  *   jev-decision.ts（jev_status / jev_probe / jev_config_save 的出站构造与文案口径）,
  *   components/SettingsModal.tsx（data-tab="jev" 的分区注册 + chat.jev 传入）
  * @COUPLED vendor/pi-web-ui/server/protocol.ts（UiJevGateConfig / UiJevRuntimeStatus / UiJevProposition /
@@ -33,6 +34,7 @@
  *
  * 用法：node tests/jev/browser-ui.mjs
  */
+import { checkFooterTheme } from "./footer-theme-check.mjs";
 import { config, chromePath, origin, vendorRequire } from "../performance/config.mjs";
 import { isolatedContext } from "../performance/isolation.mjs";
 import { settingsFixture, snapshot, socketReply } from "../performance/fixtures.mjs";
@@ -1011,6 +1013,8 @@ try {
 	// 复核图：底栏结论 + 浮层（人工核对排版与文案）。
 	await page.screenshot({ path: FOOTER_SCREENSHOT });
 	console.log(`screenshot: ${FOOTER_SCREENSHOT} (footer Jev item + detail panel)`);
+	// 10a) 与独立 footer-theme-browser.mjs 共用真实浅色主题/对比度断言。
+	await checkFooterTheme(page, jevPanel, check);
 	// 关闭行为对齐 UsageDetail：点透明 backdrop（避开浮层本身）→ 面板消失。
 	await page.locator(".status-cwd-backdrop").click({ position: { x: 10, y: 10 } });
 	const jevPanelClosed = await waitFor(async () => (await jevPanel.count()) === 0, 3000);

@@ -1,9 +1,10 @@
 /// <reference lib="dom" />
 /**
- * 浏览器标题显示项目名开关（纯前端 localStorage，不经过 server）。
+ * 浏览器标题显示会话名称开关（纯前端 localStorage，不经过 server）。
  *
- * - 默认开启：标题为 `<工作目录文件夹名> — pi-web-ui`，切项目（set_cwd）即时更新。
+ * - 默认开启：标题为 `白衣Dev + 当前会话名称`，切换或重命名会话即时更新。
  *   如需固定应用名，可在设置面板手动关闭。
+ * - 沿用 projectName 字段及存储键，保留已有用户的开关偏好。
  * - normalize/load/projectNameFromCwd 为纯函数，可单测（tests/unit/title-settings.test.ts）。
  *
  * 与 chat-width-settings.ts 同构：都是"只影响浏览器端呈现"的偏好，
@@ -15,7 +16,7 @@ import { useSyncExternalStore } from "react";
 export const TITLE_SETTINGS_KEY = "pi-web-ui:project-title";
 
 export interface TitleSettings {
-	/** 浏览器标题是否显示当前项目名（false = 固定应用名） */
+	/** 浏览器标题是否显示当前会话名称（false = 固定应用名；字段名保留兼容） */
 	projectName: boolean;
 }
 
@@ -81,7 +82,7 @@ function getSnapshot(): boolean {
 	return cached.projectName;
 }
 
-/** 标题当前是否显示项目名（设置面板切换后即时生效，无需刷新）。 */
+/** 标题当前是否显示会话名称（保留旧 API 名称；设置面板切换后即时生效）。 */
 export function useProjectTitle(): boolean {
 	return useSyncExternalStore(subscribe, getSnapshot);
 }

@@ -1721,6 +1721,11 @@ export class ClientSession {
 					disabledMarkers: [...this.markerSvc.current.disabledMarkers],
 					markers: this.markerSvc.listForUi(),
 				}),
+				settingsChanged: () => this.onSettingsChanged?.(),
+				modelFiltersChanged: () => {
+					void this.listModels();
+					this.onModelCatalogChanged?.();
+				},
 			},
 			this.subagentTemplates,
 		);
@@ -4114,9 +4119,11 @@ export class ClientSession {
 	 */
 	/** 用量与 Jev 元数据目录（实例私有，不进 Git）。 */
 	private readonly usageHistory!: UsageHistoryStore;
-	/** 模型目录变化（服务商增删改）→ 让**其他**会话也重算目录。
-	 *  @WHY 每个会话有自己的 ModelRuntime（连接时构造的快照），models 消息只发给当前会话时，
-	 *    别的标签页会一直拿着旧目录：新服务商显示「该渠道暂无可用的模型」。 */
+	/** Settings are global shared state: refresh sibling clients after a write. */
+	onSettingsChanged: (() => void) | undefined = undefined;
+	/** 模型目录变化（服务商增删改）或选择器过滤变化 → 让**其他**会话重算目录。
+	 *  @WHY 每个会话有自己的 ModelRuntime / SettingsService 快照，单独推送本端会让
+	 *    别的标签页继续展示旧设置或旧模型列表。 */
 	onModelCatalogChanged: (() => void) | undefined = undefined;
 
 	/** Persist an api-key credential for a provider (auth.json). */
@@ -7030,6 +7037,12 @@ export class AgentService {
 			for (const other of this.clients.values()) {
 				if (other === cs || other.isDisposedSession()) continue;
 				void other.listModels();
+			}
+		};
+		cs.onSettingsChanged = () => {
+			for (const other of this.clients.values()) {
+				if (other === cs || other.isDisposedSession()) continue;
+				other.pushSettings();
 			}
 		};
 		cs.onSessionsListChanged = (cwd) => this.broadcastSessionsListChanged(cs.clientId, cwd);
