@@ -18,7 +18,7 @@ const STORAGE_KEY = "pi-web-ui:lang";
 
 export const zh = {
 	/* common */
-	docTitle: "pi-web-ui — pi 编码智能体",
+	docTitle: "白衣Dev",
 	cancel: "取消",
 	ok: "确定",
 	save: "保存",
@@ -920,9 +920,9 @@ export const zh = {
 	chromeExpandTip: "展开输入工具条",
 	wideChat: "宽屏聊天列",
 	wideChatDesc: "开启：中央列铺满宽度（超宽屏有用）；关闭：保持 860px 上限",
-	projectTitle: "标题显示项目名",
+	projectTitle: "标题显示会话名称",
 	projectTitleDesc:
-		"开启：浏览器标签页标题为「项目目录名 — pi-web-ui」，切项目即时更新（多标签页开多个项目时好区分）；关闭：固定显示应用名",
+		"开启：浏览器标签页标题为「白衣Dev + 当前会话名称」，切换会话或重命名时即时更新；关闭：固定显示「白衣Dev」",
 	terminalBashTakeover: "终端接管 bash",
 	terminalBashTakeoverDesc:
 		"此开关决定 bash 是否覆盖为终端版：关 = 原生 SDK bash（纯进程、不开终端）；开 = 跑进可见终端，且 persist 参数在本开关的基础上决定一次性（false，命令跑完进程退出、输出留档）还是持久（true，shell 状态跨调用保留、静默自动转后台并通知 AI）",
@@ -1615,7 +1615,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
 
 	useEffect(() => {
 		document.documentElement.lang = htmlLang(locale);
-		// 标题由 App 统一维护（项目名优先，见 App.tsx 的 document.title effect）。
+		// 标题由 use-app-effects.ts 统一维护，跟随当前会话名称。
 	}, [locale]);
 
 	const value = useMemo(

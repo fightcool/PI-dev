@@ -13,7 +13,7 @@ export type EnDictionary = Record<keyof typeof zh, string>;
 
 export const en: EnDictionary = {
 	/* common */
-	docTitle: "pi-web-ui — pi coding agent",
+	docTitle: "白衣Dev",
 	cancel: "Cancel",
 	ok: "OK",
 	save: "Save",
@@ -939,9 +939,9 @@ export const en: EnDictionary = {
 	chromeExpandTip: "Expand the composer toolbar",
 	wideChat: "Wide chat column",
 	wideChatDesc: "On: the center column fills the width (useful on ultrawide monitors); Off: keep the 860px cap",
-	projectTitle: "Show project name in title",
+	projectTitle: "Show conversation name in title",
 	projectTitleDesc:
-		"On: the browser tab title becomes “<project folder> — pi-web-ui” and updates when you switch projects (handy with several tabs open); Off: always show the app name",
+		"On: the browser tab shows “白衣Dev + <current conversation name>” and updates when you switch or rename conversations; Off: always show “白衣Dev”",
 	terminalBashTakeover: "Terminal-backed bash",
 	terminalBashTakeoverDesc:
 		"This switch decides whether bash is overridden to a terminal version: OFF = native SDK bash (process spawn, no terminal); ON = runs in a visible terminal, where the persist parameter decides (on top of the switch) one-shot (false — process exits when the command finishes, output retained) vs persistent (true — shell state retained across calls, silent commands move to the background and notify the AI)",

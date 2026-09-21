@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useT, useI18n } from "../i18n";
 import { QUICK_PHRASE_DEFAULTS } from "../quick-phrases";
-import { projectNameFromCwd, useProjectTitle } from "../title-settings";
+import { useProjectTitle } from "../title-settings";
 import { loadSoundSettings, playSound, saveSoundSettings, type SoundSettings } from "../sounds";
 import { notify } from "../notify";
 import { useTheme } from "../theme";
@@ -29,13 +29,14 @@ export function useAppEffects(chat: AppConnection["chat"], send: AppConnection["
 			});
 		}
 	}, [chat.ready, chat.settings, send, locale]);
-	// 浏览器标题：开关开启时显示当前项目（工作目录文件夹名），否则固定应用名。
-	const cwd = chat.state?.cwd ?? "";
-	const projectTitle = useProjectTitle();
+	// 浏览器标题跟随当前会话，列表更新（包括重命名）时同步更新。
+	const activeId = chat.activeConversationId || chat.state?.conversationId;
+	const conversationTitle = chat.conversations.find((conversation) => conversation.id === activeId)?.title;
+	const showConversationTitle = useProjectTitle();
 	useEffect(() => {
-		const name = projectTitle ? projectNameFromCwd(cwd) : "";
-		document.title = name ? `${name} — pi-web-ui` : t("docTitle");
-	}, [cwd, projectTitle, t]);
+		const name = showConversationTitle ? conversationTitle?.trim() : "";
+		document.title = name ? `白衣Dev + ${name}` : "白衣Dev";
+	}, [conversationTitle, showConversationTitle]);
 	// -- sound notifications --------------------------------------------------
 	const [sound, setSound] = useState<SoundSettings>(loadSoundSettings);
 	// -- theme (whole stylesheet swap) ---------------------------------------

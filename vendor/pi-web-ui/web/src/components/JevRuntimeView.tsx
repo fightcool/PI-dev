@@ -5,7 +5,8 @@
  *              @PERF=performance @CONTRACT=interface contract 📖=dev doc reference
  *
  * Breadcrumbs (changing this affects):
- *   @COUPLED components/JevSettings.tsx（唯一挂载点：设置面板「Jev 决策门禁」分区）,
+ *   @COUPLED components/JevSettings.tsx + components/JevFooterItem.tsx（共享运行卡片）,
+ *            styles.css（.jev-runtime-cards：桌面/移动统一使用主题调色板）,
  *            jev-decision.ts（协议类型 + 校验/格式化辅助）,
  *            GatewayUsageBlock.tsx（网关自报用量的展示口径：本文件只复用，不另写一套）,
  *            use-chat.ts（jev_status / jev_probe_result → ChatState.jev）,
@@ -70,7 +71,7 @@ export function JevRuntimeCards({
 			{/* 服务端还没记录过任何调用时先说一句人话：下面那些 0 是事实（服务端确实报 0），
 			   不是为了好看编出来的。 */}
 			{runtime.total === 0 && runtime.failed === 0 && <p className="set-hint">{t("settingsJevRuntimeEmpty")}</p>}
-			<div className="resources-cards">
+			<div className="resources-cards jev-runtime-cards">
 				{cards.map((c) => (
 					<div className="resource-card" key={c.title}>
 						<div className="resource-title">{c.title}</div>

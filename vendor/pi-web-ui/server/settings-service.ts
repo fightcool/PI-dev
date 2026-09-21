@@ -57,6 +57,10 @@ export interface SettingsHost {
 	 *  texts = 各来源 token 当前的默认（自动）内容（未覆盖时 {{token}} 展开值）；
 	 *  toolsSchema = 发给模型的 function-calling 工具定义（name/description/parameters）只读文本。 */
 	promptSnapshot: () => { full: string; texts: Record<string, string>; toolsSchema: string };
+	/** Optional: notify sibling clients after the shared settings were persisted. */
+	settingsChanged?: () => void;
+	/** Optional: notify sibling clients when selector filters changed. */
+	modelFiltersChanged?: () => void;
 	/** 可选：内置标记状态（设置面板展示用）。 */
 	getMarkerState?: () => MarkerStateForSettings;
 }
@@ -78,6 +82,12 @@ export class SettingsService {
 		this.presets = host.stateStore.getPresets(host.clientId);
 	}
 
+	/** Global settings are shared by every client, so never trust a constructor snapshot
+	 * when a getter or write can be reached after another client has persisted a change. */
+	private refreshSharedSettings(): void {
+		this.settings = this.host.stateStore.getSettings(this.host.clientId);
+	}
+
 	get current(): ClientSettings {
 		return this.settings;
 	}
@@ -86,10 +96,12 @@ export class SettingsService {
 	 *  没填过（undefined）才回落到出厂默认。 */
 	/** 选择器里隐藏的模型（纯 UI 偏好；读取方按 "provider/id" 或裸 id 匹配）。 */
 	get hiddenModels(): string[] {
+		this.refreshSharedSettings();
 		return [...(this.settings.hiddenModels ?? [])];
 	}
 
 	get modelRoutingRules(): ModelRoutingRules {
+		this.refreshSharedSettings();
 		const stored = this.settings.retiredModelRoutes;
 		if (stored === undefined && this.settings.modelRouteAliases === undefined) return defaultModelRoutingRules();
 		return normalizeModelRoutingRules({ retired: stored ?? [], aliases: this.settings.modelRouteAliases ?? {} });
@@ -150,6 +162,7 @@ export class SettingsService {
 	}
 
 	push(): void {
+		this.refreshSharedSettings();
 		const disabledSkills = new Set(this.settings.disabledSkills);
 		const reviewDisabledSkills = new Set(this.settings.reviewDisabledSkills);
 		const disabledExts = new Set(this.settings.disabledExtensions);
@@ -378,6 +391,11 @@ export class SettingsService {
 		quickPhrases?: string[];
 		quickPhrasesEnabled?: boolean;
 	}): Promise<void> {
+		this.refreshSharedSettings();
+		const modelFiltersChanged =
+			partial.hiddenModels !== undefined ||
+			partial.retiredModelRoutes !== undefined ||
+			partial.modelRouteAliases !== undefined;
 		const needsReload =
 			partial.promptMode !== undefined ||
 			partial.customSystemPrompt !== undefined ||
@@ -511,12 +529,15 @@ export class SettingsService {
 			...this.settings,
 			...(clearedRouting ? { retiredModelRoutes: null, modelRouteAliases: null } : {}),
 		});
+		this.host.settingsChanged?.();
+		if (modelFiltersChanged) this.host.modelFiltersChanged?.();
 		this.push();
 		if (needsReload) await this.applyRuntime();
 	}
 
 	/** Save the CURRENT settings as a named preset (overwrites if exists). */
 	async savePreset(name: string): Promise<void> {
+		this.refreshSharedSettings();
 		const n = name.trim();
 		if (!n) {
 			this.host.emit({
@@ -552,6 +573,7 @@ export class SettingsService {
 
 	/** Replace the current settings with the named preset and apply it. */
 	async applyPreset(name: string): Promise<void> {
+		this.refreshSharedSettings();
 		const p = this.presets.find((x) => x.name === name);
 		if (!p) {
 			this.host.emit({
