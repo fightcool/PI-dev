@@ -4,18 +4,24 @@
  *   这里钉住的是**安全规则**——失败放行、未判定必留、错误结果不裁、收益不足不改、details/isError 不碰。
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
   buildTrimQuestions,
   buildTrimState,
+  classifyCliFailure,
   entryFor,
-  firstSuccessful,
   trimQuestion,
 } from "../extensions/jev-trim/ask.mjs";
-import { resolveAppCandidates } from "../extensions/jev-trim/app.mjs";
+import { resolveApp } from "../extensions/jev-trim/app.mjs";
 import { readTrimConfig } from "../extensions/jev-trim/config.mjs";
 import {
   messageText,
@@ -95,7 +101,10 @@ test("sections：大结果 + 段数上限时，每段仍只有 ~sectionChars（�
     maxSections: 24,
   });
   assert.equal(sampled, true);
-  assert.ok(sections.length <= 24, `段数必须收敛到上限内，实际 ${sections.length}`);
+  assert.ok(
+    sections.length <= 24,
+    `段数必须收敛到上限内，实际 ${sections.length}`,
+  );
   const longest = Math.max(...sections.map((s) => s.text.length));
   assert.ok(
     longest <= 3_000,
@@ -231,107 +240,86 @@ test("content 改写：只动文本 part，图片/details 结构不碰（多文�
   );
 });
 
-test("app 候选：按优先级去重列出全部，entry 选择随 checkout 内容变化", () => {
-  // 实测踩过：会话 cwd 里的 checkout 还没有 `ask` 子命令 → 每次判定都「未知命令」。
-  // 所以候选要**全部**列出来逐个尝试，而不是只取第一个。
-  const cwd = mkdtempSync(join(tmpdir(), "jev-trim-cand-"));
-  const app = join(cwd, "vendor", "pi-web-ui");
-  mkdirSync(join(app, "scripts"), { recursive: true });
-  writeFileSync(join(app, "scripts", "jev-gate.ts"), "// cli stub");
-  // ① 老 checkout 只有 jev-gate.ts（没有瘦入口）→ 用 `jev-gate.ts ask` 兜底。
-  assert.deepEqual(entryFor(app), {
-    entry: join(app, "scripts", "jev-gate.ts"),
-    prefix: ["ask"],
-  });
-  const candidates = resolveAppCandidates(cwd, {}, join(cwd, "app.json"));
-  assert.equal(candidates[0], app, "cwd 里的 checkout 优先");
-  // 去重（同一目录只出现一次）；最后一项恒为「本体自带的 checkout」兜底（这里就是本仓库）。
-  assert.equal(new Set(candidates).size, candidates.length);
-  // ② 新 checkout 有瘦入口 → 用瘦入口、不带子命令。
-  writeFileSync(join(app, "scripts", "jev-ask.ts"), "// slim stub");
-  assert.deepEqual(entryFor(app), {
-    entry: join(app, "scripts", "jev-ask.ts"),
-    prefix: [],
-  });
-  // ③ 环境变量指定的 app 排在最前；不存在的目录被忽略。
-  const other = join(cwd, "other", "vendor", "pi-web-ui");
-  mkdirSync(join(other, "scripts"), { recursive: true });
-  writeFileSync(join(other, "scripts", "jev-gate.ts"), "// cli stub");
-  const withEnv = resolveAppCandidates(
-    cwd,
-    { JEV_GATE_APP: other },
-    join(cwd, "app.json"),
+test("app 解析：运行中宿主自己那份代码优先；cwd 只在宿主没有内核时降级", () => {
+  // @WHY 部署语义：`deploy/current` 指向的 release 才是唯一在跑的代码，解析结果必须跟随它，
+  // 而不是去找别人的 checkout（实测踩过：会话 cwd 里那份还没有 `ask` 子命令 → 每次白跑 2.4s）。
+  const tmp = mkdtempSync(join(tmpdir(), "jev-trim-app-"));
+  const release = join(tmp, "deploy/releases/abc123");
+  mkdirSync(join(release, "vendor/pi-web-ui/scripts"), { recursive: true });
+  writeFileSync(
+    join(release, "vendor/pi-web-ui/scripts/jev-gate.ts"),
+    "// cli stub",
   );
-  assert.deepEqual(
-    withEnv.slice(0, 2),
-    [other, app],
-    "env 指定的 app 排最前，其次 cwd",
+  const stale = join(tmp, "someone-else");
+  mkdirSync(join(stale, "vendor/pi-web-ui/scripts"), { recursive: true });
+  writeFileSync(
+    join(stale, "vendor/pi-web-ui/scripts/jev-gate.ts"),
+    "// cli stub",
   );
-  // 有安装记录时它**优先于 cwd**（版本与本体一致，避免拿到别人的旧副本 —— 实测吃过这个亏）。
-  const recordPath = join(cwd, "app.json");
-  writeFileSync(recordPath, JSON.stringify({ app: other }));
-  assert.deepEqual(
-    resolveAppCandidates(cwd, {}, recordPath).slice(0, 2),
-    [other, app],
+  // ① 宿主入口在 release 里 → 用它（哪怕 cwd 在别的 checkout）。
+  assert.equal(
+    resolveApp({}, join(release, "scripts/start.mjs"), stale),
+    join(release, "vendor/pi-web-ui"),
   );
-  // 记录指向已删除的 checkout → 直接跳过，不付代价。
-  writeFileSync(recordPath, JSON.stringify({ app: "/gone" }));
-  assert.equal(resolveAppCandidates(cwd, {}, recordPath)[0], app);
-  const envMissing = resolveAppCandidates(
-    cwd,
-    { JEV_GATE_APP: "/nope" },
-    join(cwd, "app.json"),
+  // ② `current` 是符号链接，解析结果**保留 current** → 换发布自动跟随（不解符号链接是关键）。
+  symlinkSync(join(tmp, "deploy/releases"), join(tmp, "deploy/current"), "dir");
+  assert.equal(
+    resolveApp({}, join(tmp, "deploy/current/abc123/scripts/start.mjs"), stale),
+    join(tmp, "deploy/current/abc123/vendor/pi-web-ui"),
   );
-  assert.equal(envMissing[0], app, "不存在的 env 路径被忽略");
-  rmSync(cwd, { recursive: true, force: true });
+  // ③ 宿主自己不带内核（全局安装的 pi）→ 才降级到会话项目。
+  assert.equal(
+    resolveApp({}, join(tmp, "global-pi/scripts/cli.mjs"), stale),
+    join(stale, "vendor/pi-web-ui"),
+  );
+  // ④ 显式覆盖优先（指向真正的 app 目录，即 <checkout>/vendor/pi-web-ui）；配错就是 null。
+  const staleApp = join(stale, "vendor/pi-web-ui");
+  assert.equal(
+    resolveApp(
+      { JEV_GATE_APP: staleApp },
+      join(release, "scripts/start.mjs"),
+      stale,
+    ),
+    staleApp,
+  );
+  assert.equal(
+    resolveApp(
+      { JEV_GATE_APP: "/nope" },
+      join(release, "scripts/start.mjs"),
+      stale,
+    ),
+    null,
+  );
+  // ⑤ 都没有 → null（调用方告警放行，绝不猜）。
+  assert.equal(
+    resolveApp({}, join(tmp, "nowhere/scripts/x.mjs"), join(tmp, "nowhere")),
+    null,
+  );
+  rmSync(tmp, { recursive: true, force: true });
 });
 
-test("firstSuccessful：版本偏差自愈；取消/超时不重试", async () => {
-  // ① 第一个候选因版本偏差失败 → 试第二个并成功（这正是实测踩到的场景）。
-  const tried = [];
-  const ok = await firstSuccessful(["/old", "/new"], async (app) => {
-    tried.push(app);
-    return app === "/old"
-      ? { ok: false, reason: "app-version-skew" }
-      : { ok: true, scores: { section_0: 0.9 } };
+test("entry 选择 + CLI 失败分类：版本旧就明确要求「部署新版本」", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "jev-trim-entry-"));
+  const app = join(tmp, "vendor/pi-web-ui");
+  mkdirSync(join(app, "scripts"), { recursive: true });
+  writeFileSync(join(app, "scripts/jev-gate.ts"), "// cli stub");
+  // 旧代码：只有 jev-gate.ts → 用 `ask` 子命令兜底。
+  assert.deepEqual(entryFor(app), {
+    entry: join(app, "scripts/jev-gate.ts"),
+    prefix: ["ask"],
   });
-  assert.equal(ok.ok, true);
-  assert.deepEqual(tried, ["/old", "/new"]);
-  // ② 取消/超时：不换 app 重试（用户中断了，重试只会拖时间）。
-  const tried2 = [];
-  const aborted = await firstSuccessful(["/a", "/b"], async (app) => {
-    tried2.push(app);
-    return { ok: false, reason: "aborted" };
+  // 新代码：有瘦入口 → 直接用它。
+  writeFileSync(join(app, "scripts/jev-ask.ts"), "// slim stub");
+  assert.deepEqual(entryFor(app), {
+    entry: join(app, "scripts/jev-ask.ts"),
+    prefix: [],
   });
-  assert.equal(aborted.ok, false);
-  assert.deepEqual(tried2, ["/a"]);
-  // ③ 记住成功过的 app：下一次先试它（省掉「每次先撞一次坏候选」的 2.4s）。
-  const tried3 = [];
-  await firstSuccessful(["/slow", "/fast"], async (app) => {
-    tried3.push(app);
-    return app === "/fast"
-      ? { ok: true, scores: {} }
-      : { ok: false, reason: "app-version-skew" };
-  });
-  assert.deepEqual(tried3, ["/slow", "/fast"]);
-  const tried4 = [];
-  await firstSuccessful(["/slow", "/fast"], async (app) => {
-    tried4.push(app);
-    return { ok: true, scores: {} };
-  });
-  // 上次成功的排最前 → 第一次就成功，不会再去碰那个坏候选（这就是省下的 2.4s）。
-  assert.deepEqual(tried4, ["/fast"], "上次成功的排最前，且成功即停");
-
-  // ④ 全失败：原因串起来（能看出是哪个 checkout 的问题），不会静默变成 undefined。
-  const allFail = await firstSuccessful(["/zz-a"], async () => ({
-    ok: false,
-    reason: "cli-exit-3:x",
-  }));
-  assert.match(allFail.reason, /cli-exit-3:x@\/zz-a/);
-  assert.equal(
-    (await firstSuccessful([], async () => ({ ok: true }))).reason,
-    "app-not-found",
-  );
+  // 「未知命令」不是重试能解决的问题：报成 deploy-outdated（动作 = 部署新版本）。
+  assert.match(classifyCliFailure(3, "未知命令: ask"), /^deploy-outdated:/);
+  assert.match(classifyCliFailure(3, "未知命令: ask"), /部署新版本/);
+  // 其它失败保留退出码与输出，便于定位。
+  assert.equal(classifyCliFailure(7, "boom\n"), "cli-exit-7:boom");
+  rmSync(tmp, { recursive: true, force: true });
 });
 
 test("ask 判据：引用 state 路径、英文、两侧给反例、片段正文不复制进问题", () => {
@@ -389,7 +377,11 @@ test("askKeep：超预算的片段不进 questions，返回 judged/dropped 供�
   let seen = null;
   const runner = async ({ questions, state }) => {
     seen = { questions, state };
-    return { ok: true, scores: Object.fromEntries(Object.keys(questions).map((id) => [id, 0.9])), audit: {} };
+    return {
+      ok: true,
+      scores: Object.fromEntries(Object.keys(questions).map((id) => [id, 0.9])),
+      audit: {},
+    };
   };
   const sections = Array.from({ length: 10 }, (_, i) => ({
     index: i,

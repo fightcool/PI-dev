@@ -5,57 +5,54 @@
  * 门禁失败（包括无法确定 diff）→ 告警放行，绝不能称为通过。
  * JEV_GATE_HOOK=off → 关闭；默认开启。不复制命题或阈值，CLI 从配置/注册表读取。
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { detectCommits } from "./command.mjs";
 import { redact, runProcess, stagedState } from "./state.mjs";
 
-const SELF_ROOT = fileURLToPath(new URL("../../", import.meta.url));
-/** 安装时写入的「CLI 在哪」记录（和 gate.mjs 同目录，随副本一起安装/卸载）。 */
-const APP_RECORD = fileURLToPath(new URL("./app.json", import.meta.url));
 const require = createRequire(import.meta.url);
 
 /**
  * 门禁 CLI 所在的应用目录（`vendor/pi-web-ui`），找不到返回 null。
- * @GOTCHA 不能用「扩展文件往上两级」算根目录 —— 扩展本体是**复制**进宿主目录的
- *   （`<agentDir>/hooks/jev-gate/gate.mjs`），那个算法会指向 `<agentDir>/vendor/pi-web-ui`（不存在），
- *   于是钩子在每次提交时都退化成「找不到 CLI → 告警放行」：看着装好了，其实一次也不会真拦。
- * 解析顺序：显式 `JEV_GATE_APP` → 从**会话 cwd** 逐级向上找仓库根 →
- *   **安装时记录的 app 路径**（`app.json`，见下）→ 扩展源码所在的 checkout（开发时有效）→
- *   null（调用方必须明确告警放行，绝不假装通过）。
- * @GOTCHA 只靠 cwd 不够：会话在**别的项目**里提交（cwd 不含 `vendor/pi-web-ui`）时也会找不到 CLI，
- *   于是同样退化成「静默放行」。实测：在 `/tmp/<临时仓库>` 里提交，钩子确实没拦 —— 不是没加载，
- *   是没找到 CLI。所以安装时把当时的 checkout 记进 `app.json` 当兜底。
+ * @WHY **只认运行中宿主自己那份代码**：部署语义下就是 `deploy/current` 指向的 release，
+ *   `current` 是符号链接，所以换发布后解析结果自动跟随。
+ * @WHY 为什么不再列一串候选（旧的写法：env → cwd → 安装记录 app.json → 扩展源码 checkout）：
+ *   旧版本不该被咨询 —— 发布切换后旧 release 会被回收，而会话 cwd 里的 checkout 可能是别人
+ *   正在改的工作副本（实测遇到过：那份还没有 `ask` 子命令，于是每次白跑一次进程才失败）。
+ *   遇到「运行中的版本不支持」，正确动作是**部署新版本**，不是去别处碰运气。
+ * 解析顺序：显式 `JEV_GATE_APP` → **运行中宿主入口脚本所在树**（`process.argv[1]` 向上）→
+ *   会话 cwd 逐级向上（仅在宿主自己不带内核时降级）→ null（调用方必须明确告警放行）。
+ * @GOTCHA 不能用「扩展文件往上两级」算根目录：本体是**复制**进宿主目录的
+ *   （`<agentDir>/hooks/<name>-<hash>/gate.mjs`），那个算法会指向 `<agentDir>/vendor/pi-web-ui`（不存在），
+ *   于是钩子每次提交都退化成「找不到 CLI → 告警放行」：看着装好了，其实一次也不会真拦。
  */
-export function resolveApp(cwd, env = process.env, recordPath = APP_RECORD) {
+export function resolveApp(
+  cwd,
+  env = process.env,
+  hostEntry = process.argv[1],
+) {
   const hasCli = (dir) =>
     Boolean(dir) && existsSync(join(dir, "scripts", "jev-gate.ts"));
   if (env.JEV_GATE_APP)
     return hasCli(env.JEV_GATE_APP) ? resolve(env.JEV_GATE_APP) : null;
+  if (hostEntry && typeof hostEntry === "string") {
+    let dir = dirname(resolve(hostEntry));
+    for (let level = 0; level <= 4; level += 1) {
+      const candidate = join(dir, "vendor", "pi-web-ui");
+      if (hasCli(candidate)) return candidate;
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
   for (let dir = cwd ? resolve(cwd) : null; dir; dir = dirname(dir)) {
     const candidate = join(dir, "vendor", "pi-web-ui");
     if (hasCli(candidate)) return candidate;
     if (dirname(dir) === dir) break;
   }
-  for (const candidate of [
-    readRecordedApp(recordPath),
-    resolve(SELF_ROOT, "vendor", "pi-web-ui"),
-  ]) {
-    if (hasCli(candidate)) return resolve(candidate);
-  }
   return null;
-}
-
-/** 读安装时记录的 app 路径；文件缺失/损坏/字段不对一律当没有（不抛，也不猜）。 */
-function readRecordedApp(recordPath) {
-  try {
-    const parsed = JSON.parse(readFileSync(recordPath, "utf8"));
-    return typeof parsed?.app === "string" && parsed.app ? parsed.app : null;
-  } catch {
-    return null;
-  }
 }
 
 export async function callCli(state, signal, cwd) {

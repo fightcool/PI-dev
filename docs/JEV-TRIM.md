@@ -59,11 +59,11 @@ npm run trim -- stats [--json]        # 收益/代价汇总
 上游硬限：`state` + **最长那个问题** ≤ **32k token**（官方 `docs/models.md`；合计 64k）。
 我们在这里无法分词，只能按字符保守估：
 
-| 实测（真实 `git log -p` 文本，固定 1500 字段落） | 结果 |
-| ------------------------------------------------ | ---- |
-| 20 段 = 30k 字                                   | ✅ 成功（$0.00077、919ms） |
+| 实测（真实 `git log -p` 文本，固定 1500 字段落） | 结果                                                         |
+| ------------------------------------------------ | ------------------------------------------------------------ |
+| 20 段 = 30k 字                                   | ✅ 成功（$0.00077、919ms）                                   |
 | 22 段 = 33k 字                                   | ❌ 稳定 HTTP 400 `max_tokens_exceeded`（每次 2.1-2.6s 白花） |
-| 3 段 = 90k 字（中文）                            | ❌ 400 |
+| 3 段 = 90k 字（中文）                            | ❌ 400                                                       |
 
 所以定 `maxStateChars: 20000`。两个**必须一起看**的细节：
 
@@ -140,7 +140,8 @@ npm run trim -- stats [--json]        # 收益/代价汇总
 - `判定/改动/判完不改`：**判完不改**是正常的（相关内容本来就该全留），不是失败；
 - `跳过`：为什么没动手（按原因分类，用来调 `minChars` 等参数）；
 - `失败原因`：`app-not-found` / `cli-timeout` / `decision-error:*` —— 出现这些要当 bug 看待（留痕就是为了能看见）；
-- 统计只记数字与判定结果，**永不记 state/片段正文**（可能是源码或密钥），文件 0600、4 MiB 轮转。
+- 统计只记数字与判定结果，**永不记 state/片段正文**（可能是源码或密钥），文件 0600、4 MiB 轮转；
+  每条成功记录带 `app` 字段（= 这次用的哪份代码，部署时即 release 路径）—— 复盘「谁判的」靠它。
 
 ## 7. 安装与生效
 
@@ -152,9 +153,24 @@ PI_CODING_AGENT_DIR=/home/dev/.local/share/pi-dev/agent node scripts/install-jev
 PI_CODING_AGENT_DIR=/home/dev/.local/share/pi-dev/agent node scripts/install-jev-hook.mjs uninstall
 ```
 
-产物：`<agentDir>/extensions/jev-trim-<hash>.ts` → `<agentDir>/hooks/jev-trim-<hash>/`（本体 + `.managed-by` + `app.json`）。
+产物：`<agentDir>/extensions/jev-trim-<hash>.ts` → `<agentDir>/hooks/jev-trim-<hash>/`（本体 + `.managed-by`）。
 本体必须在 `extensions/` **之外**（pi 会把 `extensions/<目录>/index.ts` 也当扩展发现 → 同一个钩子加载两次）。
-`app.json` 记的是「CLI 在哪个 checkout」，会话在**别的项目**里工作时靠它兜底 —— 路径写错不会报错，只会静默不生效，所以有单测钉住。
+
+### CLI 来自「运行中宿主自己那份代码」
+
+解析顺序只有三档，**没有候选列表、没有重试、没有"版本偏差自愈"**：
+
+1. `JEV_GATE_APP`（显式覆盖；配错就报错，不降级）；
+2. **宿主入口脚本（`process.argv[1]`）所在树里的 `vendor/pi-web-ui`** —— 部署语义下就是
+   `deploy/current` 指向的 release（`current` 是符号链接，**解析保留字面量**，所以换发布自动跟随）；
+3. 会话 cwd 逐级向上（**仅在宿主自己不带内核时**降级，例如从全局安装启动的 pi）；
+   全都找不到 → null，**告警放行并说明原因**。
+
+> 曾经的做法是「env → cwd → 安装记录 `app.json` → 扩展源码 checkout」并逐个尝试，把它叫「版本偏差自愈」。
+> 那是把版本不一致当常态：① `switch-production-release.mjs` 会**回收旧 release**，② 会话 cwd 里的
+> checkout 可能是别人正在改的工作副本（实测：那份还没有 `ask` 子命令 → 每次判定先白跑 2.4s 才失败）。
+> **旧版本不该被咨询 —— 遇到「运行中的版本不支持」（`deploy-outdated`），正确动作是部署新版本。**
+> 为此 `switch-production-release.mjs` 在切换成功后会自动用新 release 同步扩展本体，让两者不可能错位。
 
 改完本体要重跑 install（哈希变 → 入口名变 → 宿主缓存失效）；新会话自动加载，现有会话 `/reload`。
 

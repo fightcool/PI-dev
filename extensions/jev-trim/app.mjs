@@ -1,77 +1,76 @@
-/* 🍞 AI Breadcrumb — @COUPLED jev-gate/gate.mjs::resolveApp（同源逻辑）, ask.mjs（用它跑 CLI）
- * @WHY 为什么这里和 jev-gate/gate.mjs 有一段**故意重复**的 app 解析：每个装到宿主的扩展是**独立副本**
- *   （内容寻址目录，互不 import），共享一个 lib 需要先改安装器布局 —— 那是后续重构（见
- *   docs/JEV-HARNESS-PLAN.md §8 待办）。此处保持与 gate 完全相同的三档兜底顺序，行为可预期。
- * @CONTRACT 解析顺序：`JEV_GATE_APP` → 会话 cwd 逐级向上找 `vendor/pi-web-ui` → 安装时记录的 `app.json`
- *   → 扩展自带的 checkout。找不到就返回 null，**调用方必须告警放行**（绝不假装成功）。
+/* 🍞 AI Breadcrumb — @COUPLED index.ts, ask.mjs（用它跑 CLI）, ../../docs/JEV-TRIM.md §7
+ * @WHY **只认一份代码**：扩展要调用的 CLI 必须来自**正在运行的那个宿主自己的代码**。
+ *   部署语义下就是 `deploy/current/scripts/start.mjs` → `deploy/current/vendor/pi-web-ui`；
+ *   `current` 是指向 `releases/<id>` 的符号链接，所以解析结果**随发布自动跟随**，不需要任何"治愈"。
+ * @WHY 为什么不列出候选、逐个试（曾经这么写过）：那是把「版本不一致」当成常态去容错。但
+ *   ① 部署切换后旧 release 会被回收（`switch-production-release.mjs` 的 prune 会删历史版本），
+ *   ② 会话 cwd 里的 checkout 很可能是**别人正在改的工作副本**（实测遇到过：那份还没有 `ask` 子命令），
+ *   于是每次判定都要先白跑一次进程（实测 2.4s）才失败。旧版本根本不该被咨询 ——
+ *   遇到「运行中的版本不支持」时，正确动作是**部署新版本**，不是去别处碰运气。
+ * @CONTRACT 解析只有两档：
+ *   ① `JEV_GATE_APP` 显式覆盖（调试/测试；配错就报错，不降级到别处）；
+ *   ② 运行中宿主入口脚本（`process.argv[1]`）所在树里的 `vendor/pi-web-ui`（向上最多 4 层）。
+ *   找不到 → 返回 null，调用方**告警放行并说明原因**（绝不猜路径）。
+ * @GOTCHA `path.resolve` 只做字面规范化、**不解符号链接** —— 这是刻意的：保留 `current/...` 才能让
+ *   解析结果跟着发布切换走（我们要的就是「现在在跑的那份」）。
  */
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
-/**
- * 与 gate.mjs 完全相同的两条路径推导（**别改成 dirname(import.meta.url) 那种写法**）：
- *   - `SELF_ROOT` = `../../`：源码树里 = 仓库根（`vendor/pi-web-ui` 就在旁边）；
- *     装到宿主后 = `<agentDir>`（hooks/<name>-<hash>/ 往上两级）。
- *   - `APP_RECORD` = **本体目录里的** app.json：安装器把「CLI 在哪个 checkout」写在这里。
- * @GOTCHA 这两个路径写错**不会报错**，只会让兜底永远读不到记录 → 在别的项目里静默不生效。
- */
-const SELF_ROOT = fileURLToPath(new URL("../../", import.meta.url));
-export const APP_RECORD = fileURLToPath(new URL("./app.json", import.meta.url));
 
 const hasCli = (dir) =>
   Boolean(dir) && existsSync(join(dir, "scripts", "jev-gate.ts"));
 
-function readRecordedApp(recordPath) {
-  try {
-    const parsed = JSON.parse(readFileSync(recordPath, "utf8"));
-    return typeof parsed?.app === "string" && parsed.app ? parsed.app : null;
-  } catch {
-    return null;
+/** 从宿主入口脚本往上（最多 `depth` 层）找到第一个含 `vendor/pi-web-ui` 的树根。 */
+export function appFromHostEntry(hostEntry, depth = 4) {
+  if (!hostEntry || typeof hostEntry !== "string") return null;
+  let dir = dirname(resolve(hostEntry));
+  for (let level = 0; level <= depth; level += 1) {
+    const candidate = join(dir, "vendor", "pi-web-ui");
+    if (hasCli(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
   }
+  return null;
+}
+
+/** 从会话 cwd 逐级向上找项目自带的 `vendor/pi-web-ui`（只在宿主自己没有内核时才可能用到）。 */
+export function appFromCwd(cwd) {
+  for (let dir = cwd ? resolve(cwd) : null; dir; dir = dirname(dir)) {
+    const candidate = join(dir, "vendor", "pi-web-ui");
+    if (hasCli(candidate)) return candidate;
+    if (dirname(dir) === dir) break;
+  }
+  return null;
 }
 
 /**
- * 所有**可尝试**的 app 候选（按优先级去重）。
- * @WHY 为什么不只取第一个：实测踩到过 —— 会话 cwd 里有一个**旧 checkout**（还没有 `ask` 子命令），
- *   而 cwd 优先级高于安装记录，于是每次判定都 `退出码 3：未知命令: ask`（内容原样放行，看着像「没生效」）。
- *   所以候选全列出来逐个尝试：版本偏差能自愈，只在**全部**失败时才告警放行。
- * @returns {string[]}
+ * 解析这次要用的 app（即「CLI 在哪」）。null = 没得用，调用方必须告警放行。
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {string} [hostEntry] 默认取运行中宿主的入口脚本（`process.argv[1]`）
+ * @param {string} [cwd] 会话 cwd（仅当宿主自己没有内核时才兜底）
+ * @returns {string | null}
  */
-export function resolveAppCandidates(
-  cwd,
+export function resolveApp(
   env = process.env,
-  recordPath = APP_RECORD,
+  hostEntry = process.argv[1],
+  cwd = process.cwd(),
 ) {
-  /** @type {string[]} */
-  const candidates = [];
-  const push = (dir) => {
-    if (!dir || !hasCli(dir)) return;
-    const abs = resolve(dir);
-    if (!candidates.includes(abs)) candidates.push(abs);
-  };
-  push(env.JEV_GATE_APP);
-  // 顺序：env → **安装时记录的 checkout** → 会话 cwd → 本体自带。
-  // @WHY 为什么记录排在 cwd 前面：记录的那个就是**本体所在的那份 checkout**，协议/子命令与本体同版本；
-  //   而会话 cwd 里的 checkout 可能是别人的工作副本（实测就吃过：那份还没有 `ask` 子命令 → 每次判定
-  //   先白跑 2.4s 才失败）。记录路径不存在时 `push` 会直接跳过，所以「优先」不会付代价。
-  push(readRecordedApp(recordPath));
-  for (let dir = cwd ? resolve(cwd) : null; dir; dir = dirname(dir)) {
-    push(join(dir, "vendor", "pi-web-ui"));
-    if (dirname(dir) === dir) break;
-  }
-  push(resolve(SELF_ROOT, "vendor", "pi-web-ui"));
-  return candidates;
-}
-
-export function resolveApp(cwd, env = process.env, recordPath = APP_RECORD) {
-  return resolveAppCandidates(cwd, env, recordPath)[0] ?? null;
+  const override = env.JEV_GATE_APP;
+  if (override) return hasCli(override) ? resolve(override) : null;
+  // ① 运行中宿主自己的那份代码 —— 部署语义下就是 `deploy/current` 指向的 release，
+  //    换发布时它自动跟随；旧 release / 别人的工作副本永远不会被选中。
+  const fromHost = appFromHostEntry(hostEntry);
+  if (fromHost) return fromHost;
+  // ② 宿主自己不带内核（例如从全局安装启动的 pi）时才看会话项目：
+  //    这不是「绕过运行版本」，而是一种宿主内核根本不存在时的降级；版本不合会报 `deploy-outdated`。
+  return appFromCwd(cwd);
 }
 
 /**
  * 跑一个子进程，带超时/输出上限/外部取消。
- * @CONTRACT 超时或取消都 **kill 进程** 后返回 `timedOut`/`aborted`，绝不无限期挂着——
+ * @CONTRACT 超时或取消都 **kill 进程** 后返回 `timedOut`/`aborted`，绝不无限期挂着 ——
  *   这个调用在 `tool_result` 钩子路径上，挂住就是把用户的 agent 卡死。
  */
 export function runProcess(
@@ -86,7 +85,6 @@ export function runProcess(
     });
     let stdout = "";
     let stderr = "";
-    let overflow = false;
     let done = false;
     const finish = (result) => {
       if (done) return;
@@ -107,7 +105,6 @@ export function runProcess(
     if (signal?.aborted) return onAbort();
     const collect = (chunk, which) => {
       if (stdout.length + stderr.length > maxBuffer) {
-        overflow = true;
         child.kill("SIGKILL");
         return;
       }
@@ -119,7 +116,7 @@ export function runProcess(
     child.on("error", (err) =>
       finish({ code: null, stdout, stderr: String(err?.message ?? err) }),
     );
-    child.on("close", (code) => finish({ code, stdout, stderr, overflow }));
+    child.on("close", (code) => finish({ code, stdout, stderr }));
     if (input !== undefined) {
       child.stdin.on("error", () => {});
       child.stdin.end(input);

@@ -15,7 +15,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { resolveAppCandidates, runProcess } from "./app.mjs";
+import { resolveApp, runProcess } from "./app.mjs";
 
 /** 单条片段的判据模板（`{i}` 是片段下标）。 */
 export function trimQuestion(index) {
@@ -73,6 +73,7 @@ export function buildTrimState({ objective, tool, sections }) {
  * @property {Record<string, number>} [scores] 片段 id → 0..1 概率
  * @property {JevAudit} [audit]
  * @property {number} elapsedMs 墙钟（含 CLI 冷启动）
+ * @property {string} [app] 这次用的是哪份代码（= 运行中的 release 路径，回答「谁判的」）
  * @property {string} [reason] `ok:false` 时的原因
  * @property {number[]} [judged] 真正进了 state 的片段 index（其余未判 = 原样保留）
  * @property {number} [dropped] 因 state 预算没判的片段数
@@ -131,12 +132,28 @@ export async function askKeep({
     judged: judged.map((s) => s.index),
     dropped: sections.length - judged.length,
   };
-  if (!result.ok) return { ok: false, elapsedMs, reason: result.reason, ...meta };
-  return { ok: true, scores: result.scores, audit: result.audit, elapsedMs, ...meta };
+  if (!result.ok)
+    return {
+      ok: false,
+      elapsedMs,
+      reason: result.reason,
+      app: result.app,
+      ...meta,
+    };
+  return {
+    ok: true,
+    scores: result.scores,
+    audit: result.audit,
+    elapsedMs,
+    app: result.app,
+    ...meta,
+  };
 }
 
 /**
- * 选定 entry 与参数前缀：瘦入口优先，老入口兜底（版本不一致时仍能工作，代价只是慢）。
+ * 选定 entry 与参数前缀：新入口（瘦）优先，`jev-gate.ts ask` 兜底。
+ * @WHY 两者在**同一份代码**里（运行中宿主自己的那份），差别只是启动开销；瘦入口不存在 =
+ *   这份代码比扩展本体旧 → 由 `classifyCliFailure` 报成 `deploy-outdated`。
  * @returns {{entry: string, prefix: string[]}}
  */
 export function entryFor(app) {
@@ -147,60 +164,34 @@ export function entryFor(app) {
 }
 
 /**
- * 记住「上次成功的 app」，下次先试它。
- * @WHY 实测：会话 cwd 里的旧 checkout 排在候选第一位，每次判定都要先白跑一次它（失败 + **2.4s**），
- *   再落到真正可用的那个（0.65s）—— 平均墙钟从 ~1.5s 涨到 ~3.4s。记住成功过的就不用每次重付这笔钱。
- * @CONTRACT 只做**排序**，不做「唯一」：记的那个也可能后来变得不可用（checkout 被删/切旧），
- *   所以仍然会回退到其它候选。
+ * 把 CLI 失败分类成可定位的原因（纯函数，可单测）。
+ * @WHY 最重要的一类：运行中的版本**不认识 ask 子命令** —— 那不是重试能解决的问题，
+ *   正确动作是**部署新版本**（或重装扩展本体）。单列出来，现场一眼看出该做什么。
  */
-let preferredApp = null;
-
-/**
- * 逐个候选尝试，返回第一个成功的结果；全部失败时把原因串起来（能看出是哪个 checkout 的问题）。
- * @WHY 实测踩到过：会话 cwd 里的 checkout 还没有 `ask` 子命令 → 每次判定都「未知命令」，内容被原样放行，
- *   看起来就像「装好了却没生效」。逐个尝试让**版本偏差自愈**。
- * @CONTRACT 取消/超时是「这次别问了」（用户中断），不再换 app 重试 —— 重试只会拖时间。
- * @param {string[]} candidates
- * @param {(app: string) => Promise<{ok: boolean, reason?: string}>} attempt
- */
-
-/**
- * 逐个候选尝试，返回第一个成功的结果；全部失败时把原因串起来（能看出是哪个 checkout 的问题）。
- * @WHY 实测踩到过：会话 cwd 里的 checkout 还没有 `ask` 子命令 → 每次判定都「未知命令」，内容被原样放行，
- *   看起来就像「装好了却没生效」。逐个尝试让**版本偏差自愈**。
- * @CONTRACT 取消/超时是「这次别问了」（用户中断），不再换 app 重试 —— 重试只会拖时间。
- * @param {string[]} candidates
- * @param {(app: string) => Promise<{ok: boolean, reason?: string}>} attempt
- */
-export async function firstSuccessful(candidates, attempt) {
-  const reasons = [];
-  const ordered =
-    preferredApp && candidates.includes(preferredApp)
-      ? [preferredApp, ...candidates.filter((c) => c !== preferredApp)]
-      : candidates;
-  for (const candidate of ordered) {
-    const result = await attempt(candidate);
-    if (result.ok) {
-      preferredApp = candidate;
-      return result;
-    }
-    reasons.push(`${result.reason}@${candidate}`);
-    if (result.reason === "aborted" || result.reason === "cli-timeout") break;
-  }
-  return {
-    ok: false,
-    reason: reasons.join(" | ").slice(0, 400) || "app-not-found",
-  };
+export function classifyCliFailure(code, output) {
+  const detail = String(output ?? "")
+    .trim()
+    .slice(0, 200);
+  if (/未知命令/.test(detail))
+    return "deploy-outdated:运行中的版本没有 ask 子命令（部署新版本后重试）";
+  return `cli-exit-${code}:${detail}`;
 }
 
-/** 在单个 app 上尝试一次判定。 */
-async function attemptOn(app, { questionsFile, state, signal, timeoutMs }) {
+/**
+ * 在当前运行的那份代码上尝试一次判定。
+ * @CONTRACT **只试这一份**。没有候选列表、没有重试别处 —— 「版本不一致」的处理是部署新版本。
+ */
+export async function attemptOn(
+  app,
+  { questionsFile, state, signal, timeoutMs },
+) {
   let loader;
   try {
     loader = createRequire(join(app, "package.json")).resolve("tsx");
   } catch (err) {
     return {
       ok: false,
+      app,
       reason: `tsx-unresolved:${String(err?.message ?? err).slice(0, 120)}`,
     };
   }
@@ -227,30 +218,27 @@ async function attemptOn(app, { questionsFile, state, signal, timeoutMs }) {
       maxBuffer: 4 * 1024 * 1024,
     },
   );
-  if (proc.aborted) return { ok: false, reason: "aborted" };
-  if (proc.timedOut) return { ok: false, reason: "cli-timeout" };
-  if (proc.code !== 0) {
-    const detail = (proc.stderr || proc.stdout).trim().slice(0, 200);
-    // 版本偏差（这个 checkout 还没有 ask 子命令）单列一个原因：好认，而且值得去试下一个候选。
+  if (proc.aborted) return { ok: false, app, reason: "aborted" };
+  if (proc.timedOut) return { ok: false, app, reason: "cli-timeout" };
+  if (proc.code !== 0)
     return {
       ok: false,
-      reason: /未知命令/.test(detail)
-        ? "app-version-skew"
-        : `cli-exit-${proc.code}:${detail}`,
+      app,
+      reason: classifyCliFailure(proc.code, proc.stderr || proc.stdout),
     };
-  }
   let parsed;
   try {
     parsed = JSON.parse(proc.stdout);
   } catch {
-    return { ok: false, reason: "cli-output-not-json" };
+    return { ok: false, app, reason: "cli-output-not-json" };
   }
   if (parsed?.error || !parsed?.checks)
     return {
       ok: false,
+      app,
       reason: `decision-error:${parsed?.errorCode ?? "unknown"}`,
     };
-  return { ok: true, scores: parsed.checks, audit: parsed.audit };
+  return { ok: true, app, scores: parsed.checks, audit: parsed.audit };
 }
 
 /**
@@ -258,15 +246,25 @@ async function attemptOn(app, { questionsFile, state, signal, timeoutMs }) {
  * @CONTRACT **逐个候选 app 尝试**，只在全部失败时返回失败（版本偏差不该让整个功能静默失效）。
  */
 async function defaultRunner({ questions, state, cwd, signal, timeoutMs }) {
-  const candidates = resolveAppCandidates(cwd);
-  if (candidates.length === 0) return { ok: false, reason: "app-not-found" };
+  // 只认运行中宿主自己的那份代码；找不到就失败并说清楚（绝不猜别的 checkout）。
+  const app = resolveApp(process.env, process.argv[1], cwd);
+  if (!app)
+    return {
+      ok: false,
+      reason:
+        "app-not-found:运行中的宿主旁边找不到 vendor/pi-web-ui（调试可用 JEV_GATE_APP 显式指定）",
+    };
   const dir = mkdtempSync(join(tmpdir(), "jev-trim-"));
   const questionsFile = join(dir, "questions.json");
   try {
     writeFileSync(questionsFile, JSON.stringify(questions), { mode: 0o600 });
-    return await firstSuccessful(candidates, (app) =>
-      attemptOn(app, { questionsFile, state, signal, timeoutMs }),
-    );
+    return await attemptOn(app, {
+      questionsFile,
+      state,
+      cwd,
+      signal,
+      timeoutMs,
+    });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
