@@ -31,7 +31,10 @@ export function useAppEffects(chat: AppConnection["chat"], send: AppConnection["
 	}, [chat.ready, chat.settings, send, locale]);
 	// 浏览器标题跟随当前会话，列表更新（包括重命名）时同步更新。
 	const activeId = chat.activeConversationId || chat.state?.conversationId;
-	const conversationTitle = chat.conversations.find((conversation) => conversation.id === activeId)?.title;
+	const listedConversationTitle = chat.conversations.find((conversation) => conversation.id === activeId)?.title;
+	const activeTitle = chat.activeConversationTitle;
+	const activeConversationTitle = activeTitle && activeTitle.id === activeId ? activeTitle.title : undefined;
+	const conversationTitle = listedConversationTitle ?? activeConversationTitle;
 	const showConversationTitle = useProjectTitle();
 	useEffect(() => {
 		const name = showConversationTitle ? conversationTitle?.trim() : "";

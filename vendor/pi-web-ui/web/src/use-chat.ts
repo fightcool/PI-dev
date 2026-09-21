@@ -193,6 +193,8 @@ export interface ChatState {
 	conversations: ConversationSummary[];
 	/** Id of the conversation the current snapshot belongs to. */
 	activeConversationId: string;
+	/** Title supplied for the active conversation even when it is absent from the listed rows. */
+	activeConversationTitle: { id: string; title: string } | null;
 	/** 乐观切换：用户已点开的会话，其首份快照还没到。true 时对话面板显示加载
 	 *  占位而不是上一个会话的内容（否则用户看到的是「点了没反应，然后跳一下」）。
 	 *  结束条件就是「快照里的 conversationId 变了」——switch_conversation 与
@@ -402,6 +404,7 @@ type Action =
 			type: "conversations";
 			conversations: ConversationSummary[];
 			activeId: string;
+			activeTitle?: string;
 	  }
 	| { type: "projects"; projects: ProjectSummary[] }
 	| { type: "files"; files: FileListing }
@@ -681,6 +684,8 @@ function reducer(state: ChatState, action: Action): ChatState {
 				ready: true,
 				state: action.state,
 				activeConversationId: action.state.conversationId,
+				activeConversationTitle:
+					state.activeConversationTitle?.id === action.state.conversationId ? state.activeConversationTitle : null,
 				// 乐观切换的收尾：只有「活动会话真的换了」才算切换完成——这样切换期间
 				// 旧会话的定时快照/后台统计更新不会提前把占位揭掉。
 				switching: action.state.conversationId === state.state?.conversationId && state.switching,
@@ -778,6 +783,9 @@ function reducer(state: ChatState, action: Action): ChatState {
 				...state,
 				conversations: action.conversations,
 				activeConversationId: action.activeId,
+				activeConversationTitle: action.activeTitle
+					? { id: action.activeId, title: action.activeTitle }
+					: null,
 			};
 		case "projects":
 			return { ...state, projects: action.projects };
@@ -1017,6 +1025,7 @@ export function useChat() {
 		sessions: [],
 		conversations: [],
 		activeConversationId: "",
+		activeConversationTitle: null,
 		switching: false,
 		projects: [],
 		files: null,
@@ -1278,6 +1287,7 @@ export function useChat() {
 						type: "conversations",
 						conversations: msg.conversations,
 						activeId: msg.activeId,
+						activeTitle: msg.activeTitle,
 					});
 					break;
 				case "projects":
