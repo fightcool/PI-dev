@@ -1809,7 +1809,9 @@ export type ServerMessage =
 			error?: string;
 			unsupported?: boolean;
 	  }
-	/** 网关配置（get_gateway 的回执）：配置 + 重复接入提示。 */
+	/** 网关配置（get_gateway 的回执）：配置 + 重复接入提示 + 运行时的组合错误。
+	 *  runtimeError 非空 = SDK 拒绝了 models.json（例如某个模型的 cost 缺字段），此时
+	 *  **整个文件都不生效**、运行时里没有这个服务商 —— 界面必须显著提示，不能看起来一切正常。 */
 	| {
 			type: "gateway";
 			reqId: number;
@@ -1817,6 +1819,7 @@ export type ServerMessage =
 			error?: string;
 			config?: UiGatewayConfig;
 			duplicates?: UiGatewayDuplicate[];
+			runtimeError?: string;
 	  }
 	/** 网关配置保存回执（save_gateway）。失败时 error 就是原因，界面不得假装已保存。 */
 	| { type: "gateway_saved"; reqId: number; ok: boolean; error?: string; errorEn?: string }

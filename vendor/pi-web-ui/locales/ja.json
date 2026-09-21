@@ -1041,6 +1041,8 @@
 		"gatewayUsageHint": "These are the gateway's own billing numbers — not the same thing as the local token-based estimate above, and the two must never be added together.",
 		"settingsGateway": "Gateway",
 		"settingsGatewayKeyEntry": "Configure the key under “Gateway”",
+		"gatewayRuntimeError": "The model config was rejected by the runtime (currently unusable)",
+		"gatewayRuntimeErrorHint": "The runtime rejected models.json, so the gateway is not registered at all — fix the model/field it names (common: cost missing cacheRead / cacheWrite).",
 		"gatewaySettingsTitle": "Gateway",
 		"gatewayCurrent": "This instance has a single model entry point: one base URL and one key. The model list comes from the gateway itself.",
 		"gatewaySettingsIntro": "This instance has a single model entry point: one base URL and one key. The model list comes from the gateway itself.",
