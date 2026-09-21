@@ -190,6 +190,21 @@ describe("gateway usage: query", () => {
 		expect(fallback.usage?.windowDays).toBe(30);
 	});
 
+	it("鉴权被拒（401/403）不算「没有账单接口」：必须报密钥问题并保留 unsupported=false", async () => {
+		// 2026-09-21 实测：运行时里没有这个服务商时，账单接口返回 401；旧实现把它归到
+		// 「直连上游、不是网关」，把人引向完全错误的方向（真因是 models.json 被 SDK 拒绝）。
+		const unauthorized = (async () =>
+			new Response(JSON.stringify({ error: { message: "Invalid token" } }), {
+				status: 401,
+			})) as unknown as typeof fetch;
+		const res = await new GatewayUsageService(port(), unauthorized).query("newapi", { now: T0 });
+		expect(res.ok).toBe(false);
+		expect(res.unsupported).toBeFalsy();
+		expect(res.error).toContain("拒绝了这把密钥");
+		const forbidden = (async () => new Response("nope", { status: 403 })) as unknown as typeof fetch;
+		expect((await new GatewayUsageService(port(), forbidden).query("newapi", { now: T0 })).unsupported).toBeFalsy();
+	});
+
 	it("把「这台网关没有账单接口」与「网关连不上」分开报（unsupported）", async () => {
 		// ① 端点不存在（404）→ 永久事实：界面应停止重试，也不该在状态栏常驻报错。
 		const noBilling = await new GatewayUsageService(port(), stubGateway({}).fetchImpl).query("newapi", { now: T0 });
