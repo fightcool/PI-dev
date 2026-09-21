@@ -2,14 +2,14 @@
 
 <!-- 🍞 AI Breadcrumb — @COUPLED DEV-CON-PROPOSAL.md, STRUCTURE.md, history/dev-con/README.md -->
 
-**本仓库渠道管理功能的唯一开发范本是 [DEV-CON-PROPOSAL.md：PI-dev 多渠道开发基准](DEV-CON-PROPOSAL.md)。** 它统一产品边界、架构、配置所有权、热切换、用量/账户口径、阶段顺序、技术待验证项与验收标准。P0 技术结论与证据见 [P0-VERIFICATION.md](P0-VERIFICATION.md)。
+**当前模型接入方式的唯一依据是 [NEWAPI-GATEWAY.md：NewAPI 单网关接入](NEWAPI-GATEWAY.md)**（网关是谁、配置写在哪、用量数字怎么读，含实测证据）。**多渠道模型（渠道档案 / 凭据引用 / 对话绑定 / 每渠道账户查询）已整体移除**，其需求与结论留在 [DEV-CON-PROPOSAL.md](DEV-CON-PROPOSAL.md) 与 [P0-VERIFICATION.md](P0-VERIFICATION.md)，**仅作历史**，不得据其恢复旧实现。
 
 ## 开发时阅读
 
 | 文档 | 用途 |
 | --- | --- |
-| [DEV-CON-PROPOSAL.md](DEV-CON-PROPOSAL.md) | 当前需求与验收的唯一依据，先读此文 |
-| [P0-VERIFICATION.md](P0-VERIFICATION.md) | P0 七项的实现结论、可复现证据与未验证项 |
+| [NEWAPI-GATEWAY.md](NEWAPI-GATEWAY.md) | 当前接入方式的唯一依据，先读此文 |
+| [DEV-CON-PROPOSAL.md](DEV-CON-PROPOSAL.md)、[P0-VERIFICATION.md](P0-VERIFICATION.md) | 历史基准与 P0 结论（多渠道模型已移除，留档追溯） |
 | [CONTEXT.md](../CONTEXT.md) | 领域词汇，辅助理解，不维护第二份计划 |
 | [STRUCTURE.md](STRUCTURE.md) | 目录、依赖、实例数据和源码边界 |
 | [根README](../README.md) | 安装/开发入口与项目导航 |
@@ -26,7 +26,7 @@
 ## 记录与历史材料
 
 - [PERF-SESSION-LOAD.md](PERF-SESSION-LOAD.md)：会话加载/切换性能的实测基线、度量口径与优化分层（含未完成项）。
-- [DEV-CON归档索引](history/dev-con/README.md)：旧评估、v1.2架构讨论和已移除原型的记录。
+- [DEV-CON归档索引](history/dev-con/README.md)：旧评估、v1.2架构讨论、已移除的多渠道实现与原型记录。
 - [FOUNDATION-VALIDATION.md](FOUNDATION-VALIDATION.md)：指定基线的结构/性能验收，不是当前规划或在线状态证明。
 - [PM2-CUTOVER.md](PM2-CUTOVER.md)：特定一次迁移记录，不是后续部署计划或授权。
 - `history/`：早期环境与认证记录，仅供追溯。

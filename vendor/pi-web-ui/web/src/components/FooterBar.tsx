@@ -5,36 +5,35 @@
  *              @PERF=performance @CONTRACT=interface contract 📖=dev doc reference
  *
  * Breadcrumbs (changing this affects):
- *   @COUPLED components/UsageDetail.tsx (令牌项点开的用量/归属面板), use-chat.ts (channelState / state.channelBinding)
+ *   @COUPLED components/UsageDetail.tsx (令牌项点开的用量/归属面板), use-chat.ts (state.gatewayUsage)
+ *   @COUPLED components/GatewayUsageBlock.tsx（网关自报用量的展示口径，唯一实现）,
+ *            web/src/gateway-usage.ts（金额格式与「这份读数属于哪个网关」的判定）
  *   @COUPLED components/JevFooterItem.tsx（缓存命中项之后的 Jev 门禁项：最简结论 + 点开浮层，
  *            浮层外壳与关闭行为与 UsageDetail 同口径）, jev-footer.ts（最近结论的推断）
  *   @COUPLED components/DirectoryPicker.tsx（工作目录选择器：浏览/新建/选定的唯一实现，
  *            左栏「＋ 新建项目」共用同一组件，行为不允许分叉）
- *   📖 docs/DEV-CON-PROPOSAL.md §6（状态栏：当前渠道/模型 + 用量）, §7（渠道归属）
- *   @CONTRACT 底栏只显示「有效」渠道与待生效标记；待生效不等于已生效，两者必须能同时看到。
- *   @GOTCHA 令牌项是按钮（点开明细），不要再把整行当成纯文本。
+ *   📖 docs/NEWAPI-GATEWAY.md §4（状态栏的网关项显示什么、为什么可能什么都不显示）
+ *   @CONTRACT 网关项只在**有读数**时出现：读取失败、或该服务商没有账单接口时不占位 ——
+ *             状态栏是常驻监视器，一个永远红着的项只会让人学会忽略它（原因在用量面板里说）。
+ *   @GOTCHA 令牌项与网关项都是按钮（点开明细），不要再把整行当成纯文本。
  *   @GOTCHA Jev 项与用量面板都是 <footer> 的 position:fixed 子节点：整块 display:none 会连它们
  *            一起藏掉（见下面 statusbar 不参与收起的 @WHY）。
  * ──────────────────────────────────────────────────
  */
 import { useEffect, useRef, useState } from "react";
-import type { UiChannelBinding } from "../types";
-import type { ChatState, UsageHistoryMsg, UsageHistoryWindow } from "../use-chat";
+import type { ChatState, OpsApi } from "../use-chat";
 import { useT } from "../i18n";
 import { cacheMetrics, estimateStreamTokens, streamRate, trimRateSamples, type RateSample } from "../cache-stats";
 import { UsageDetail, formatTokens } from "./UsageDetail";
 import { JevFooterItem } from "./JevFooterItem";
-import { channelAccountView } from "../channel-account";
-import { bindingCoversActiveModel } from "../channel-models";
+import { gatewayUsageFacts } from "../gateway-usage";
 import { DirectoryPicker } from "./DirectoryPicker";
 
 interface FooterBarProps {
 	chat: ChatState;
-	/** P4：用量历史查询（只读）；未提供时用量详情不显示历史区。 */
-	onQueryUsageHistory?: (groupBy: UsageHistoryMsg["groupBy"], window: UsageHistoryWindow) => number;
-	/** 手动重试该渠道的余额查询（连续失败后自动刷新停止，重试恢复）。 */
-	onRetryAccount?: (channelId: string) => void;
-	/** 用量明细面板开合（提到 App 层：输入框工具条的「渠道余额」chip 也会打开它）。 */
+	/** P4 运维 / 网关的只读查询（用量历史、网关用量）。 */
+	opsApi: OpsApi;
+	/** 用量明细面板开合（App 层受控）。 */
 	usageOpen?: boolean;
 	onUsageOpenChange?: (open: boolean) => void;
 	/** 打开设置面板（App 注入 dialogs.setSettingsOpen）；Jev 浮层的「设置」入口用。 */
@@ -50,15 +49,7 @@ interface FooterBarProps {
  * workspace path — click the path to open a directory picker (browse into
  * folders, go up, create folders, or pick one as the working directory).
  */
-export function FooterBar({
-	chat,
-	send,
-	onQueryUsageHistory,
-	usageOpen: usageOpenProp,
-	onUsageOpenChange,
-	onRetryAccount,
-	onOpenSettings,
-}: FooterBarProps) {
+export function FooterBar({ chat, opsApi, send, usageOpen: usageOpenProp, onUsageOpenChange, onOpenSettings }: FooterBarProps) {
 	const t = useT();
 	const state = chat.state;
 	const [editing, setEditing] = useState(false);
@@ -111,32 +102,21 @@ export function FooterBar({
 
 	const queueTotal = state.queue.steering.length + state.queue.followUp.length;
 
-	// -- DEV-CON 渠道账户：chip 与用量面板共用同一份派生（见 channel-account.ts）。
-	const accountView = channelAccountView({
-		channels: chat.channelState?.channels ?? [],
-		accounts: chat.channelState?.accounts ?? [],
-		binding: state.channelBinding,
-		modelProvider: state.model?.provider ?? null,
-	});
+	/** 服务商展示名（models.json 的 name）：归属表用它把 providerId 显示成人看得懂的名字。 */
+	const providerNames = Object.fromEntries(
+		chat.modelsConfig.filter((p) => p.name).map((p) => [p.providerId, p.name as string]),
+	);
 
-	// -- DEV-CON 渠道：只显示有效绑定（与待生效标记分开），名字从 channel_state 解析。
-	// 绑定要与**实际在跑的模型**对得上才算生效（同口径见 channel-models.ts 的
-	// bindingCoversActiveModel）：模型被渠道以外的路径换掉后，旧绑定不得继续冒充当前渠道。
-	const channels = chat.channelState?.channels ?? [];
-	const channelBinding = state.channelBinding ?? null;
-	const storedBinding = channelBinding?.effective ?? null;
-	const effectiveBinding =
-		storedBinding &&
-		bindingCoversActiveModel(
-			channels.find((c) => c.id === storedBinding.channelId),
-			storedBinding,
-			state.model ? `${state.model.provider}/${state.model.id}` : null,
-		)
-			? storedBinding
-			: null;
-	const pendingBinding = channelBinding?.pending ?? null;
-	const channelName = (sel: UiChannelBinding): string =>
-		channels.find((c) => c.id === sel.channelId)?.displayName ?? sel.channelName ?? sel.channelId;
+	// -- 网关自报用量：状态栏只显示**读数**（有数字才占位），失败与「不是网关」的原因在面板里说。
+	const gatewayFacts = gatewayUsageFacts(chat.gatewayUsage.usage);
+	const gatewayCurrent = chat.gatewayUsage.ok === true && gatewayFacts !== null;
+	/** 状态栏文本：有额度就「已用 / 额度」，只有已用（不限额度或网关没报）就只写已用。 */
+	const gatewayText =
+		gatewayFacts === null
+			? ""
+			: gatewayFacts.limitText
+				? `${gatewayFacts.usedText} / ${gatewayFacts.limitText}`
+				: `${gatewayFacts.usedText}`;
 
 	const startEdit = () => {
 		setEditing(true);
@@ -169,28 +149,20 @@ export function FooterBar({
 				</>
 			)}
 
-			{effectiveBinding && (
+			{gatewayCurrent && (
 				<>
-					<span
-						className="status-item status-channel"
-						title={t("channelFooterTip", { sel: `${channelName(effectiveBinding)} · ${effectiveBinding.modelId}` })}
+					<button
+						type="button"
+						className={`status-item status-gateway status-item-clickable${usageOpen ? " active" : ""}`}
+						title={`${t("gatewayUsageTitle")}\n${gatewayText}\n${t("gatewayChipTip")}`}
+						onClick={() => {
+							// 点开 = 既要看明细，也要拿最新数字（网关账单本身滞后几秒，见文档 §4）。
+							opsApi.queryGatewayUsage(chat.gatewayUsage.usage?.providerId, true);
+							setUsageOpen(true);
+						}}
 					>
-						{t("channelFooter")} {channelName(effectiveBinding)}
-						{channelBinding?.source === "project" && (
-							<span className="status-channel-src">{t("channelSourceProject")}</span>
-						)}
-						{channelBinding?.source === "instance" && (
-							<span className="status-channel-src">{t("channelSourceInstance")}</span>
-						)}
-					</span>
-					<span className="status-sep">·</span>
-				</>
-			)}
-			{pendingBinding && (
-				<>
-					<span className="status-item status-channel-pending" title={t("channelPendingTip")}>
-						⏳ {channelName(pendingBinding)} · {t("channelPendingBadge")}
-					</span>
+						{t("gatewayChip")} <b>{gatewayText}</b>
+					</button>
 					<span className="status-sep">·</span>
 				</>
 			)}
@@ -267,11 +239,12 @@ export function FooterBar({
 						attribution={s.attribution}
 						recentRequests={s.recentRequests}
 						usageHistory={chat.usageHistory}
-						onQueryUsageHistory={onQueryUsageHistory}
+						onQueryUsageHistory={opsApi.queryUsageHistory}
 						runId={s.runId}
-						channels={channels}
-						accountView={accountView}
-						onRetryAccount={onRetryAccount}
+						gatewayUsage={chat.gatewayUsage}
+						activeProvider={state.model?.provider ?? null}
+						providerNames={providerNames}
+						onRefreshGatewayUsage={() => opsApi.queryGatewayUsage(undefined, true)}
 					/>
 				</>
 			)}

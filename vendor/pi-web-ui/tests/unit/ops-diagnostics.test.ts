@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { buildDiagnostics, usageSummaryOf } from "../../server/dev-con/ops-diagnostics.js";
 import { evaluateAlerts, markFired, ALERT_COOLDOWN_MS } from "../../server/dev-con/ops-alerts.js";
-import { findSecretMaterial } from "../../server/dev-con/channel-model.js";
+import { findSecretMaterial } from "../../server/dev-con/secret-scan.js";
 import type { UiResourceSnapshot, UiStorageSnapshot } from "../../server/protocol.js";
 
 // 合成凭据在运行时拼接：本仓库的发布检查会把 `sk-` + 24 字符以上的字面量判为疑似密钥，
@@ -43,12 +43,12 @@ describe("ops diagnostics bundle", () => {
 			units: [{ unit: "pi-dev-pm2.service", active: "active", enabled: "enabled" }],
 			resources: resources(50, 100, { currentBytes: 10, maxBytes: 100 }),
 			storage,
-			channels: { configRevision: 3, count: 2, enabledCount: 1, bindings: 1, pending: 0, accounts: 0, brokenRefs: 1 },
-			usage: { windowDays: 30, requests: 5, totalTokens: 100, cost: 0.02, unpricedRequests: 1, bySource: { user: 4, subagent: 1 }, byChannel: { "ch-a": 3 } },
+			providers: { count: 2 },
+			usage: { windowDays: 30, requests: 5, totalTokens: 100, cost: 0.02, unpricedRequests: 1, bySource: { user: 4, subagent: 1 }, byProvider: { "gateway": 3 } },
 			environment: { platform: "linux", cpuCount: 4, totalMemBytes: 1_000 },
 			warnings: ["storage:sessions 已达遍历上限"],
 		});
-		expect(bundle).toMatchObject({ generatedAt: 42, channels: { brokenRefs: 1 }, usage: { requests: 5 } });
+		expect(bundle).toMatchObject({ generatedAt: 42, providers: { count: 2 }, usage: { requests: 5 } });
 		// 诊断包不得出现任何「密钥形状」的字段名，也不得包含合成密钥正文。
 		expect(findSecretMaterial(bundle)).toEqual([]);
 		expect(JSON.stringify(bundle)).not.toContain(SYNTHETIC_MARKER);
@@ -62,7 +62,7 @@ describe("ops diagnostics bundle", () => {
 			rows: [{ key: "user", requests: 2 }, { key: "review", requests: 1 }],
 		});
 		expect(summary).toMatchObject({ requests: 3, totalTokens: 300, cost: 0.3, unpricedRequests: 1, bySource: { user: 2, review: 1 } });
-		expect(summary.byChannel).toEqual({});
+		expect(summary.byProvider).toEqual({});
 	});
 });
 

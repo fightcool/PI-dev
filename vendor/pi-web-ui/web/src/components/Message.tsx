@@ -29,7 +29,7 @@ import { StreamMarkdown } from "./StreamMarkdown";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { ToolCallBlock, type ToolView } from "./ToolCallBlock";
 import { useT, type Translate } from "../i18n";
-import type { ChannelErrorView } from "../error-hint";
+import type { UpstreamErrorView } from "../error-hint";
 import { parseSkillBlock, type SkillBlock } from "../skill-block";
 import { isRasterImage, fileToProcessedImage } from "../image-paste";
 
@@ -136,9 +136,9 @@ interface MessageProps {
 	/** 新插入的压缩摘要卡：首次渲染即自动展开一次，之后用户可手动收起
 	 *  （收起后不再自动打开）。 */
 	autoExpand?: boolean;
-	/** 报错卡要显示的上下文：是**哪个渠道 · 哪个模型**失败的、能不能给出人话原因
+	/** 报错卡要显示的上下文：是**哪个服务商 · 哪个模型**失败的、能不能给出人话原因
 	 *  （在 MessageList 里只对报错消息算一次，普通消息不产生新对象、保住 memo）。 */
-	errorHint?: ChannelErrorView | null;
+	errorHint?: UpstreamErrorView | null;
 }
 
 export const Message = memo(function Message({
@@ -164,19 +164,18 @@ export const Message = memo(function Message({
 	errorHint,
 }: MessageProps) {
 	const t = useT();
-	// 报错卡：先说**是哪个渠道·哪个模型**失败（两个渠道可能指向同一个站点，只有原文时用户
-	// 会把一个渠道的欠费当成另一个渠道的问题）；认得的失败再给一句人话，上游原文收进「详情」。
+	// 报错卡：先说**是哪个服务商·哪个模型**失败，认得的失败再给一句人话，
+	// 上游原文收进「详情」。
 	const errorMessage = message.errorMessage ?? "";
 	const quotaFacts = errorHint?.kind === "quota" ? errorHint : null;
 	const errorWhere = errorMessage
-		? [errorHint?.channelName ?? errorHint?.providerId, errorHint?.modelId].filter(Boolean).join(" · ") || null
+		? [errorHint?.providerId, errorHint?.modelId].filter(Boolean).join(" · ") || null
 		: null;
 	const errorText = quotaFacts
 		? quotaFacts.remaining
-			? t("channelErrorQuota", { remaining: quotaFacts.remaining })
-			: t("channelErrorQuotaNoRemaining")
+			? t("upstreamErrorQuota", { remaining: quotaFacts.remaining })
+			: t("upstreamErrorQuotaNoRemaining")
 		: errorMessage;
-	const errorTopup = quotaFacts?.topupUrl ?? null;
 	// Inline edit-and-re-ask editor (user messages only).
 	const [editing, setEditing] = useState(false);
 	const [draft, setDraft] = useState("");
@@ -466,24 +465,13 @@ export const Message = memo(function Message({
 								<span className="msg-error-text">{errorText}</span>
 								{errorDetailOpen && <pre className="msg-error-detail">{errorMessage}</pre>}
 								<div className="msg-error-actions">
-									{/* 额度不足这类失败：一键去充值，省得自己找供应商控制台 */}
-									{errorTopup && (
-										<a
-											className="msg-error-link"
-											href={errorTopup}
-											target="_blank"
-											rel="noreferrer noopener"
-										>
-											<FiExternalLink /> {t("channelTopUp")}
-										</a>
-									)}
 									{quotaFacts && (
 										<button
 											type="button"
 											className="msg-error-more"
 											onClick={() => setErrorDetailOpen((v) => !v)}
 										>
-											{errorDetailOpen ? t("channelErrorDetailHide") : t("channelErrorDetail")}
+											{errorDetailOpen ? t("upstreamErrorDetailHide") : t("upstreamErrorDetail")}
 										</button>
 									)}
 									{/* 最后一轮报错且已停止：给一个手动重试入口

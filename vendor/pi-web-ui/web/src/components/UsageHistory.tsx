@@ -1,21 +1,23 @@
 /* 🍞 AI Breadcrumb — @COUPLED web/src/use-chat.ts（queryUsageHistory / state.usageHistory）,
  *   web/src/components/UsageDetail.tsx（面板内嵌本组件）, server/dev-con/usage-history.ts（聚合口径）
- * 📖 docs/DEV-CON-PROPOSAL.md §8 P4 首个切片（跨渠道/项目/时间历史）
+ * 📖 docs/NEWAPI-GATEWAY.md §4（按服务商归属：单网关实例下这一维通常是同一个值）
  * @CONTRACT 只读展示服务端聚合结果：分组键是记录里的引用，未知/缺失按「未归属」显示，
  *   未知价格按「未知价格」显示（不是 0），触到扫描上限时明确标注结果不完整。
  * @GOTCHA 缓存命中率与失败标注不是这里算的：命中率取服务端 token 加权值（null → 「—」，
  *   表示没有 token 可算而不是 0%），失败只认 isFailedStopReason（stopReason=error），
- *   与「按渠道用量」面板同一份聚合、同一口径，前端不重算。
+ *   与「按服务商/来源」面板同一份聚合、同一口径，前端不重算。
+ * @GOTCHA 分组键是**记录里当时的值**：历史记录里的服务商 id 即使今天已不在配置里，也照原样显示
+ *   （显示名只在能解析到时才用），绝不按今天的配置改写历史。
  */
 import { memo, useEffect, useState } from "react";
-import type { UiChannelInfo } from "../types";
 import { useT } from "../i18n";
 import type { UsageHistoryMsg, UsageHistoryWindow } from "../use-chat";
 
-const GROUPS: UsageHistoryMsg["groupBy"][] = ["channel", "project", "model", "source", "day"];
+const GROUPS: UsageHistoryMsg["groupBy"][] = ["provider", "project", "model", "source", "day"];
 const WINDOWS: UsageHistoryWindow[] = ["today", "7d", "30d", "all"];
 
-const formatTokens = (n: number): string => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+const formatTokens = (n: number): string =>
+	n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 const formatCost = (n: number): string => (n === 0 ? "0" : n < 0.01 ? n.toFixed(4) : n.toFixed(2));
 /** 命中率：null 是「没有 token 可算」（无记录 / 全部未上报），必须显示「—」而不是 0%。 */
 const formatHitRate = (rate: number | null | undefined): string =>
@@ -23,25 +25,26 @@ const formatHitRate = (rate: number | null | undefined): string =>
 
 export const UsageHistory = memo(function UsageHistory({
 	history,
-	channels,
+	providerNames,
 	onQuery,
 }: {
 	history: UsageHistoryMsg | null;
-	channels: UiChannelInfo[];
+	/** 服务商展示名（models.json 的 name）；缺省时显示原 id。 */
+	providerNames?: Record<string, string>;
 	onQuery: (groupBy: UsageHistoryMsg["groupBy"], window: UsageHistoryWindow) => void;
 }) {
 	const t = useT();
-	const [groupBy, setGroupBy] = useState<UsageHistoryMsg["groupBy"]>("channel");
+	const [groupBy, setGroupBy] = useState<UsageHistoryMsg["groupBy"]>("provider");
 	const [window, setWindow] = useState<UsageHistoryWindow>("7d");
 	// 打开面板即拉一次；分组/时间窗变化时按新口径重查（服务端每天切分按 UTC）。
 	useEffect(() => {
 		onQuery(groupBy, window);
 	}, [groupBy, window, onQuery]);
 
-	/** 分组键 → 可读标签；渠道/项目缺名字时只显示原值，绝不猜。 */
+	/** 分组键 → 可读标签；缺名字时只显示原值，绝不猜。 */
 	const label = (key: string): string => {
-		if (key === "unattributed") return t("channelUnattributed");
-		if (groupBy === "channel") return channels.find((c) => c.id === key)?.displayName ?? `${t("channelUnattributed")} · ${key}`;
+		if (key === "unattributed") return t("usageUnattributed");
+		if (groupBy === "provider") return providerNames?.[key] ?? key;
 		return key;
 	};
 
@@ -51,14 +54,24 @@ export const UsageHistory = memo(function UsageHistory({
 			<div className="usage-history-controls">
 				<span className="usage-history-group">
 					{GROUPS.map((g) => (
-						<button key={g} type="button" className={`chan-btn${g === groupBy ? " primary" : ""}`} onClick={() => setGroupBy(g)}>
+						<button
+							key={g}
+							type="button"
+							className={`chan-btn${g === groupBy ? " primary" : ""}`}
+							onClick={() => setGroupBy(g)}
+						>
 							{t(`usageGroup_${g}` as Parameters<typeof t>[0])}
 						</button>
 					))}
 				</span>
 				<span className="usage-history-window">
 					{WINDOWS.map((w) => (
-						<button key={w} type="button" className={`chan-btn${w === window ? " primary" : ""}`} onClick={() => setWindow(w)}>
+						<button
+							key={w}
+							type="button"
+							className={`chan-btn${w === window ? " primary" : ""}`}
+							onClick={() => setWindow(w)}
+						>
 							{t(`usageWindow_${w}` as Parameters<typeof t>[0])}
 						</button>
 					))}
@@ -91,7 +104,10 @@ export const UsageHistory = memo(function UsageHistory({
 									<td>
 										{row.requests}
 										{(row.failedRequests ?? 0) > 0 && (
-											<span className="usage-unknown-price" title={t("usageFailedTip", { tokens: formatTokens(row.wastedInput ?? 0) })}>
+											<span
+												className="usage-unknown-price"
+												title={t("usageFailedTip", { tokens: formatTokens(row.wastedInput ?? 0) })}
+											>
 												{" "}
 												{t("usageHistoryFailed", { n: row.failedRequests })}
 											</span>
@@ -123,7 +139,10 @@ export const UsageHistory = memo(function UsageHistory({
 								<td>
 									{history.totals.requests}
 									{(history.totals.failedRequests ?? 0) > 0 && (
-										<span className="usage-unknown-price" title={t("usageFailedTip", { tokens: formatTokens(history.totals.wastedInput ?? 0) })}>
+										<span
+											className="usage-unknown-price"
+											title={t("usageFailedTip", { tokens: formatTokens(history.totals.wastedInput ?? 0) })}
+										>
 											{" "}
 											{t("usageHistoryFailed", { n: history.totals.failedRequests })}
 										</span>

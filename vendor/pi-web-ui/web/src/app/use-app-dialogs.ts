@@ -8,9 +8,8 @@ export function useAppDialogs() {
 	// 内置服务商与密钥面板（原模型下拉页脚的「管理模型」）。
 	// @WHY 2026-09-17 模型下拉里的入口已撤除（两处改同一批东西）；现在只由
 	// 「设置 → 渠道 → 内置服务商与密钥」打开，所以不再导出 openManageModels。
-	const [manageModelsOpen, setManageModelsOpen] = useState(false);
-	// 用量明细面板：底栏令牌项和「渠道余额」chip 都能打开（状态提到 App 层，
-	// 否则输入框工具条里的 chip 无法触发底栏那张面板）。
+	// 用量明细面板：底栏令牌项与「网关用量」状态项都能打开（状态提到 App 层，
+	// 因为面板本体挂在 FooterBar 里，而状态栏项可以随时收起/重建）。
 	const [usageOpen, setUsageOpen] = useState(false);
 	// Settings panel (system prompt / skills / extensions / presets).
 	const [settingsOpen, setSettingsOpen] = useState(false);
@@ -47,7 +46,6 @@ export function useAppDialogs() {
 		return () => window.removeEventListener("keydown", onKey);
 	}, []);
 
-	const openUsage = useCallback(() => setUsageOpen(true), []);
 	const openNewProject = useCallback(() => setNewProjectOpen(true), []);
 	const onJumpDone = useCallback(() => setSearchJump(null), []);
 	const [searchVisited, setSearchVisited] = useState(false);
@@ -59,11 +57,8 @@ export function useAppDialogs() {
 		setPreviewFile,
 		setupDismissed,
 		setSetupDismissed,
-		manageModelsOpen,
-		setManageModelsOpen,
 		usageOpen,
 		setUsageOpen,
-		openUsage,
 		settingsOpen,
 		setSettingsOpen,
 		bgTasksOpen,

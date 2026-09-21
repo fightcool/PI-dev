@@ -1,16 +1,15 @@
 # PI-dev
 
-<!-- 🍞 AI Breadcrumb — @COUPLED docs/DEV-CON-PROPOSAL.md, docs/STRUCTURE.md, docs/README.md -->
+<!-- 🍞 AI Breadcrumb — @COUPLED docs/NEWAPI-GATEWAY.md, docs/STRUCTURE.md, docs/README.md -->
 
-可复现的个人远程 AI 开发环境，以 Pi 为核心，保留 pi-web-ui 现有 Pi/DSH 引擎架构。一个仓库管理工具链、定制工作台、验证和部署；私有配置与会话独立持久化。当前渠道功能的唯一开发范本是 [PI-dev 多渠道开发基准](docs/DEV-CON-PROPOSAL.md)，统一架构、范围、阶段与验收；P0 技术结论见 [P0 技术验证](docs/P0-VERIFICATION.md)。旧 `dev-con/` 只读原型已按决定移除，渠道功能全部实现于现有 Web 应用。
+可复现的个人远程 AI 开发环境，以 Pi 为核心，保留 pi-web-ui 现有 Pi/DSH 引擎架构。一个仓库管理工具链、定制工作台、验证和部署；私有配置与会话独立持久化。模型调用统一经**一个网关**接入（当前为 `https://api.ftai.cc/`）：一个接口地址、一把密钥、一份模型清单，接口事实与口径见 [NewAPI 单网关接入](docs/NEWAPI-GATEWAY.md)。
 
 ## 从哪里开始
 
-- [唯一开发基准](docs/DEV-CON-PROPOSAL.md)：Pi多渠道配置、热切换、Token/费用、账户查询的需求、设计约束和验收。
-- [P0 技术验证](docs/P0-VERIFICATION.md)：授权隔离、切换时点、命令/版本、用量身份、存储、账户查询、入口安全的结论与证据。
-- [文档导航](docs/README.md)：区分开发基准、工程规范与历史材料。
-- [领域词汇](CONTEXT.md)：渠道、绑定、热切换、费用与余额的含义。
-- [DEV-CON历史材料](docs/history/dev-con/README.md)：前期评估、架构讨论和暂停原型，均非当前计划。
+- [单网关接入](docs/NEWAPI-GATEWAY.md)：唯一入口的模型、接口事实（实测）、网关自报用量与本地估算两条口径。
+- [文档导航](docs/README.md)：区分当前依据、工程规范与历史材料。
+- [领域词汇](CONTEXT.md)：网关、模型清单、网关自报用量与估算费用的含义。
+- [多渠道历史材料](docs/history/dev-con/README.md)：已移除的多渠道模型（渠道档案/绑定/账户查询）记录，非当前计划。
 - [目录结构与开发边界](docs/STRUCTURE.md)：各目录的归属、源码与运行数据的区别。
 - [安装与运维](docs/OPERATIONS.md)：配置、服务维护和升级。
 - [Jev 提交钩子](docs/JEV-HOOK.md)：Pi bash 提交前自动判定；仅 block 拦截，全局安装、关闭与卸载。
@@ -43,11 +42,7 @@ bootstrap 下载并校验项目内工具链，使用锁文件安装依赖、构�
 npm run build             # vendor应用及版本信息
 npm run typecheck         # 服务端、前端及测试类型
 npm test                  # 根工程/配置/服务/发布测试（含用量口径单测）
-npm run test:unit         # 应用单元测试
-npm run test:channels:unit # 渠道模型/存储/服务/账户单测
-npm run test:channels     # 端到端：双对话双密钥隔离（需先 build）
-npm run test:channels:multi # 端到端：两个客户端（广播一致/冲突可见可恢复/绑定不互相覆盖）
-npm run test:channels:browser # Chromium：渠道选择器/待生效/用量归属的界面断言
+npm run test:unit         # 应用单元测试（含网关用量换算/窗口/unsupported 规格）
 npm run test:smoke        # 自包含协议冒烟
 npm run test:performance  # Chromium，合成数据，无真实模型调用
 npm run check:publish
