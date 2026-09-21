@@ -12410,3 +12410,20 @@ button.source-default-toggle {
 	display: flex;
 	gap: 6px;
 }
+
+/* 运行时拒绝 models.json 时的原文块（设置 → 网关）：等宽 + 可滚，长错误不撑破面板。 */
+.gw-runtime-error {
+	margin: 6px 0 0;
+	padding: 6px 8px;
+	max-height: 180px;
+	overflow: auto;
+	font-family: var(--mono);
+	font-size: 11px;
+	line-height: 1.5;
+	color: var(--text-dim);
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	white-space: pre-wrap;
+	word-break: break-word;
+}

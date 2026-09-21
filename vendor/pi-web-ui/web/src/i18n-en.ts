@@ -1216,6 +1216,8 @@ export const en: EnDictionary = {
 		"These are the gateway's own billing numbers — not the same thing as the local token-based estimate above, and the two must never be added together.",
 	settingsGateway: "Gateway",
 	settingsGatewayKeyEntry: "Configure the key under “Gateway”",
+	gatewayRuntimeError: "The model config was rejected by the runtime (currently unusable)",
+	gatewayRuntimeErrorHint: "Below is the runtime's own message: the whole models.json failed to load, so the gateway is not registered at all — the config can look fine and still be unusable. Fix the model/field it names (common: cost missing cacheRead / cacheWrite).",
 	gatewaySettingsTitle: "Gateway",
 	gatewayCurrent: "Current gateway",
 	gatewaySettingsIntro:

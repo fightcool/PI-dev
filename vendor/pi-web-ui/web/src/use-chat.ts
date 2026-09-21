@@ -107,8 +107,8 @@ export type StorageMsg = Extract<ServerMessage, { type: "storage" }>;
 export type DiagnosticsMsg = Extract<ServerMessage, { type: "diagnostics" }>;
 /** 用量历史的时间窗（今天按 UTC 切分，与聚合口径一致）。 */
 export type UsageHistoryWindow = "all" | "today" | "7d" | "30d";
-const startOfUtcDay = (ms: number) => Date.UTC(new Date(ms).getUTCFullYear(), new Date(ms).getUTCMonth(), new Date(ms).getUTCDate());
-
+const startOfUtcDay = (ms: number) =>
+	Date.UTC(new Date(ms).getUTCFullYear(), new Date(ms).getUTCMonth(), new Date(ms).getUTCDate());
 
 /**
  * P4 运维 / 网关用量的只读查询 API（use-chat 返回值之一），外加只读的用量历史。
@@ -129,7 +129,12 @@ export interface OpsApi {
 	/** 单网关接入：读网关配置（baseUrl / 协议 / 是否已有密钥 / 模型清单 + 重复接入提示）。 */
 	getGateway: () => number;
 	/** 单网关接入：写网关配置。省略的字段不动；apiKey 留空 = 保留已存密钥，"" = 显式清除。 */
-	saveGateway: (input: { baseUrl?: string; api?: string; apiKey?: string | null; models?: UiModelConfigEntry[] }) => number;
+	saveGateway: (input: {
+		baseUrl?: string;
+		api?: string;
+		apiKey?: string | null;
+		models?: UiModelConfigEntry[];
+	}) => number;
 	/**
 	 * 从网关**服务端**读取模型清单并入 models.json（密钥不出服务端，顺带绕开 CORS）。
 	 * 返回 reqId；结果在 state.refreshProviderResult（added/total）。
@@ -238,6 +243,9 @@ export interface ChatState {
 		/** 最近一次保存结果（null = 本次会话还没保存过）。 */
 		saveOk: boolean | null;
 		saveError?: string;
+		/** 非空 = SDK 拒绝了 models.json（整个文件不生效、运行时里没有这个服务商）。
+		 *  界面必须显著提示：配置看着正常但什么都调不通，正是 2026-09-21 那次事故的形态。 */
+		runtimeError?: string;
 	};
 	/** P4 首个切片：最近一次用量历史查询结果（只读聚合）。 */
 	usageHistory: UsageHistoryMsg | null;
@@ -713,7 +721,11 @@ function reducer(state: ChatState, action: Action): ChatState {
 			const older = d.messages.filter((m) => !known.has(m.id));
 			return {
 				...state,
-				state: { ...ui, messages: older.length > 0 ? [...older, ...ui.messages] : ui.messages, messagesOmitted: d.omittedBefore },
+				state: {
+					...ui,
+					messages: older.length > 0 ? [...older, ...ui.messages] : ui.messages,
+					messagesOmitted: d.omittedBefore,
+				},
 			};
 		}
 		case "tool_delta": {
@@ -815,6 +827,7 @@ function reducer(state: ChatState, action: Action): ChatState {
 					error: action.msg.error,
 					config: action.msg.config,
 					duplicates: action.msg.duplicates ?? [],
+					runtimeError: action.msg.runtimeError,
 				},
 			};
 		case "gateway_saved":
@@ -1630,7 +1643,12 @@ export function useChat() {
 				usageReqIdRef.current += 1;
 				const reqId = usageReqIdRef.current;
 				const now = Date.now();
-				const from = window === "all" ? undefined : window === "today" ? startOfUtcDay(now) : now - (window === "7d" ? 7 : 30) * 86_400_000;
+				const from =
+					window === "all"
+						? undefined
+						: window === "today"
+							? startOfUtcDay(now)
+							: now - (window === "7d" ? 7 : 30) * 86_400_000;
 				opsSendRef.current({ type: "usage_history_query", reqId, groupBy, ...(from === undefined ? {} : { from }) });
 				return reqId;
 			},
@@ -1656,7 +1674,8 @@ export function useChat() {
 				gatewayReqIdRef.current += 1;
 				const reqId = gatewayReqIdRef.current;
 				const sent = opsSendRef.current({ type: "save_gateway", reqId, ...input });
-				if (!sent) dispatch({ type: "gateway_saved", result: { type: "gateway_saved", reqId, ok: false, error: "连接未就绪" } });
+				if (!sent)
+					dispatch({ type: "gateway_saved", result: { type: "gateway_saved", reqId, ok: false, error: "连接未就绪" } });
 				return reqId;
 			},
 			// 网关（NewAPI 一类）自报用量（只读）。providerId 省略 = 服务端用当前生效模型的服务商。

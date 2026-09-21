@@ -19,7 +19,13 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { ServerMessage, UiGatewayConfig, UiModelConfigEntry, UiProviderConfig, ProviderKeyInfo } from "./protocol.js";
+import type {
+	ServerMessage,
+	UiGatewayConfig,
+	UiModelConfigEntry,
+	UiProviderConfig,
+	ProviderKeyInfo,
+} from "./protocol.js";
 import { pick, type ServerLang } from "./i18n.js";
 import { backfillModelCapability } from "./dev-con/model-capability.js";
 import { resolveGatewayProviderId, sameGatewayDuplicates, type ProviderFacts } from "./dev-con/gateway-config.js";
@@ -993,8 +999,7 @@ export class ModelAdminService {
 			...(typeof p.api === "string" && p.api ? { api: p.api } : {}),
 			// 密钥可能在 models.json（内联）或 provider-keys.json（本实例用后者）：两处都算已配置，
 			// 界面只关心「有没有」，不关心存哪（解析顺序是 SDK 的事）。
-			hasApiKey:
-				(typeof p.apiKey === "string" && p.apiKey.trim().length > 0) || this.hasStoredKey(gatewayId),
+			hasApiKey: (typeof p.apiKey === "string" && p.apiKey.trim().length > 0) || this.hasStoredKey(gatewayId),
 			models: this.modelsOf(p),
 		};
 		const duplicates = sameGatewayDuplicates({
@@ -1002,7 +1007,17 @@ export class ModelAdminService {
 			...(config.baseUrl ? { gatewayBaseUrl: config.baseUrl } : {}),
 			providers: facts,
 		});
-		this.host.emit({ type: "gateway", reqId, ok: true, config, duplicates });
+		// @WHY 2026-09-21 事故：models.json 过不了 SDK 的 schema（一个模型的 cost 缺 cacheRead/
+		//   cacheWrite），于是**整个文件被拒**、运行时里没有这个服务商 —— 而面板照样显示配置与模型
+		//   清单（那是我们直接读盘的结果），看起来一切正常、实际什么都调不通。把运行时的错误原样
+		//   带给界面，是让这种「静默不可用」在面板上立刻可见的唯一办法。
+		let runtimeError: string | undefined;
+		try {
+			runtimeError = this.host.modelRuntime().getError();
+		} catch {
+			// 运行时未就绪：不编错误，界面按「无法确认」处理。
+		}
+		this.host.emit({ type: "gateway", reqId, ok: true, config, duplicates, ...(runtimeError ? { runtimeError } : {}) });
 	}
 
 	/** models.json 里某个服务商的模型清单（字段与 listModelsConfig 同口径）。 */
@@ -1046,16 +1061,19 @@ export class ModelAdminService {
 		const fail = (error: string, errorEn?: string) =>
 			this.host.emit({ type: "gateway_saved", reqId, ok: false, error, ...(errorEn ? { errorEn } : {}) });
 		if (!gatewayId)
-			return fail(
-				pick(l, "还没有可写的网关配置", "No gateway configuration to write yet", "gateway.save.nogateway"),
-			);
+			return fail(pick(l, "还没有可写的网关配置", "No gateway configuration to write yet", "gateway.save.nogateway"));
 		const apiKey = input.apiKey;
 		if (typeof apiKey === "string" && apiKey.trim()) {
 			try {
 				await this.setProviderApiKey(gatewayId, apiKey.trim());
 			} catch (err) {
 				return fail(
-					pick(l, `保存密钥失败：${(err as Error).message}`, `Failed to save the key: ${(err as Error).message}`, "gateway.save.keyfailed"),
+					pick(
+						l,
+						`保存密钥失败：${(err as Error).message}`,
+						`Failed to save the key: ${(err as Error).message}`,
+						"gateway.save.keyfailed",
+					),
 				);
 			}
 		} else if (apiKey === "") {
@@ -1063,7 +1081,12 @@ export class ModelAdminService {
 				await this.clearProviderApiKey(gatewayId);
 			} catch (err) {
 				return fail(
-					pick(l, `清除密钥失败：${(err as Error).message}`, `Failed to clear the key: ${(err as Error).message}`, "gateway.save.clearfailed"),
+					pick(
+						l,
+						`清除密钥失败：${(err as Error).message}`,
+						`Failed to clear the key: ${(err as Error).message}`,
+						"gateway.save.clearfailed",
+					),
 				);
 			}
 		}
@@ -1077,11 +1100,13 @@ export class ModelAdminService {
 					: typeof current.baseUrl === "string"
 						? { baseUrl: current.baseUrl }
 						: {}),
-				...(input.api !== undefined
-					? { api: input.api }
-					: typeof current.api === "string"
-						? { api: current.api }
-						: {}),
+				...(input.api !== undefined ? { api: input.api } : typeof current.api === "string" ? { api: current.api } : {}),
+				// @BUGFIX 2026-09-21：name / authHeader 是 writeModelConfig 的**受管键**，config 里不给
+				//   就会被清掉。网关表单不管这两项，于是「保存一次」就把网关显示名抹成裸 id、把
+				//   authHeader: true 抹掉（实测：抹掉后探测与调用都不再带鉴权头 → 401 Invalid token）。
+				//   表单不管理的键必须在**这一层**原样带过去。
+				...(typeof current.name === "string" && current.name.trim() ? { name: current.name } : {}),
+				...(current.authHeader === true ? { authHeader: true } : {}),
 				models: input.models ?? this.modelsOf(current),
 			};
 			const result = await this.writeModelConfig(gatewayId, config);
@@ -1454,7 +1479,11 @@ export class ModelAdminService {
 		opts: { modelMerge?: "replace" | "patch" } = {},
 	): Promise<{ ok: true; count: number } | { ok: false; error: string; errorEn?: string }> {
 		if (!pid || !/^[\w.-]+$/.test(pid)) {
-			return { ok: false, error: "服务商 ID 无效（仅字母/数字/._-）", errorEn: "Invalid provider ID (letters/digits/._- only)" };
+			return {
+				ok: false,
+				error: "服务商 ID 无效（仅字母/数字/._-）",
+				errorEn: "Invalid provider ID (letters/digits/._- only)",
+			};
 		}
 		// @BUGFIX 2026-09-13：渠道的 /models 只返回 {id, object}（RightCode 实测如此），
 		// 表单拿不到 reasoning / contextWindow。这里先按模型 id 回填已知能力，
@@ -1480,7 +1509,10 @@ export class ModelAdminService {
 		// 改模型元数据（deepseek 就是这种），它不需要再填 baseUrl。
 		const registered = (() => {
 			try {
-				return this.host.modelRuntime().getProviders().some((p) => p.id === pid);
+				return this.host
+					.modelRuntime()
+					.getProviders()
+					.some((p) => p.id === pid);
 			} catch {
 				return false;
 			}

@@ -1182,6 +1182,8 @@ export const zh = {
 	gatewayUsageHint: "这是网关自己的账单数字，与上面的本地按 token 估算**不是**同一回事，两者不能相加。",
 	settingsGateway: "网关",
 	settingsGatewayKeyEntry: "去「网关」里配置密钥",
+	gatewayRuntimeError: "模型配置被运行时拒绝（当前不可用）",
+	gatewayRuntimeErrorHint: "下面这段是运行时给出的原文：整份 models.json 都没生效，所以网关其实没有被注册——配置看起来正常也调不通。按它指出的模型与字段修好即可（常见：cost 缺 cacheRead / cacheWrite）。",
 	gatewaySettingsTitle: "网关",
 	gatewayCurrent: "当前网关",
 	gatewaySettingsIntro: "本实例只有一个模型调用入口：填一个接口地址和一把密钥即可。模型清单由网关自己提供。",

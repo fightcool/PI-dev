@@ -141,6 +141,18 @@ export function GatewaySettings({
 			{/* 首次配置 / 读取失败：都走同一张表单，不另做一个「空态页面」。 */}
 			{gw.ok === false && !config && <p className="gw-usage-error">{gw.error ?? t("gatewayLoadFailed")}</p>}
 
+			{/* 运行时拒绝了这份配置：**整个 models.json 不生效**，所以任何「看着正常」都是假象。
+			    必须放在最上面、用警示色，并原样带上 SDK 的话（它指到具体模型与字段）。 */}
+			{gw.runtimeError && (
+				<div className="gw-dup">
+					<div className="gw-dup-head">
+						<FiAlertTriangle /> {t("gatewayRuntimeError")}
+					</div>
+					<p className="set-hint">{t("gatewayRuntimeErrorHint")}</p>
+					<pre className="gw-runtime-error">{gw.runtimeError}</pre>
+				</div>
+			)}
+
 			<div className="gw-field">
 				<span className="field-label">{t("gatewayBaseUrl")}</span>
 				<input
