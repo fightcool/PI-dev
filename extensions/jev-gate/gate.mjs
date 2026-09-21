@@ -16,17 +16,21 @@ const require = createRequire(import.meta.url);
 
 /**
  * 门禁 CLI 所在的应用目录（`vendor/pi-web-ui`），找不到返回 null。
- * @WHY **只认运行中宿主自己那份代码**：部署语义下就是 `deploy/current` 指向的 release，
- *   `current` 是符号链接，所以换发布后解析结果自动跟随。
- * @WHY 为什么不再列一串候选（旧的写法：env → cwd → 安装记录 app.json → 扩展源码 checkout）：
- *   旧版本不该被咨询 —— 发布切换后旧 release 会被回收，而会话 cwd 里的 checkout 可能是别人
- *   正在改的工作副本（实测遇到过：那份还没有 `ask` 子命令，于是每次白跑一次进程才失败）。
- *   遇到「运行中的版本不支持」，正确动作是**部署新版本**，不是去别处碰运气。
- * 解析顺序：显式 `JEV_GATE_APP` → **运行中宿主入口脚本所在树**（`process.argv[1]` 向上）→
- *   会话 cwd 逐级向上（仅在宿主自己不带内核时降级）→ null（调用方必须明确告警放行）。
+ * @WHY **只认正在跑我们的那个文件的所在树**：部署语义下就是 `deploy/current` 指向的 release
+ *   （`current` 是符号链接，`path.resolve` 不解符号链接 → 解析结果保留字面量，换发布自动跟随）。
+ * @WHY 为什么不再列候选（旧写法：env → 会话 cwd → 安装记录 app.json → 扩展源码 checkout，逐个尝试）：
+ *   旧版本不该被咨询 —— 旧 release 会被 `switch-production-release.mjs` 回收，会话 cwd 里的
+ *   checkout 又可能是别人正在改的工作副本。判据口径是「遇到运行中的版本不支持 → 部署新版本」，
+ *   不是去别处碰运气。
+ * @GOTCHA **`process.argv[1]` 在 pm2 下不是应用入口**：pm2 用自己的 process container 重新 fork，
+ *   argv[1] = `…/pm2/lib/ProcessContainerFork.js`。pm2 暴露的真实入口在 `pm_exec_path`，优先用它。
+ * @GOTCHA **绝不用会话 cwd 兜底**：实测它把「宿主入口解析失败」掩盖成「版本错位」
+ *   （日志里 app=<workspace> 而不是 release），真问题晚了两周才被发现。
+ *   cwd 只能进诊断输出。
  * @GOTCHA 不能用「扩展文件往上两级」算根目录：本体是**复制**进宿主目录的
  *   （`<agentDir>/hooks/<name>-<hash>/gate.mjs`），那个算法会指向 `<agentDir>/vendor/pi-web-ui`（不存在），
  *   于是钩子每次提交都退化成「找不到 CLI → 告警放行」：看着装好了，其实一次也不会真拦。
+ * 解析顺序：显式 `JEV_GATE_APP` → `pm_exec_path` → `process.argv[1]` → null（调用方必须明确告警放行）。
  */
 export function resolveApp(
   cwd,
@@ -37,9 +41,10 @@ export function resolveApp(
     Boolean(dir) && existsSync(join(dir, "scripts", "jev-gate.ts"));
   if (env.JEV_GATE_APP)
     return hasCli(env.JEV_GATE_APP) ? resolve(env.JEV_GATE_APP) : null;
-  if (hostEntry && typeof hostEntry === "string") {
-    let dir = dirname(resolve(hostEntry));
-    for (let level = 0; level <= 4; level += 1) {
+  for (const entry of [env.pm_exec_path, hostEntry]) {
+    if (!entry || typeof entry !== "string") continue;
+    let dir = dirname(resolve(entry));
+    for (let level = 0; level <= 6; level += 1) {
       const candidate = join(dir, "vendor", "pi-web-ui");
       if (hasCli(candidate)) return candidate;
       const parent = dirname(dir);
@@ -47,16 +52,11 @@ export function resolveApp(
       dir = parent;
     }
   }
-  for (let dir = cwd ? resolve(cwd) : null; dir; dir = dirname(dir)) {
-    const candidate = join(dir, "vendor", "pi-web-ui");
-    if (hasCli(candidate)) return candidate;
-    if (dirname(dir) === dir) break;
-  }
   return null;
 }
 
 export async function callCli(state, signal, cwd) {
-  const app = resolveApp(cwd);
+  const app = resolveApp(cwd, process.env, process.argv[1]);
   if (!app) return { code: null, stdout: "", appMissing: true };
   const loader = require.resolve("tsx", { paths: [app] });
   // No --proposition means ALL registered propositions, dynamically read by the CLI.
@@ -89,7 +89,7 @@ export function mapDecision(result) {
   });
   if (result.appMissing)
     return failure(
-      "本机找不到门禁 CLI（无 vendor/pi-web-ui/scripts/jev-gate.ts）：请设 JEV_GATE_APP 指向 checkout，或在仓库目录内提交",
+      `找不到门禁 CLI（无 vendor/pi-web-ui/scripts/jev-gate.ts）：pm_exec_path=${process.env.pm_exec_path ?? "-"}，argv[1]=${process.argv[1] ?? "-"}；请设 JEV_GATE_APP 指定（本提示只说事实，不猜别的副本）`,
     );
   if (![0, 1, 2].includes(result.code))
     return failure(

@@ -161,10 +161,15 @@ PI_CODING_AGENT_DIR=/home/dev/.local/share/pi-dev/agent node scripts/install-jev
 解析顺序只有三档，**没有候选列表、没有重试、没有"版本偏差自愈"**：
 
 1. `JEV_GATE_APP`（显式覆盖；配错就报错，不降级）；
-2. **宿主入口脚本（`process.argv[1]`）所在树里的 `vendor/pi-web-ui`** —— 部署语义下就是
+2. **`pm_exec_path`**（pm2 process container 暴露的「我在跑哪个文件」）与
+   **`process.argv[1]`**，各自向上找 `vendor/pi-web-ui` —— 部署语义下即
    `deploy/current` 指向的 release（`current` 是符号链接，**解析保留字面量**，所以换发布自动跟随）；
-3. 会话 cwd 逐级向上（**仅在宿主自己不带内核时**降级，例如从全局安装启动的 pi）；
-   全都找不到 → null，**告警放行并说明原因**。
+3. 都没有 → null，**告警放行并说明原因**（消息里带 `pm_exec_path` / `argv[1]` / `cwd` 三项事实，便于定位）。
+
+> **为什么必须有 `pm_exec_path`、又为什么删掉 cwd 档**（`@GOTCHA`，实测）：pm2 用 process container
+> 重新 fork 应用，扩展里的 `process.argv[1]` 是 `…/pm2/lib/ProcessContainerFork.js`，向上找不到 CLI。
+> 当时的 cwd 降级把这次**解析失败**显示成了**版本错位**（日志 `app=<会话项目>/vendor/pi-web-ui`），
+> 于是「看着正常、其实从没生效」。cwd 属于「当前项目」，不属于「正在跑的代码」，所以它只允许出现在诊断信息里。
 
 > 曾经的做法是「env → cwd → 安装记录 `app.json` → 扩展源码 checkout」并逐个尝试，把它叫「版本偏差自愈」。
 > 那是把版本不一致当常态：① `switch-production-release.mjs` 会**回收旧 release**，② 会话 cwd 里的
