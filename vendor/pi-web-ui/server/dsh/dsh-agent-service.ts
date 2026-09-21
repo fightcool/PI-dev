@@ -157,6 +157,8 @@ interface DshConversation {
 }
 
 interface DshSettings {
+	/** 选择器里隐藏的模型（纯 UI 偏好，与 pi 引擎同字段）。 */
+	hiddenModels: string[];
 	promptMode: "append" | "replace";
 	customSystemPrompt: string;
 	disabledSkills: string[];
@@ -227,6 +229,7 @@ const DEFAULT_SETTINGS: DshSettings = {
 	toolsWrap: true,
 	disabledPlugins: [],
 	hiddenBuiltinProviders: [],
+	hiddenModels: [],
 	retiredModelRoutes: [],
 	modelRouteAliases: {},
 	reviewPrompt: "",
@@ -373,6 +376,7 @@ export class DshClientSession {
 				toolsWrap: savedSettings.toolsWrap,
 				disabledPlugins: savedSettings.disabledPlugins ?? [],
 				hiddenBuiltinProviders: savedSettings.hiddenBuiltinProviders ?? [],
+				hiddenModels: savedSettings.hiddenModels ?? [],
 				retiredModelRoutes: savedSettings.retiredModelRoutes ?? [],
 				modelRouteAliases: { ...(savedSettings.modelRouteAliases ?? {}) },
 				reviewPrompt: savedSettings.reviewPrompt,
@@ -2514,6 +2518,7 @@ export class DshClientSession {
 			reviewDisabledSkills: [],
 			disabledPlugins: this.settings.disabledPlugins,
 			hiddenBuiltinProviders: [...this.settings.hiddenBuiltinProviders],
+			hiddenModels: [...this.settings.hiddenModels],
 			retiredModelRoutes: [...this.settings.retiredModelRoutes],
 			modelRouteAliases: { ...this.settings.modelRouteAliases },
 			defaultModelRouting: defaultModelRoutingRules(),

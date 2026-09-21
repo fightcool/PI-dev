@@ -45,10 +45,14 @@ export function useGatewayUsageAutoRefresh({
 	const readyRef = useRef(false);
 	readyRef.current = ready;
 
-	// ① 就绪后查一次；② 换服务商后重查（非 force：同一网关的重复查询走服务端缓存）。
+	// ① 就绪后查一次；② 当前模型换了服务商后重查（非 force：同一网关的重复查询走服务端缓存）。
+	// @GOTCHA 这里**不传** providerId：服务端默认查的就是**网关**（单网关实例唯一入口）。
+	//   早期版本传的是「当前模型的服务商」，于是在模型还没切到网关时（例如会话从旧模型恢复）
+	//   会去查 openrouter 的账单接口，界面显示「该服务商没有账单接口」——查的根本不是我们要的
+	//   那台网关（2026-09-21 实测踩到）。
 	useEffect(() => {
-		if (!ready || !activeProvider) return;
-		opsApi.queryGatewayUsage(activeProvider);
+		if (!ready) return;
+		opsApi.queryGatewayUsage();
 	}, [opsApi, ready, activeProvider]);
 
 	// ③ 页面开着就按固定间隔刷新；页面不可见时不打请求（切回来时下一次 tick 自然补上）。

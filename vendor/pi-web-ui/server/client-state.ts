@@ -108,6 +108,8 @@ export interface ClientSettings {
 	 *  删除时前端会一并调 clear_provider_api_key 清掉它的密钥——否则残留密钥
 	 *  会让该服务商继续出现在模型选择器/视觉桥里，看起来像「删了还在」。 */
 	hiddenBuiltinProviders?: string[];
+	/** 选择器里隐藏的模型（"provider/id"）：纯 UI 偏好，不动运行时。 */
+	hiddenModels?: string[];
 	/** 模型路由规则（退役/隐藏的路由 id，可写 "id" 或 "provider/id"）。纯 UI/选择偏好：
 	 *  不进预设、不需 reload；缺省 = model-routing.ts 的出厂默认。 */
 	retiredModelRoutes?: string[];
