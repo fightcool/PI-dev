@@ -154,6 +154,25 @@ journalctl --user -u pi-dev-switch.service --no-pager
 
 `SWITCH_DRAIN_TOLERATE` 仍然有效（切换派发方 `deploy-detached.mjs` 默认 1，容许派发者自己那一个在飞回合）。
 
+### 2026-09-21 生产升级（`2cee44c3a577` → `b6846adc1fa3` → `b5d29ad8f790`，协议 v35 → v36）
+
+单网关接入上线（[NEWAPI-GATEWAY.md](NEWAPI-GATEWAY.md)）：移除多渠道模型，补齐网关配置读写与网关自报用量的读取/展示。
+
+| 项 | 第一次（单网关接入） | 第二次（上线当天抓到的 balance 缺陷） |
+| --- | --- | --- |
+| 提交 / PR | `b6846adc1fa3` / PR #89 | `b5d29ad8f790` / PR #90 |
+| 候选构建 | `prepare-release.mjs b6846ad`（锁文件未变 → 复用依赖）；`build-info.commit` = `b6846adc1fa35d7c0b007f3776f2a04e6ac5899d`、`protocolVersion` **36** | `prepare-release.mjs b5d29ad`（同前）；`protocolVersion` 36 |
+| 候选验证（产物级） | 候选目录内 `SMOKE_JOBS=3 npm run test:smoke` **44/44**（145.1s） | 候选目录内 **44/44**（147.1s） |
+| 源码级 | 同一提交的 CI：`linux` ×2 **success**；`jev-gate` **failure（有意为之，已留档）**。全量 diff 1,073,332 字符超上游上限，故按块/按文件跑了 20 组 check：`test_asserts_behavior` 20/20 approve；`change_preserves_public_api` 13 block（0.05–0.15）—— 这一票判得对（本次确实删除了公开 wire 消息/类型/导出），破坏性清单见 NEWAPI-GATEWAY.md §7，仓库主人 override | CI 三项**全 success**（含 `jev-gate`） |
+| 切换验收 | `drained (active=0 drainable=0 orphaned=0, tolerate<=0)` → `DEPLOYED 2cee44c3a577 → b6846adc1fa3 pid=59984 commit=b6846adc1fa3 protocol=36 entry=/assets/index-DTt6VIS_.js`（06:05:57.411Z，中断约 4 秒）；extensions 同步 2 项；prune 删除 0 个（保留 current + 回滚点 + keep=2）；`pi-dev-pm2.service=active` | `DEPLOYED b6846adc1fa3 → b5d29ad8f790 pid=65877 commit=b5d29ad8f790 protocol=36`（06:21:58.917Z）；同上 |
+| 在线核对 | `/api/health` 200 且 pid 一致（59984）；`current` → `releases/b6846adc1fa3`；匿名 `/ws` 与 `/api/models` 仍 401；公网 `dev.ftai.cc` 首页发新前端入口（与候选一致）；`current/.../server/dev-con/` 下 `gateway-config.ts` / `gateway-usage.ts` / `http-json.ts` / `failure-alert.ts` / `secret-scan.ts` 均在；web 产物含 `gateway_usage` 与「网关自报用量」文案 | `/api/health` pid 一致（65877）；`current` → `releases/b5d29ad8f790`；匿名仍 401；PM2 `online` restarts=0、`buildInfo.commit` = `b5d29ad8f790` |
+| **上线当天抓到的缺陷** | 按验收清单跑 `npm run jev -- balance` 得到 `查询失败: 服务商 openrouter 未注册地址` —— balance 拿的是 Jev 凭据指向的服务商（OpenRouter 直连上游），而不是网关。**只影响 CLI 的 balance 子命令**，不影响网关配置与用量读取（服务端路径） | 修复后实测：`网关: https://api.ftai.cc … 已用: $0.00112 / 额度: 未设上限（占位值）/ 口径: 累计`，并明说 Jev 用的是 openrouter 不是网关。回归锁 `tests/unit/jev-balance-target.test.ts`（替身网关 + 真实子进程；可证伪性实测：改回旧目标即两条变红） |
+| 回滚 | `2cee44c3a577` 完整保留（第二次切换后仍在盘上，作为当前回滚点） | `b6846adc1fa3` 完整保留 = 当前回滚点 |
+
+> 这次 `jev-gate` 的 block 与 PR #85 同型：**判定正确**（确实删了文档化的公开接口），按本仓既有做法把破坏性清单写进 `docs/NEWAPI-GATEWAY.md §7`（改了什么 / 为什么 / 替代物 / 消费方范围）后再合并。CI 门槛「只有 block 拦」，该 check 非必需，历史先例（#85，api=0.09）同样以 failure 合并。
+
+> 顺带修掉一个被本次改动**暴露**的测试基座缺陷：`left-panel-delete-test` 的第二台 server 用 `PORT + 1` = 8968，与 `db-client-test` 主端口相同（端口唯一性守卫漏解析 `PI_WEB_PORT: String(PORT + 1)` 这类写法，所以此前判不出来）。冒烟清单增删后并发分组变化，CI 由偶发变成稳定失败（假失败形态：连到别人的 server）。已修端口并补齐守卫解析，实测「改回 8968 守卫即红」。
+
 ### 2026-09-20 生产升级（`f157a8a55863` → `28fad6fffc1d` → `a028fc476398`，均协议 v33）
 
 | 项 | 第一次（渠道绑定与实际模型脱钩修复） | 第二次（另一分支：Jev 面板） |
