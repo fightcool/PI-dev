@@ -28,6 +28,7 @@ try {
         { id: 'assessment', title: '当前会话', cwd: '/synthetic', messageCount: 1, isStreaming: false, isSubagent: false },
         { id: 'second', title: '另一个会话', cwd: '/synthetic', messageCount: 0, isStreaming: false, isSubagent: false },
       ];
+      const listedConversations = conversations.filter(conversation => conversation.id !== 'assessment');
       await context.routeWebSocket('**/*', ws => {
         assert.equal(new URL(ws.url()).origin, origin.replace('http:', 'ws:'));
         socket = ws;
@@ -35,11 +36,16 @@ try {
           const message = JSON.parse(String(raw));
           sent.push(message);
           const replies = message.type === 'list_conversations'
-            ? [{ type: 'conversations', conversations, activeId: 'assessment' }]
+            ? [{ type: 'conversations', conversations: listedConversations, activeId: 'assessment', activeTitle: '当前会话' }]
             : socketReply(message, state);
           for (const reply of replies) ws.send(JSON.stringify(reply));
           if (message.type === 'hello') {
-            ws.send(JSON.stringify({ type: 'conversations', conversations, activeId: 'assessment' }));
+            ws.send(JSON.stringify({
+              type: 'conversations',
+              conversations: listedConversations,
+              activeId: 'assessment',
+              activeTitle: '当前会话',
+            }));
           }
         });
       });
@@ -48,10 +54,20 @@ try {
       await page.setViewportSize(viewport);
       await page.goto(origin);
       await page.waitForFunction(() => document.title === '白衣Dev + 当前会话');
-      socket.send(JSON.stringify({ type: 'conversations', conversations, activeId: 'second' }));
+      socket.send(JSON.stringify({
+        type: 'conversations',
+        conversations,
+        activeId: 'second',
+        activeTitle: '另一个会话',
+      }));
       await page.waitForFunction(() => document.title === '白衣Dev + 另一个会话');
       conversations[1].title = '重命名后的会话';
-      socket.send(JSON.stringify({ type: 'conversations', conversations, activeId: 'second' }));
+      socket.send(JSON.stringify({
+        type: 'conversations',
+        conversations,
+        activeId: 'second',
+        activeTitle: '重命名后的会话',
+      }));
       await page.waitForFunction(() => document.title === '白衣Dev + 重命名后的会话');
       socket.send(JSON.stringify({ type: 'conversations', conversations: [], activeId: '' }));
       await page.waitForFunction(() => document.title === '白衣Dev');

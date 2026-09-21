@@ -1698,6 +1698,8 @@ export type ServerMessage =
 			type: "conversations";
 			conversations: ConversationSummary[];
 			activeId: string;
+			/** Title of the active conversation, even when it is not in the listed rows. */
+			activeTitle?: string;
 	  }
 	| {
 			type: "tool_delta";

@@ -1359,7 +1359,12 @@ export class DshClientSession {
 				isSubagent: false,
 			});
 		}
-		this.emit({ type: "conversations", conversations: list, activeId: this.activeId });
+		this.emit({
+			type: "conversations",
+			conversations: list,
+			activeId: this.activeId,
+			activeTitle: this.conv.title,
+		});
 	}
 
 	async newChat(): Promise<void> {

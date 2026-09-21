@@ -5255,6 +5255,7 @@ export class ClientSession {
 			type: "conversations",
 			conversations,
 			activeId: this.activeId,
+			activeTitle: this.convs.get(this.activeId)?.title,
 		});
 	}
 
