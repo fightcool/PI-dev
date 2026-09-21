@@ -179,15 +179,23 @@ export class GatewayUsageService {
 				}
 			}
 			if (used === undefined) {
-				// 传输层面的失败（网络/超时）原样上报原因；其余一律按「这个网关没有用量接口」说。
+				// 分三种说实话，而不是把一切都叫「没有账单接口」：
+				//  ① 传输失败（网络/超时）→ 暂时故障，值得重试；
+				//  ② 鉴权被拒（401/403）→ 密钥不对或没解析出密钥。这是**配置问题**，说成
+				//     「不是网关」会把人引向完全错误的方向（2026-09-21 实测踩到：运行时里没有这个
+				//     服务商时这里拿到 401，界面却写「直连上游、不是网关」，真因是 models.json 被拒）；
+				//  ③ 其余（404/405/非 JSON/重定向）→ 才是「这台网关没有账单接口」。
 				const transport =
 					first.kind === "network" || first.kind === "timeout" ? (first.error ?? "网关不可达") : undefined;
+				const unauthorized = first.status === 401 || first.status === 403;
 				return {
 					ok: false,
-					unsupported: !transport,
+					unsupported: !transport && !unauthorized,
 					error: transport
 						? `查询网关用量失败：${transport}（${usageUrl}）`
-						: `网关未提供用量接口（${usageUrl} 不可读或字段无法识别）`,
+						: unauthorized
+							? `网关拒绝了这把密钥（HTTP ${first.status}）：检查「设置 → 网关」里的 API 密钥；若密钥没问题，则是该服务商没有注册进运行时（配置被 SDK schema 拒绝时也会走到这里，详见网关页顶部的运行时提示）`
+							: `网关未提供用量接口（${usageUrl} 不可读或字段无法识别）`,
 				};
 			}
 			const [subBody, statusBody] = await Promise.all([
