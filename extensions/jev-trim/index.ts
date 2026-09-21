@@ -184,6 +184,8 @@ export default function jevTrim(
         judged: asked.judged?.length ?? null,
         dropped: asked.dropped ?? 0,
         ok: true,
+        // 成功也要记「问的是哪份代码」：复盘时要能把一次判定挂回具体的 release/checkout。
+        app: asked.app ?? null,
         changed: Boolean(plan),
         kept: plan?.kept.length ?? sections.length,
         elided: plan?.elided.length ?? 0,

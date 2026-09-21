@@ -108,7 +108,9 @@ test("dry-run：判定失败时原样放行，并留痕失败原因（不许静�
   assert.equal(rows.length, 1);
   assert.equal(rows[0].mode, "dry-run");
   assert.equal(rows[0].ok, false);
-  // 具体原因取决于候选解析（可能是 app-not-found / tsx-unresolved / cli-exit-3），
+  // 「问的是哪份代码」必须留痕：`app-not-found`（没找到 CLI）与 `deploy-outdated`（找到但版本旧）
+  // 处置办法完全不同，而两者曾经都表现为「静默不生效」。
+  assert.ok("app" in rows[0], "失败记录也必须带 app 字段");
   // 这里钉的是**不变量**：失败必须放行、必须留痕、理由必须非空可定位（不是「静默通过」）。
   assert.equal(typeof rows[0].reason, "string");
   assert.ok(rows[0].reason.length > 0);
