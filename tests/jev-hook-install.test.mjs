@@ -1,6 +1,7 @@
 /* 🍞 AI Breadcrumb — @COUPLED ../scripts/install-jev-hook.mjs, ../extensions/jev-gate/index.ts
  * 📖 docs/JEV-HOOK.md — global discovery and UI transport without Jev/network calls.
- * 安装是**内容寻址**的：入口 `extensions/jev-gate-<hash>.ts` + 本体 `hooks/jev-gate-<hash>/`。
+ * 安装是**内容寻址**的：入口 `extensions/<name>-<hash>.ts` + 本体 `hooks/<name>-<hash>/`。
+ * 安装器一次装**所有** `extensions/jev-*`（漏装是踩过最多次的坑：「装好了却没生效」）。
  * 名字里的哈希不是装饰：宿主进程按扩展**路径**缓存已加载的 factory，同名覆盖会让新会话继续跑旧代码。
  */
 import test from "node:test";
@@ -30,6 +31,8 @@ const installer = fileURLToPath(
 );
 const HASHED_SHIM = /^jev-gate-[0-9a-f]{8}\.ts$/;
 const HASHED_BODY = /^jev-gate-[0-9a-f]{8}$/;
+const TRIM_SHIM = /^jev-trim-[0-9a-f]{8}\.ts$/;
+const TRIM_BODY = /^jev-trim-[0-9a-f]{8}$/;
 
 function onlyEntry(dir, pattern) {
   const found = readdir(dir).filter((name) => pattern.test(name));
@@ -69,9 +72,13 @@ test("global entry auto-discovers, notifies via UI and uninstalls without touchi
   await loader.reload();
   const loaded = loader.getExtensions();
   assert.deepEqual(loaded.errors, []);
-  // 本体在 extensions/ 之外，所以这里只会发现入口这一个扩展（放进去会被加载两次）。
-  assert.equal(loaded.extensions.length, 1);
-  assert.ok(loaded.extensions[0].handlers.has("tool_call"));
+  // 本体在 extensions/ 之外，所以每个扩展只被发现一次（放进 extensions/ 会被加载两次）。
+  // 安装器装**所有** `extensions/jev-*`：这里应恰好两个入口 —— gate（tool_call）+ trim（tool_result）。
+  assert.equal(loaded.extensions.length, 2);
+  const gate = loaded.extensions.find((ext) => ext.handlers.has("tool_call"));
+  const trim = loaded.extensions.find((ext) => ext.handlers.has("tool_result"));
+  assert.ok(gate, "提交钩子应注册 tool_call");
+  assert.ok(trim, "工具结果过滤应注册 tool_result");
   const runner = new ExtensionRunner(
     loaded.extensions,
     loaded.runtime,
@@ -199,4 +206,21 @@ test("installed entry is self-contained: no absolute repo/worktree path in the s
     const body = readFileSync(join(agentDir, "hooks", bodyName, name), "utf8");
     assert.doesNotMatch(body, /\/home\/dev\//);
   }
+  // 第二个扩展（工具结果过滤）同样要自包含：装到宿主的副本里不能残留仓库绝对路径。
+  const trimShimName = onlyEntry(join(agentDir, "extensions"), TRIM_SHIM);
+  const trimBodyName = onlyEntry(join(agentDir, "hooks"), TRIM_BODY);
+  const trimShim = readFileSync(join(agentDir, "extensions", trimShimName), "utf8");
+  assert.match(trimShim, /from "\.\.\/hooks\/jev-trim-[0-9a-f]{8}\/index\.ts"/);
+  assert.doesNotMatch(trimShim, /\/home\/|\/tmp\/|worktree/);
+  for (const name of readdirSync(join(agentDir, "hooks", trimBodyName))) {
+    if (!/\.(ts|mjs)$/.test(name)) continue;
+    const body = readFileSync(join(agentDir, "hooks", trimBodyName, name), "utf8");
+    assert.doesNotMatch(body, /\/home\/dev\//, `${name} 不应含仓库绝对路径`);
+  }
+  // 兜底 CLI 记录必须落在**本体目录**里（app.mjs 用 `new URL("./app.json", import.meta.url)` 读它；
+  // 读到位置不对不会报错，只会静默不生效 —— 这条断言就是为了钉住它）。
+  const trimApp = JSON.parse(
+    readFileSync(join(agentDir, "hooks", trimBodyName, "app.json"), "utf8"),
+  );
+  assert.match(trimApp.app, /vendor\/pi-web-ui$/);
 });

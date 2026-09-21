@@ -41,8 +41,12 @@ export const JEV_SAMPLES_MAX_BYTES = 8 * 1024 * 1024;
 /** 短字段（理由/模型/来源）的最大长度，超出即丢弃。 */
 const MAX_FIELD_CHARS = 600;
 
-/** 决策来源：复盘时要能区分「agent 主动问的」与「脚本/CI 跑的」。 */
-export type JevSampleSource = "tool" | "cli" | "probe" | "ws" | "unknown";
+/**
+ * 决策来源：复盘时要能区分「agent 主动问的」与「脚本/CI 跑的」。
+ * `ask` = harness 里的临时判断（工具结果裁剪/重排/路由/护栏，见 docs/JEV-HARNESS-PLAN.md）；
+ * 它和门禁共用同一套 gate/缓存/审计，但在复盘里必须能与「提交门禁」分开看。
+ */
+export type JevSampleSource = "tool" | "cli" | "probe" | "ask" | "ws" | "unknown";
 
 export interface JevSampleError {
 	code: string;
@@ -118,7 +122,7 @@ function shortString(value: unknown): string | undefined {
 	return typeof value === "string" && value.length > 0 && value.length <= MAX_FIELD_CHARS ? value : undefined;
 }
 
-const SOURCES: readonly JevSampleSource[] = ["tool", "cli", "probe", "ws", "unknown"];
+const SOURCES: readonly JevSampleSource[] = ["tool", "cli", "probe", "ask", "ws", "unknown"];
 
 function normalizeSource(value: unknown): JevSampleSource {
 	return SOURCES.includes(value as JevSampleSource) ? (value as JevSampleSource) : "unknown";
