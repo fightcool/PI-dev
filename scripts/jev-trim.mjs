@@ -116,7 +116,7 @@ function printStats() {
   }
   console.log(`统计：${trimStatsPath(agentDir)}（${s.rows} 条）`);
   console.log(
-    `判定 ${s.judged} 次（成功 ${s.judged - s.failed} / 失败 ${s.failed}），其中会改动 ${s.changed} 次、判完不改 ${s.unchanged} 次`,
+    `判定 ${s.judged + s.failed} 次（成功 ${s.judged} / 失败 ${s.failed}），其中会改动 ${s.changed} 次、判完不改 ${s.unchanged} 次`,
   );
   console.log(
     `字符：${s.charsBefore} → ${s.charsAfter}（省 ${s.savedChars}，${percent(s.savedRatio)}，≈ ${Math.round(s.savedChars / 4)} token）`,

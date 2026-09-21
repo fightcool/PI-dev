@@ -32,21 +32,37 @@ function readRecordedApp(recordPath) {
   }
 }
 
-export function resolveApp(cwd, env = process.env, recordPath = APP_RECORD) {
-  if (env.JEV_GATE_APP)
-    return hasCli(env.JEV_GATE_APP) ? resolve(env.JEV_GATE_APP) : null;
+/**
+ * 所有**可尝试**的 app 候选（按优先级去重）。
+ * @WHY 为什么不只取第一个：实测踩到过 —— 会话 cwd 里有一个**旧 checkout**（还没有 `ask` 子命令），
+ *   而 cwd 优先级高于安装记录，于是每次判定都 `退出码 3：未知命令: ask`（内容原样放行，看着像「没生效」）。
+ *   所以候选全列出来逐个尝试：版本偏差能自愈，只在**全部**失败时才告警放行。
+ * @returns {string[]}
+ */
+export function resolveAppCandidates(
+  cwd,
+  env = process.env,
+  recordPath = APP_RECORD,
+) {
+  /** @type {string[]} */
+  const candidates = [];
+  const push = (dir) => {
+    if (!dir || !hasCli(dir)) return;
+    const abs = resolve(dir);
+    if (!candidates.includes(abs)) candidates.push(abs);
+  };
+  push(env.JEV_GATE_APP);
   for (let dir = cwd ? resolve(cwd) : null; dir; dir = dirname(dir)) {
-    const candidate = join(dir, "vendor", "pi-web-ui");
-    if (hasCli(candidate)) return candidate;
+    push(join(dir, "vendor", "pi-web-ui"));
     if (dirname(dir) === dir) break;
   }
-  for (const candidate of [
-    readRecordedApp(recordPath),
-    resolve(SELF_ROOT, "vendor", "pi-web-ui"),
-  ]) {
-    if (hasCli(candidate)) return resolve(candidate);
-  }
-  return null;
+  push(readRecordedApp(recordPath));
+  push(resolve(SELF_ROOT, "vendor", "pi-web-ui"));
+  return candidates;
+}
+
+export function resolveApp(cwd, env = process.env, recordPath = APP_RECORD) {
+  return resolveAppCandidates(cwd, env, recordPath)[0] ?? null;
 }
 
 /**

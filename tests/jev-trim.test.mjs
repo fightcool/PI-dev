@@ -4,12 +4,18 @@
  *   这里钉住的是**安全规则**——失败放行、未判定必留、错误结果不裁、收益不足不改、details/isError 不碰。
  */
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import {
   buildTrimQuestions,
   buildTrimState,
+  entryFor,
+  firstSuccessful,
   trimQuestion,
 } from "../extensions/jev-trim/ask.mjs";
+import { resolveAppCandidates } from "../extensions/jev-trim/app.mjs";
 import { readTrimConfig } from "../extensions/jev-trim/config.mjs";
 import {
   messageText,
@@ -202,6 +208,99 @@ test("content 改写：只动文本 part，图片/details 结构不碰（多文�
   assert.deepEqual(
     textParts(original).map((p) => p.index),
     [0, 2],
+  );
+});
+
+test("app 候选：按优先级去重列出全部，entry 选择随 checkout 内容变化", () => {
+  // 实测踩过：会话 cwd 里的 checkout 还没有 `ask` 子命令 → 每次判定都「未知命令」。
+  // 所以候选要**全部**列出来逐个尝试，而不是只取第一个。
+  const cwd = mkdtempSync(join(tmpdir(), "jev-trim-cand-"));
+  const app = join(cwd, "vendor", "pi-web-ui");
+  mkdirSync(join(app, "scripts"), { recursive: true });
+  writeFileSync(join(app, "scripts", "jev-gate.ts"), "// cli stub");
+  // ① 老 checkout 只有 jev-gate.ts（没有瘦入口）→ 用 `jev-gate.ts ask` 兜底。
+  assert.deepEqual(entryFor(app), {
+    entry: join(app, "scripts", "jev-gate.ts"),
+    prefix: ["ask"],
+  });
+  const candidates = resolveAppCandidates(cwd, {}, join(cwd, "app.json"));
+  assert.equal(candidates[0], app, "cwd 里的 checkout 优先");
+  // 去重（同一目录只出现一次）；最后一项恒为「本体自带的 checkout」兜底（这里就是本仓库）。
+  assert.equal(new Set(candidates).size, candidates.length);
+  // ② 新 checkout 有瘦入口 → 用瘦入口、不带子命令。
+  writeFileSync(join(app, "scripts", "jev-ask.ts"), "// slim stub");
+  assert.deepEqual(entryFor(app), {
+    entry: join(app, "scripts", "jev-ask.ts"),
+    prefix: [],
+  });
+  // ③ 环境变量指定的 app 排在最前；不存在的目录被忽略。
+  const other = join(cwd, "other", "vendor", "pi-web-ui");
+  mkdirSync(join(other, "scripts"), { recursive: true });
+  writeFileSync(join(other, "scripts", "jev-gate.ts"), "// cli stub");
+  const withEnv = resolveAppCandidates(
+    cwd,
+    { JEV_GATE_APP: other },
+    join(cwd, "app.json"),
+  );
+  assert.deepEqual(
+    withEnv.slice(0, 2),
+    [other, app],
+    "env 指定的 app 排最前，其次 cwd",
+  );
+  const envMissing = resolveAppCandidates(
+    cwd,
+    { JEV_GATE_APP: "/nope" },
+    join(cwd, "app.json"),
+  );
+  assert.equal(envMissing[0], app, "不存在的 env 路径被忽略");
+  rmSync(cwd, { recursive: true, force: true });
+});
+
+test("firstSuccessful：版本偏差自愈；取消/超时不重试", async () => {
+  // ① 第一个候选因版本偏差失败 → 试第二个并成功（这正是实测踩到的场景）。
+  const tried = [];
+  const ok = await firstSuccessful(["/old", "/new"], async (app) => {
+    tried.push(app);
+    return app === "/old"
+      ? { ok: false, reason: "app-version-skew" }
+      : { ok: true, scores: { section_0: 0.9 } };
+  });
+  assert.equal(ok.ok, true);
+  assert.deepEqual(tried, ["/old", "/new"]);
+  // ② 取消/超时：不换 app 重试（用户中断了，重试只会拖时间）。
+  const tried2 = [];
+  const aborted = await firstSuccessful(["/a", "/b"], async (app) => {
+    tried2.push(app);
+    return { ok: false, reason: "aborted" };
+  });
+  assert.equal(aborted.ok, false);
+  assert.deepEqual(tried2, ["/a"]);
+  // ③ 记住成功过的 app：下一次先试它（省掉「每次先撞一次坏候选」的 2.4s）。
+  const tried3 = [];
+  await firstSuccessful(["/slow", "/fast"], async (app) => {
+    tried3.push(app);
+    return app === "/fast"
+      ? { ok: true, scores: {} }
+      : { ok: false, reason: "app-version-skew" };
+  });
+  assert.deepEqual(tried3, ["/slow", "/fast"]);
+  const tried4 = [];
+  await firstSuccessful(["/slow", "/fast"], async (app) => {
+    tried4.push(app);
+    return { ok: true, scores: {} };
+  });
+  // 上次成功的排最前 → 第一次就成功，不会再去碰那个坏候选（这就是省下的 2.4s）。
+  assert.deepEqual(tried4, ["/fast"], "上次成功的排最前，且成功即停");
+
+  // ④ 全失败：原因串起来（能看出是哪个 checkout 的问题），不会静默变成 undefined。
+  const allFail = await firstSuccessful(["/zz-a"], async () => ({
+    ok: false,
+    reason: "cli-exit-3:x",
+  }));
+  assert.match(allFail.reason, /cli-exit-3:x@\/zz-a/);
+  assert.equal(
+    (await firstSuccessful([], async () => ({ ok: true }))).reason,
+    "app-not-found",
   );
 });
 
