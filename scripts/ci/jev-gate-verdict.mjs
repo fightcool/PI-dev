@@ -83,3 +83,23 @@ export function verdictOf({ decision, status }) {
   // 未知结论（协议新增了第四种？）→ 当出错，别当通过。
   return { kind: "error", exitCode: 3, error: `未知结论：${String(outcome)}` };
 }
+
+/**
+ * 从「对外接口声明」文档里取一段给判据看的摘录。
+ * @WHY 判据的 `change_preserves_public_api` 要问「公共接口是否兼容」，而「公共」必须由**仓库自己**定义：
+ *   默认口径「任何导出名都是公共接口」会把同仓内部重构一律判成破坏性变更（实测两次 0.07 / 0.11）。
+ *   把声明放进 state，判据就能看见「哪些面算公共、哪些只是内部实现」。
+ * @CONTRACT 声明缺失/为空 → 返回 ""，调用方照旧送 state（**不能因为拿不到声明就不判**）。
+ *   截断只按行切，且显式标注被截断 —— 宁可少给，也不要给半句让人误读的口径。
+ * @MAGIC maxChars=4000：state 与最长问题共享 32k token 上限，diff 已占大头，声明只留要点。
+ */
+export function publicSurfaceExcerpt(markdown, maxChars = 4000) {
+  const text = typeof markdown === "string" ? markdown.trim() : "";
+  if (!text) return "";
+  if (text.length <= maxChars) return text;
+  const clipped = text.slice(0, maxChars);
+  const lastBreak = clipped.lastIndexOf("\n");
+  const body =
+    lastBreak > maxChars * 0.6 ? clipped.slice(0, lastBreak) : clipped;
+  return `${body}\n\n[……对外接口声明过长，已按 ${maxChars} 字符截断……]`;
+}

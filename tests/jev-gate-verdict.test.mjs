@@ -10,6 +10,7 @@ import { test } from "node:test";
 import {
   SKIP_TEXT,
   describeChecks,
+  publicSurfaceExcerpt,
   skipReason,
   thresholdOf,
   verdictOf,
@@ -115,4 +116,18 @@ test("分数表把每个判定项的分数与生效阈值都写出来（含「�
   assert.equal(lines.length, 2);
   assert.match(lines[0], /0\.94.*0\.95.*0\.15.*独立阈值/);
   assert.match(lines[1], /0\.42.*0\.9.*0\.1.*全局/);
+});
+
+test("对外接口声明摘录：缺失给空串，超长按行截断并标注", () => {
+  // @WHY 判据的「公共接口」必须由本仓定义，否则任何同仓内部导出都被当成公共接口（实测两次 block）。
+  // 这份摘录进 state；拿不到时给空串，调用方照旧送 state（不跳过门禁）。
+  assert.equal(publicSurfaceExcerpt(""), "");
+  assert.equal(publicSurfaceExcerpt(undefined), "");
+  assert.equal(publicSurfaceExcerpt("   \n  "), "");
+  assert.equal(publicSurfaceExcerpt("# 短声明\n"), "# 短声明");
+  const long = Array.from({ length: 400 }, (_, i) => `- line ${i}`).join("\n");
+  const out = publicSurfaceExcerpt(long, 200);
+  assert.ok(out.length < 400, "必须真的截断");
+  assert.match(out, /已按 200 字符截断/);
+  assert.ok(!out.includes("line 399"), "截断后的内容只能来自前缀");
 });

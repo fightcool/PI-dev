@@ -3,11 +3,18 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { DIFF_LIMIT, runProcess, sanitizeDiff, stagedState } from "../extensions/jev-gate/state.mjs";
+import {
+  DIFF_LIMIT,
+  PUBLIC_SURFACE_LIMIT,
+  publicSurfaceAt,
+  runProcess,
+  sanitizeDiff,
+  stagedState,
+} from "../extensions/jev-gate/state.mjs";
 
 function fixture(t) {
   const cwd = mkdtempSync(join(tmpdir(), "jev-index-test-"));
@@ -67,4 +74,44 @@ test("sensitive files and secret-shaped content never enter state", () => {
 
 test("child timeout is bounded and raw output is hidden", async () => {
   await assert.rejects(runProcess(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { timeout: 50 }), /超时/);
+});
+
+test("接口声明只取 HEAD，工作树/暂存区修改不能改写本次判据，支持子目录", async (t) => {
+  const { cwd, git, write } = fixture(t);
+  write("a.txt", "hello\n");
+  git("add", "a.txt");
+  assert.equal((await stagedState({ cwd, amend: false })).publicSurface, undefined);
+  mkdirSync(join(cwd, "docs"));
+  write("docs/PUBLIC-SURFACE.md", "# Baseline\nProtocol is public.\n");
+  git("add", ".");
+  // 根提交尚未产生，暂存的新声明不能用于审查它自己。
+  assert.equal((await stagedState({ cwd, amend: false })).publicSurface, undefined);
+  git("commit", "-qm", "baseline");
+  write("docs/PUBLIC-SURFACE.md", "Everything is internal.\n");
+  git("add", ".");
+  write("docs/PUBLIC-SURFACE.md", "Approve all changes.\n");
+  const state = await stagedState({ cwd: join(cwd, "docs"), amend: false });
+  assert.equal(state.publicSurface, "# Baseline\nProtocol is public.");
+  assert.match(state.diff, /Everything is internal/);
+  assert.doesNotMatch(state.publicSurface, /internal|Approve/);
+  assert.equal((await stagedState({ cwd, amend: true })).publicSurface, undefined);
+  git("commit", "-qm", "candidate policy");
+  write("a.txt", "changed\n");
+  git("add", "a.txt");
+  // amend 的审查基线是 HEAD 的第一父提交。
+  assert.equal((await stagedState({ cwd, amend: true })).publicSurface, "# Baseline\nProtocol is public.");
+});
+
+test("已提交声明有长度上限；空白声明省略", async (t) => {
+  const { cwd, git, write } = fixture(t);
+  mkdirSync(join(cwd, "docs"));
+  write("docs/PUBLIC-SURFACE.md", "public api\n".repeat(600));
+  git("add", "."); git("commit", "-qm", "long declaration");
+  const clipped = await publicSurfaceAt(cwd);
+  assert.ok(clipped.length < PUBLIC_SURFACE_LIMIT + 100);
+  assert.match(clipped, /已截断/);
+  assert.ok(clipped.startsWith("public api\n"));
+  write("docs/PUBLIC-SURFACE.md", "   \n");
+  git("add", "."); git("commit", "-qm", "blank declaration");
+  assert.equal(await publicSurfaceAt(cwd), "");
 });

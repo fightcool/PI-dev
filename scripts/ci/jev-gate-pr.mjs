@@ -37,6 +37,7 @@ import {
   skipReason,
   verdictOf,
 } from "./jev-gate-verdict.mjs";
+import { readPublicSurface } from "./jev-public-surface.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..");
@@ -90,7 +91,13 @@ function buildState(baseSha) {
   const diff = truncated
     ? `${raw.slice(0, MAX_DIFF_CHARS)}\n\n[……diff 过长，已按 ${MAX_DIFF_CHARS} 字符截断（完整长度 ${raw.length}）……]`
     : raw;
-  return { objective, diff, truncated, diffChars: raw.length };
+  return {
+    objective,
+    diff,
+    truncated,
+    diffChars: raw.length,
+    publicSurface: readPublicSurface(ROOT, baseSha),
+  };
 }
 
 function defaultObjective(baseSha) {
@@ -215,7 +222,12 @@ function run() {
     const statePath = join(agentDir, "state.json");
     writeFileSync(
       statePath,
-      JSON.stringify({ objective: state.objective, diff: state.diff }),
+      JSON.stringify({
+        objective: state.objective,
+        // 判据要按本仓口径判断「什么是公共接口」；没有声明时这个字段缺失，判定照旧。
+        publicSurface: state.publicSurface || undefined,
+        diff: state.diff,
+      }),
       { mode: 0o600 },
     );
     const { status, decision, stderr } = runGate(agentDir, statePath);

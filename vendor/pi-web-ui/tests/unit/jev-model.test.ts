@@ -306,6 +306,17 @@ describe("buildJevQuestions", () => {
 		expect(questionNamesOf(questions)).toEqual([JEV_PROBE_PROPOSITION_ID]);
 	});
 
+	it("公共接口声明提供基线背景，不能覆盖对外行为兼容性", () => {
+		// @CONTRACT 新声明不能授权同一 diff；内部导出的调用方也必须同步修改。
+		const questions = buildJevQuestions(["change_preserves_public_api"]);
+		const api = questions.change_preserves_public_api;
+		const instructions = formatJevProse(api.instructions);
+		expect(instructions).toMatch(/PUBLIC-SURFACE\.md/);
+		expect(instructions).toMatch(/pre-change Git revision/);
+		expect(instructions).toMatch(/cannot authorize that diff/);
+		expect(formatJevProse(api.criteria.true)).toMatch(/every affected consumer is updated/);
+	});
+
 	it("sends the proposition text verbatim and never invents unknown ids", () => {
 		const questions = buildJevQuestions(["change_preserves_public_api", "nope"]);
 		expect(Object.keys(questions)).toEqual(["change_preserves_public_api"]);

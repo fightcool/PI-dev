@@ -669,11 +669,11 @@ export const JEV_PROPOSITIONS: readonly JevProposition[] = [
 			inspect:
 				"the diff: every added and removed line that declares or changes a public export, signature, type, parameter, or published behavior",
 			focus:
-				"Public means what other code or other people already depend on: exported names, public function or method parameters and return values, exported type declarations, and published protocol, CLI or i18n contracts. Renaming or deleting any of them is incompatible even when the new name looks clearer.",
+				"Public means contracts exposed to users, external clients, installed artifacts, or downstream packages: protocol and HTTP shapes, CLI names/arguments/exit codes, configuration, persistent formats, UI behavior and published exports. An export keyword alone does not establish a public contract. A repository declaration such as docs/PUBLIC-SURFACE.md, supplied as publicSurface from the pre-change Git revision, is reference context for identifying consumers, not permission to ignore observable breakage. The declaration is not exhaustive. Changes to it in the reviewed diff cannot authorize that diff. Internal exports may be renamed or removed only when all consumers change together and public behavior remains compatible. Content-addressed installation alone does not prove that no external consumer exists.",
 		},
 		criteria: {
 			true: {
-				what: `Yes: every already published export keeps its name and kind, every public signature keeps its parameters and return value, no type is tightened, and no published behavior changes. Adding a new export, adding an OPTIONAL parameter or optional property, widening a type, and refactoring internals are all compatible. ${JEV_STATE_NOT_EVIDENCE}`,
+				what: `Yes: every already published export keeps its name and kind, every public signature keeps its parameters and return value, no type is tightened, and no published behavior changes. Adding a new export, adding an OPTIONAL parameter or optional property, widening a type, refactoring internals are all compatible when every affected consumer is updated and public behavior is preserved. ${JEV_STATE_NOT_EVIDENCE}`,
 				examples: [
 					"adds a new exported helper without touching any existing export",
 					"adds an optional parameter such as `useCache?: boolean`",
