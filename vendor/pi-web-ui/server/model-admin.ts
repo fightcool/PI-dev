@@ -931,6 +931,25 @@ export class ModelAdminService {
 	}
 
 	/**
+	 * 取「这个服务商真正会用到的密钥」（探测 /models、读用量都走它）。
+	 * @CONTRACT 顺序与真实调用一致：运行时解析（含 $ENV、命令、OAuth）→ 命名密钥库当前 active 名 →
+	 *   models.json 内联兜底。拿不到就返回 undefined，让调用方如实报错，不编造。
+	 */
+	private async resolveProbeKey(pid: string, inline?: string): Promise<string | undefined> {
+		try {
+			const resolved = await this.host.modelRuntime().getAuth(pid);
+			const key = resolved?.auth?.apiKey;
+			if (key) return key;
+		} catch {
+			// 运行时未就绪 / 该服务商不在注册表 → 回落盘上的密钥来源
+		}
+		const activeName = this.getActiveKeyName(pid);
+		const stored = activeName ? this.resolveProviderKeyValue(pid, activeName) : null;
+		if (stored) return stored;
+		return inline?.trim() ? inline.trim() : undefined;
+	}
+
+	/**
 	 * 网关用量查询用的端口（**不依赖运行时**的变体：直接读 models.json / provider-keys.json）。
 	 * @WHY 服务端的 ClientSession 用**本会话 runtime** 解析地址与密钥（能覆盖 $ENV 引用、OAuth 等）；
 	 *   而 CLI（scripts/jev-gate.ts balance）与单测没有 runtime，只有一份 agentDir —— 两边必须给出
@@ -1391,9 +1410,14 @@ export class ModelAdminService {
 				});
 				return done(false, { error: "provider missing or no baseUrl" });
 			}
+			// @BUGFIX 2026-09-21：「从网关读取模型清单」一直 401 Invalid token —— 这里原来只把
+			//   models.json 的**内联** apiKey 传给探测，而单网关实例的密钥存在 provider-keys.json 里
+			//   （内联为空）→ 请求根本没带鉴权头。现在按与真实调用**同一条**解析顺序取密钥：
+			//   运行时 auth（覆盖 $ENV / 命令 / OAuth）→ 命名密钥库的当前 active 名 → 内联兜底。
+			const probeKey = await this.resolveProbeKey(pid, saved.apiKey);
 			const fetched = await ModelAdminService.probeModelsEndpoint(
 				saved.baseUrl,
-				saved.apiKey,
+				probeKey,
 				saved.authHeader === true ? true : undefined,
 				saved.api,
 				saved.headers as Record<string, string> | undefined,
