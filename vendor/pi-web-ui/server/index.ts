@@ -212,14 +212,16 @@ function authRateLimited(bucket: string, now = Date.now()): { limited: boolean; 
 		return { limited: false, retryAfterSec: 0 };
 	}
 	entry.count += 1;
-	if (entry.count > AUTH_MAX_ATTEMPTS) return { limited: true, retryAfterSec: Math.max(1, Math.ceil((entry.resetAt - now) / 1000)) };
+	if (entry.count > AUTH_MAX_ATTEMPTS)
+		return { limited: true, retryAfterSec: Math.max(1, Math.ceil((entry.resetAt - now) / 1000)) };
 	return { limited: false, retryAfterSec: 0 };
 }
 /** 成功即清空该桶，避免正常用户被自己之前的失败计数拖累。 */
 function authRateLimitReset(bucket: string): void {
 	authAttempts.delete(bucket);
 }
-const authBucket = (req: { socket?: { remoteAddress?: string } }, kind: string): string => `${kind}:${req.socket?.remoteAddress ?? "unknown"}`;
+const authBucket = (req: { socket?: { remoteAddress?: string } }, kind: string): string =>
+	`${kind}:${req.socket?.remoteAddress ?? "unknown"}`;
 
 app.post(["/api/auth/recovery", "/dev/api/auth/recovery"], async (req, res) => {
 	const bucket = authBucket(req, "recovery");
@@ -618,14 +620,18 @@ if (existsSync(webDist)) {
 		// Callback form: a failed stat here (npm i -g is mid-replacement of the
 		// package dir) responds 503 instead of crashing the request pipeline
 		// with an unhandled ENOENT stack trace.
-		res.sendFile(join(webDist, "index.html"), {
-			cacheControl: false,
-			headers: { "Cache-Control": "no-cache, no-store, must-revalidate", Pragma: "no-cache" },
-		}, (err) => {
-			if (err && !res.headersSent) {
-				res.status(503).send("正在更新 pi-web-ui，请稍后刷新…");
-			}
-		});
+		res.sendFile(
+			join(webDist, "index.html"),
+			{
+				cacheControl: false,
+				headers: { "Cache-Control": "no-cache, no-store, must-revalidate", Pragma: "no-cache" },
+			},
+			(err) => {
+				if (err && !res.headersSent) {
+					res.status(503).send("正在更新 pi-web-ui，请稍后刷新…");
+				}
+			},
+		);
 	});
 } else if (process.env[RESTART_CHILD_ENV]) {
 	// Auto-restart replacement of a self-update whose npm install did not
@@ -1442,6 +1448,7 @@ wss.on("connection", (ws) => {
 					disabledExtensions: msg.disabledExtensions,
 					disabledPlugins: msg.disabledPlugins,
 					hiddenBuiltinProviders: msg.hiddenBuiltinProviders,
+					hiddenModels: msg.hiddenModels,
 					retiredModelRoutes: msg.retiredModelRoutes,
 					modelRouteAliases: msg.modelRouteAliases,
 					terminalToolsEnabled: msg.terminalToolsEnabled,
@@ -1530,10 +1537,10 @@ wss.on("connection", (ws) => {
 			// -- 网关（用量 + 配置） --------------------------------------
 			case "query_gateway_usage":
 				void cs.queryGatewayUsage(msg.reqId, msg.providerId, msg.force);
-				break
+				break;
 			case "get_gateway":
 				void cs.getGateway(msg.reqId);
-				break
+				break;
 			case "save_gateway":
 				void cs.saveGateway(msg.reqId, {
 					baseUrl: msg.baseUrl,
