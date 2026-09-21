@@ -240,61 +240,64 @@ test("content 改写：只动文本 part，图片/details 结构不碰（多文�
   );
 });
 
-test("app 解析：运行中宿主自己那份代码优先；cwd 只在宿主没有内核时降级", () => {
-  // @WHY 部署语义：`deploy/current` 指向的 release 才是唯一在跑的代码，解析结果必须跟随它，
-  // 而不是去找别人的 checkout（实测踩过：会话 cwd 里那份还没有 `ask` 子命令 → 每次白跑 2.4s）。
+test("app 解析：pm_exec_path → argv[1]，绝不用 cwd 兜底", () => {
+  // @WHY 部署语义：`deploy/current` 指向的 release 才是唯一在跑的代码，解析必须跟随它。
+  // @GOTCHA pm2 会用自己的 process container 重新 fork，`process.argv[1]` 是 pm2 的包装器，
+  //   真实入口在 `pm_exec_path` —— 实测就是这里翻车，还被 cwd 兜底掩盖成「版本错位」。
   const tmp = mkdtempSync(join(tmpdir(), "jev-trim-app-"));
-  const release = join(tmp, "deploy/releases/abc123");
+  const release = join(tmp, "deploy/current");
   mkdirSync(join(release, "vendor/pi-web-ui/scripts"), { recursive: true });
   writeFileSync(
     join(release, "vendor/pi-web-ui/scripts/jev-gate.ts"),
     "// cli stub",
   );
-  const stale = join(tmp, "someone-else");
-  mkdirSync(join(stale, "vendor/pi-web-ui/scripts"), { recursive: true });
+  const other = join(tmp, "someone-else");
+  mkdirSync(join(other, "vendor/pi-web-ui/scripts"), { recursive: true });
   writeFileSync(
-    join(stale, "vendor/pi-web-ui/scripts/jev-gate.ts"),
+    join(other, "vendor/pi-web-ui/scripts/jev-gate.ts"),
     "// cli stub",
   );
-  // ① 宿主入口在 release 里 → 用它（哪怕 cwd 在别的 checkout）。
+  const pm2Wrapper = join(
+    tmp,
+    "deploy/tools/pm2/node_modules/pm2/lib/ProcessContainerFork.js",
+  );
+
+  // ① pm_exec_path 胜出（pm2 现场）。
   assert.equal(
-    resolveApp({}, join(release, "scripts/start.mjs"), stale),
+    resolveApp(
+      { pm_exec_path: join(release, "scripts/start.mjs") },
+      pm2Wrapper,
+    ),
     join(release, "vendor/pi-web-ui"),
   );
-  // ② `current` 是符号链接，解析结果**保留 current** → 换发布自动跟随（不解符号链接是关键）。
-  symlinkSync(join(tmp, "deploy/releases"), join(tmp, "deploy/current"), "dir");
-  assert.equal(
-    resolveApp({}, join(tmp, "deploy/current/abc123/scripts/start.mjs"), stale),
-    join(tmp, "deploy/current/abc123/vendor/pi-web-ui"),
+  // ② 解析结果保留 `current` 字面量 → 换发布自动跟随。
+  assert.match(
+    resolveApp(
+      { pm_exec_path: join(release, "scripts/start.mjs") },
+      pm2Wrapper,
+    ),
+    /deploy\/current/,
   );
-  // ③ 宿主自己不带内核（全局安装的 pi）→ 才降级到会话项目。
+  // ③ 无 pm2 时用 argv[1]（直接 node 启动）。
   assert.equal(
-    resolveApp({}, join(tmp, "global-pi/scripts/cli.mjs"), stale),
-    join(stale, "vendor/pi-web-ui"),
+    resolveApp({}, join(release, "scripts/start.mjs")),
+    join(release, "vendor/pi-web-ui"),
   );
-  // ④ 显式覆盖优先（指向真正的 app 目录，即 <checkout>/vendor/pi-web-ui）；配错就是 null。
-  const staleApp = join(stale, "vendor/pi-web-ui");
+  // ④ cwd 里有别的 checkout 也**不能**当答案（cwd 不是「正在跑的代码」）。
+  assert.equal(resolveApp({}, other), null);
+  // ⑤ 显式覆盖优先；配错就是 null（不猜别处）。
+  const otherApp = join(other, "vendor/pi-web-ui");
   assert.equal(
     resolveApp(
-      { JEV_GATE_APP: staleApp },
-      join(release, "scripts/start.mjs"),
-      stale,
+      {
+        JEV_GATE_APP: otherApp,
+        pm_exec_path: join(release, "scripts/start.mjs"),
+      },
+      pm2Wrapper,
     ),
-    staleApp,
+    otherApp,
   );
-  assert.equal(
-    resolveApp(
-      { JEV_GATE_APP: "/nope" },
-      join(release, "scripts/start.mjs"),
-      stale,
-    ),
-    null,
-  );
-  // ⑤ 都没有 → null（调用方告警放行，绝不猜）。
-  assert.equal(
-    resolveApp({}, join(tmp, "nowhere/scripts/x.mjs"), join(tmp, "nowhere")),
-    null,
-  );
+  assert.equal(resolveApp({ JEV_GATE_APP: "/nope" }, pm2Wrapper), null);
   rmSync(tmp, { recursive: true, force: true });
 });
 

@@ -22,7 +22,7 @@ const hasCli = (dir) =>
   Boolean(dir) && existsSync(join(dir, "scripts", "jev-gate.ts"));
 
 /** 从宿主入口脚本往上（最多 `depth` 层）找到第一个含 `vendor/pi-web-ui` 的树根。 */
-export function appFromHostEntry(hostEntry, depth = 4) {
+export function appFromHostEntry(hostEntry, depth = 6) {
   if (!hostEntry || typeof hostEntry !== "string") return null;
   let dir = dirname(resolve(hostEntry));
   for (let level = 0; level <= depth; level += 1) {
@@ -35,37 +35,30 @@ export function appFromHostEntry(hostEntry, depth = 4) {
   return null;
 }
 
-/** 从会话 cwd 逐级向上找项目自带的 `vendor/pi-web-ui`（只在宿主自己没有内核时才可能用到）。 */
-export function appFromCwd(cwd) {
-  for (let dir = cwd ? resolve(cwd) : null; dir; dir = dirname(dir)) {
-    const candidate = join(dir, "vendor", "pi-web-ui");
-    if (hasCli(candidate)) return candidate;
-    if (dirname(dir) === dir) break;
-  }
-  return null;
-}
-
 /**
  * 解析这次要用的 app（即「CLI 在哪」）。null = 没得用，调用方必须告警放行。
+ * @WHY 只认**正在跑我们的那个文件的所在树**，因为部署语义下那就是唯一在跑的代码
+ *   （`deploy/current` → 某个 release；`current` 是符号链接，`path.resolve` 不解符号链接，
+ *   所以解析结果保留字面量，换发布自动跟随）。旧 release / 别人的工作副本永远不会被选中。
+ * @GOTCHA **`process.argv[1]` 在 pm2 下不是应用入口**：pm2 用自己的 process container 重新 fork
+ *   应用，argv[1] = `…/pm2/lib/ProcessContainerFork.js`。实测曾因此解析失败，
+ *   再被 cwd 降级掩盖成「版本错位」（日志里 app=<会话项目>/vendor/pi-web-ui，
+ *   而不是 release）—— 那个降级档已删除。pm2 暴露的真实入口是 `pm_exec_path`，优先用它。
+ * @GOTCHA 层级要够深：pi 的 CLI 可能在 `node_modules/@scope/pkg/dist/…`，从那里跑到 checkout 根要 4-5 层。
+ * @CONTRACT 不把会话 cwd 当来源：它只属于「当前项目」，与「正在跑的代码」无关；
+ *   一旦拿它兜底，解析失败就会被掩盖成版本错位（上面的实测）。cwd 仅作诊断输出。
  * @param {NodeJS.ProcessEnv} [env]
- * @param {string} [hostEntry] 默认取运行中宿主的入口脚本（`process.argv[1]`）
- * @param {string} [cwd] 会话 cwd（仅当宿主自己没有内核时才兜底）
+ * @param {string} [hostEntry] 默认取 `process.argv[1]`
  * @returns {string | null}
  */
-export function resolveApp(
-  env = process.env,
-  hostEntry = process.argv[1],
-  cwd = process.cwd(),
-) {
+export function resolveApp(env = process.env, hostEntry = process.argv[1]) {
   const override = env.JEV_GATE_APP;
   if (override) return hasCli(override) ? resolve(override) : null;
-  // ① 运行中宿主自己的那份代码 —— 部署语义下就是 `deploy/current` 指向的 release，
-  //    换发布时它自动跟随；旧 release / 别人的工作副本永远不会被选中。
-  const fromHost = appFromHostEntry(hostEntry);
-  if (fromHost) return fromHost;
-  // ② 宿主自己不带内核（例如从全局安装启动的 pi）时才看会话项目：
-  //    这不是「绕过运行版本」，而是一种宿主内核根本不存在时的降级；版本不合会报 `deploy-outdated`。
-  return appFromCwd(cwd);
+  for (const entry of [env.pm_exec_path, hostEntry]) {
+    const app = appFromHostEntry(entry);
+    if (app) return app;
+  }
+  return null;
 }
 
 /**

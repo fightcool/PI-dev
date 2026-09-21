@@ -71,8 +71,13 @@ node <release>/scripts/install-jev-hook.mjs install    # env 里显式带 PI_COD
 > 把本体放进 `extensions/jev-gate/`，它**自己也会被当成一个扩展**发现，于是同一个钩子加载两次
 > （SDK 实测 `extensions.length === 2`）。
 > ③ **CLI 一定来自「运行中宿主自己那份代码」**（2026-09-21 修正）：解析顺序是
-> `JEV_GATE_APP` → **宿主入口脚本（`process.argv[1]`）所在树里的 `vendor/pi-web-ui`** → 会话 cwd（仅在宿主自己不带内核时降级）→ null（告警放行）。
+> `JEV_GATE_APP` → **`pm_exec_path`** → **`process.argv[1]`**（各自向上找 `vendor/pi-web-ui`）→ null（告警放行）。
+> **没有 cwd 档**：cwd 属于「当前项目」，不属于「正在跑的代码」。
 > 部署语义下第 2 档就是 `deploy/current` 指向的 release（`current` 是符号链接，**解析保留字面量**，所以换发布自动跟随）。
+> **`pm_exec_path` 不能省**（`@GOTCHA`，实测翻车）：pm2 用自己的 process container 重新 fork 应用，
+> 所以扩展里 `process.argv[1]` = `…/pm2/lib/ProcessContainerFork.js`，从那里向上找不到 CLI。
+> 当时的「cwd 降级」把这个**解析失败**掩盖成了**版本错位**（服务日志里 `app=<会话项目>/vendor/pi-web-ui`
+> 而不是 release），真问题晚了两周才被发现。pm2 暴露的真实入口在 `pm_exec_path`；cwd 现在只进诊断输出。
 > 曾经的做法是「env → cwd → 安装时记录的 `app.json` → 扩展源码 checkout」并逐个候选尝试（所谓「版本偏差自愈」），
 > 那是把版本不一致当常态：旧 release 会被 `switch-production-release.mjs` 回收，会话 cwd 里的副本可能是别人正在改的
 > 工作副本（实测：那份还没有 `ask` 子命令 → 每次判定先白跑 2.4s 才失败）。**旧版本不该被咨询 ——

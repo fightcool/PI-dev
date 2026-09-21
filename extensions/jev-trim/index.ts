@@ -158,7 +158,9 @@ export default function jevTrim(
           reason: asked.reason,
           wallMs: asked.elapsedMs,
         });
-        console.error(`[jev-trim] 判定失败，已原样放行：${asked.reason}`);
+        console.error(
+          `[jev-trim] 判定失败，已原样放行：${asked.reason}（app=${asked.app ?? "未解析到"}，宿主入口=${process.argv[1] ?? "?"}）`,
+        );
         if (failuresNotified === 0) {
           failuresNotified += 1;
           notify(

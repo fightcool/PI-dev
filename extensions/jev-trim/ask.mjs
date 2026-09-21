@@ -247,12 +247,11 @@ export async function attemptOn(
  */
 async function defaultRunner({ questions, state, cwd, signal, timeoutMs }) {
   // 只认运行中宿主自己的那份代码；找不到就失败并说清楚（绝不猜别的 checkout）。
-  const app = resolveApp(process.env, process.argv[1], cwd);
+  const app = resolveApp(process.env, process.argv[1]);
   if (!app)
     return {
       ok: false,
-      reason:
-        "app-not-found:运行中的宿主旁边找不到 vendor/pi-web-ui（调试可用 JEV_GATE_APP 显式指定）",
+      reason: `app-not-found:运行中宿主旁边找不到 vendor/pi-web-ui（pm_exec_path=${process.env.pm_exec_path ?? "-"}，argv[1]=${process.argv[1] ?? "-"}，cwd=${cwd ?? "-"}；调试可用 JEV_GATE_APP 显式指定）`,
     };
   const dir = mkdtempSync(join(tmpdir(), "jev-trim-"));
   const questionsFile = join(dir, "questions.json");

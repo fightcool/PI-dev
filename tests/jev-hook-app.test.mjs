@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { mapDecision, resolveApp } from "../extensions/jev-gate/gate.mjs";
 
 /** 造一个假 checkout：`<root>/vendor/pi-web-ui/scripts/jev-gate.ts`。 */
@@ -25,71 +25,79 @@ function fakeCheckout(parent, name) {
   return root;
 }
 
-test("resolveApp：宿主自己没有内核时，从会话 cwd 逐级向上找项目自带的仓库根", (t) => {
-  const tmp = mkdtempSync(join(tmpdir(), "jev-app-resolve-"));
+test("resolveApp：优先 pm_exec_path（pm2 的 process container 会改写 argv[1]）", (t) => {
+  // @WHY 实测现场：服务由 pm2 启动，扩展里 `process.argv[1]` =
+  //   `<deploy>/tools/pm2/node_modules/pm2/lib/ProcessContainerFork.js`，
+  //   从那里向上找不到 vendor/pi-web-ui → 被判成「版本错位」。pm2 暴露的真实入口在 pm_exec_path。
+  const tmp = mkdtempSync(join(tmpdir(), "jev-app-pm2-"));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
-  const root = fakeCheckout(tmp, "PI-dev");
-  // @BUGFIX 2026-09-20：扩展被**复制**到 <agentDir>/hooks/jev-gate/ 后，
-  // 「往上两级」算出的是 <agentDir>/vendor/pi-web-ui（不存在）→ 钩子每次都退化成告警放行。
-  // 所以必须从会话 cwd 解析：在仓库根、或在仓库内任意子目录提交，都要能找到。
-  const env = {}; // 刻意不给 JEV_GATE_APP
-  // hostEntry 指向一棵**没有** vendor/pi-web-ui 的树（模拟从全局安装启动的 pi）→ 才降级到 cwd。
-  const noKernelHost = join(tmp, "global-pi/scripts/cli.mjs");
-  assert.equal(
-    resolveApp(root, env, noKernelHost),
-    join(root, "vendor", "pi-web-ui"),
+  const release = fakeCheckout(tmp, "deploy/current");
+  const pm2Wrapper = join(
+    tmp,
+    "deploy/tools/pm2/node_modules/pm2/lib/ProcessContainerFork.js",
   );
-  const deep = join(root, "vendor/pi-web-ui/server/dev-con");
-  mkdirSync(deep, { recursive: true });
-  assert.equal(
-    resolveApp(deep, env, noKernelHost),
-    join(root, "vendor", "pi-web-ui"),
-  );
-});
-
-test("resolveApp：优先用**运行中宿主自己**那份代码（旧 checkout 不该被咨询）", (t) => {
-  // @WHY 实测踩过：会话 cwd 里的 checkout 是别人的工作副本（还没有 `ask` 子命令），
-  // 而老实现把 cwd 排在前面 → 每次判定先白跑一次进程（2.4s）才失败。
-  // 部署语义下 `current` 指向的 release 才是唯一在跑的代码，必须先命中它。
-  const tmp = mkdtempSync(join(tmpdir(), "jev-app-host-"));
-  t.after(() => rmSync(tmp, { recursive: true, force: true }));
-  const release = fakeCheckout(tmp, "deploy/releases/abc123");
-  const stale = fakeCheckout(tmp, "someone-else-worktree");
-  const hostEntry = join(release, "scripts/start.mjs");
-  assert.equal(
-    resolveApp(stale, {}, hostEntry),
-    join(release, "vendor/pi-web-ui"),
-    "宿主自己的 release 优先于会话 cwd",
-  );
-  // 发布切换靠符号链接跟随：解析结果里保留 `current` 字面量，所以换发布自动生效。
-  const currentEntry = join(tmp, "deploy/current/scripts/start.mjs");
-  // `current` 本身就是符号链接（真实部署就是这样），入口脚本通过它访问 —— 不需要额外创建。
-  symlinkSync(release, join(tmp, "deploy/current"), "dir");
-  assert.equal(
-    resolveApp(stale, {}, currentEntry),
-    join(tmp, "deploy/current/vendor/pi-web-ui"),
-    "解析结果保留 current（不解符号链接）→ 跟随发布切换",
-  );
-});
-
-test("resolveApp 优先用 JEV_GATE_APP，指错就返回 null（不静默退回猜测）", (t) => {
-  const tmp = mkdtempSync(join(tmpdir(), "jev-app-env-"));
-  t.after(() => rmSync(tmp, { recursive: true, force: true }));
-  const root = fakeCheckout(tmp, "checkout");
-  const app = join(root, "vendor", "pi-web-ui");
-  // 显式配置正确 → 用它，即使 cwd 在别处。
-  assert.equal(resolveApp(tmp, { JEV_GATE_APP: app }), app);
-  // 显式配置错 → null（调用方会告警放行），而不是悄悄回退到 cwd 猜测。
-  assert.equal(resolveApp(app, { JEV_GATE_APP: join(tmp, "nope") }), null);
-  // 也不会回退到「宿主自己的代码」或 cwd：显式配错就是错，不许猜。
-  const host = fakeCheckout(tmp, "host");
   assert.equal(
     resolveApp(
-      app,
+      tmp,
+      { pm_exec_path: join(release, "scripts/start.mjs") },
+      pm2Wrapper,
+    ),
+    join(release, "vendor/pi-web-ui"),
+    "pm_exec_path 必须优先于 argv[1]",
+  );
+  // 解析结果保留 `current` 字面量 → 换发布自动跟随（不解符号链接是关键）。
+  assert.match(
+    resolveApp(
+      tmp,
+      { pm_exec_path: join(release, "scripts/start.mjs") },
+      pm2Wrapper,
+    ),
+    /deploy\/current/,
+  );
+});
+
+test("resolveApp：argv[1] 兜底（直接 node 启动，无 pm2）", (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "jev-app-argv-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  const release = fakeCheckout(tmp, "deploy/releases/abc123");
+  assert.equal(
+    resolveApp(tmp, {}, join(release, "scripts/start.mjs")),
+    join(release, "vendor/pi-web-ui"),
+  );
+  // 从 node_modules 深处的 CLI 也要能找到（pi 的 cli 在 @scope/pkg/dist 下，要爬 4-5 层）。
+  const deepCli = join(
+    release,
+    "vendor/pi-web-ui/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+  );
+  mkdirSync(dirname(deepCli), { recursive: true });
+  writeFileSync(deepCli, "// cli\n");
+  assert.equal(resolveApp(tmp, {}, deepCli), join(release, "vendor/pi-web-ui"));
+});
+
+test("resolveApp：不给 cwd 兜底 —— cwd 里有 checkout 也不能当答案", (t) => {
+  // @WHY 这是本设计最关键的否定性断言：cwd 兜底曾把「宿主入口解析失败」掩盖成「版本错位」，
+  //   真问题（argv[1] 在 pm2 下不是应用入口）晚了两周才发现。cwd 只允许出现在诊断信息里。
+  const tmp = mkdtempSync(join(tmpdir(), "jev-app-nocwd-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  const project = fakeCheckout(tmp, "PI-dev"); // cwd 里确实有一个 checkout
+  assert.equal(
+    resolveApp(project, {}, "/nonexistent/scripts/unknown.js"),
+    null,
+  );
+  // 显式 JEV_GATE_APP 配错 → null（不静默回退到 cwd 或宿主树）。
+  assert.equal(
+    resolveApp(
+      project,
       { JEV_GATE_APP: join(tmp, "nope") },
-      join(host, "scripts/start.mjs"),
+      join(project, "scripts/start.mjs"),
     ),
     null,
+  );
+  // 显式配置正确 → 用它，即使 cwd 与宿主树都在别处。
+  const app = join(project, "vendor/pi-web-ui");
+  assert.equal(
+    resolveApp(tmp, { JEV_GATE_APP: app }, "/nonexistent/x.js"),
+    app,
   );
 });
 
