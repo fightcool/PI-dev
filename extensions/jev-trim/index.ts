@@ -128,7 +128,7 @@ export default function jevTrim(
         record({ ...base, skipped: "no-objective" });
         return undefined;
       }
-      const { sections, merged } = splitSections(text, cfg);
+      const { sections, sampled } = splitSections(text, cfg);
       if (sections.length < 2) {
         record({
           ...base,
@@ -145,6 +145,7 @@ export default function jevTrim(
         cwd: ctx.cwd,
         signal: ctx.signal,
         timeoutMs: cfg.cliTimeoutMs,
+        maxStateChars: cfg.maxStateChars,
       });
       if (!asked.ok) {
         record({
@@ -174,7 +175,9 @@ export default function jevTrim(
       record({
         ...base,
         sections: sections.length,
-        merged,
+        sampled,
+        judged: asked.judged?.length ?? null,
+        dropped: asked.dropped ?? 0,
         ok: true,
         changed: Boolean(plan),
         kept: plan?.kept.length ?? sections.length,

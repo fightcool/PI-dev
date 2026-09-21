@@ -35,14 +35,15 @@ const firstLineOf = (text) => {
 
 /**
  * 把工具结果切成片段。
- * @returns {{ sections: {index:number,text:string,firstLine:string}[], merged:boolean }}
+ * @property sampled = 片段数超过上限、只判其中一部分（未判到的片段调用方必须原样保留）
+ * @returns {{ sections: {index:number,text:string,firstLine:string}[], sampled:boolean }}
  */
 export function splitSections(
   text,
   { sectionChars = 1_500, maxSections = 24 } = {},
 ) {
   const normalized = String(text ?? "").replace(/\r\n/g, "\n");
-  if (normalized.trim().length === 0) return { sections: [], merged: false };
+  if (normalized.trim().length === 0) return { sections: [], sampled: false };
 
   const pieces = [];
   let current = "";
@@ -62,14 +63,21 @@ export function splitSections(
   }
   flush();
 
-  let merged = false;
+  /**
+   * 片段数超上限时**均匀取样**，绝不合并。
+   * @BUGFIX 第一版是「合并相邻片段」：每段长度变成 `总长/上限`，实测 90k 字的工具结果 → 22 段 × 4.1k 字，
+   *   等于把**整份结果**塞进 state；上游按 token 限流（`state` + 最长问题 ≤ 32k token），
+   *   于是每次都是 HTTP 400 `max_tokens_exceeded` —— 功能等于没生效，还白花一次调用。
+   *   取样是「只判一部分」：没被判断的片段按安全规则**原样保留**，所以取样不丢字、也不会误删。
+   */
+  let sampled = false;
   let buckets = pieces;
   if (pieces.length > maxSections) {
-    merged = true;
-    const size = Math.ceil(pieces.length / maxSections);
+    sampled = true;
     buckets = [];
-    for (let i = 0; i < pieces.length; i += size)
-      buckets.push(pieces.slice(i, i + size).join("\n\n"));
+    const step = pieces.length / maxSections;
+    for (let i = 0; i < maxSections; i += 1)
+      buckets.push(pieces[Math.floor(i * step)]);
   }
   return {
     sections: buckets.map((body, index) => ({
@@ -77,6 +85,6 @@ export function splitSections(
       text: body,
       firstLine: firstLineOf(body),
     })),
-    merged,
+    sampled,
   };
 }

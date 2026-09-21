@@ -16,7 +16,8 @@ import { readFileSync, statSync } from "node:fs";
  * @property {number} minChars 小于这个字符数的工具结果不动手（别为小输出付一次网络往返）
  * @property {number} maxChars 大于这个字符数的结果放弃判定（state 太大会把成本与延迟一起推高）
  * @property {number} sectionChars 每个片段的目标字符数（片段是判断与保留的最小单位）
- * @property {number} maxSections 最多切多少片段（再多就合并，避免问题墙 + 超上下文）
+ * @property {number} maxSections 最多判多少片段（再多就均匀取样；未判到的片段原样保留）
+ * @property {number} maxStateChars 进 state 的片段总字符上限（上游按 token 限流：state + 最长问题 ≤ 32k token）
  * @property {number} keepAt 保留阈值：片段得分 ≥ 它的才留下
  * @property {number} maxPerSession 一个会话最多裁几次（连续大输出时别把每轮都拖成秒级）
  * @property {number} cliTimeoutMs 单次 ask 的墙钟上限（含 CLI 冷启动）
@@ -54,6 +55,7 @@ export function loadFileConfig(agentDir) {
       "maxChars",
       "sectionChars",
       "maxSections",
+      "maxStateChars",
       "keepAt",
       "maxPerSession",
       "cliTimeoutMs",
@@ -76,6 +78,7 @@ const DEFAULTS = {
   maxChars: 400_000,
   sectionChars: 1_500,
   maxSections: 24,
+  maxStateChars: 20_000,
   keepAt: 0.5,
   maxPerSession: 3,
   cliTimeoutMs: 20_000,
@@ -140,6 +143,13 @@ export function readTrimConfig(env = process.env, file = {}) {
       DEFAULTS.maxSections,
       1,
       48,
+    ),
+    maxStateChars: num(
+      env.JEV_TRIM_MAX_STATE_CHARS,
+      file.maxStateChars,
+      DEFAULTS.maxStateChars,
+      4_000,
+      40_000,
     ),
     keepAt: num(
       env.JEV_TRIM_KEEP_AT,
