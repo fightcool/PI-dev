@@ -34,10 +34,10 @@ import { fileURLToPath } from "node:url";
 import {
   SKIP_TEXT,
   describeChecks,
-  publicSurfaceExcerpt,
   skipReason,
   verdictOf,
 } from "./jev-gate-verdict.mjs";
+import { readPublicSurface } from "./jev-public-surface.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..");
@@ -79,23 +79,6 @@ function git(args, { allowFail = false } = {}) {
   return (run.stdout ?? "").trim();
 }
 
-/**
- * 本仓的「对外接口声明」路径（存在就放进 state）。
- * @WHY 判据口径默认是「任何导出名都算公共接口」，于是同仓内部重构每次都被判成破坏性变更
- *   （实测 0.07 / 0.11 两次 block）。声明文件把「哪些面算公共、哪些只是内部实现」写清楚，
- *   判据按它办；口径变更也因此在 diff 里可见（改声明 = 改门禁口径，需在 PR 里说明）。
- * @CONTRACT 文件缺失/读取失败 → 空字符串，**照旧送 state 判定**：拿不到声明不是跳过门禁的理由。
- */
-const PUBLIC_SURFACE_PATH = join(ROOT, "docs", "PUBLIC-SURFACE.md");
-
-export function readPublicSurface() {
-  try {
-    return publicSurfaceExcerpt(readFileSync(PUBLIC_SURFACE_PATH, "utf8"));
-  } catch {
-    return "";
-  }
-}
-
 /** 被审内容（state）：objective 给人/模型一点意图，diff 是真正要判的东西。 */
 function buildState(baseSha) {
   const title = process.env.JEV_OBJECTIVE?.trim();
@@ -113,7 +96,7 @@ function buildState(baseSha) {
     diff,
     truncated,
     diffChars: raw.length,
-    publicSurface: readPublicSurface(),
+    publicSurface: readPublicSurface(ROOT, baseSha),
   };
 }
 

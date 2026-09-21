@@ -3,8 +3,6 @@
  * @CONTRACT Only staged text is sent; credentials are excluded/redacted before CLI stdin.
  */
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 
 // @MAGIC Git output capped at 8 MiB; reviewed text at 24k chars, with an explicit marker.
 export const DIFF_LIMIT = 24_000;
@@ -15,19 +13,17 @@ export const PUBLIC_SURFACE_LIMIT = 4_000;
  * 本仓的「对外接口声明」（`docs/PUBLIC-SURFACE.md`）。
  * @WHY 判据 `change_preserves_public_api` 的默认口径是「任何导出名都算公共接口」，于是同仓内部重构
  *   每次都被判成破坏性变更（实测两次 block：0.07 / 0.11）。声明的存在让判据按**本仓**口径办事。
- * @CONTRACT 文件缺失/为空/读不到 → 返回 ""，判定照旧（拿不到声明不是跳过门禁的理由）；
- *   超长按字符截断并留标记（宁可少给，也不给半句让人误读的口径）。
+ * @CONTRACT 只读审查前的 Git 版本，不读工作树/暂存区；声明本身的修改仍是被审内容。
+ *   文件缺失/为空 → 返回 ""，判定照旧；超长截断并标注，凭据形状先抹除。
  */
-export async function publicSurfaceAt(cwd) {
-  try {
-    const text = (await readFile(join(cwd, "docs", "PUBLIC-SURFACE.md"), "utf8")).trim();
-    if (!text) return "";
-    return text.length <= PUBLIC_SURFACE_LIMIT
-      ? text
-      : `${text.slice(0, PUBLIC_SURFACE_LIMIT)}\n\n[……对外接口声明过长，已截断……]`;
-  } catch {
-    return "";
-  }
+export async function publicSurfaceAt(cwd, ref = "HEAD", signal) {
+  const result = await runProcess("git", ["show", `${ref}:docs/PUBLIC-SURFACE.md`], { cwd, signal });
+  if (result.code !== 0) return "";
+  const text = redact(result.stdout).trim();
+  if (!text) return "";
+  return text.length <= PUBLIC_SURFACE_LIMIT
+    ? text
+    : `${text.slice(0, PUBLIC_SURFACE_LIMIT)}\n\n[……对外接口声明过长，已截断……]`;
 }
 
 /** No raw child errors: they can contain arguments, source text or upstream credentials. */
@@ -82,7 +78,7 @@ export async function stagedState(commit, signal) {
   const truncated = safe.length > DIFF_LIMIT;
   const diff = safe.slice(0, DIFF_LIMIT) + (truncated ? "\n[diff 已截断：仅审查前 24000 字符]" : "");
   const summary = redact(await git([...args, "--stat", "--"])).slice(0, 1200);
-  const publicSurface = await publicSurfaceAt(commit.cwd);
+  const publicSurface = await publicSurfaceAt(commit.cwd, base[0] ?? "HEAD", signal);
   return {
     objective: `审查并提交以下暂存改动（仅有暂存摘要，未提供原始任务目标）：\n${summary || "当前暂存改动"}`,
     // 判据要按本仓口径判断「什么是公共接口」；没有声明时字段缺席，判定照旧。

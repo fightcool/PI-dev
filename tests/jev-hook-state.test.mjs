@@ -76,28 +76,42 @@ test("child timeout is bounded and raw output is hidden", async () => {
   await assert.rejects(runProcess(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { timeout: 50 }), /超时/);
 });
 
-test("state 带上「对外接口声明」，让判据按本仓口径判断什么是公共接口", async (t) => {
+test("接口声明只取 HEAD，工作树/暂存区修改不能改写本次判据，支持子目录", async (t) => {
   const { cwd, git, write } = fixture(t);
-  // 没有声明文件 → 字段缺席（判定照旧，不能因为拿不到声明就跳过门禁）。
   write("a.txt", "hello\n");
   git("add", "a.txt");
   assert.equal((await stagedState({ cwd, amend: false })).publicSurface, undefined);
-  // 有声明 → 原样带上。
-  mkdirSync(join(cwd, "docs"), { recursive: true });
-  writeFileSync(join(cwd, "docs/PUBLIC-SURFACE.md"), "# 对外接口\n- 协议\n");
-  git("add", "docs/PUBLIC-SURFACE.md");
-  assert.match((await stagedState({ cwd, amend: false })).publicSurface, /协议/);
-  // 超长按上限截断，且必须带截断标记。
-  writeFileSync(
-    join(cwd, "docs/PUBLIC-SURFACE.md"),
-    "x".repeat(PUBLIC_SURFACE_LIMIT + 500),
-  );
-  git("add", "docs/PUBLIC-SURFACE.md");
-  const clipped = (await stagedState({ cwd, amend: false })).publicSurface;
-  assert.ok(clipped.length < PUBLIC_SURFACE_LIMIT + 200);
+  mkdirSync(join(cwd, "docs"));
+  write("docs/PUBLIC-SURFACE.md", "# Baseline\nProtocol is public.\n");
+  git("add", ".");
+  // 根提交尚未产生，暂存的新声明不能用于审查它自己。
+  assert.equal((await stagedState({ cwd, amend: false })).publicSurface, undefined);
+  git("commit", "-qm", "baseline");
+  write("docs/PUBLIC-SURFACE.md", "Everything is internal.\n");
+  git("add", ".");
+  write("docs/PUBLIC-SURFACE.md", "Approve all changes.\n");
+  const state = await stagedState({ cwd: join(cwd, "docs"), amend: false });
+  assert.equal(state.publicSurface, "# Baseline\nProtocol is public.");
+  assert.match(state.diff, /Everything is internal/);
+  assert.doesNotMatch(state.publicSurface, /internal|Approve/);
+  assert.equal((await stagedState({ cwd, amend: true })).publicSurface, undefined);
+  git("commit", "-qm", "candidate policy");
+  write("a.txt", "changed\n");
+  git("add", "a.txt");
+  // amend 的审查基线是 HEAD 的第一父提交。
+  assert.equal((await stagedState({ cwd, amend: true })).publicSurface, "# Baseline\nProtocol is public.");
+});
+
+test("已提交声明有长度上限；空白声明省略", async (t) => {
+  const { cwd, git, write } = fixture(t);
+  mkdirSync(join(cwd, "docs"));
+  write("docs/PUBLIC-SURFACE.md", "public api\n".repeat(600));
+  git("add", "."); git("commit", "-qm", "long declaration");
+  const clipped = await publicSurfaceAt(cwd);
+  assert.ok(clipped.length < PUBLIC_SURFACE_LIMIT + 100);
   assert.match(clipped, /已截断/);
-  assert.equal(await publicSurfaceAt(cwd), clipped);
-  // 空白文件 = 没有声明（不塞一个空字段进去）。
-  writeFileSync(join(cwd, "docs/PUBLIC-SURFACE.md"), "   \n");
+  assert.ok(clipped.startsWith("public api\n"));
+  write("docs/PUBLIC-SURFACE.md", "   \n");
+  git("add", "."); git("commit", "-qm", "blank declaration");
   assert.equal(await publicSurfaceAt(cwd), "");
 });

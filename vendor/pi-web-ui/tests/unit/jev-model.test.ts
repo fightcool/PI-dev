@@ -306,16 +306,15 @@ describe("buildJevQuestions", () => {
 		expect(questionNamesOf(questions)).toEqual([JEV_PROBE_PROPOSITION_ID]);
 	});
 
-	it("公共接口的口径必须留出「本仓声明说了算」的出口", () => {
-		// @WHY 判据默认口径是「任何导出名都算公共接口」，于是把同仓内部重构一律判成破坏性变更
-		//   （实测两次 block：0.07 / 0.11，见 docs/PUBLIC-SURFACE.md）。声明文件是唯一出口，
-		//   所以这里钉住：口径文本必须提到「本仓声明说了算」以及「无外部消费者的内部导出不算」。
-		const api = JEV_PROPOSITIONS.find((p) => p.id === "change_preserves_public_api")!;
-		// 用 formatJevProse 渲染（判据文本的唯一展示实现），避免在测试里自己拼字符串。
+	it("公共接口声明提供基线背景，不能覆盖对外行为兼容性", () => {
+		// @CONTRACT 新声明不能授权同一 diff；内部导出的调用方也必须同步修改。
+		const questions = buildJevQuestions(["change_preserves_public_api"]);
+		const api = questions.change_preserves_public_api;
 		const instructions = formatJevProse(api.instructions);
 		expect(instructions).toMatch(/PUBLIC-SURFACE\.md/);
-		expect(instructions).toMatch(/DECIDES WHAT COUNTS AS PUBLIC/i);
-		expect(formatJevProse(api.criteria.true)).toMatch(/only the repository's own modules and tests consume/);
+		expect(instructions).toMatch(/pre-change Git revision/);
+		expect(instructions).toMatch(/cannot authorize that diff/);
+		expect(formatJevProse(api.criteria.true)).toMatch(/every affected consumer is updated/);
 	});
 
 	it("sends the proposition text verbatim and never invents unknown ids", () => {
