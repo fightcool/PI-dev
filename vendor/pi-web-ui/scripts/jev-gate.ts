@@ -462,9 +462,15 @@ function applyConfigPatch(
  *   —— 多渠道时代的产物，网关根本不在那条路径上，读出来的数字与真实扣费无关。
  * @CONTRACT 复用的是服务端同一个 GatewayUsageService（同一套单位换算与「不猜余额」口径），
  *   不是 CLI 自己写一遍解析；地址/密钥经 ModelAdminService 的**无运行时**端口解析。
+ * @GOTCHA 目标服务商是**网关**（gatewayProviderId），不是 Jev 的 credentialRef：后者说的是
+ *   「谁跑门禁判定」，可以是直连上游（OpenRouter），拿它去查账单只会得到「未注册地址」。
  * @GOTCHA 该部署忽略日期窗口，所以打印的是**累计**用量，不写「近 N 天」。
  */
-async function runBalance(agentDir: string, config: Parameters<typeof requireApiKey>[1], asJson: boolean): Promise<number> {
+async function runBalance(
+	agentDir: string,
+	config: Parameters<typeof requireApiKey>[1],
+	asJson: boolean,
+): Promise<number> {
 	const unreachable = () => {
 		throw new Error("CLI 不应触发 ModelAdminHost 的运行时成员");
 	};
@@ -478,12 +484,18 @@ async function runBalance(agentDir: string, config: Parameters<typeof requireApi
 		pushModels: unreachable,
 	} as unknown as ModelAdminHost;
 	const admin = new ModelAdminService(host);
-	// Jev 的凭据指向哪个服务商就查哪个；没配就用网关本身（单网关接入下两者通常同一个）。
-	const providerId = (config.credentialRef?.providerId || admin.gatewayProviderId() || "").trim();
+	// 查**网关**（本实例唯一的模型调用入口）—— 不是 Jev 凭据指向的那个服务商：
+	// Jev 的 credentialRef 说的是「谁来跑门禁判定」（可以是 OpenRouter 这类直连上游），
+	// 与「我们的模型调用走哪台网关、花了多少钱」是两件事。用错目标会得到
+	// 「服务商 openrouter 未注册地址」这种与用户意图无关的报错（2026-09-21 上线当天实测踩到）。
+	const providerId = (admin.gatewayProviderId() || "").trim();
 	if (!providerId) {
-		console.error("没有可查询的网关：models.json 里还没有配置服务商");
+		console.error(
+			"没有可查询的网关：models.json 里还没有配置服务商（先运行 npm run jev -- config --base-url … 或用界面「设置 → 网关」配置）",
+		);
 		return 3;
 	}
+	const jevProvider = (config.credentialRef?.providerId ?? "").trim();
 	const service = new GatewayUsageService(admin.gatewayUsagePort());
 	const result = await service.query(providerId, { force: true });
 	if (asJson) {
@@ -501,6 +513,9 @@ async function runBalance(agentDir: string, config: Parameters<typeof requireApi
 	const u = result.usage!;
 	const money = (v: number | null) => (v === null ? "未报告" : `$${v}`);
 	console.log(`网关: ${u.baseUrl ?? "-"}${u.providerName ? `（${u.providerName}）` : ""}`);
+	// 说清楚「为什么这里没有 Jev 那个服务商的余额」——否则看起来像是丢了功能。
+	if (jevProvider && jevProvider !== providerId)
+		console.log(`注: Jev 门禁用的是 ${jevProvider}（直连上游，不是网关），本命令只读网关自己的账单接口`);
 	console.log(`已用: ${money(u.usedUsd)}`);
 	console.log(`额度: ${u.unlimited ? "未设上限（网关返回占位值）" : money(u.limitUsd)}`);
 	if (u.remainingUsd !== null) console.log(`剩余: ${money(u.remainingUsd)}`);
@@ -864,7 +879,8 @@ async function main(): Promise<number> {
 		const questions = readAskQuestions(flags);
 		const apiKey = requireApiKey(agentDir, config);
 		if (!apiKey) return 3;
-		const state = flags.get("state-file") !== undefined || flags.get("state") !== undefined ? await readState(flags) : "";
+		const state =
+			flags.get("state-file") !== undefined || flags.get("state") !== undefined ? await readState(flags) : "";
 		const decision = await gate.evaluate({
 			state,
 			questions,
