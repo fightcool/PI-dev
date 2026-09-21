@@ -71,6 +71,7 @@ export function printUsage(credentialProvider: string): void {
 			"  propositions                 列出可用二元判断命题（判定句 + 真/假标准）",
 			"  check --proposition <id> --state-file <path|->  [--json] [--no-cache]   跑一次门禁",
 			"  probe                        真实自检：用合成样本打一次 Decisions 接口（支持 --no-cache）",
+			"  ask --questions-file <path|-> [--state-file <path|->] [--raw]   临时命题（harness 用：裁剪/重排/路由/护栏）",
 			"  cache                        磁盘决策缓存概览（条数 / 占用 / 时间范围）",
 			"  cache clear [--json]         删除磁盘决策缓存（派生数据，删了只损失一次调用费用）",
 			"  samples [--json]             真实样本概览（`samples clear` 删样本：不可再生，先导出再删）",
@@ -82,8 +83,9 @@ export function printUsage(credentialProvider: string): void {
 			"  --agent-dir <path>           覆盖实例数据目录（默认 $PI_CODING_AGENT_DIR ?? getAgentDir()）",
 			"  --no-cache                   跳过内存与磁盘缓存，强制一次新鲜判定（排障/验证上游）",
 			"  --json                       机器可读输出",
+			"  --raw                        （ask）只取原始概率，不套放行/阻断阈值：成功即退出 0，用于排序/筛选",
 			"",
-			"退出码（check / probe）：0 通过 / 1 阻断 / 2 转人工 / 3 出错",
+			"退出码（check / probe / ask）：0 通过 / 1 阻断 / 2 转人工 / 3 出错",
 			"退出码（review）：0 到期该复盘 / 1 未到期 / 3 参数或 IO 问题",
 		].join("\n"),
 	);

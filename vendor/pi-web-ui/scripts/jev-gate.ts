@@ -66,6 +66,7 @@ import {
 	suggestThresholds,
 	summarizeScores,
 } from "../server/dev-con/jev-tune.js";
+import { JevAskError, askExitCode, parseAskQuestions } from "../server/dev-con/jev-ask.js";
 import { jevSettingsPath, loadJevSettings, saveJevSettings } from "../server/dev-con/jev-settings.js";
 import { ModelAdminService, type ModelAdminHost } from "../server/model-admin.js";
 import { openRouterAdapter } from "../server/dev-con/channel-accounts.js";
@@ -160,6 +161,27 @@ function resolveApiKey(agentDir: string, providerId: string, keyName: string): s
 		pushModels: unreachable,
 	} as unknown as ModelAdminHost;
 	return new ModelAdminService(host).resolveProviderKeyValue(providerId, keyName);
+}
+
+/**
+ * 读 `--questions-file`（`-` = stdin）并做形状校验。
+ * @CONTRACT 失败信息只报 id 与原因，**永不回显** state 或载荷正文（可能是整份源码/diff）。
+ */
+function readAskQuestions(flags: Flags): ReturnType<typeof parseAskQuestions> {
+	const file = flags.get("questions-file");
+	if (typeof file !== "string") {
+		throw new JevAskError(
+			'缺少 --questions-file：提供命题 JSON（{ "<id>": { "type": "noul", "instructions": …, "criteria": … } }），或用 - 从 stdin 读',
+		);
+	}
+	const raw = file === "-" ? readFileSync(0, "utf8") : readFileSync(file, "utf8");
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		throw new JevAskError("--questions-file 不是合法 JSON");
+	}
+	return parseAskQuestions(parsed);
 }
 
 async function readState(flags: Flags): Promise<unknown> {
@@ -820,6 +842,27 @@ async function main(): Promise<number> {
 			flags.get("no-cache") !== true,
 			isProbe ? "probe" : "cli",
 		);
+	}
+
+	if (command === "ask") {
+		// 通用临时命题：harness 里所有「顺手问一句」的判断都走这里（见 docs/JEV-HARNESS-PLAN.md §6）。
+		// 与 check/probe 共用同一个 gate、同一份密钥解析、同一套缓存与审计；不注册任何命题。
+		// 先校验参数形状，再要密钥：参数用错时不该因为「没配密钥」而报出误导性错误（也便于离线测试）。
+		const questions = readAskQuestions(flags);
+		const apiKey = requireApiKey(agentDir, config);
+		if (!apiKey) return 3;
+		const state = flags.get("state-file") !== undefined || flags.get("state") !== undefined ? await readState(flags) : "";
+		const decision = await gate.evaluate({
+			state,
+			questions,
+			apiKey,
+			useCache: flags.get("no-cache") !== true,
+			source: "ask",
+		});
+		const raw = flags.get("raw") === true;
+		if (asJson) console.log(JSON.stringify(decision, null, 2));
+		else printDecision(decision);
+		return askExitCode(decision, raw);
 	}
 
 	if (command === "tune") return await runTune(gate, agentDir, config, flags, asJson);

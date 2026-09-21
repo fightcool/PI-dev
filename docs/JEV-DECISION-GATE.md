@@ -481,13 +481,15 @@ npm run jev -- tune --corpus <你的语料>.jsonl --from-cache          # 不联
 | 磁盘决策缓存 `jev-decisions-cache.jsonl` | 只存 `cacheKey` 的 sha256、命题名、0..1 分数、审计元数据 | ✗ 摘要**推不回 state**（代码注释即写明），只知分数不知内容 |
 | 内存决策事件（环形缓冲，容量 200） | 时间/结论/分数/model/token/cost/耗时 | ✗ 不落盘，且没有 state、没有理由 |
 
+> **来源口径**：`source` 取值 `check(ci)/probe/tool/ask/ws/unknown`。`ask` = harness 里的临时判断（工具结果裁剪、重排、路由、护栏，见 [JEV-HARNESS-PLAN.md](JEV-HARNESS-PLAN.md)），与提交门禁共用同一套 gate/缓存/审计，但复盘时要分开看。
+
 ⇒ 一周后我们手里只有「分数分布」，无法判断某次 `approve` 到底对不对 → 校准无从谈起。
 **必须先加一份样本留痕**，再谈「跑一周」。
 
 ### 9.1 记什么、不记什么
 
 落盘 `<agentDir>/dev-con/jev-samples.jsonl`（**0600**、append-only、2000 条 / 8 MiB 轮转只留一代 `.1`）：
-`at`、命题名（去重排序）、每个命题的 0..1 分数、三态结论、中英理由、来源（`tool`/`cli`/`probe`/`ws`）、
+`at`、命题名（去重排序）、每个命题的 0..1 分数、三态结论、中英理由、来源（`tool`/`cli`/`probe`/`ask`/`ws`）、
 `model`、**被审内容 `state`**（截断 4000 字符 + 密钥形状抹除）、`stateChars`（截断前长度）、
 `stateHash`（复用本次 cacheKey 的 sha256）、失败时的错误码。
 
