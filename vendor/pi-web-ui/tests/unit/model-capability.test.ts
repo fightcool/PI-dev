@@ -22,6 +22,23 @@ describe("knownCapabilityOf", () => {
 		expect(map?.minimal).toBeNull();
 	});
 
+	it("认得 claude-fable-5-1（对齐 opus-5：可推理可识图，无档位映射）", () => {
+		const cap = knownCapabilityOf("claude-fable-5-1");
+		expect(cap?.reasoning).toBe(true);
+		expect(cap?.input).toEqual(["text", "image"]);
+		expect(cap?.contextWindow).toBe(200000);
+		expect(cap?.thinkingLevelMap).toBeUndefined();
+	});
+
+	it("认得 gpt-6-sol（astra 同款档位映射，off/minimal 置空）", () => {
+		const cap = knownCapabilityOf("gpt-6-sol");
+		expect(cap?.reasoning).toBe(true);
+		expect(cap?.thinkingLevelMap?.low).toBe("low");
+		expect(cap?.thinkingLevelMap?.max).toBe("max");
+		expect(cap?.thinkingLevelMap?.off).toBeNull();
+		expect(cap?.contextWindow).toBe(1000000);
+	});
+
 	it("空 id 与未知模型都返回 undefined（不猜）", () => {
 		expect(knownCapabilityOf("")).toBeUndefined();
 		expect(knownCapabilityOf("   ")).toBeUndefined();
@@ -42,6 +59,22 @@ describe("backfillModelCapability", () => {
 		expect(out.contextWindow).toBe(1050000);
 		expect(out.input).toEqual(["text", "image"]);
 		expect((out.thinkingLevelMap as Record<string, unknown>)?.low).toBe("low");
+	});
+
+	it("裸条目 claude-fable-5-1 回填出推理与识图（newapi 网关实测后的登记）", () => {
+		const out = backfillModelCapability({ id: "claude-fable-5-1" });
+		expect(out.reasoning).toBe(true);
+		expect(out.input).toEqual(["text", "image"]);
+		expect(out.contextWindow).toBe(200000);
+	});
+
+	it("裸条目 gpt-6-sol 回填出档位映射与 1M 窗口", () => {
+		const out = backfillModelCapability({ id: "gpt-6-sol" });
+		expect(out.reasoning).toBe(true);
+		expect((out.thinkingLevelMap as Record<string, unknown>)?.low).toBe("low");
+		expect((out.thinkingLevelMap as Record<string, unknown>)?.max).toBe("max");
+		expect(out.contextWindow).toBe(1000000);
+		expect(out.input).toEqual(["text", "image"]);
 	});
 
 	it("不覆盖用户已填的字段（显式配置优先）", () => {

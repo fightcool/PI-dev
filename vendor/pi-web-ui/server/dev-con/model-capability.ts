@@ -69,6 +69,21 @@ export const KNOWN_MODEL_CAPABILITIES: Record<string, KnownModelCapability> = {
 		contextWindow: 200_000,
 		input: ["text", "image"],
 	},
+	// 2026-09-23 经 api.ftai.cc 实测：:low/:high 档位均被网关接受，16x16 纯色图识别通过；
+	// 能力字段与 claude-opus-5 对齐（Claude 5 家族同构），无 thinkingLevelMap（同 opus-5）。
+	"claude-fable-5-1": {
+		reasoning: true,
+		contextWindow: 200_000,
+		input: ["text", "image"],
+	},
+	// 2026-09-23 经 api.ftai.cc 实测：:low/:max 档位均被网关接受，16x16 纯色图识别通过；
+	// 档位映射沿用 gpt-6-astra 同款，contextWindow 按 sol 家族对齐 gpt-5.6-sol 取 1M。
+	"gpt-6-sol": {
+		reasoning: true,
+		thinkingLevelMap: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
+		contextWindow: 1_000_000,
+		input: ["text", "image"],
+	},
 };
 
 /** 查表：命中返回能力定义，未登记返回 undefined（= 未知，不猜）。 */
