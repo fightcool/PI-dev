@@ -58,6 +58,32 @@ PM2候选部署使用经过指定的提交归档、独立shared配置与状态�
 
 不要原地执行 `npm update` 或让应用自更新绕过锁文件。依赖升级更新两个实际受影响的清单/锁文件，并重新执行类型、构建、单元、协议和性能验证。
 
+## 会话留存
+
+会话转录（`agentDir/sessions/`）与机器生成归档（`web/subagent-archive/`、`dev-con/usage-history*.bak`）无界增长；`pi-dev-session-prune` 给它们一个保守的留存策略（实测背景：13 天积累 43 会话/151MB、subagent 归档 507 文件/127MB）。
+
+默认策略（归档优先于删除）：
+
+| 对象 | 动作 | 阈值 |
+| --- | --- | --- |
+| 会话 `.jsonl` | gzip 到 `agentDir/sessions-archive/`（保留相对路径），删除原文件 | 90 天未修改 |
+| `sessions-archive/` 里的归档 | 删除 | 180 天 |
+| `web/subagent-archive/` | 删除 | 30 天 |
+| `usage-history*.bak` 副本 | 保留最新 1 份，其余删除 | — |
+
+安全栏：24 小时内修改过的文件一律不动（活跃会话天然满足）；单轮影响总量超过 2GiB 时拒绝执行（`--force` 显式放行）；恢复 = `gunzip` 回 `sessions/` 原位。`usage-history.jsonl` 正本永不动。
+
+```bash
+# 手动预演（默认 dry-run，不动盘）
+node scripts/maintenance/prune-sessions.mjs
+# 执行
+node scripts/maintenance/prune-sessions.mjs --apply
+# 一次性安装每日定时器（04:47 ±5min，随 Persistent 补跑）
+node scripts/maintenance/prune-sessions.mjs --install-units
+```
+
+天数阈值可用 `--session-days/--archive-days/--subagent-days` 覆盖；`--agent-dir` 指定其他实例（默认读 `~/.config/pi-dev/runtime.json` 的 agentDir）。
+
 ## Docker
 
 根Dockerfile以仓库为上下文，复用锁定依赖安装与根build；复制应用、包内共享模块、主题、插件及所需启动脚本。compose仅将端口绑定到宿主机127.0.0.1，并显式持久化 `/config`、`/data/web`、`/data/agent`、`/workspace`。运行用户为node，bind mount业务工作区时需确保其UID/GID有权限。
