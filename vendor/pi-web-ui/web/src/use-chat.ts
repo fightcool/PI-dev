@@ -1710,6 +1710,17 @@ export function useChat() {
 		};
 	}
 
+	// ── 机器负载（状态栏芯片 + 设置→系统 共用一份快照）─────────────────────
+	// 服务端无后台采样，采集即请求：ready 后每 5 秒拉一次；断开即停、重连立即补拉。
+	// 首调同时预热 /proc/stat 的 CPU 采样基线（服务端首次 cpuPercent 为 null，5 秒后就有值）。
+	const resourcesReady = chat.ready;
+	useEffect(() => {
+		if (!resourcesReady) return;
+		opsApiRef.current?.listResources();
+		const timer = setInterval(() => opsApiRef.current?.listResources(), 5000);
+		return () => clearInterval(timer);
+	}, [resourcesReady]);
+
 	const chatApi = useRef({
 		chat,
 		send,

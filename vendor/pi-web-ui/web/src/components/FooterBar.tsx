@@ -118,6 +118,12 @@ export function FooterBar({ chat, opsApi, send, usageOpen: usageOpenProp, onUsag
 				? `${gatewayFacts.usedText} / ${gatewayFacts.limitText}`
 				: `${gatewayFacts.usedText}`;
 
+	// -- 机器负载芯片：来源是 use-chat 的 5 秒轮询（chat.resources），与设置→系统同一份快照。
+	const loadRes = chat.resources?.ok ? (chat.resources.snapshot ?? null) : null;
+	const loadGib = (n: number | null) => (n === null ? "—" : `${(n / 1024 ** 3).toFixed(1)}G`);
+	const loadMemWarn =
+		loadRes !== null && loadRes.host.mem.totalBytes > 0 && loadRes.host.mem.usedBytes / loadRes.host.mem.totalBytes >= 0.85;
+
 	const startEdit = () => {
 		setEditing(true);
 	};
@@ -175,6 +181,29 @@ export function FooterBar({ chat, opsApi, send, usageOpen: usageOpenProp, onUsag
 				{ctxText}
 			</span>
 			<span className="status-sep">·</span>
+
+			{/* 机器负载：与设置→系统同一份快照（use-chat 每 5 秒轮询）。有读数才占位（同网关项契约）；
+			    cpuPercent 首次采样为 null → 先显示「—」，下一轮（≤5s）补上。 */}
+			{loadRes && (
+				<>
+					<span
+						className="status-item status-load"
+						title={`${t("loadTip")}\nload 1/5/15m: ${loadRes.host.loadAvg.map((v) => v.toFixed(2)).join(" / ")}\ncgroup: ${loadGib(loadRes.app.cgroup.currentBytes)}${
+							loadRes.app.cgroup.maxBytes === null ? "" : ` / ${loadGib(loadRes.app.cgroup.maxBytes)}`
+						}\n${new Date(loadRes.at).toLocaleTimeString()}`}
+					>
+						{t("loadCpu")}{" "}
+						<b className={loadRes.host.cpuPercent !== null && loadRes.host.cpuPercent >= 80 ? "cache-pct warn" : undefined}>
+							{loadRes.host.cpuPercent === null ? "—" : `${Math.round(loadRes.host.cpuPercent)}%`}
+						</b>{" "}
+						· {t("loadMem")}{" "}
+						<b className={loadMemWarn ? "cache-pct warn" : undefined}>
+							{loadGib(loadRes.host.mem.usedBytes)} / {loadGib(loadRes.host.mem.totalBytes)}
+						</b>
+					</span>
+					<span className="status-sep">·</span>
+				</>
+			)}
 
 			<button
 				type="button"

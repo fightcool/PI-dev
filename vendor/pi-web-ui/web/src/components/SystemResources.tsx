@@ -4,7 +4,7 @@
  * @CONTRACT 只读展示快照：读不到的字段显示「—」（不是 0），并显示来源标签与告警；
  *   应用 RSS（本进程）与 cgroup（systemd unit，含 supervisor）分开标注，不混成一个数字。
  */
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect } from "react";
 import { useT } from "../i18n";
 import type { UiResourceSnapshot } from "../types";
 import type { DiagnosticsMsg, StorageMsg } from "../use-chat";
@@ -48,19 +48,12 @@ export const SystemResources = memo(function SystemResources({
 	onSetOpsAlerts?: (enabled: boolean) => void;
 }) {
 	const t = useT();
-	const [tick, setTick] = useState(0);
 	// 存储遍历较贵：只在挂载时查一次，之后由按钮触发。
 	useEffect(() => {
 		onLoadStorage?.();
 	}, [onLoadStorage]);
-	// 面板打开期间每 5 秒刷新一次（服务端无后台采样，刷新即一次只读采集）。
-	useEffect(() => {
-		const timer = setInterval(() => setTick((v) => v + 1), 5000);
-		return () => clearInterval(timer);
-	}, []);
-	useEffect(() => {
-		onRefresh();
-	}, [tick, onRefresh]);
+	// 快照刷新已上收到 use-chat（ready 后每 5 秒轮询，状态栏与本面板共用 chat.resources）；
+	// 这里不再自建 interval —— onRefresh 仅保留给面板底部的手动刷新按钮。
 
 	if (!snapshot) return <p className="set-hint">{t("resourcesLoading")}</p>;
 	const { host, app, disks } = snapshot;
