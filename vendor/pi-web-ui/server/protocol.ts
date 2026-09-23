@@ -1232,6 +1232,9 @@ export interface UiModelConfigEntry {
 	input?: string[];
 	contextWindow?: number;
 	maxTokens?: number;
+	/** UI 档位 → 网关实际 API 值（null = 该档不提供）。仅在用户显式编辑时携带；
+	 *  未携带时服务端不写该键，盘上手工维护的映射原样保留。 */
+	thinkingLevelMap?: Record<string, string | null>;
 }
 
 /**

@@ -159,8 +159,31 @@ export interface ProviderKeysData {
 /** 设置表单只管理这些服务商键；其余键（headers、modelOverrides、未来字段）服务端原样保留。 */
 const MANAGED_PROVIDER_KEYS = new Set(["name", "api", "baseUrl", "apiKey", "authHeader", "models"]);
 
-/** 设置表单只管理这些模型键；其余键（cost / thinkingLevelMap / compat / 未来字段）原样保留。 */
+/** 设置表单只管理这些模型键；其余键（cost / compat / 未来字段）原样保留。
+ *  thinkingLevelMap 特例：不进本表（不带时盘上值原样保留），但表单**显式携带**
+ *  合法映射时以表单为准 —— 这是「能力标注」编辑区的写入口。 */
 const MANAGED_MODEL_KEYS = new Set(["id", "name", "reasoning", "input", "contextWindow", "maxTokens"]);
+
+/** thinkingLevelMap 的合法键（UI 档位全集，ModelThinking.tsx 的 THINKING_VALUES）。 */
+const THINKING_LEVEL_KEYS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+/** thinkingLevelMap 的合法值（网关 API 档位；null = 该档不提供）。SDK 的档位值是
+ *  provider 自由字符串（deepseek 用 low/high，openai-responses 用 minimal..max），
+ *  这里按「已知档位名全集」收口；更奇异的值（数字预算等）读投影不显示、盘上原样保留。 */
+const THINKING_API_VALUES = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
+
+/** 校验并收敛表单带来的 thinkingLevelMap：键/值任一非法 → 整表丢弃（返回 undefined，
+ *  落回「未携带」语义，由盘上原值或已知能力回填接管）。纯函数，不猜不改。 */
+function sanitizeThinkingLevelMap(map: unknown): Record<string, string | null> | undefined {
+	if (!map || typeof map !== "object" || Array.isArray(map)) return undefined;
+	const out: Record<string, string | null> = {};
+	for (const [key, value] of Object.entries(map as Record<string, unknown>)) {
+		if (!THINKING_LEVEL_KEYS.has(key)) return undefined;
+		if (value === null) out[key] = null;
+		else if (typeof value === "string" && THINKING_API_VALUES.has(value)) out[key] = value;
+		else return undefined;
+	}
+	return out;
+}
 
 /** 取上一个条目里不被表单管理的字段（浅拷贝进新对象，不动磁盘里的原引用）。 */
 function unmanagedEntries(source: Record<string, unknown> | undefined, managed: Set<string>): Record<string, unknown> {
@@ -895,6 +918,7 @@ export class ModelAdminService {
 						input: Array.isArray(m.input) ? (m.input as string[]) : undefined,
 						contextWindow: m.contextWindow as number | undefined,
 						maxTokens: m.maxTokens as number | undefined,
+						thinkingLevelMap: sanitizeThinkingLevelMap(m.thinkingLevelMap),
 					}))
 				: [];
 			return {
@@ -1049,6 +1073,7 @@ export class ModelAdminService {
 			input: Array.isArray(m.input) ? (m.input as string[]) : undefined,
 			contextWindow: m.contextWindow as number | undefined,
 			maxTokens: m.maxTokens as number | undefined,
+			thinkingLevelMap: sanitizeThinkingLevelMap(m.thinkingLevelMap),
 		}));
 	}
 
@@ -1514,16 +1539,19 @@ export class ModelAdminService {
 		// 否则下面的重建只落下 {id}，SDK 会把「未知」当成「不支持思考」。
 		const models = (config.models ?? [])
 			.filter((m) => m.id && m.id.trim())
-			.map((m) =>
-				backfillModelCapability({
+			.map((m) => {
+				// thinkingLevelMap 只在表单显式携带且整体合法时才写；省略 = 不动盘上值。
+				const levelMap = sanitizeThinkingLevelMap(m.thinkingLevelMap);
+				return backfillModelCapability({
 					id: m.id.trim(),
 					...(m.name?.trim() ? { name: m.name.trim() } : {}),
 					...(m.reasoning !== undefined ? { reasoning: m.reasoning } : {}),
 					...(m.input?.length ? { input: m.input } : {}),
 					...(m.contextWindow ? { contextWindow: Number(m.contextWindow) } : {}),
 					...(m.maxTokens ? { maxTokens: Number(m.maxTokens) } : {}),
-				}),
-			);
+					...(levelMap !== undefined ? { thinkingLevelMap: levelMap } : {}),
+				});
+			});
 		if (models.length === 0) {
 			return { ok: false, error: "至少需要一个模型", errorEn: "At least one model is required" };
 		}

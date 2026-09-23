@@ -1249,6 +1249,17 @@ export const en: EnDictionary = {
 	gatewayModelsProbeFailed: "Read failed: {error}",
 	gatewayModelsHint:
 		"The list comes from the gateway's /models endpoint (adds only, never deletes); the key is used server-side and never reaches the browser.",
+	gatewayCapTitle: "Model capability tags",
+	gatewayCapIntro:
+		"Tag models with reasoning, vision and thinking levels (the gateway list only carries ids); untagged models fall back to the built-in capability table, and unknown ones count as non-reasoning.",
+	gatewayCapFilterPh: "Search models…",
+	gatewayCapEmpty: "No models yet — load the model list from the gateway first",
+	gatewayCapContext: "Context window",
+	gatewayCapMaxTokens: "Max output",
+	gatewayCapSave: "Save capability tags",
+	gatewayCapLevelsHint:
+		"Check the levels this model supports; renamed mappings (e.g. medium→high) still need manual models.json editing.",
+	gatewayCapLevelRequired: "{id}: check at least one level (including \"off\")",
 	gatewayDupTitle: "Duplicate entry",
 	gatewayDupHint:
 		"{ids} points at the same address too ({count} models): the same models show up twice in the picker and usage attribution splits. Consider removing the redundant entry.",

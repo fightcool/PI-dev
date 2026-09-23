@@ -23,13 +23,106 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FiAlertTriangle, FiCheck, FiRefreshCw, FiTrash2 } from "react-icons/fi";
-import type { ClientMessage, UiProviderConfig } from "../types";
+import type { ClientMessage, UiModelConfigEntry, UiProviderConfig } from "../types";
 import type { ChatState, OpsApi } from "../use-chat";
 import { useT } from "../i18n";
 import { GatewayUsageBlock } from "./GatewayUsageBlock";
 
 /** 网关可用的接口协议（与 server/protocol.ts 的 uiProvider 注释同一口径）。 */
 const PROTOCOLS = ["openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai"] as const;
+
+/** 能力标注的档位全集（与 SDK 的 EXTENDED_THINKING_LEVELS、ModelThinking 的 THINKING_VALUES 同源）。 */
+const CAP_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+type CapLevel = (typeof CAP_LEVELS)[number];
+
+/** 能力标注表单里的一行。数值用字符串承载：空串 = 清除该键（绝不落成 0）。 */
+interface CapRow {
+	id: string;
+	reasoning: boolean;
+	/** 只有动过的字段才显式提交：未动过且盘上也未声明的字段保持缺省，
+	 *  让服务端的已知能力回填继续接管（显式 false 会挡住回填）。 */
+	reasoningTouched: boolean;
+	vision: boolean;
+	visionTouched: boolean;
+	/** 勾选的档位；levelsTouched=false 时不提交映射（盘上手工映射原样保留）。 */
+	levels: Set<CapLevel>;
+	levelsTouched: boolean;
+	contextWindow: string;
+	maxTokens: string;
+}
+
+/** 数值输入 → 提交值：空串/非法一律不写该键（绝不落成 0）。 */
+function numberOrUndefined(raw: string): number | undefined {
+	const text = raw.trim();
+	if (!text) return undefined;
+	const value = Number(text);
+	return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
+}
+
+/** 现有条目 → 初始勾选集，口径与 SDK getSupportedThinkingLevels 一致：
+ *  无映射时 off..high 默认支持、xhigh/max 需显式映射；null = 不提供。 */
+function supportedLevelsOf(entry: UiModelConfigEntry): Set<CapLevel> {
+	const map = entry.thinkingLevelMap;
+	if (!map) return new Set<CapLevel>(["off", "minimal", "low", "medium", "high"]);
+	const out = new Set<CapLevel>();
+	for (const level of CAP_LEVELS) {
+		const mapped = map[level];
+		if (mapped === null) continue;
+		if (mapped === undefined && (level === "xhigh" || level === "max")) continue;
+		out.add(level);
+	}
+	return out;
+}
+
+function capRowOf(entry: UiModelConfigEntry): CapRow {
+	return {
+		id: entry.id,
+		reasoning: entry.reasoning === true,
+		reasoningTouched: false,
+		vision: (entry.input ?? []).includes("image"),
+		visionTouched: false,
+		levels: supportedLevelsOf(entry),
+		levelsTouched: false,
+		contextWindow: entry.contextWindow ? String(entry.contextWindow) : "",
+		maxTokens: entry.maxTokens ? String(entry.maxTokens) : "",
+	};
+}
+
+/** 勾选集 → 显式映射：off 勾选 = 缺省键（SDK 默认支持），未勾 = null；
+ *  其余档勾选 = 同名值（简化标注不表达改名映射），未勾 = null。 */
+function levelMapOf(levels: Set<CapLevel>): Record<string, string | null> {
+	const map: Record<string, string | null> = {};
+	if (!levels.has("off")) map.off = null;
+	for (const level of CAP_LEVELS) {
+		if (level === "off") continue;
+		map[level] = levels.has(level) ? level : null;
+	}
+	return map;
+}
+
+/** 表单行 → 提交条目。基线（base）来自服务端读到的条目：
+ *  未动过且盘上存在的字段回显原值（replace 合并不会清掉），未动过且盘上也没有的键不写。 */
+function capEntryOf(row: CapRow, base: UiModelConfigEntry | undefined): UiModelConfigEntry {
+	const contextWindow = numberOrUndefined(row.contextWindow);
+	const maxTokens = numberOrUndefined(row.maxTokens);
+	return {
+		id: row.id,
+		...(base?.name ? { name: base.name } : {}),
+		...(row.reasoningTouched || base?.reasoning !== undefined ? { reasoning: row.reasoning } : {}),
+		...(row.visionTouched || base?.input !== undefined
+			? { input: row.vision ? ["text", "image"] : ["text"] }
+			: {}),
+		...(contextWindow !== undefined ? { contextWindow } : {}),
+		...(maxTokens !== undefined ? { maxTokens } : {}),
+		// 推理关闭时档位集合无意义（SDK 直接返回 ["off"]），不提交映射。
+		...(row.levelsTouched && row.reasoning ? { thinkingLevelMap: levelMapOf(row.levels) } : {}),
+	};
+}
+
+/** 显示名兜底：过滤时也按服务端读到的 name 匹配。 */
+function baseNameOf(config: { models: UiModelConfigEntry[] } | undefined, id: string): string | undefined {
+	return config?.models.find((m) => m.id === id)?.name;
+}
 
 export function GatewaySettings({
 	gateway,
@@ -72,6 +165,17 @@ export function GatewaySettings({
 	const pendingRef = useRef<number | null>(null);
 	const [probeReqId, setProbeReqId] = useState<number | null>(null);
 
+	// ── 模型能力标注（推理/识图/思考档位/窗口）──────────────────────────────
+	/** 与顶部连接表单分开的编辑状态：各自的 dirty 与 pending 互不干扰。 */
+	const [capRows, setCapRows] = useState<CapRow[]>([]);
+	const capDirtyRef = useRef(false);
+	const [capSaving, setCapSaving] = useState(false);
+	const [capSaved, setCapSaved] = useState(false);
+	const capPendingRef = useRef<number | null>(null);
+	const [capError, setCapError] = useState("");
+	const [capServerError, setCapServerError] = useState("");
+	const [capFilter, setCapFilter] = useState("");
+
 	// 打开面板即读一次（配置不是快照的一部分：它属于 models.json，按需读）。
 	useEffect(() => {
 		opsApi.getGateway();
@@ -85,11 +189,33 @@ export function GatewaySettings({
 		setClearKey(false);
 	}, [config]);
 
+	// 能力行同样只在「用户没改过」时跟随服务端回包（同顶部表单的 @GOTCHA）。
+	useEffect(() => {
+		if (!config || capDirtyRef.current) return;
+		setCapRows(config.models.map(capRowOf));
+	}, [config]);
+
 	// 保存成功后重新读取（服务端会归一化/回填能力，界面不自己猜结果）。
 	useEffect(() => {
 		if (gw.saveOk === null) return;
 		setSaving(false);
-		if (gw.saveOk && pendingRef.current !== null) {
+		setCapSaving(false);
+		if (gw.saveOk === false) {
+			// 失败时把归属理清：能力标注那次保存的失败只显示在能力区，不冒充连接表单的错误。
+			if (capPendingRef.current !== null) {
+				capPendingRef.current = null;
+				setCapServerError(gw.saveError ?? "");
+			}
+			return;
+		}
+		if (capPendingRef.current !== null) {
+			capPendingRef.current = null;
+			capDirtyRef.current = false;
+			setCapSaved(true);
+			opsApi.getGateway();
+			return;
+		}
+		if (pendingRef.current !== null) {
 			pendingRef.current = null;
 			dirtyRef.current = false;
 			opsApi.getGateway();
@@ -143,6 +269,51 @@ export function GatewaySettings({
 		if (!config) return;
 		setProbeReqId(opsApi.refreshProviderModels(config.providerId));
 	};
+
+	// ── 能力标注：行编辑与提交 ─────────────────────────────────────────────
+	const patchCapRow = (id: string, next: Partial<CapRow>) => {
+		capDirtyRef.current = true;
+		setCapRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...next } : r)));
+	};
+	const toggleCapLevel = (id: string, level: CapLevel) => {
+		setCapRows((prev) =>
+			prev.map((r) => {
+				if (r.id !== id) return r;
+				const levels = new Set(r.levels);
+				if (levels.has(level)) levels.delete(level);
+				else levels.add(level);
+				return { ...r, levels, levelsTouched: true };
+			}),
+		);
+		capDirtyRef.current = true;
+	};
+
+	const saveCapabilities = () => {
+		if (capSaving || !config) return;
+		const invalid = capRows.find((r) => r.reasoning && r.levelsTouched && r.levels.size === 0);
+		if (invalid) {
+			setCapError(t("gatewayCapLevelRequired", { id: invalid.id }));
+			return;
+		}
+		setCapError("");
+		setCapServerError("");
+		setCapSaving(true);
+		setCapSaved(false);
+		// 提交是整表替换：行 + 基线兜底。行间没出现的新模型（如刚探测进来的）
+		// 原样回显，绝不能因为这次保存把它们从清单里挤掉。
+		const baseById = new Map(config.models.map((m) => [m.id, m]));
+		const rowIds = new Set(capRows.map((r) => r.id));
+		const models = [
+			...capRows.map((r) => capEntryOf(r, baseById.get(r.id))),
+			...config.models.filter((m) => !rowIds.has(m.id)).map((m) => ({ ...m })),
+		];
+		capPendingRef.current = opsApi.saveGateway({ models });
+	};
+
+	const q = capFilter.trim().toLowerCase();
+	const listedCapRows = q
+		? capRows.filter((r) => r.id.toLowerCase().includes(q) || (baseNameOf(config, r.id) ?? "").toLowerCase().includes(q))
+		: capRows;
 
 	const removeDuplicate = (providerId: string) => {
 		if (!window.confirm(t("gatewayDupRemoveConfirm", { id: providerId }))) return;
@@ -299,6 +470,98 @@ export function GatewaySettings({
 					)}
 				</div>
 				<span className="set-hint">{t("gatewayModelsHint")}</span>
+			</div>
+
+			{/* 模型能力标注：网关 /models 只报 id，推理/识图/档位在这里补齐（新模型自助打标，不改代码）。 */}
+			<div className="gw-field">
+				<span className="field-label">{t("gatewayCapTitle")}</span>
+				<p className="set-hint">{t("gatewayCapIntro")}</p>
+				{modelCount === 0 ? (
+					<span className="set-hint">{t("gatewayCapEmpty")}</span>
+				) : (
+					<>
+						<input
+							className="chan-input gw-cap-filter"
+							type="text"
+							placeholder={t("gatewayCapFilterPh")}
+							value={capFilter}
+							onChange={(e) => setCapFilter(e.target.value)}
+						/>
+						<div className="gw-cap-list">
+							{listedCapRows.map((row) => (
+								<div key={row.id} className="gw-cap-row">
+									<span className="gw-cap-id" title={row.id}>
+										{row.id}
+									</span>
+									<label className="gw-cap-check">
+										<input
+											type="checkbox"
+											checked={row.reasoning}
+											onChange={(e) => patchCapRow(row.id, { reasoning: e.target.checked, reasoningTouched: true })}
+										/>
+										{t("reasoning")}
+									</label>
+									<label className="gw-cap-check">
+										<input
+											type="checkbox"
+											checked={row.vision}
+											onChange={(e) => patchCapRow(row.id, { vision: e.target.checked, visionTouched: true })}
+										/>
+										{t("vision")}
+									</label>
+									<div className="gw-cap-levels" title={t("gatewayCapLevelsHint")}>
+										{CAP_LEVELS.map((lv) => (
+											<button
+												key={lv}
+												type="button"
+												className={`gw-cap-level${row.levels.has(lv) ? " on" : ""}`}
+												disabled={!row.reasoning}
+												onClick={() => toggleCapLevel(row.id, lv)}
+											>
+												{t(`thinking.${lv}`)}
+											</button>
+										))}
+									</div>
+									<input
+										className="chan-input gw-cap-num"
+										type="number"
+										placeholder={t("gatewayCapContext")}
+										value={row.contextWindow}
+										onChange={(e) => patchCapRow(row.id, { contextWindow: e.target.value })}
+									/>
+									<input
+										className="chan-input gw-cap-num"
+										type="number"
+										placeholder={t("gatewayCapMaxTokens")}
+										value={row.maxTokens}
+										onChange={(e) => patchCapRow(row.id, { maxTokens: e.target.value })}
+									/>
+								</div>
+							))}
+						</div>
+						<div className="gw-actions">
+							<button type="button" className="chan-btn primary" onClick={saveCapabilities} disabled={capSaving || !config}>
+								{capSaving ? t("gatewaySaving") : t("gatewayCapSave")}
+							</button>
+							{capSaved && !capSaving && (
+								<span className="gw-ok">
+									<FiCheck /> {t("gatewaySaved")}
+								</span>
+							)}
+							{capError && (
+								<span className="gw-usage-error">
+									<FiAlertTriangle /> {capError}
+								</span>
+							)}
+							{capServerError && (
+								<span className="gw-usage-error">
+									<FiAlertTriangle /> {t("gatewaySaveFailed", { error: capServerError })}
+								</span>
+							)}
+						</div>
+						<span className="set-hint">{t("gatewayCapLevelsHint")}</span>
+					</>
+				)}
 			</div>
 
 			{/* 用量：与面板/状态栏同一份口径（GatewayUsageBlock 是唯一实现）。 */}
