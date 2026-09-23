@@ -1212,6 +1212,16 @@ export const zh = {
 	gatewayModelsProbed: "已合并：新增 {added} 个，共 {total} 个",
 	gatewayModelsProbeFailed: "读取失败：{error}",
 	gatewayModelsHint: "清单由网关的 /models 接口提供（只新增、不删除）；密钥在服务端使用，不出浏览器。",
+	gatewayCapTitle: "模型能力标注",
+	gatewayCapIntro:
+		"给模型标注推理、识图与思考档位（网关清单只报 id，能力在这里补齐）；未标注时按内置能力表回填，仍未知则视为不支持思考。",
+	gatewayCapFilterPh: "搜索模型…",
+	gatewayCapEmpty: "暂无模型，先从网关读取模型清单",
+	gatewayCapContext: "上下文窗口",
+	gatewayCapMaxTokens: "最大输出",
+	gatewayCapSave: "保存能力标注",
+	gatewayCapLevelsHint: "勾选该模型支持的档位；改名映射（如 中→high）需手工编辑 models.json。",
+	gatewayCapLevelRequired: "{id} 至少勾选一个档位（含「关闭」）",
 	gatewayDupTitle: "重复接入",
 	gatewayDupHint:
 		"{ids} 也指向同一个地址（共 {count} 个模型）：同一批模型会在选择器里出现两次，用量归属也会分裂。建议删掉多余的那份登记。",

@@ -120,3 +120,91 @@ describe("保存服务商配置时的字段保留", () => {
 		expect(providers.deepseek.models[1].cost).toBeUndefined();
 	});
 });
+
+/* ── thinkingLevelMap：能力标注编辑区的写入口 ──────────────────────────────
+ * 语义：表单**显式携带**合法映射时以表单为准；不带（或非法被整表丢弃）时
+ * 盘上手工映射原样保留；内置能力表的回填只补缺失，不覆盖显式值。
+ */
+const capInitial = {
+	providers: {
+		newapi: {
+			baseUrl: "https://api.ftai.cc/v1",
+			models: [
+				{
+					id: "gpt-7-nano",
+					name: "gpt-7-nano",
+					thinkingLevelMap: { low: "low", medium: "medium" },
+					cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+				},
+				{ id: "gpt-6-astra" },
+			],
+		},
+	},
+};
+
+function setupCap(): { dir: string; svc: ModelAdminService } {
+	const dir = mkdtempSync(join(tmpdir(), "model-admin-cap-"));
+	writeFileSync(join(dir, "models.json"), JSON.stringify(capInitial, null, 2) + "\n");
+	return { dir, svc: new ModelAdminService(makeHost(dir)) };
+}
+
+const saveNewapi = (svc: ModelAdminService, models: unknown[]) =>
+	svc.saveModelConfig("newapi", {
+		providerId: "newapi",
+		baseUrl: "https://api.ftai.cc/v1",
+		models: models as never,
+	});
+
+describe("thinkingLevelMap：能力标注的写入口", () => {
+	it("表单显式携带合法映射时以表单为准（覆盖盘上手工映射，cost 不受影响）", async () => {
+		const { dir, svc } = setupCap();
+		await saveNewapi(svc, [
+			{ id: "gpt-7-nano", name: "gpt-7-nano", reasoning: true, thinkingLevelMap: { low: "low", high: "high" } },
+		]);
+		const model = read(dir).providers.newapi.models[0];
+		expect(model.thinkingLevelMap).toEqual({ low: "low", high: "high" });
+		expect(model.cost.input).toBe(1);
+	});
+
+	it("表单不带映射时盘上手工映射原样保留", async () => {
+		const { dir, svc } = setupCap();
+		await saveNewapi(svc, [{ id: "gpt-7-nano", name: "gpt-7-nano", reasoning: true }]);
+		expect(read(dir).providers.newapi.models[0].thinkingLevelMap).toEqual({ low: "low", medium: "medium" });
+	});
+
+	it("非法映射（未知键 / 未知值）整表丢弃，等效未携带 → 盘上原值保留", async () => {
+		const { dir, svc } = setupCap();
+		await saveNewapi(svc, [
+			{ id: "gpt-7-nano", name: "gpt-7-nano", thinkingLevelMap: { bogus: "low" } },
+		]);
+		await saveNewapi(svc, [
+			{ id: "gpt-7-nano", name: "gpt-7-nano", thinkingLevelMap: { low: "ultra" } },
+		]);
+		expect(read(dir).providers.newapi.models[0].thinkingLevelMap).toEqual({ low: "low", medium: "medium" });
+	});
+
+	it("内置能力表模型：不带映射时回填表值（回填不覆盖显式映射）", async () => {
+		const { dir, svc } = setupCap();
+		await saveNewapi(svc, [{ id: "gpt-6-astra" }]);
+		const astra = read(dir).providers.newapi.models.find((m: { id: string }) => m.id === "gpt-6-astra");
+		expect(astra.reasoning).toBe(true);
+		expect(astra.thinkingLevelMap.max).toBe("max");
+
+		await saveNewapi(svc, [
+			{ id: "gpt-6-astra", reasoning: true, thinkingLevelMap: { low: "low" } },
+		]);
+		const explicit = read(dir).providers.newapi.models.find((m: { id: string }) => m.id === "gpt-6-astra");
+		expect(explicit.thinkingLevelMap).toEqual({ low: "low" });
+	});
+
+	it("listModelsConfig 读投影携带 thinkingLevelMap（UI 往返无损）", async () => {
+		const { dir } = setupCap();
+		const emitted: { type?: string; providers?: { models: { id: string; thinkingLevelMap?: Record<string, string | null> }[] }[] }[] = [];
+		const host = makeHost(dir);
+		const svc = new ModelAdminService({ ...host, emit: (msg) => emitted.push(msg as never) });
+		await svc.listModelsConfig();
+		const msg = emitted.find((m) => m.type === "models_config");
+		const nano = msg?.providers?.[0].models.find((m) => m.id === "gpt-7-nano");
+		expect(nano?.thinkingLevelMap).toEqual({ low: "low", medium: "medium" });
+	});
+});

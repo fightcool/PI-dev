@@ -225,3 +225,89 @@ describe("GatewaySettings：地址 + 密钥 + 模型清单", () => {
 		expect(opsApi.getGateway).toHaveBeenCalled();
 	});
 });
+
+describe("GatewaySettings：模型能力标注", () => {
+	/** 找到指定模型的能力行。 */
+	const capRow = (container: HTMLElement, id: string): HTMLElement =>
+		[...container.querySelectorAll(".gw-cap-row")].find((r) => (r.querySelector(".gw-cap-id")?.textContent ?? "") === id) as HTMLElement;
+	const capCheck = (row: HTMLElement, i: number): HTMLInputElement =>
+		row.querySelectorAll(".gw-cap-check input")[i] as HTMLInputElement;
+	const capLevel = (row: HTMLElement, label: string): HTMLElement =>
+		[...row.querySelectorAll(".gw-cap-level")].find((b) => b.textContent === label) as HTMLElement;
+	const capSave = () =>
+		[...document.querySelectorAll("button")].find((b) => textOf(b).includes("保存能力标注"))! as HTMLElement;
+	const saveCalls = (opsApi: unknown) =>
+		(opsApi as unknown as { saveGateway: { mock: { calls: unknown[][] } } }).saveGateway.mock.calls;
+
+	it("勾选推理后保存：动过的字段显式提交，没动过的裸模型只回传 id（回填继续接管）", () => {
+		const { container, opsApi } = mount({});
+		const row = capRow(container, "deepseek-flash");
+		act(() => capCheck(row, 0).dispatchEvent(new MouseEvent("click", { bubbles: true })));
+		act(() => capSave().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+		const arg = saveCalls(opsApi)[0][0] as { models: Record<string, unknown>[] };
+		expect(arg.models[0]).toEqual({ id: "deepseek-flash", reasoning: true });
+		expect(arg.models[1]).toEqual({ id: "gpt-5.6-sol" });
+	});
+
+	it("勾选档位生成同名映射；基线已有的字段（reasoning/input）原样回显", () => {
+		const { container, opsApi } = mount({
+			gateway: {
+				config: { ...CONFIG, models: [{ id: "m-reasoning", reasoning: true, input: ["text", "image"] }] },
+			},
+		});
+		const row = capRow(container, "m-reasoning");
+		// 无映射时默认 off..high 勾选；补勾「极高」。
+		act(() => capLevel(row, "极高").dispatchEvent(new MouseEvent("click", { bubbles: true })));
+		act(() => capSave().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+		const arg = saveCalls(opsApi)[0][0] as { models: Record<string, unknown>[] };
+		expect(arg.models[0].reasoning).toBe(true);
+		expect(arg.models[0].input).toEqual(["text", "image"]);
+		// off 勾选 = 不写键；其余档勾选 = 同名值，未勾 = null。
+		expect(arg.models[0].thinkingLevelMap).toEqual({
+			minimal: "minimal",
+			low: "low",
+			medium: "medium",
+			high: "high",
+			xhigh: "xhigh",
+			max: null,
+		});
+	});
+
+	it("取消推理勾选发送显式 false（显式声明优先，挡住能力表回填）", () => {
+		const { container, opsApi } = mount({
+			gateway: { config: { ...CONFIG, models: [{ id: "m-reasoning", reasoning: true }] } },
+		});
+		const row = capRow(container, "m-reasoning");
+		act(() => capCheck(row, 0).dispatchEvent(new MouseEvent("click", { bubbles: true })));
+		act(() => capSave().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+		const arg = saveCalls(opsApi)[0][0] as { models: Record<string, unknown>[] };
+		expect(arg.models[0].reasoning).toBe(false);
+		expect("thinkingLevelMap" in arg.models[0]).toBe(false);
+	});
+
+	it("档位一个不剩时阻止保存并点名模型", () => {
+		const { container, opsApi } = mount({
+			gateway: { config: { ...CONFIG, models: [{ id: "m-reasoning", reasoning: true }] } },
+		});
+		const row = capRow(container, "m-reasoning");
+		for (const label of ["关闭", "极简", "低", "中", "高"]) {
+			act(() => capLevel(row, label).dispatchEvent(new MouseEvent("click", { bubbles: true })));
+		}
+		act(() => capSave().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+		expect(saveCalls(opsApi)).toHaveLength(0);
+		expect(textOf(container)).toContain("m-reasoning 至少勾选一个档位");
+	});
+
+	it("数值字段空 = 不写键（绝不落成 0）", () => {
+		const { container, opsApi } = mount({
+			gateway: { config: { ...CONFIG, models: [{ id: "m-plain" }] } },
+		});
+		const row = capRow(container, "m-plain");
+		const nums = [...row.querySelectorAll('input[type="number"]')] as HTMLInputElement[];
+		act(() => typeInto(nums[0], "128000"));
+		act(() => capSave().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+		const arg = saveCalls(opsApi)[0][0] as { models: Record<string, unknown>[] };
+		expect(arg.models[0].contextWindow).toBe(128000);
+		expect("maxTokens" in arg.models[0]).toBe(false);
+	});
+});

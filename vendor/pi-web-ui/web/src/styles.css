@@ -12098,6 +12098,72 @@ button.source-default-toggle {
 	padding: 2px 6px;
 	background: var(--bg-elev);
 }
+/* 模型能力标注：一行一个模型，窄面板下允许换行。 */
+.gw-cap-filter {
+	max-width: 260px;
+	margin-bottom: 6px;
+}
+.gw-cap-list {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin-bottom: 8px;
+}
+.gw-cap-row {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 6px 10px;
+	padding: 4px 6px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+}
+.gw-cap-id {
+	font-family: var(--mono);
+	font-size: 12px;
+	color: var(--text);
+	min-width: 140px;
+	max-width: 220px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.gw-cap-check {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 12px;
+	color: var(--text-dim);
+	white-space: nowrap;
+}
+.gw-cap-levels {
+	display: inline-flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+.gw-cap-level {
+	font-family: var(--mono);
+	font-size: 11px;
+	color: var(--text-faint);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 1px 6px;
+	background: var(--bg-elev);
+}
+.gw-cap-level.on {
+	color: var(--text);
+	border-color: color-mix(in srgb, var(--accent, #4f8cff) 55%, var(--border));
+	background: color-mix(in srgb, var(--accent, #4f8cff) 14%, var(--bg-elev));
+}
+.gw-cap-level:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+.gw-cap-num {
+	width: 110px;
+	font-family: var(--mono);
+	font-size: 12px;
+}
 .gw-dup {
 	margin-top: 10px;
 	border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--border));
