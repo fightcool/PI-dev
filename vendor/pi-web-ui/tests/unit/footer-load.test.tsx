@@ -13,6 +13,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { act } from "react-dom/test-utils";
 import { FooterBar } from "../../web/src/components/FooterBar.js";
 import { SystemResources } from "../../web/src/components/SystemResources.js";
+import { useChat } from "../../web/src/use-chat.js";
 import { LanguageProvider } from "../../web/src/i18n.js";
 import type { ChatState } from "../../web/src/use-chat.js";
 import type { UiResourceSnapshot } from "../../web/src/types.js";
@@ -188,5 +189,66 @@ describe("SystemResources：快照轮询已上收到 use-chat", () => {
 		expect(btn).toBeDefined();
 		act(() => btn!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 		expect(onRefresh).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("use-chat：机器负载轮询随连接启停", () => {
+	it("ready 后立即拉一次并每 5 秒轮询；断开即停", () => {
+		vi.useFakeTimers();
+		class FakeWS {
+			static OPEN = 1;
+			static instances: FakeWS[] = [];
+			sent: string[] = [];
+			onopen: (() => void) | null = null;
+			onmessage: ((ev: { data: string }) => void) | null = null;
+			onclose: (() => void) | null = null;
+			readyState = 1;
+			send(data: string) {
+				this.sent.push(data);
+			}
+			close() {
+				this.readyState = 3;
+				this.onclose?.();
+			}
+			constructor(_url: string) {
+				FakeWS.instances.push(this);
+			}
+		}
+		vi.stubGlobal("WebSocket", FakeWS);
+		const container = document.createElement("div");
+		document.body.appendChild(container);
+		root = createRoot(container);
+		act(() =>
+			root!.render(
+				createElement(
+					LanguageProvider,
+					null,
+					createElement(function Probe() {
+						useChat();
+						return createElement("span");
+					}),
+				),
+			),
+		);
+		const ws = FakeWS.instances.at(-1)!;
+		act(() => ws.onopen?.());
+		act(() =>
+			ws.onmessage?.({
+				data: JSON.stringify({ type: "ready", clientId: "probe", serverVersion: "0.85.1" }),
+			}),
+		);
+		const polls = () => ws.sent.filter((s) => s.includes('"list_resources"')).length;
+		expect(polls(), "ready 即首调（顺带预热 CPU 采样基线）").toBe(1);
+		act(() => vi.advanceTimersByTime(5000));
+		expect(polls()).toBe(2);
+		act(() => vi.advanceTimersByTime(5000));
+		expect(polls()).toBe(3);
+		// 断开：ready 翻 false → 轮询停（重连由 connect 闭环处理，不影响本断言）
+		act(() => ws.close());
+		const atClose = polls();
+		act(() => vi.advanceTimersByTime(10000));
+		expect(polls(), "断开后不再轮询").toBe(atClose);
+		vi.unstubAllGlobals();
+		vi.useRealTimers();
 	});
 });
